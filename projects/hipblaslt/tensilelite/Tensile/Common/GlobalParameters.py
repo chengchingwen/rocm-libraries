@@ -382,6 +382,7 @@ defaultBenchmarkCommonParameters = [
     {"GlobalSplitUAlgorithm": ["MultipleBuffer"]},
     {"GlobalSplitUCoalesced": [False]},
     {"GlobalSplitUWorkGroupMappingRoundRobin": [False]},
+    {"LocalSplitU": [ 1 ] },
     {"Use64bShadowLimit": [1]},
     {"NumLoadsCoalescedA": [1]},
     {"NumLoadsCoalescedB": [1]},
