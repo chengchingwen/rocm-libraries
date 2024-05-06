@@ -55,8 +55,8 @@ def matrixInstructionToMIParameters(
     """
     print2(f">> Converting MatrixInstruction {mi} to MI parameters")
 
-    if len(mi) != 9:
-      raise ValueError(f"MatrixInstruction must be 9 items long to convert into MI"
+    if len(mi) != 9 and len(mi) != 10 and len(mi) != 13 and len(mi) != 15:
+      raise ValueError(f"MatrixInstruction must be 9 or 10 or 13 or 15 items long to convert into MI"
                        f" Parameters, found {mi} with length {len(mi)}")
 
     result = {}
@@ -78,7 +78,7 @@ def matrixInstructionToMIParameters(
     result["MatrixInstK"] = mi[2]
     result["MatrixInstB"] = mi[3]
 
-    waves = mi[7]* mi[8]
+    waves = mi[7] * mi[8]
     wg0 = mi[4] * mi[0] * mi[7]
 
     result["WavefrontSize"] = wavefrontSize
@@ -133,6 +133,18 @@ def matrixInstructionToMIParameters(
     result['MIInputPerThreadA'] = result['MIInputPerThread'] if not sparseA else result['MIInputPerThread'] // 2
     result['MIInputPerThreadB'] = result['MIInputPerThread'] if not sparseB else result['MIInputPerThread'] // 2
     result['MIInputPerThreadMetadata'] = result['MIInputPerThread'] if not isSparse else result['MIInputPerThread'] // 8
+
+    if len(mi) >= 10:
+        result['LocalSplitU'] = mi[9]
+
+    if len(mi) >= 13:
+        result['DirectToVgprA'] = mi[10]
+        result['DirectToVgprB'] = mi[11]
+        result['DepthU'] = mi[12]
+
+    if len(mi) >= 15:
+        result['WorkGroupMapping'] = mi[13]
+        result['UnrollLoopSwapGlobalReadOrder'] = mi[14]
 
     print2(f">> MI Parameters: {pprint.pformat(result)}")
     return result
