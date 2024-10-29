@@ -552,6 +552,18 @@ class Solution(collections.abc.Mapping):
        (state["UseDotInstruction"]):
       state["tailLoopOptA"] = False
       state["tailLoopOptB"] = False
+
+    if (state["DirectToVgprA"] == -1):
+      state["DirectToVgprA"] = True if (state['MIWaveGroup'][1] == 1 and \
+                                        ((state["MacroTile0"] * state["MacroTile1"] >= 57344 and state["ProblemType"]["TransposeA"]) or \
+                                         not state["ProblemType"]["TransposeA"] or \
+                                         state["ProblemType"]["SwizzleTensorA"])) else False
+    if (state["DirectToVgprB"] == -1):
+      state["DirectToVgprB"] = True if (state['MIWaveGroup'][0] == 1 and \
+                                        ((state["MacroTile0"] * state["MacroTile1"] >= 57344 and not state["ProblemType"]["TransposeB"]) or \
+                                         state["ProblemType"]["TransposeB"] or \
+                                         state["ProblemType"]["SwizzleTensorB"])) else False
+
     if (not state["ProblemType"]["TLUA"]) and (state["DirectToVgprA"]):
       state["tailLoopOptA"] = False
     if (not state["ProblemType"]["TLUB"]) and (state["DirectToVgprB"]):
@@ -2165,7 +2177,7 @@ class Solution(collections.abc.Mapping):
         autoLRVW = 0
         if state["LocalReadVectorWidth"] == -1:
           autoLRVW = 1
-          if state["TransposeLDS"] or (state["MIInputPerThread"] * state["ProblemType"]["DataType"].numBytes() > 16):
+          if state["TransposeLDS"] and (not state["DirectToLds"]) and state["ClusterLocalRead"] or (state["MIInputPerThread"] * state["ProblemType"]["DataType"].numBytes() > 16):
             state["LocalReadVectorWidth"] = 16 // state["ProblemType"]["DataType"].numBytes()
           else:
             state["LocalReadVectorWidth"] = state["MIInputPerThread"]
@@ -2181,7 +2193,7 @@ class Solution(collections.abc.Mapping):
 
         if autoLRVW:
           if state["LocalReadVectorWidth"] // state["MIInputPerThread"] > 1:
-            if (state["DepthU"] // state["MatrixInstK"] <= state["LocalReadVectorWidth"] // state["MIInputPerThread"]):
+            if (sol["DepthU"] // sol["MatrixInstK"] // sol["LocalSplitU"] <= sol["LocalReadVectorWidth"] // sol["MIInputPerThread"]):
               # if only have 1 iteration with wider local read, reduce LRVW to have better scheduling (at least 2 iterations)
               state["LocalReadVectorWidth"] //= 2
           if state["LocalReadVectorWidth"] // state["MIInputPerThread"] > 1:
@@ -2226,14 +2238,14 @@ class Solution(collections.abc.Mapping):
       if state["EnableMatrixInstruction"]:
         if state["GlobalReadVectorWidthA"] < 0:
           genGRVWA = True
-          if state["GlobalReadVectorWidthA"] == -2:
-            if state["MatrixInstBM"] == 1 and state["MIWaveTile"][0] == 1 and state["MIWaveGroup"][0] == 1 and state["ProblemType"]["TLUA"]:
-              state["GlobalReadVectorWidthA"] = 1
-            else:
-              reject(state, printRejectionReason, "GRVWA=-2 is set for skinny MT")
-          elif state["GlobalReadVectorWidthA"] == -1:
-            if state["ProblemType"]["SwizzleTensorA"]:
-              state["GlobalReadVectorWidthA"] = state["MIInputPerThreadA"] * calSwizzlePackK(state, "A")
+          if state["GlobalReadVectorWidthA"] == -1:
+            if state["DirectToVgprA"]:
+              if state["ProblemType"]["SwizzleTensorA"]:
+                state["GlobalReadVectorWidthA"] = state["MIInputPerThreadA"] * calSwizzlePackK(state, "A")
+              elif state["ProblemType"]["TLUA"]:
+                state["GlobalReadVectorWidthA"] = state["MIWaveTile"][0]
+              else:
+                state["GlobalReadVectorWidthA"] = state["LocalReadVectorWidth"]
             elif state["enableGLTrA"]:
               state["GlobalReadVectorWidthA"] = 8
             else:
@@ -2266,14 +2278,14 @@ class Solution(collections.abc.Mapping):
       if state["EnableMatrixInstruction"]:
         if state["GlobalReadVectorWidthB"] < 0:
           genGRVWB = True
-          if state["GlobalReadVectorWidthB"] == -2:
-            if state["MatrixInstBN"] == 1 and state["MIWaveTile"][1] == 1 and state["MIWaveGroup"][1] == 1 and state["ProblemType"]["TLUB"]:
-              state["GlobalReadVectorWidthB"] = 1
-            else:
-              reject(state, printRejectionReason, "GRVWB=-2 is set for skinny MT")
-          elif state["GlobalReadVectorWidthB"] == -1:
-            if state["ProblemType"]["SwizzleTensorB"]:
-              state["GlobalReadVectorWidthB"] = state["MIInputPerThreadB"] * calSwizzlePackK(state, "B")
+          if state["GlobalReadVectorWidthB"] == -1:
+            if state["DirectToVgprB"]:
+              if state["ProblemType"]["SwizzleTensorB"]:
+                state["GlobalReadVectorWidthB"] = state["MIInputPerThreadB"] * calSwizzlePackK(state, "B")
+              elif state["ProblemType"]["TLUB"]:
+                state["GlobalReadVectorWidthB"] = state["MIWaveTile"][1]
+              else:
+                state["GlobalReadVectorWidthB"] = state["LocalReadVectorWidth"]
             elif state["enableGLTrB"]:
               state["GlobalReadVectorWidthB"] = 8
             else:
@@ -3343,7 +3355,7 @@ class Solution(collections.abc.Mapping):
         state["StoreSyncOpt"] = 0
         state["GroupLoadStore"] = False
       else:
-        state["NumElementsPerBatchStore"] = 16 if not state["ProblemType"]["DataType"].numBytes() == 8 else 1
+        state["NumElementsPerBatchStore"] = max(1,8 // state["MIWaveTile"][0]) * state["MIWaveTile"][0]
 
     # Mbsk prefetch optimization
     if state["_GlobalAccumulation"] != 'MultipleBufferSingleKernel':

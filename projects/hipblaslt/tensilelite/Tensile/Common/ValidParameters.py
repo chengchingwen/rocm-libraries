@@ -315,8 +315,8 @@ validParameters = { # we need to make sure this matches develop
     "BufferStore": [False, True],
     # Attempt to load directly from global memory into Vgpr.
     # Assembly only
-    "DirectToVgprA": [False, True],
-    "DirectToVgprB": [False, True],
+    "DirectToVgprA": [-1, 0, 1],
+    "DirectToVgprB": [-1, 0, 1],
     "DirectToVgprSparseMetadata": [False, True],
     # B address interleave (restricted): non-contiguous tile columns for TN/NN-like B (TLUB == False),
     # with runtime G chosen as the largest power-of-two factor of (N/MT1), capped by LVCB.
@@ -733,8 +733,8 @@ validParameters = { # we need to make sure this matches develop
     # NOTE: for input bpe=32, max GRVW is 4  (to fit dwordx4) (FP32), min GRVW is 1 (dword)
     #                 bpe=16, max GRVW is 8  (to fit dwordx4) (FP16), min GRVW is 2 (dword)
     #                 bpe=8,  max GRVW is 16 (to fit dwordx4) (INT8), min GRVW is 4 (dword)
-    "GlobalReadVectorWidthA": [-2, -1, 1, 2, 3, 4, 6, 8, 16],
-    "GlobalReadVectorWidthB": [-2, -1, 1, 2, 3, 4, 6, 8, 16],
+    "GlobalReadVectorWidthA": [-1, 1, 2, 3, 4, 6, 8, 16],
+    "GlobalReadVectorWidthB": [-1, 1, 2, 3, 4, 6, 8, 16],
     # Controls desired width (#elements) for loads from LDS -> VGPR.
     # -1 : Set LocalReadVectorWidth =  VectorWidth
     #  1 cannot be used for half type.
