@@ -398,6 +398,18 @@ class Solution(collections.abc.Mapping):
        (state["UseDotInstruction"]):
       state["tailLoopOptA"] = False
       state["tailLoopOptB"] = False
+
+    if (state["DirectToVgprA"] == -1):
+      state["DirectToVgprA"] = True if (state['MIWaveGroup'][1] == 1 and \
+                                        ((state["MacroTile0"] * state["MacroTile1"] >= 57344 and state["ProblemType"]["TransposeA"]) or \
+                                         not state["ProblemType"]["TransposeA"] or \
+                                         state["ProblemType"]["SwizzleTensorA"])) else False
+    if (state["DirectToVgprB"] == -1):
+      state["DirectToVgprB"] = True if (state['MIWaveGroup'][0] == 1 and \
+                                        ((state["MacroTile0"] * state["MacroTile1"] >= 57344 and not state["ProblemType"]["TransposeB"]) or \
+                                         state["ProblemType"]["TransposeB"] or \
+                                         state["ProblemType"]["SwizzleTensorB"])) else False
+
     if (state["DirectToVgprA"]):
       state["tailLoopOptA"] = False
     if (state["DirectToVgprB"]):
@@ -1851,7 +1863,7 @@ class Solution(collections.abc.Mapping):
         autoLRVW = 0
         if state["LocalReadVectorWidth"] == -1:
           autoLRVW = 1
-          if state["TransposeLDS"] or (state["MIInputPerThread"] * state["ProblemType"]["DataType"].numBytes() > 16):
+          if state["TransposeLDS"] and (not state["DirectToLds"]) and state["ClusterLocalRead"] or (state["MIInputPerThread"] * state["ProblemType"]["DataType"].numBytes() > 16):
             state["LocalReadVectorWidth"] = 16 // state["ProblemType"]["DataType"].numBytes()
           else:
             state["LocalReadVectorWidth"] = state["MIInputPerThread"]
@@ -1916,8 +1928,13 @@ class Solution(collections.abc.Mapping):
             else:
               reject(state, printRejectionReason, "GRVWA=-2 is set for skinny MT")
           elif state["GlobalReadVectorWidthA"] == -1:
-            if state["ProblemType"]["SwizzleTensorA"]:
-              state["GlobalReadVectorWidthA"] = state["MIInputPerThreadA"] * calSwizzlePackK(state, "A")
+            if state["DirectToVgprA"]:
+              if state["ProblemType"]["SwizzleTensorA"]:
+                state["GlobalReadVectorWidthA"] = state["MIInputPerThreadA"] * calSwizzlePackK(state, "A")
+              elif state["ProblemType"]["TLUA"]:
+                state["GlobalReadVectorWidthA"] = state["MIWaveTile"][0]
+              else:
+                state["GlobalReadVectorWidthA"] = state["LocalReadVectorWidth"]
             elif state["enableGLTrA"]:
               state["GlobalReadVectorWidthA"] = 8
             else:
@@ -1956,8 +1973,13 @@ class Solution(collections.abc.Mapping):
             else:
               reject(state, printRejectionReason, "GRVWB=-2 is set for skinny MT")
           elif state["GlobalReadVectorWidthB"] == -1:
-            if state["ProblemType"]["SwizzleTensorB"]:
-              state["GlobalReadVectorWidthB"] = state["MIInputPerThreadB"] * calSwizzlePackK(state, "B")
+            if state["DirectToVgprB"]:
+              if state["ProblemType"]["SwizzleTensorB"]:
+                state["GlobalReadVectorWidthB"] = state["MIInputPerThreadB"] * calSwizzlePackK(state, "B")
+              elif state["ProblemType"]["TLUB"]:
+                state["GlobalReadVectorWidthB"] = state["MIWaveTile"][1]
+              else:
+                state["GlobalReadVectorWidthB"] = state["LocalReadVectorWidth"]
             elif state["enableGLTrB"]:
               state["GlobalReadVectorWidthB"] = 8
             else:
@@ -2847,14 +2869,7 @@ class Solution(collections.abc.Mapping):
     ldsNumBytes = max(ldsNumBytesAB, ldsNumBytesReduction, ldsNumBytesOccupancy)
 
     if state["NumElementsPerBatchStore"] == -1:
-      if ldsNumBytes > 32768 or \
-          state["ProblemType"]["ComputeDataType"].numBytes() * state["MacroTile0"] * state["MacroTile1"] > 32768*4:
-        state["NumElementsPerBatchStore"] = 0
-        state["StorePriorityOpt"] = 0
-        state["StoreSyncOpt"] = 0
-        state["GroupLoadStore"] = 0
-      else:
-        state["NumElementsPerBatchStore"] = 16 if not state["ProblemType"]["DataType"].numBytes() == 8 else 1
+      state["NumElementsPerBatchStore"] = max(1,8 // state["MIWaveTile"][0]) * state["MIWaveTile"][0]
 
     # Mbsk prefetch optimization
     if state["_GlobalAccumulation"] != 'MultipleBufferSingleKernel':
