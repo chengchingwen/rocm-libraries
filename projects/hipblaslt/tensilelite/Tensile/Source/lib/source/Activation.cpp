@@ -37,6 +37,8 @@ namespace TensileLite
             return "Abs";
         case ActivationType::Clippedrelu:
             return "Clippedrelu";
+        case ActivationType::Clamp:
+            return "Clamp";
         case ActivationType::Exp:
             return "Exp";
         case ActivationType::Gelu:

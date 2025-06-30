@@ -182,6 +182,8 @@ typedef enum rocblaslt_epilogue_
     ROCBLASLT_EPILOGUE_BGRADB         = 512,
     ROCBLASLT_EPILOGUE_SWISH_EXT      = 65536,
     ROCBLASLT_EPILOGUE_SWISH_BIAS_EXT = 65540,
+    ROCBLASLT_EPILOGUE_CLAMP_EXT      = 66560,
+    ROCBLASLT_EPILOGUE_CLAMP_BIAS_EXT = 66564,
 } rocblaslt_epilogue;
 
 /*! \ingroup types_module

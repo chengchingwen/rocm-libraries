@@ -478,7 +478,7 @@ try
 
         ("activation_type",
          value<std::string>(&activation_type)->default_value("none"),
-         "Options: none, gelu, relu, swish")
+         "Options: none, gelu, relu, swish, clamp")
 
         ("activation_arg1",
          value<float>(&arg.activation_arg1)->default_value(0),

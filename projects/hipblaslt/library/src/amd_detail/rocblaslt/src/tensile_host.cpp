@@ -321,6 +321,9 @@ namespace
         case ROCBLASLT_EPILOGUE_SWISH_EXT:
         case ROCBLASLT_EPILOGUE_SWISH_BIAS_EXT:
             return TensileLite::ActivationType::Silu;
+        case ROCBLASLT_EPILOGUE_CLAMP_EXT:
+        case ROCBLASLT_EPILOGUE_CLAMP_BIAS_EXT:
+            return TensileLite::ActivationType::Clamp;
         case ROCBLASLT_EPILOGUE_BIAS:
         case ROCBLASLT_EPILOGUE_DEFAULT:
         case ROCBLASLT_EPILOGUE_BGRADA:
@@ -358,6 +361,7 @@ namespace
         case ROCBLASLT_EPILOGUE_BGRADA:
         case ROCBLASLT_EPILOGUE_BGRADB:
         case ROCBLASLT_EPILOGUE_SWISH_BIAS_EXT:
+        case ROCBLASLT_EPILOGUE_CLAMP_BIAS_EXT:
             return true;
             break;
         default:
@@ -664,6 +668,8 @@ namespace
         case TensileLite::ActivationType::Silu:
         case TensileLite::ActivationType::Swish:
             return "swish";
+        case TensileLite::ActivationType::Clamp:
+            return "clamp";
         case TensileLite::ActivationType::None:
         default:
             return "none";

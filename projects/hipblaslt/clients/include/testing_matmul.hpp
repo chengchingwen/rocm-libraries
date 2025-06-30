@@ -742,6 +742,13 @@ auto _silu = [](auto in, auto /*arg1*/, auto /*arg2*/) -> decltype(in) {
     return static_cast<decltype(in)>(in_Tc / (1.f + exp(-in_Tc)));
 };
 
+// clamp
+auto _clamp = [](auto in, auto alpha, auto beta) -> decltype(in) {
+  using Tc = float;
+  Tc in_Tc = static_cast<Tc>(in);
+  return static_cast<decltype(in)>(std::max(alpha, std::min(in_Tc, beta)));
+};
+
 void testing_matmul_bad_arg(const Arguments& arg)
 {
     const int64_t M = 128;
@@ -1563,6 +1570,9 @@ void testing_matmul_with_bias(const Arguments& arg,
             case hipblaslt_activation_type::swish:
                 epilogue[i] = HIPBLASLT_EPILOGUE_SWISH_BIAS_EXT;
                 break;
+            case hipblaslt_activation_type::clamp:
+                epilogue[i] = HIPBLASLT_EPILOGUE_CLAMP_BIAS_EXT;
+                break;
             default:
                 epilogue[i] = HIPBLASLT_EPILOGUE_BIAS;
                 break;
@@ -1582,6 +1592,10 @@ void testing_matmul_with_bias(const Arguments& arg,
                 break;
             case hipblaslt_activation_type::swish:
                 epilogue[i]    = HIPBLASLT_EPILOGUE_SWISH_EXT;
+                epilogue_on[i] = true;
+                break;
+            case hipblaslt_activation_type::clamp:
+                epilogue[i]    = HIPBLASLT_EPILOGUE_CLAMP_EXT;
                 epilogue_on[i] = true;
                 break;
             default:
@@ -3227,6 +3241,17 @@ void testing_matmul_with_bias(const Arguments& arg,
                                       To,
                                       Talpha);
                         break;
+                    case hipblaslt_activation_type::clamp:
+                        epilogue_func(epilogue_param,
+                                      hBias_buf,
+                                      Tbias,
+                                      arg.activation_arg1,
+                                      arg.activation_arg2,
+                                      ::_clamp,
+                                      arg.gradient,
+                                      To,
+                                      Talpha);
+                        break;
                     default:
                         epilogue_func(epilogue_param, hBias_buf, Tbias, false, To, Talpha);
                         break;
@@ -3833,6 +3858,9 @@ void testing_matmul_with_bias(const Arguments& arg,
                     break;
                 case hipblaslt_activation_type::swish:
                     flops += silu_gflop_count(M[gemmIdx], N[gemmIdx], Talpha);
+                    break;
+                case hipblaslt_activation_type::clamp:
+                    flops += clamp_gflop_count(M[gemmIdx], N[gemmIdx], Talpha);
                     break;
                 default:
                     break;
