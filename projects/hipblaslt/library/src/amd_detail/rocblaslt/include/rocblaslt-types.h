@@ -367,6 +367,8 @@ typedef enum rocblaslt_matmul_desc_attributes_
     ROCBLASLT_MATMUL_DESC_COMPUTE_INPUT_TYPE_A_EXT   = 100,
     ROCBLASLT_MATMUL_DESC_COMPUTE_INPUT_TYPE_B_EXT,
     ROCBLASLT_MATMUL_DESC_MAX,
+    ROCBLASLT_MATMUL_DESC_EPILOGUE_ACT_ARG0_EXT,
+    ROCBLASLT_MATMUL_DESC_EPILOGUE_ACT_ARG1_EXT,
 } rocblaslt_matmul_desc_attributes;
 
 /*! \ingroup types_module
@@ -538,6 +540,8 @@ struct RocblasltContractionProblem
     void*              amaxD;
     void*              workspace;
     size_t             workspaceSize;
+    float              act0;
+    float              act1;
 
     hipStream_t stream;
     void*       Synchronizer;
@@ -602,6 +606,8 @@ struct RocblasltContractionProblem
                                 void*                  amaxD,
                                 void*                  workspace,
                                 size_t                 workspaceSize,
+                                float                  act0,
+                                float                  act1,
                                 hipStream_t            stream,
                                 void*                  Synchronizer,
                                 bool                   swizzleA,
@@ -642,6 +648,8 @@ namespace rocblaslt
             = RocblasltContractionProblem::ScalingFormat::None;
         RocblasltContractionProblem::ScalingFormat scaling_b_type
             = RocblasltContractionProblem::ScalingFormat::None;
+        float                                      act0;
+        float                                      act1;
     };
 
     class RocTuningV2

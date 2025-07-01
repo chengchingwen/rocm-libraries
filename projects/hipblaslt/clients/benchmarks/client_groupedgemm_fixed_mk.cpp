@@ -125,7 +125,7 @@ auto _silu = [](auto in) -> decltype(in) {
 auto _clamp = [](auto in) -> decltype(in) {
     using Tc = float;
     Tc in_Tc = static_cast<Tc>(in);
-    return static_cast<decltype(in)>(std::max(-1.f, std::min(in_tc, 1.f)));
+    return static_cast<decltype(in)>(std::max(-1.f, std::min(in_Tc, 1.f)));
 };
 
 template <typename T>

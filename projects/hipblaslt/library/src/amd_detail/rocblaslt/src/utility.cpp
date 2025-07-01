@@ -232,6 +232,10 @@ const char* rocblaslt_matmul_desc_attributes_to_string(rocblaslt_matmul_desc_att
         return "MATMUL_DESC_COMPUTE_INPUT_TYPE_A_EXT";
     case ROCBLASLT_MATMUL_DESC_COMPUTE_INPUT_TYPE_B_EXT:
         return "MATMUL_DESC_COMPUTE_INPUT_TYPE_B_EXT";
+    case ROCBLASLT_MATMUL_DESC_EPILOGUE_ACT_ARG0_EXT:
+        return "MATMUL_DESC_EPILOGUE_ACT_ARG0_EXT";
+    case ROCBLASLT_MATMUL_DESC_EPILOGUE_ACT_ARG1_EXT:
+        return "MATMUL_DESC_EPILOGUE_ACT_ARG1_EXT";
     default:
         return "Invalid";
     }

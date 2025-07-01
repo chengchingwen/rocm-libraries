@@ -82,7 +82,6 @@ inline hipblaslt_internal_ostream& operator<<(hipblaslt_internal_ostream& os,
     case hipblaslt_activation_type::swish:
         os << "swish";
         break;
-    }
     case hipblaslt_activation_type::clamp:
         os << "clamp";
         break;

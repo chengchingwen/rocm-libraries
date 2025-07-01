@@ -195,6 +195,8 @@ typedef enum {
   HIPBLASLT_MATMUL_DESC_COMPUTE_INPUT_TYPE_A_EXT = 100,     /**<Compute input A types. Defines the data type used for the input A of matrix multiply. */
   HIPBLASLT_MATMUL_DESC_COMPUTE_INPUT_TYPE_B_EXT,           /**<Compute input B types. Defines the data type used for the input B of matrix multiply. */
   HIPBLASLT_MATMUL_DESC_MAX,
+  HIPBLASLT_MATMUL_DESC_EPILOGUE_ACT_ARG0_EXT,              /**<first extra argument for the activation function. */
+  HIPBLASLT_MATMUL_DESC_EPILOGUE_ACT_ARG1_EXT,              /**<second extra argument for the activation function. */
 } hipblasLtMatmulDescAttributes_t;
 
 /*! \ingroup types_module
