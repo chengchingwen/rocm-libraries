@@ -482,11 +482,11 @@ try
 
         ("activation_arg1",
          value<float>(&arg.activation_arg1)->default_value(0),
-         "Reserved.")
+         "First extra argument for activation function if needed.")
 
         ("activation_arg2",
          value<float>(&arg.activation_arg2)->default_value(std::numeric_limits<float>::infinity()),
-         "Reserved.")
+         "Second extra argument for activation function if needed.")
 
         ("bias_type",
          value<std::string>(&bias_type), "Precision of bias vector."

@@ -746,7 +746,7 @@ auto _silu = [](auto in, auto /*arg1*/, auto /*arg2*/) -> decltype(in) {
 auto _clamp = [](auto in, auto alpha, auto beta) -> decltype(in) {
   using Tc = float;
   Tc in_Tc = static_cast<Tc>(in);
-  return static_cast<decltype(in)>(std::max(alpha, std::min(in_Tc, beta)));
+  return static_cast<decltype(in)>(std::max(static_cast<Tc>(alpha), std::min(in_Tc, static_cast<Tc>(beta))));
 };
 
 void testing_matmul_bad_arg(const Arguments& arg)
@@ -1333,6 +1333,7 @@ void testing_matmul_with_bias(const Arguments& arg,
         matD(gemm_count);
     std::vector<std::vector<hipblasLtMatmulDesc_t>> matmul;
     std::vector<hipblasLtEpilogue_t> epilogue(gemm_count, HIPBLASLT_EPILOGUE_DEFAULT);
+    std::vector<float> act0(gemm_count), act1(gemm_count);
 
     std::vector<HipDeviceBuffer>  dA, dB, dC, dD, dE, dBias;
     std::vector<HipDeviceBuffer>* dDp;
@@ -1601,6 +1602,11 @@ void testing_matmul_with_bias(const Arguments& arg,
             default:
                 break;
             }
+        }
+        if(epilogue_on[i])
+        {
+          act0[i] = arg.activation_arg1;
+          act1[i] = arg.activation_arg2;
         }
         if(arg.gradient)
         {
@@ -2057,11 +2063,21 @@ void testing_matmul_with_bias(const Arguments& arg,
             }
         }
         if(epilogue_on[i])
+        {
             EXPECT_HIPBLAS_STATUS(hipblasLtMatmulDescSetAttribute(matmul[0][i],
                                                                   HIPBLASLT_MATMUL_DESC_EPILOGUE,
                                                                   &(epilogue[i]),
                                                                   sizeof(epilogue[i])),
                                   HIPBLAS_STATUS_SUCCESS);
+            CHECK_HIPBLASLT_ERROR(hipblasLtMatmulDescSetAttribute(matmul[0][i],
+                                                                  HIPBLASLT_MATMUL_DESC_EPILOGUE_ACT_ARG0_EXT,
+                                                                  &(act0[i]),
+                                                                  sizeof(act0[i])));
+            CHECK_HIPBLASLT_ERROR(hipblasLtMatmulDescSetAttribute(matmul[0][i],
+                                                                  HIPBLASLT_MATMUL_DESC_EPILOGUE_ACT_ARG1_EXT,
+                                                                  &(act1[i]),
+                                                                  sizeof(act1[i])));
+        }
 
         if(arg.use_e)
         {
