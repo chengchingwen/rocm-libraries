@@ -182,8 +182,8 @@ typedef enum rocblaslt_epilogue_
     ROCBLASLT_EPILOGUE_BGRADB         = 512,
     ROCBLASLT_EPILOGUE_SWISH_EXT      = 65536,
     ROCBLASLT_EPILOGUE_SWISH_BIAS_EXT = 65540,
-    ROCBLASLT_EPILOGUE_CLAMP_EXT      = 66560,
-    ROCBLASLT_EPILOGUE_CLAMP_BIAS_EXT = 66564,
+    ROCBLASLT_EPILOGUE_CLAMP_EXT      = 131072,
+    ROCBLASLT_EPILOGUE_CLAMP_BIAS_EXT = 131076,
 } rocblaslt_epilogue;
 
 /*! \ingroup types_module
@@ -648,8 +648,8 @@ namespace rocblaslt
             = RocblasltContractionProblem::ScalingFormat::None;
         RocblasltContractionProblem::ScalingFormat scaling_b_type
             = RocblasltContractionProblem::ScalingFormat::None;
-        float                                      act0;
-        float                                      act1;
+        float                                      act0 = 0.f;
+        float                                      act1 = 0.f;
     };
 
     class RocTuningV2

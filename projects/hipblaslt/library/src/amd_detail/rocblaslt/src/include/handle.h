@@ -180,8 +180,8 @@ struct _rocblaslt_matmul_desc
     uint32_t scaleABlockColSize = 0;
     uint32_t scaleBBlockRowSize = 0;
     uint32_t scaleBBlockColSize = 0;
-    float act0 = 0;
-    float act1 = 0;
+    float act0 = 0.f;
+    float act1 = 0.f;
 
     std::shared_ptr<void> m_data; // Tensile data
 

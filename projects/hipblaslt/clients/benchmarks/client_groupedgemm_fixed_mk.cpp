@@ -858,6 +858,11 @@ int test_hipblaslt(hipDataType                 in_datatype,
             epilogue[i] = HIPBLASLT_EPILOGUE_CLAMP_EXT;
         gemmEpilogue[i].setMode(epilogue[i]);
         gemmEpilogue[i].setBiasDataType(static_cast<hipDataType>(HIP_R_32F));
+        if(actType[i] == ActivationType::CLAMP)
+        {
+            gemmEpilogue[i].setAct0(-1.f);
+            gemmEpilogue[i].setAct1(1.f);
+        }
         gemmInputs[i].setA(da[i]);
         gemmInputs[i].setB(db[i]);
         gemmInputs[i].setC(dc[i]);
