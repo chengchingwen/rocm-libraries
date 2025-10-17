@@ -26,6 +26,8 @@ import os
 import shutil
 import sys
 import time
+import itertools
+from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 
 from copy import deepcopy
 from pathlib import Path
@@ -55,6 +57,117 @@ from Tensile.Common import HR, print1, print2, IsaInfo, IsaVersion, \
 from Tensile.Common.Architectures import isaToGfx, gfxToVariants
 from Tensile.Common.GlobalParameters import globalParameters, startTime
 
+def _generateForkedSolutionsParallel(problemType, constantParams, forkPermutations, assembler: Assembler, \
+                                     debugConfig: DebugConfig, isaInfoMap: Dict[IsaVersion, IsaInfo]):
+    try:
+        workers = int(os.getenv("TENSILELITE_FORK_SOLUTION_WORKERS", 1))
+        if workers < -1 or workers == 0:
+            raise ValueError
+        cpu_count = os.cpu_count() - 1
+        max_workers = min(workers, cpu_count) if workers > 0 else cpu_count
+    except ValueError:
+        print1("TENSILELITE_FORK_SOLUTION_WORKERS is not a valid integer, use 1")
+        max_workers = 1
+
+    rbuf = {}
+    nextidx = 0
+    gid = 0
+    solIter = iter(forkPermutations)
+    future2idx = {}
+    batchsize = 512
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        try:
+            stopped = False
+            for _ in range(2 * max_workers):
+                batch = list(itertools.islice(solIter, batchsize))
+                if not batch:
+                    stopped = True
+                    break
+
+                future = executor.submit(_generateForkedSolutionBatched, problemType, constantParams, batch, assembler,
+                                         debugConfig, isaInfoMap)
+                future2idx[future] = gid
+                gid += 1
+
+            while future2idx:
+                done, _ = wait(future2idx.keys(), return_when=FIRST_COMPLETED)
+                for future in done:
+                    idx = future2idx.pop(future)
+                    result = future.result()
+                    rbuf[idx] = result
+
+                    if not stopped:
+                        batch = list(itertools.islice(solIter, batchsize))
+                        if not batch:
+                            stopped = True
+                        else:
+                            nfuture = executor.submit(_generateForkedSolutionBatched, problemType, constantParams, batch,
+                                                      assembler, debugConfig, isaInfoMap)
+                            future2idx[nfuture] = gid
+                            gid += 1
+
+                    size = 0
+                    while nextidx in rbuf:
+                        sz, current = rbuf.pop(nextidx)
+                        size += sz
+                        if current:
+                            yield (size, current)
+                            size = 0
+                        nextidx += 1
+        except Exception as e:
+            for future in future2idx:
+                future.cancel()
+            raise e
+        assert not rbuf
+
+
+def _generateForkedSolutionBatched(problemType, constantParams, perms, assembler: Assembler, \
+                                   debugConfig: DebugConfig, isaInfoMap: Dict[IsaVersion, IsaInfo]):
+    solutions = []
+    solutionSet = set()
+    for perm in perms:
+        solutionObject = _generateForkedSolution(problemType, constantParams, perm, assembler, debugConfig, isaInfoMap)
+        if solutionObject and solutionObject not in solutionSet:
+            solutionSet.add(solutionObject)
+            solutions.append(solutionObject)
+    return (len(perms), solutions)
+
+def _generateForkedSolution(problemType, constantParams, perm, assembler: Assembler, \
+                            debugConfig: DebugConfig, isaInfoMap: Dict[IsaVersion, IsaInfo]):
+    solution = {
+        "ProblemType": deepcopy(problemType.state),
+        "ISA": next(iter(isaInfoMap.keys()))
+    }
+    solution.update(constantParams)
+    solution.update(perm)
+
+    mi = solution["MatrixInstruction"]
+    wavefrontSize = solution["WavefrontSize"]
+    workgroup = solution["WorkGroup"]
+    ptype = solution["ProblemType"]
+    isa = solution["ISA"]
+
+    if len(mi) == 9 or len(mi) == 10 or len(mi) == 13 or len(mi) == 15:
+        miParams = matrixInstructionToMIParameters(mi, isa, wavefrontSize, ptype, workgroup, isaInfoMap)
+        solution.update(miParams)
+    elif len(mi) == 0:
+        solution["EnableMatrixInstruction"] = False
+
+    if validateMIParameters(solution, isaInfoMap):
+        solutionObject = Solution(
+            solution,
+            debugConfig.splitGSU,
+            debugConfig.printSolutionRejectionReason,
+            debugConfig.printIndexAssignmentInfo,
+            assembler,
+            isaInfoMap,
+        )
+        if solutionObject["Valid"]:
+            return solutionObject
+
+    elif debugConfig.printSolutionRejectionReason:
+        print1("rejecting solution " + str(solution))
+    return None
 
 def _generateForkedSolutions(problemType, constantParams, forkPermutations, assembler: Assembler, \
                             debugConfig: DebugConfig, isaInfoMap: Dict[IsaVersion, IsaInfo]):
@@ -63,48 +176,44 @@ def _generateForkedSolutions(problemType, constantParams, forkPermutations, asse
 
     solutions = []
     solutionSet = set()
-    for perm in forkPermutations:
-        # Expect only a single ISA in the map for the Tensile context
-        # because the GPU has to be physically present for benchmarking
+    completed = 0
+    start = time.time()
+    total = len(forkPermutations)
+    display = 2048
+    for size, solutionObjects in _generateForkedSolutionsParallel(problemType, constantParams, forkPermutations, assembler,
+                                                           debugConfig, isaInfoMap):
+        completed += size
+        for solutionObject in solutionObjects:
+            if solutionObject and solutionObject not in solutionSet:
+                solutionSet.add(solutionObject)
+                solutions.append(solutionObject)
 
-        solution = {
-            "ProblemType": deepcopy(problemType.state),
-            "ISA": next(iter(isaInfoMap.keys()))
-        }
-        solution.update(constantParams)
-        solution.update(perm)
+        if True: #completed % display == 0:
+            percent = int((completed / total) * 100)
+            bar = '#' * int(percent/4) + '-' * (25 - int(percent/4))
+            elapsed = time.time() - start
+            hours = int(elapsed // 3600)
+            minutes = int((elapsed % 3600) // 60)
+            seconds = elapsed % 60
+            elapsed_str = f"{hours}:{minutes}:{seconds:.2f}"
+            eta = elapsed * (total / completed)
+            eta_hours = int(eta // 3600)
+            eta_minutes = int((eta % 3600) // 60)
+            eta_seconds = eta % 60
+            eta_str = f"{eta_hours}:{eta_minutes}:{eta_seconds:.2f}"
+            sys.stdout.write('\033[2K\033[1G')
+            sys.stdout.write(f'Progress: |{bar}| {completed}/{total} ({percent}%) Elapsed: {elapsed_str} ETA: {eta_str}')
+            sys.stdout.flush()
 
-
-        mi = solution["MatrixInstruction"]
-        wavefrontSize = solution["WavefrontSize"]
-        workgroup = solution["WorkGroup"]
-        ptype = solution["ProblemType"]
-        isa = solution["ISA"]
-
-        if len(mi) == 9:
-            miParams = matrixInstructionToMIParameters(mi, isa, wavefrontSize, ptype, workgroup, isaInfoMap)
-            solution.update(miParams)
-        elif len(mi) == 0:
-            solution["EnableMatrixInstruction"] = False
-
-        if validateMIParameters(solution, isaInfoMap):
-            solutionObject = Solution(
-                solution,
-                debugConfig.splitGSU,
-                debugConfig.printSolutionRejectionReason,
-                debugConfig.printIndexAssignmentInfo,
-                assembler,
-                isaInfoMap
-            )
-            if solutionObject["Valid"]:
-                if solutionObject not in solutionSet:
-                    solutionSet.add(solutionObject)
-                    solutions.append(solutionObject)
-        elif debugConfig.printSolutionRejectionReason:
-            print1("rejecting solution " + str(solution))
-
+    elapsed = time.time() - start
+    hours = int(elapsed // 3600)
+    minutes = int((elapsed % 3600) // 60)
+    seconds = elapsed % 60
+    elapsed_str = f"{hours}:{minutes}:{seconds:.2f}"
+    sys.stdout.write('\033[2K\033[1G')
+    sys.stdout.write(f'Progress: |{"*"*25}| {completed}/{total} (100%) Elapsed: {elapsed_str}\n')
+    sys.stdout.flush()
     return solutions
-
 
 def _getCustomKernelSolutionObj(
         kernelName,
