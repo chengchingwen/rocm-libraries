@@ -133,12 +133,21 @@ namespace Tensilelite
             //issue local write
             double lwCycles = numGRA * lwA / waveNum;
             lwCycles += numGRB * lwB / waveNum;
-
+#undef EXPERIMENTAL
+#define EXPERIMENTAL 0
+#if EXPERIMENTAL
+            double perf = std::max((grCycles2 + others + 1024) / math_frequency, mem_latency)
+                          + (lwCycles*1 + grCycles2 + 1024) / math_frequency;
+            //std::cout<<"grCycles, others, math_frequency="<<grCycles<<","<<others<<","<<math_frequency<<""<<std::endl;
+        }
+        return (grCycles2 + others + 1024*depthU/64) / math_frequency;
+#else
             double perf = std::max((grCycles + others) / math_frequency, mem_latency)
                           + (lwCycles + grCycles2) / math_frequency;
             //std::cout<<"grCycles, others, math_frequency="<<grCycles<<","<<others<<","<<math_frequency<<""<<std::endl;
         }
         return (grCycles2 + others) / math_frequency;
+#endif                          
     }
 
 
@@ -737,7 +746,21 @@ namespace Tensilelite
         uint32_t num_tiles = ceilDivide(numberWGs, uint32_t(hw_consts.NumCUs));
         uint32_t loopCnt = K_AfterGSU / depthU;
         uint32_t K_tail = K_AfterGSU - (loopCnt * depthU);
+#undef EXPERIMENTAL
+#define EXPERIMENTAL 0
+#if EXPERIMENTAL
+        PGR = (std::floor(K_AfterGSU/depthU > 1)) ? sizeMapping.PrefetchGlobalRead : int(K_AfterGSU/depthU);
+        int      PLR = (std::floor(K_AfterGSU/sizeMapping.LocalSplitU/depthU) < 1) ? 0: 1;//sizeMapping.PrefetchLocalRead;
 
+        if (PLR == 0)
+        {
+            //std::cout<<"M:"<<M<<",N:"<<N<<",MT0:"<<MT0<<",MT1:"<<MT1<<std::endl;
+            pp.microSeconds = 9999999.9;
+            pp.hitRate = 0;
+            return pp;
+        }
+#else
+#endif
         // 5. Cache Hit Rates and Bandwidths
         CacheHitRates cache_hits;
         L1CacheHitRate l1 = computeL1CacheHitRate(hw_consts,
@@ -887,6 +910,17 @@ namespace Tensilelite
         perf += gsu_overall;
 
 
+#undef EXPERIMENTAL
+#define EXPERIMENTAL 0
+#if EXPERIMENTAL
+        if (int(M) % int(MT0) != 0)
+            // perf += store_edge;
+            // perf += store;
+            // perf += store* ((int(M) % int(MT0))/MT0);
+            // perf = perf - store + std::max(store_edge, store);
+            perf = perf + std::max(store_edge, store);
+#else
+#endif
         pp.microSeconds = perf;
         pp.hitRate = cache_hits.totalL2HitRate * 100;
 
