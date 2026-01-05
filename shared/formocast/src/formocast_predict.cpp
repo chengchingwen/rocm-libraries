@@ -189,18 +189,21 @@ namespace Tensilelite
         HardwareConstants hw;
         if(arch == HardwareArchitecture::gfx950)
         {
-            unsigned char magic[184] = {0, 0, 0, 0, 0, 0, 224, 64, 0, 0, 0, 0, 0, 0, 80, 65, 0, 0, 0, 0, 0, 0, 176, 65, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 80, 64, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 80, 64, 0, 0, 0, 0, 0, 0, 80, 64, 0, 0, 0, 0, 0, 0, 8, 64, 0, 0, 0, 0, 0, 176, 157, 64, 189, 134, 242, 26, 202, 171, 152, 64, 189, 134, 242, 26, 202, 171, 168, 64, 0, 0, 0, 0, 0, 32, 156, 64, 0, 0, 0, 0, 0, 92, 162, 64, 205, 204, 204, 204, 204, 204, 4, 64, 205, 204, 204, 204, 204, 204, 0, 64, 0, 0, 0, 0, 0, 0, 176, 64, 0, 0, 0, 0, 0, 0, 112, 64, 0, 0, 0, 0, 0, 0, 80, 64, 205, 204, 204, 204, 204, 204, 236, 63, 0, 0, 0, 0, 0, 0, 232, 63, 8, 0, 0, 0, 0, 0, 0, 0};
-            hw = archConstantMap(magic, 184);
+            unsigned char magic[208] = {0, 0, 0, 0, 0, 0, 224, 64, 0, 0, 0, 0, 0, 0, 80, 65, 0, 0, 0, 0, 0, 0, 176, 65, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 80, 64, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 80, 64, 0, 0, 0, 0, 0, 0, 80, 64, 0, 0, 0, 0, 0, 0, 8, 64, 0, 0, 0, 0, 0, 176, 157, 64, 189, 134, 242, 26, 202, 171, 152, 64, 189, 134, 242, 26, 202, 171, 168, 64, 0, 0, 0, 0, 0, 32, 156, 64, 0, 0, 0, 0, 0, 92, 162, 64, 205, 204, 204, 204, 204, 204, 4, 64, 205, 204, 204, 204, 204, 204, 0, 64, 0, 0, 0, 0, 0, 0, 176, 64, 0, 0, 0, 0, 0, 0, 112, 64, 0, 0, 0, 0, 0, 0, 80, 64, 205, 204, 204, 204, 204, 204, 236, 63, 0, 0, 0, 0, 0, 0, 232, 63, 8, 0, 0, 0, 14, 0, 0, 0, 10, 0, 0, 0, 10, 0, 0, 0, 6, 0, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0};
+            hw = archConstantMap(magic, 208);
+            hw.architecture = HardwareArchitecture::gfx950;
         }
         else if(arch == HardwareArchitecture::gfx942)
         {
-            unsigned char magic[184] = {0, 0, 0, 0, 0, 0, 224, 64, 0, 0, 0, 0, 0, 0, 80, 65, 0, 0, 0, 0, 0, 0, 176, 65, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 80, 64, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 80, 64, 0, 0, 0, 0, 0, 0, 80, 64, 0, 0, 0, 0, 0, 0, 8, 64, 0, 0, 0, 0, 0, 80, 148, 64, 118, 98, 39, 118, 98, 7, 162, 64, 118, 98, 39, 118, 98, 7, 178, 64, 0, 0, 0, 0, 0, 48, 145, 64, 1, 96, 132, 2, 0, 0, 0, 0, 154, 153, 153, 153, 153, 153, 5, 64, 64, 96, 132, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 160, 64, 0, 0, 0, 0, 0, 0, 115, 64, 0, 0, 0, 0, 0, 0, 80, 64, 205, 204, 204, 204, 204, 204, 236, 63, 143, 194, 245, 40, 92, 143, 226, 63, 8, 0, 0, 0, 0, 0, 0, 0};
-            hw = archConstantMap(magic, 184);
+            unsigned char magic[208] = {0, 0, 0, 0, 0, 0, 224, 64, 0, 0, 0, 0, 0, 0, 80, 65, 0, 0, 0, 0, 0, 0, 176, 65, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 80, 64, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 80, 64, 0, 0, 0, 0, 0, 0, 80, 64, 0, 0, 0, 0, 0, 0, 8, 64, 0, 0, 0, 0, 0, 80, 148, 64, 118, 98, 39, 118, 98, 7, 162, 64, 118, 98, 39, 118, 98, 7, 178, 64, 0, 0, 0, 0, 0, 48, 145, 64, 1, 96, 132, 2, 0, 0, 0, 0, 154, 153, 153, 153, 153, 153, 5, 64, 64, 96, 132, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 160, 64, 0, 0, 0, 0, 0, 0, 115, 64, 0, 0, 0, 0, 0, 0, 80, 64, 205, 204, 204, 204, 204, 204, 236, 63, 143, 194, 245, 40, 92, 143, 226, 63, 8, 0, 0, 0, 10, 0, 0, 0, 5, 0, 0, 0, 2, 0, 0, 0, 6, 0, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0};
+            hw = archConstantMap(magic, 208);
+            hw.architecture = HardwareArchitecture::gfx942;
         }
         else if(arch == HardwareArchitecture::gfx1201)
         {
-            unsigned char magic[184] = {0, 0, 0, 0, 0, 0, 224, 64, 0, 0, 0, 0, 0, 0, 96, 65, 0, 0, 0, 0, 0, 0, 144, 65, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 80, 64, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 228, 63, 0, 0, 0, 0, 0, 168, 147, 64, 20, 174, 71, 225, 122, 132, 78, 64, 104, 145, 237, 124, 63, 119, 123, 64, 0, 0, 0, 0, 0, 92, 162, 64, 0, 0, 0, 0, 0, 136, 163, 64, 51, 51, 51, 51, 51, 51, 45, 64, 205, 204, 204, 204, 204, 204, 44, 64, 0, 0, 0, 0, 0, 0, 160, 64, 0, 0, 0, 0, 0, 0, 80, 64, 0, 0, 0, 0, 0, 0, 64, 64, 205, 204, 204, 204, 204, 204, 236, 63, 0, 0, 0, 0, 0, 0, 232, 63, 1, 0, 0, 0, 0, 0, 0, 0};
-            hw = archConstantMap(magic, 184);
+            unsigned char magic[208] = {0, 0, 0, 0, 0, 0, 224, 64, 0, 0, 0, 0, 0, 0, 96, 65, 0, 0, 0, 0, 0, 0, 144, 65, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 80, 64, 0, 0, 0, 0, 0, 0, 96, 64, 0, 0, 0, 0, 0, 0, 228, 63, 0, 0, 0, 0, 0, 168, 147, 64, 20, 174, 71, 225, 122, 132, 78, 64, 104, 145, 237, 124, 63, 119, 123, 64, 0, 0, 0, 0, 0, 92, 162, 64, 0, 0, 0, 0, 0, 136, 163, 64, 51, 51, 51, 51, 51, 51, 45, 64, 205, 204, 204, 204, 204, 204, 44, 64, 0, 0, 0, 0, 0, 0, 160, 64, 0, 0, 0, 0, 0, 0, 80, 64, 0, 0, 0, 0, 0, 0, 64, 64, 205, 204, 204, 204, 204, 204, 236, 63, 0, 0, 0, 0, 0, 0, 232, 63, 1, 0, 0, 0, 14, 0, 0, 0, 10, 0, 0, 0, 10, 0, 0, 0, 6, 0, 0, 0, 3, 0, 0, 0, 3, 0, 0, 0};
+            hw = archConstantMap(magic, 208);
+            hw.architecture = HardwareArchitecture::gfx1201;
         }
         else
         {
@@ -286,7 +289,7 @@ namespace Tensilelite
             hw.L1CacheCapacity, hw.L1CacheLineSize, hw.L1BusWidthPerCU,
             MT0, MT1, bpeA, bpeB, NTA, NTB, GRVWA, GRVWB, DTVA, DTVB,
             isSwizzleA, isSwizzleB, VWA, VWB, transA, transB, lda, ldb,
-            NLCA, NLCB, threadnum, NumWave0, NumWave1);
+            NLCA, NLCB, threadnum, NumWave0, NumWave1, hw.architecture == HardwareArchitecture::gfx942);
         
         L1CacheHitRate result;
         result.tile0HitRate = hr.tile0HitRate;
@@ -642,6 +645,11 @@ namespace Tensilelite
         //LocalSplitU
         int LSU = sizeMapping.LocalSplitU;
 
+        //DirectToLdsA
+        bool DirectToLdsA = sizeMapping.DirectToLdsA;
+        //DirectToLdsB
+        bool DirectToLdsB = sizeMapping.DirectToLdsB;
+
         // Clock calculation
         // TODO: No need to check minMathClock if we guarantee that MathClocksUnrolledLoop is correct.
         double math_clk = sizeMapping.MathClocksUnrolledLoop;
@@ -674,7 +682,14 @@ namespace Tensilelite
             pp.hitRate = 0;
             return pp;
         }
-        if (MT0 - M >= 16 || MT1 - N >= 16)
+        if ((M < 128 && MT0 - M >= 16) || (N < 128 && MT1 - N >= 16))
+        {
+            //std::cout<<"M:"<<M<<",N:"<<N<<",MT0:"<<MT0<<",MT1:"<<MT1<<std::endl;
+            pp.microSeconds = 9999999.9;
+            pp.hitRate = 0;
+            return pp;
+        }
+        if ((M >= 128 && MT0 - M >= 32) || (N >= 128 && MT1 - N >= 32))
         {
             //std::cout<<"M:"<<M<<",N:"<<N<<",MT0:"<<MT0<<",MT1:"<<MT1<<std::endl;
             pp.microSeconds = 9999999.9;
@@ -693,6 +708,18 @@ namespace Tensilelite
                     return pp;
                 }
         }
+        if(DirectToLdsA && M < MT0)
+        {
+            pp.microSeconds = 9999999.9;
+            pp.hitRate = 0;
+            return pp;
+        }
+        if(DirectToLdsB && N < MT1)
+        {
+            pp.microSeconds = 9999999.9;
+            pp.hitRate = 0;
+            return pp;
+        }
 
         // 4. Derived Problem/Workgroup Dimensions
         double K_AfterGSU = ceilDivide((uint32_t)K, GlobalSplitU);
@@ -700,7 +727,7 @@ namespace Tensilelite
         uint32_t N_WGs_total = ceilDivide(N, MT1);
         int N_WGs_per_tile_XCD = std::min((uint32_t)WGM, N_WGs_total);
         int M_WGs_per_tile_XCD
-            = std::min(M_WGs_total, ceilDivide(int(hw_consts.NumCUs / 8), N_WGs_per_tile_XCD));
+            = std::min(M_WGs_total, ceilDivide(int(hw_consts.NumCUs / hw_consts.NumXCDs), N_WGs_per_tile_XCD));
         int M_WGs_per_tile = std::min(M_WGs_total, ceilDivide(int(hw_consts.NumCUs), N_WGs_per_tile_XCD));
         int N_WGs_per_tile
             = std::min(N_WGs_total, N_WGs_per_tile_XCD * ceilDivide(M_WGs_per_tile, M_WGs_total));
@@ -850,11 +877,15 @@ namespace Tensilelite
             perf += tail_overall;
         }
 
-        // 14. Apply CU Occupancy
+        // 14. Add LSU Reduction Part
+        perf += lsu_overall;
+
+        // 15. Apply CU Occupancy
         perf = resolveOccupancy(hw_consts, perf, prefetch, loop_overall + tail_overall, store, num_tiles, CUOccupancy);
 
-        // 15. Add LSU+GSU Reduction Part
-        perf += (gsu_overall + lsu_overall);
+        // 16. Add GSU Reduction Part
+        perf += gsu_overall;
+
 
         pp.microSeconds = perf;
         pp.hitRate = cache_hits.totalL2HitRate * 100;
@@ -908,6 +939,7 @@ namespace Tensilelite
         std::cout<<"loop_overall      =          "<<loop_overall<<std::endl;
         std::cout<<"preLoopCost       =          "<<preLoopCost<<std::endl;
         std::cout<<"prefetch          =          "<<prefetch<<std::endl;
+        std::cout<<"store_edge        =          "<<store_edge<<std::endl;
         std::cout<<"store             =          "<<store<<std::endl;
         std::cout<<"gsu_overall       =          "<<gsu_overall<<std::endl;
         std::cout<<"lsu_overall       =          "<<lsu_overall<<std::endl;
@@ -975,14 +1007,38 @@ namespace Tensilelite
         return Simulator::checkLocalReadFinished(currentCycle, fifo, numLR);
     }
 
-    int Formocast::checkLocalReadFIFOFull(int currentCycle, std::queue<int>& fifo, int bpRead, int numWaves, bool isStall) const
+    int Formocast::checkLocalReadFIFOFull(int currentCycle, std::queue<int>& fifo, int bpRead, int numWaves, bool isStall, double bankConflict) const
     {
-        return Simulator::checkLocalReadFIFOFull(currentCycle, fifo, bpRead, numWaves, isStall);
+        int lrStallLatencyBuffer;
+        if (!isStall){
+            lrStallLatencyBuffer = 1;
+        }
+        else if (bpRead == 16) {
+            lrStallLatencyBuffer = Simulator::getLocalReadLatency(hw_consts.LocalReadBaseLatencyB128, hw_consts.LocalReadConflictMultiplierB128, bankConflict);
+        } else if (bpRead == 8) {
+            lrStallLatencyBuffer = Simulator::getLocalReadLatency(hw_consts.LocalReadBaseLatencyB64, hw_consts.LocalReadConflictMultiplierB64, bankConflict);
+        } else {
+            lrStallLatencyBuffer = Simulator::getLocalReadLatency(hw_consts.LocalReadBaseLatencyB32, hw_consts.LocalReadConflictMultiplierB32, bankConflict);
+        }
+        return Simulator::checkLocalReadFIFOFull(currentCycle, fifo, bpRead, numWaves, lrStallLatencyBuffer);
     }
 
     void Formocast::pushLocalRead(int currentCycle, std::queue<int>& fifo, int bpr, bool isGfx950)
     {
         Simulator::pushLocalRead(currentCycle, fifo, bpr, isGfx950);
+    }
+
+    void Formocast::pushLocalReadWrite(int currentCycle, std::queue<int>& fifo, int bpr, double bankConflict)
+    {
+        int lrMemLatency;
+        if (bpr == 16) {
+            lrMemLatency = Simulator::getLocalReadLatency(hw_consts.LocalReadBaseLatencyB128, hw_consts.LocalReadConflictMultiplierB128, bankConflict);
+        } else if (bpr == 8) {
+            lrMemLatency = Simulator::getLocalReadLatency(hw_consts.LocalReadBaseLatencyB64, hw_consts.LocalReadConflictMultiplierB64, bankConflict);
+        } else {
+            lrMemLatency = Simulator::getLocalReadLatency(hw_consts.LocalReadBaseLatencyB32, hw_consts.LocalReadConflictMultiplierB32, bankConflict);
+        }
+        fifo.push(currentCycle + lrMemLatency);
     }
 
     // Standalone tie-breaker function implementation

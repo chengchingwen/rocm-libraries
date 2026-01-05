@@ -76,6 +76,9 @@ namespace Tensilelite
             int LocalSplitU = 1;
 
             std::array<int, 2> waveGroup;
+
+            bool DirectToLdsA = false;
+            bool DirectToLdsB = false;
         };
         struct PredictedPerformance
         {
@@ -123,9 +126,17 @@ namespace Tensilelite
             double L2ReadArbEff;
             double L2WriteArbEff;
             uint32_t NumXCDs;
+            uint32_t LocalReadBaseLatencyB128;
+            uint32_t LocalReadBaseLatencyB64;
+            uint32_t LocalReadBaseLatencyB32;
+            uint32_t LocalReadConflictMultiplierB128;
+            uint32_t LocalReadConflictMultiplierB64;
+            uint32_t LocalReadConflictMultiplierB32;
+            HardwareArchitecture architecture;
 
             void print() const {
                 std::cout << "HardwareConstants:" << std::endl;
+                std::cout << "  architecture:         " << (architecture == HardwareArchitecture::gfx950 ? "gfx950" : architecture == HardwareArchitecture::gfx942 ? "gfx942" : architecture == HardwareArchitecture::gfx1201 ? "gfx1201" : "Unknown") << std::endl;
                 std::cout << "  L1CacheCapacity:      " << L1CacheCapacity << std::endl;
                 std::cout << "  L2CacheCapacity:      " << L2CacheCapacity << std::endl;
                 std::cout << "  L3CacheCapacity:      " << L3CacheCapacity << std::endl;
@@ -149,6 +160,12 @@ namespace Tensilelite
                 std::cout << "  L2ReadArbEff:         " << L2ReadArbEff << std::endl;
                 std::cout << "  L2WriteArbEff:        " << L2WriteArbEff << std::endl;
                 std::cout << "  NumXCDs:              " << NumXCDs << std::endl;
+                std::cout << "  LocalReadBaseLatencyB128: " << LocalReadBaseLatencyB128 << std::endl;
+                std::cout << "  LocalReadBaseLatencyB64: " << LocalReadBaseLatencyB64 << std::endl;
+                std::cout << "  LocalReadBaseLatencyB32: " << LocalReadBaseLatencyB32 << std::endl;
+                std::cout << "  LocalReadConflictMultiplierB128: " << LocalReadConflictMultiplierB128 << std::endl;
+                std::cout << "  LocalReadConflictMultiplierB64: " << LocalReadConflictMultiplierB64 << std::endl;
+                std::cout << "  LocalReadConflictMultiplierB32: " << LocalReadConflictMultiplierB32 << std::endl;
             };
         };
 
@@ -317,9 +334,10 @@ namespace Tensilelite
         bool isBetter(MinTieBreakerInfo previousSolution, MinTieBreakerInfo currentSolution) const;
         MinTieBreakerInfo getMinTieBreakerInfo() const;
 
-        int checkLocalReadFIFOFull(int currentCycle, std::queue<int>& fifo, int bpRead, int numWaves, bool isStall) const;
+        int checkLocalReadFIFOFull(int currentCycle, std::queue<int>& fifo, int bpRead, int numWaves, bool isStall, double bankConflict) const;
         int checkLocalReadFinished(int currentCycle, std::queue<int>& fifo, int numLR) const;
         int checkGlobalReadFIFOFull(int currentCycle, std::queue<int>& fifo, int bpRead, int numWaves, bool isStall) const;
+        void pushLocalReadWrite(int currentCycle, std::queue<int>& fifo, int bpr, double bankConflict);
         void pushLocalRead(int currentCycle, std::queue<int>& fifo, int bpr, bool isGfx950);
         // Helper function to analyze bank conflicts from VGPR states
         BankConflictResult analyzeBankConflictsFromVGPR(

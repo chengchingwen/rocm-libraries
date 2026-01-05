@@ -97,7 +97,7 @@ namespace Tensilelite
                                              bool isSwizzleA, bool isSwizzleB, uint32_t VWA, uint32_t VWB,
                                              bool transA, bool transB, double lda, double ldb,
                                              int NLCA, int NLCB, uint32_t threadnum,
-                                             uint32_t NumWave0, uint32_t NumWave1);
+                                             uint32_t NumWave0, uint32_t NumWave1, bool isL1FourBank);
 
         L3CacheHitRate computeL3CacheHitRate(double M, double N, double K, double L3CacheCapacity,
                                              double NumCUs, uint32_t bpeA, uint32_t bpeB,
@@ -122,9 +122,9 @@ namespace Tensilelite
         // FIFO and queue simulation functions
         int checkGlobalReadFIFOFull(int currentCycle, std::queue<int>& fifo, int bpRead, int numWaves, bool isStall);
         int checkLocalReadFinished(int currentCycle, std::queue<int>& fifo, int numLR);
-        int checkLocalReadFIFOFull(int currentCycle, std::queue<int>& fifo, int bpRead, int numWaves, bool isStall);
+        int checkLocalReadFIFOFull(int currentCycle, std::queue<int>& fifo, int bpRead, int numWaves, int lrStallLatencyBuffer);
         void pushLocalRead(int currentCycle, std::queue<int>& fifo, int bpr, bool isGfx950);
-
+        int getLocalReadLatency(int baseLatency, int conflictMultiplier, double bankConflict);
         double analyzeBankConflictsFromVGPR(
             const std::vector<std::unordered_map<std::string, int64_t>>& vgprState,
             const std::string& vgprLocalReadAddrA,
