@@ -395,135 +395,285 @@ namespace rocisa
         return result;
     }
     
-    // Simulate VALU instruction for a single thread
-    void simulateInstruction(const ParsedInstruction& inst,
-                           std::unordered_map<std::string, int64_t>& vgprState,
-                           const std::unordered_map<std::string, int64_t>& sgprState)
+    // Helper function to extract operand value from InstructionInput
+    int64_t getInstructionInputValue(const InstructionInput& input,
+                                    std::unordered_map<std::string, int64_t>& vgprState,
+                                    const std::unordered_map<std::string, int64_t>& sgprState)
     {
-        if(!inst.valid || inst.dst.empty()) return;
+        return std::visit([&](auto&& arg) -> int64_t {
+            using T = std::decay_t<decltype(arg)>;
+            if constexpr(std::is_same_v<T, std::shared_ptr<Container>>)
+            {
+                std::string regName = arg->toString();
+                return getOperandValue(regName, vgprState, sgprState);
+            }
+            else if constexpr(std::is_same_v<T, int> || std::is_same_v<T, int64_t>)
+            {
+                return static_cast<int64_t>(arg);
+            }
+            else
+            {
+                return 0; // fallback for other types
+            }
+        }, input);
+    }
+
+    // Simulate VALU instruction using dynamic casting (type-safe approach)
+    void simulateInstructionTyped(std::shared_ptr<Instruction> instruction,
+                                  std::unordered_map<std::string, int64_t>& vgprState,
+                                  const std::unordered_map<std::string, int64_t>& sgprState)
+    {
+        // Try to cast to CommonInstruction first (most VALU instructions inherit from this)
+        auto commonInst = std::dynamic_pointer_cast<CommonInstruction>(instruction);
+        if(!commonInst || !commonInst->dst) return;
+
+        std::string dstReg = commonInst->dst->toString();
         
-        const std::string& op = inst.opcode;
-        
-        // v_add_co_u32: dst = src0 + src1 (with carry out)
-        if(op.find("v_add_co_u32") != std::string::npos && inst.srcs.size() >= 2)
+        // v_add_co_u32: dst = src0 + src1 (with carry out, dst1 is vcc)
+        if(auto vaddco = std::dynamic_pointer_cast<VAddCOU32>(instruction))
         {
-            // src0 is vcc
-            int64_t src1 = getOperandValue(inst.srcs[1], vgprState, sgprState);
-            int64_t src2 = getOperandValue(inst.srcs[2], vgprState, sgprState);
-            vgprState[inst.dst] = src1 + src2;
-            // std::cout << "v_add_co_u32: " << inst.dst << " = " << src1 << " + " << src2 << std::endl;
+            if(vaddco->srcs.size() >= 2)
+            {
+                int64_t src0 = getInstructionInputValue(vaddco->srcs[0], vgprState, sgprState);
+                int64_t src1 = getInstructionInputValue(vaddco->srcs[1], vgprState, sgprState);
+                vgprState[dstReg] = src0 + src1;
+            }
         }
         // v_add_u32, v_add_i32
-        else if(op.find("v_add_u32") != std::string::npos && inst.srcs.size() >= 2)
+        else if(auto vaddu = std::dynamic_pointer_cast<VAddU32>(instruction))
         {
-            int64_t src0 = getOperandValue(inst.srcs[0], vgprState, sgprState);
-            int64_t src1 = getOperandValue(inst.srcs[1], vgprState, sgprState);
-            vgprState[inst.dst] = src0 + src1;
+            if(vaddu->srcs.size() >= 2)
+            {
+                int64_t src0 = getInstructionInputValue(vaddu->srcs[0], vgprState, sgprState);
+                int64_t src1 = getInstructionInputValue(vaddu->srcs[1], vgprState, sgprState);
+                vgprState[dstReg] = src0 + src1;
+            }
+        }
+        else if(auto vaddi = std::dynamic_pointer_cast<VAddI32>(instruction))
+        {
+            if(vaddi->srcs.size() >= 2)
+            {
+                int64_t src0 = getInstructionInputValue(vaddi->srcs[0], vgprState, sgprState);
+                int64_t src1 = getInstructionInputValue(vaddi->srcs[1], vgprState, sgprState);
+                vgprState[dstReg] = src0 + src1;
+            }
         }
         // v_sub_u32, v_sub_i32
-        else if(op.find("v_sub_u32") != std::string::npos && inst.srcs.size() >= 2)
+        else if(auto vsubu = std::dynamic_pointer_cast<VSubU32>(instruction))
         {
-            int64_t src0 = getOperandValue(inst.srcs[0], vgprState, sgprState);
-            int64_t src1 = getOperandValue(inst.srcs[1], vgprState, sgprState);
-            vgprState[inst.dst] = src0 - src1;
+            if(vsubu->srcs.size() >= 2)
+            {
+                int64_t src0 = getInstructionInputValue(vsubu->srcs[0], vgprState, sgprState);
+                int64_t src1 = getInstructionInputValue(vsubu->srcs[1], vgprState, sgprState);
+                vgprState[dstReg] = src0 - src1;
+            }
         }
-        // v_mul_lo_u32, v_mul_lo_i32
-        else if(op.find("v_mul_lo_u32") != std::string::npos && inst.srcs.size() >= 2)
+        else if(auto vsubi = std::dynamic_pointer_cast<VSubI32>(instruction))
         {
-            int64_t src0 = getOperandValue(inst.srcs[0], vgprState, sgprState);
-            int64_t src1 = getOperandValue(inst.srcs[1], vgprState, sgprState);
-            vgprState[inst.dst] = src0 * src1;
-            // std::cout << "v_mul_lo_u32: " << inst.dst << " = " << src0 << " * " << src1 << std::endl;
+            if(vsubi->srcs.size() >= 2)
+            {
+                int64_t src0 = getInstructionInputValue(vsubi->srcs[0], vgprState, sgprState);
+                int64_t src1 = getInstructionInputValue(vsubi->srcs[1], vgprState, sgprState);
+                vgprState[dstReg] = src0 - src1;
+            }
         }
-        // v_lshlrev_b32: dst = src1 << src0
-        else if(op.find("v_lshlrev_b32") != std::string::npos && inst.srcs.size() >= 2)
+        // v_mul_lo_u32
+        else if(auto vmulou = std::dynamic_pointer_cast<VMulLOU32>(instruction))
         {
-            int64_t src0 = getOperandValue(inst.srcs[0], vgprState, sgprState);
-            int64_t src1 = getOperandValue(inst.srcs[1], vgprState, sgprState);
-            vgprState[inst.dst] = src1 << src0;
-            // std::cout << "v_lshlrev_b32: " << inst.dst << " = " << src1 << " << " << src0 << std::endl;
+            if(vmulou->srcs.size() >= 2)
+            {
+                int64_t src0 = getInstructionInputValue(vmulou->srcs[0], vgprState, sgprState);
+                int64_t src1 = getInstructionInputValue(vmulou->srcs[1], vgprState, sgprState);
+                vgprState[dstReg] = src0 * src1;
+            }
         }
-        // v_lshl_add_u32: dst = (src0 << src1) + src2
-        else if(op.find("v_lshl_add_u32") != std::string::npos && inst.srcs.size() >= 3)
+        // v_mul_hi_u32: dst = high 32 bits of (src0 * src1)
+        else if(auto vmulhiu = std::dynamic_pointer_cast<VMulHIU32>(instruction))
         {
-            int64_t src0 = getOperandValue(inst.srcs[0], vgprState, sgprState);
-            int64_t src1 = getOperandValue(inst.srcs[1], vgprState, sgprState);
-            int64_t src2 = getOperandValue(inst.srcs[2], vgprState, sgprState);
-            vgprState[inst.dst] = (src0 << src1) + src2;
-            // std::cout << "v_lshl_add_u32: " << inst.dst << " = (" << src0 << " << " << src1 << ") + " << src2 << std::endl;
+            if(vmulhiu->srcs.size() >= 2)
+            {
+                int64_t src0 = getInstructionInputValue(vmulhiu->srcs[0], vgprState, sgprState);
+                int64_t src1 = getInstructionInputValue(vmulhiu->srcs[1], vgprState, sgprState);
+                // Cast to uint64_t for unsigned multiplication, then take high 32 bits
+                uint64_t result = static_cast<uint64_t>(static_cast<uint32_t>(src0)) *
+                                  static_cast<uint64_t>(static_cast<uint32_t>(src1));
+                vgprState[dstReg] = static_cast<int64_t>(result >> 32);
+            }
         }
-        // v_add_lshl_u32: dst = (src0 + src1) << src2
-        else if(op.find("v_add_lshl_u32") != std::string::npos && inst.srcs.size() >= 3)
+        // v_mul_hi_i32: dst = high 32 bits of (src0 * src1) signed
+        else if(auto vmulhii = std::dynamic_pointer_cast<VMulHII32>(instruction))
         {
-            int64_t src0 = getOperandValue(inst.srcs[0], vgprState, sgprState);
-            int64_t src1 = getOperandValue(inst.srcs[1], vgprState, sgprState);
-            int64_t src2 = getOperandValue(inst.srcs[2], vgprState, sgprState);
-            vgprState[inst.dst] = (src0 + src1) << src2;
-            // std::cout << "v_add_lshl_u32: " << inst.dst << " = (" << src0 << " + " << src1 << ") << " << src2 << std::endl;
+            if(vmulhii->srcs.size() >= 2)
+            {
+                int64_t src0 = getInstructionInputValue(vmulhii->srcs[0], vgprState, sgprState);
+                int64_t src1 = getInstructionInputValue(vmulhii->srcs[1], vgprState, sgprState);
+                // Cast to int64_t for signed multiplication, then take high 32 bits
+                int64_t result = static_cast<int64_t>(static_cast<int32_t>(src0)) *
+                                 static_cast<int64_t>(static_cast<int32_t>(src1));
+                vgprState[dstReg] = result >> 32;
+            }
         }
-        // v_lshl_b32: dst = src0 << src1
-        else if(op.find("v_lshl_b32") != std::string::npos && inst.srcs.size() >= 2)
+        // v_lshlrev_b32 or v_lshl_b32: logical shift left
+        else if(auto vlshl = std::dynamic_pointer_cast<VLShiftLeftB32>(instruction))
         {
-            int64_t src0 = getOperandValue(inst.srcs[0], vgprState, sgprState);
-            int64_t src1 = getOperandValue(inst.srcs[1], vgprState, sgprState);
-            vgprState[inst.dst] = src0 << src1;
+            if(vlshl->srcs.size() >= 2)
+            {
+                // VLShiftLeftB32 format: dst, shiftAmount, src
+                int64_t shiftAmount = getInstructionInputValue(vlshl->srcs[0], vgprState, sgprState);
+                int64_t src = getInstructionInputValue(vlshl->srcs[1], vgprState, sgprState);
+                vgprState[dstReg] = src << shiftAmount;
+            }
         }
-        // v_lshrrev_b32: dst = src1 >> src0
-        else if(op.find("v_lshrrev_b32") != std::string::npos && inst.srcs.size() >= 2)
+        // v_lshrrev_b32 or v_lshr_b32: logical shift right (32-bit)
+        else if(auto vlshr = std::dynamic_pointer_cast<VLShiftRightB32>(instruction))
         {
-            int64_t src0 = getOperandValue(inst.srcs[0], vgprState, sgprState);
-            int64_t src1 = getOperandValue(inst.srcs[1], vgprState, sgprState);
-            vgprState[inst.dst] = (uint64_t)src1 >> (uint64_t)src0;
-            // std::cout << "v_lshrrev_b32: " << inst.dst << " = " << src1 << " >> " << src0 << std::endl;
+            if(vlshr->srcs.size() >= 2)
+            {
+                // VLShiftRightB32 format: dst, shiftAmount, src
+                int64_t shiftAmount = getInstructionInputValue(vlshr->srcs[0], vgprState, sgprState);
+                int64_t src = getInstructionInputValue(vlshr->srcs[1], vgprState, sgprState);
+                vgprState[dstReg] = (uint64_t)src >> (uint64_t)shiftAmount;
+            }
         }
-        // v_lshr_b32: dst = src0 >> src1
-        else if(op.find("v_lshr_b32") != std::string::npos && inst.srcs.size() >= 2)
+        // v_lshlrev_b64 or v_lshl_b64: logical shift left (64-bit)
+        else if(auto vlshl64 = std::dynamic_pointer_cast<VLShiftLeftB64>(instruction))
         {
-            int64_t src0 = getOperandValue(inst.srcs[0], vgprState, sgprState);
-            int64_t src1 = getOperandValue(inst.srcs[1], vgprState, sgprState);
-            vgprState[inst.dst] = (uint64_t)src0 >> (uint64_t)src1;
-            // std::cout << "v_lshr_b32: " << inst.dst << " = " << src0 << " >> " << src1 << std::endl;
+            if(vlshl64->srcs.size() >= 2)
+            {
+                // VLShiftLeftB64 format: dst, shiftAmount, src
+                int64_t shiftAmount = getInstructionInputValue(vlshl64->srcs[0], vgprState, sgprState);
+                int64_t src = getInstructionInputValue(vlshl64->srcs[1], vgprState, sgprState);
+                vgprState[dstReg] = static_cast<int64_t>(static_cast<uint64_t>(src) << shiftAmount);
+            }
+        }
+        // v_lshrrev_b64 or v_lshr_b64: logical shift right (64-bit)
+        else if(auto vlshr64 = std::dynamic_pointer_cast<VLShiftRightB64>(instruction))
+        {
+            if(vlshr64->srcs.size() >= 2)
+            {
+                // VLShiftRightB64 format: dst, shiftAmount, src
+                int64_t shiftAmount = getInstructionInputValue(vlshr64->srcs[0], vgprState, sgprState);
+                int64_t src = getInstructionInputValue(vlshr64->srcs[1], vgprState, sgprState);
+                vgprState[dstReg] = static_cast<int64_t>(static_cast<uint64_t>(src) >> shiftAmount);
+            }
         }
         // v_and_b32
-        else if(op.find("v_and_b32") != std::string::npos && inst.srcs.size() >= 2)
+        else if(auto vand = std::dynamic_pointer_cast<VAndB32>(instruction))
         {
-            int64_t src0 = getOperandValue(inst.srcs[0], vgprState, sgprState);
-            int64_t src1 = getOperandValue(inst.srcs[1], vgprState, sgprState);
-            vgprState[inst.dst] = src0 & src1;
-            // std::cout << "v_and_b32: " << inst.dst << " = " << src0 << " & " << src1 << std::endl;
+            if(vand->srcs.size() >= 2)
+            {
+                int64_t src0 = getInstructionInputValue(vand->srcs[0], vgprState, sgprState);
+                int64_t src1 = getInstructionInputValue(vand->srcs[1], vgprState, sgprState);
+                vgprState[dstReg] = src0 & src1;
+            }
         }
         // v_or_b32
-        else if(op.find("v_or_b32") != std::string::npos && inst.srcs.size() >= 2)
+        else if(auto vor = std::dynamic_pointer_cast<VOrB32>(instruction))
         {
-            int64_t src0 = getOperandValue(inst.srcs[0], vgprState, sgprState);
-            int64_t src1 = getOperandValue(inst.srcs[1], vgprState, sgprState);
-            vgprState[inst.dst] = src0 | src1;
+            if(vor->srcs.size() >= 2)
+            {
+                int64_t src0 = getInstructionInputValue(vor->srcs[0], vgprState, sgprState);
+                int64_t src1 = getInstructionInputValue(vor->srcs[1], vgprState, sgprState);
+                vgprState[dstReg] = src0 | src1;
+            }
         }
         // v_xor_b32
-        else if(op.find("v_xor_b32") != std::string::npos && inst.srcs.size() >= 2)
+        else if(auto vxor = std::dynamic_pointer_cast<VXorB32>(instruction))
         {
-            int64_t src0 = getOperandValue(inst.srcs[0], vgprState, sgprState);
-            int64_t src1 = getOperandValue(inst.srcs[1], vgprState, sgprState);
-            vgprState[inst.dst] = src0 ^ src1;
+            if(vxor->srcs.size() >= 2)
+            {
+                int64_t src0 = getInstructionInputValue(vxor->srcs[0], vgprState, sgprState);
+                int64_t src1 = getInstructionInputValue(vxor->srcs[1], vgprState, sgprState);
+                vgprState[dstReg] = src0 ^ src1;
+            }
         }
-        // v_mad_u32_u24, v_mad_i32_i24: dst = src0 * src1 + src2
-        else if(op.find("v_mad_u32_u24") != std::string::npos && inst.srcs.size() >= 3)
+        // v_mad_u32_u24: dst = src0 * src1 + src2
+        else if(auto vmadu = std::dynamic_pointer_cast<VMadU32U24>(instruction))
         {
-            int64_t src0 = getOperandValue(inst.srcs[0], vgprState, sgprState);
-            int64_t src1 = getOperandValue(inst.srcs[1], vgprState, sgprState);
-            int64_t src2 = getOperandValue(inst.srcs[2], vgprState, sgprState);
-            vgprState[inst.dst] = src0 * src1 + src2;
+            if(vmadu->srcs.size() >= 3)
+            {
+                int64_t src0 = getInstructionInputValue(vmadu->srcs[0], vgprState, sgprState);
+                int64_t src1 = getInstructionInputValue(vmadu->srcs[1], vgprState, sgprState);
+                int64_t src2 = getInstructionInputValue(vmadu->srcs[2], vgprState, sgprState);
+                vgprState[dstReg] = src0 * src1 + src2;
+            }
+        }
+        // v_mad_i32_i24: dst = src0 * src1 + src2
+        else if(auto vmadi = std::dynamic_pointer_cast<VMadI32I24>(instruction))
+        {
+            if(vmadi->srcs.size() >= 3)
+            {
+                int64_t src0 = getInstructionInputValue(vmadi->srcs[0], vgprState, sgprState);
+                int64_t src1 = getInstructionInputValue(vmadi->srcs[1], vgprState, sgprState);
+                int64_t src2 = getInstructionInputValue(vmadi->srcs[2], vgprState, sgprState);
+                vgprState[dstReg] = src0 * src1 + src2;
+            }
         }
         // v_mov_b32: dst = src0
-        else if(op.find("v_mov_b32") != std::string::npos && inst.srcs.size() >= 1)
+        else if(auto vmov = std::dynamic_pointer_cast<VMovB32>(instruction))
         {
-            int64_t src0 = getOperandValue(inst.srcs[0], vgprState, sgprState);
-            vgprState[inst.dst] = src0;
+            if(vmov->srcs.size() >= 1)
+            {
+                int64_t src0 = getInstructionInputValue(vmov->srcs[0], vgprState, sgprState);
+                vgprState[dstReg] = src0;
+            }
+        }
+        // v_lshl_add_u32 (actual instruction, CommonInstruction): dst = (src0 << shiftAmount) + src1
+        // srcs = {src0, shiftHex, src1} - note the order!
+        else if(auto vlshladd = std::dynamic_pointer_cast<_VLShiftLeftAddU32>(instruction))
+        {
+            if(vlshladd->srcs.size() >= 3)
+            {
+                int64_t src0 = getInstructionInputValue(vlshladd->srcs[0], vgprState, sgprState);
+                int64_t shiftAmount = getInstructionInputValue(vlshladd->srcs[1], vgprState, sgprState);
+                int64_t src1 = getInstructionInputValue(vlshladd->srcs[2], vgprState, sgprState);
+                vgprState[dstReg] = (src0 << shiftAmount) + src1;
+            }
+        }
+        // v_add_lshl_u32 (actual instruction, CommonInstruction): dst = (src0 + src1) << shiftAmount
+        // srcs = {src0, src1, shiftHex} - standard order
+        else if(auto vaddlshl = std::dynamic_pointer_cast<_VAddLShiftLeftU32>(instruction))
+        {
+            if(vaddlshl->srcs.size() >= 3)
+            {
+                int64_t src0 = getInstructionInputValue(vaddlshl->srcs[0], vgprState, sgprState);
+                int64_t src1 = getInstructionInputValue(vaddlshl->srcs[1], vgprState, sgprState);
+                int64_t shiftAmount = getInstructionInputValue(vaddlshl->srcs[2], vgprState, sgprState);
+                vgprState[dstReg] = (src0 + src1) << shiftAmount;
+            }
+        }
+        // v_lshl_add_u32 (CompositeInstruction wrapper): dst = (src0 << shiftAmount) + src1
+        // srcs = {src0, src1, shiftHex} based on constructor
+        else if(auto vlshladd = std::dynamic_pointer_cast<VLShiftLeftAddU32>(instruction))
+        {
+            if(vlshladd->srcs.size() >= 3)
+            {
+                int64_t src0 = getInstructionInputValue(vlshladd->srcs[0], vgprState, sgprState);
+                int64_t src1 = getInstructionInputValue(vlshladd->srcs[1], vgprState, sgprState);
+                int64_t shiftAmount = getInstructionInputValue(vlshladd->srcs[2], vgprState, sgprState);
+                vgprState[dstReg] = (src0 << shiftAmount) + src1;
+            }
+        }
+        // v_add_lshl_u32 (CompositeInstruction wrapper): dst = (src0 + src1) << shiftAmount
+        // srcs = {src0, src1, shiftHex} based on constructor
+        else if(auto vaddlshl = std::dynamic_pointer_cast<VAddLShiftLeftU32>(instruction))
+        {
+            if(vaddlshl->srcs.size() >= 3)
+            {
+                int64_t src0 = getInstructionInputValue(vaddlshl->srcs[0], vgprState, sgprState);
+                int64_t src1 = getInstructionInputValue(vaddlshl->srcs[1], vgprState, sgprState);
+                int64_t shiftAmount = getInstructionInputValue(vaddlshl->srcs[2], vgprState, sgprState);
+                vgprState[dstReg] = (src0 + src1) << shiftAmount;
+            }
+        }
+        else
+        {
+            throw std::runtime_error("Unsupported instruction: " + instruction->toString());
         }
     }
 
     // Helper function to analyze bank conflicts in local read address calculation
-    Tensilelite::Formocast::BankConflictResult _countLocalReadBankConflicts(std::shared_ptr<Module> module, int numWaves, MacroTable& macros, int LocalReadBytesA, int LocalReadBytesB)
+    Tensilelite::Formocast::BankConflictResult _countLocalReadBankConflicts(Tensilelite::Formocast& formocast, std::shared_ptr<Module> module, int numWaves, MacroTable& macros, int LocalReadBytesA, int LocalReadBytesB)
     {
         std::vector<std::shared_ptr<Item>> moduleInst;
         _popInst(module, moduleInst, macros);
@@ -588,16 +738,13 @@ namespace rocisa
                 }
                 
                 // Parse and simulate VALU instructions for each thread
-                if(instStr.find("v_") != std::string::npos)
+                // Check if instruction starts with "v_" (VALU instructions)
+                if(instStr.size() >= 2 && instStr.compare(0, 2, "v_") == 0)
                 {
-                    ParsedInstruction parsed = parseInstruction(instStr);
-                    if(parsed.valid)
+                    // Simulate for each thread using type-safe dynamic casting
+                    for(int tid = 0; tid < NUM_THREADS_TO_SIMULATE; tid++)
                     {
-                        // Simulate for each thread
-                        for(int tid = 0; tid < NUM_THREADS_TO_SIMULATE; tid++)
-                        {
-                            simulateInstruction(parsed, vgprState[tid], sgprState);
-                        }
+                        simulateInstructionTyped(instruction, vgprState[tid], sgprState);
                     }
                 }
                 
@@ -612,18 +759,14 @@ namespace rocisa
                 }
             }
         }
-        
-        //FIXME: pass formocast from countcycles function
-        Tensilelite::Formocast formocast;
+
         // Analyze bank conflicts and return results
-        return formocast.analyzeBankConflictsFromVGPR(
-            vgprState, vgprLocalReadAddrA, vgprLocalReadAddrB, LocalReadBytesA, LocalReadBytesB);
+        return formocast.analyzeBankConflictsFromVGPR(vgprState, vgprLocalReadAddrA, vgprLocalReadAddrB, LocalReadBytesA, LocalReadBytesB);
     }
 
     // Helper function to count cycles
-    int _countCycles(std::shared_ptr<Module> item, int numWaves, MacroTable& macros, std::pair<double, double> bankConflicts)
+    int _countCycles(Tensilelite::Formocast& formocast, std::shared_ptr<Module> item, int numWaves, MacroTable& macros, std::pair<double, double> bankConflicts)
     {
-        Tensilelite::Formocast formocast;
         std::vector<std::shared_ptr<Item>> moduleInst;
         _popInst(item, moduleInst, macros);
 
@@ -632,24 +775,16 @@ namespace rocisa
         int jumpOverhead = 6;
         int previousLW = 0;
         std::queue<int> hwLRFIFO;
-        std::queue<int> mfmaLRFIFO;
+        std::queue<int> lgkmLRFIFO;
         std::queue<int> hwGRFIFO;
         bool isEndOfLoop  = false;
         bool isPreviousLR = false;
-        auto isaVersion   = rocIsa::getInstance().getKernel().isaVersion;
-        if (isaVersion == std::array<int, 3>{9, 5, 0}) {
-            formocast.setHardware(Tensilelite::HardwareArchitecture::gfx950);
-        }
-        else if (isaVersion == std::array<int, 3>{9, 4, 2}) {
-            formocast.setHardware(Tensilelite::HardwareArchitecture::gfx942);
-        }
-        else if (isaVersion == std::array<int, 3>{12, 0, 1}) {
-            formocast.setHardware(Tensilelite::HardwareArchitecture::gfx1201);
-        }
-        else {
-            // not supported
-            formocast.setHardware(Tensilelite::HardwareArchitecture::gfx950);
-        }
+        bool isPreviousMFMA = false;
+
+        // Find vgprLocalReadAddrA and vgprLocalReadAddrB names
+        std::string vgprLocalReadAddrA = "vgprLocalReadAddrA";
+        std::string vgprLocalReadAddrB = "vgprLocalReadAddrB";
+
         bool skip = false;
         for(auto& item : moduleInst)
         {
@@ -710,24 +845,47 @@ namespace rocisa
             }
             else if(auto dsReadInst = std::dynamic_pointer_cast<DSLoadInstruction>(item))
             {
-                //heck LR fifo
-                auto currCycles = cycles + dsReadInst->issueLatency();
-                if(isPreviousLR){
-                    currCycles += dsReadInst->issueLatency();
-                    isPreviousLR = false;
-                }
-                else{
-                    isPreviousLR = true;
-                }
-                int bpr = 4;
+                int bpr = 2;
                 if (auto lr128 = std::dynamic_pointer_cast<DSLoadB128>(dsReadInst)) {
                     bpr = 16;
                 } else if (auto lr64 = std::dynamic_pointer_cast<DSLoadB64>(dsReadInst)) {
                     bpr = 8;
+                } else if (auto lr32 = std::dynamic_pointer_cast<DSLoadB32>(dsReadInst)) {
+                    bpr = 4;
                 }
-                cycles = formocast.checkLocalReadFIFOFull(currCycles, hwLRFIFO, bpr, numWaves, isaVersion != std::array<int, 3>{9, 5, 0});
 
-                formocast.pushLocalRead(currCycles, mfmaLRFIFO, bpr, isaVersion == std::array<int, 3>{9, 5, 0});
+                //heck LR fifo
+                auto currCycles = cycles + dsReadInst->issueLatency();
+                if(isPreviousLR && bpr >= 4) {
+                    currCycles += dsReadInst->issueLatency();
+                }
+                else if(isPreviousMFMA && rocIsa::getInstance().getKernel().isaVersion == std::array<int, 3>{9, 5, 0}) {
+                    // gfx950 limitation: no DSLoad instruction can be issued in next 4 cycles after MFMA instruction
+                    currCycles += 1;
+                }
+
+                // Determine which bank conflict value to use based on source register
+                double bankConflict = bankConflicts.first; // default to A
+                if(dsReadInst->srcs)
+                {
+                    std::string srcStr = dsReadInst->srcs->toString();
+                    // Check if source contains vgprLocalReadAddrB
+                    if(!vgprLocalReadAddrB.empty() && srcStr.find(vgprLocalReadAddrB) != std::string::npos)
+                    {
+                        bankConflict = bankConflicts.second; // Use B's bank conflict
+                    }
+                    else if(!vgprLocalReadAddrA.empty() && srcStr.find(vgprLocalReadAddrA) != std::string::npos)
+                    {
+                        bankConflict = bankConflicts.first; // Use A's bank conflict
+                    }
+                    else
+                    {
+                        bankConflict = 1.0;
+                    }
+                }
+
+                cycles = formocast.checkLocalReadFIFOFull(currCycles, hwLRFIFO, bpr, numWaves, true, bankConflict);
+                formocast.pushLocalReadWrite(cycles, lgkmLRFIFO, bpr, bankConflict);
             }
             else if(auto rwInst = std::dynamic_pointer_cast<ReadWriteInstruction>(item))
             {
@@ -749,6 +907,7 @@ namespace rocisa
                     else
                         cycles += wInst->issueLatency();
                     previousLW = cycles;
+                    formocast.pushLocalReadWrite(cycles, lgkmLRFIFO, 4, 1.0); //Fixme: Local write is not implemented yet
                 }
                 else if(auto wInst = std::dynamic_pointer_cast<DSStoreB64>(item))
                 {
@@ -757,6 +916,7 @@ namespace rocisa
                     else
                         cycles += wInst->issueLatency();
                     previousLW = cycles;
+                    formocast.pushLocalReadWrite(cycles, lgkmLRFIFO, 4, 1.0); //Fixme: Local write is not implemented yet
                 }
                 else if(auto wInst = std::dynamic_pointer_cast<DSStoreB32>(item))
                 {
@@ -765,6 +925,7 @@ namespace rocisa
                     else
                         cycles += wInst->issueLatency();
                     previousLW = cycles;
+                    formocast.pushLocalReadWrite(cycles, lgkmLRFIFO, 4, 1.0); //Fixme: Local write is not implemented yet
                 }
                 else
                 {
@@ -774,7 +935,7 @@ namespace rocisa
             else if(auto waitInst = std::dynamic_pointer_cast<_SWaitCnt>(item))
             {
                 auto numLR = waitInst->getParams();
-                cycles = formocast.checkLocalReadFinished(cycles + 1, mfmaLRFIFO, std::stoi(InstructionInputToString(numLR[0])));
+                cycles = formocast.checkLocalReadFinished(cycles + 1, lgkmLRFIFO, std::stoi(InstructionInputToString(numLR[0])));
             }
             else if(auto branchInst = std::dynamic_pointer_cast<BranchInstruction>(item))
             {
@@ -795,6 +956,23 @@ namespace rocisa
             {
                 instruction->comment = instruction->comment + " <This is " + std::to_string(cycles) + "-cycle>"; // for debug
             }
+
+            // Set Flags
+            if(auto mfmaInst = std::dynamic_pointer_cast<MFMAInstruction>(item))
+            {
+                isPreviousMFMA = true;
+                isPreviousLR = false;
+            }
+            else if(auto lrInst = std::dynamic_pointer_cast<DSLoadInstruction>(item))
+            {
+                isPreviousLR = true;
+                isPreviousMFMA = false;
+            }
+            else
+            {
+                isPreviousLR = false;
+                isPreviousMFMA = false;
+            }
         }
         if(!isEndOfLoop)
         {
@@ -802,16 +980,19 @@ namespace rocisa
             // Add jump overhead here
             cycles += jumpOverhead + 1;
         }
-        return cycles * 4; // 4 for gfx9
+        if (rocIsa::getInstance().getKernel().isaVersion[0] == 9) {
+            cycles = cycles * 4;
+        }
+        return cycles;
     }
-    int _countCycles(std::shared_ptr<Module> item, int numWaves, std::pair<double, double> bankConflicts)
+    int _countCycles(Tensilelite::Formocast& formocast, std::shared_ptr<Module> item, int numWaves, std::pair<double, double> bankConflicts)
     {
         MacroTable macros;
-        return _countCycles(item, numWaves, macros, bankConflicts);
+        return _countCycles(formocast, item, numWaves, macros, bankConflicts);
     }
 
     // Helper function to recursively find and analyze Local Read Addresses module
-    std::pair<double, double> _findAndAnalyzeLocalReadAddresses(std::shared_ptr<Module> module, int numWaves, MacroTable& macros, int LocalReadBytesA, int LocalReadBytesB, int depth = 0)
+    std::pair<double, double> _findAndAnalyzeLocalReadAddresses(Tensilelite::Formocast& formocast, std::shared_ptr<Module> module, int numWaves, MacroTable& macros, int LocalReadBytesA, int LocalReadBytesB, int depth = 0)
     {
         std::string indent(depth * 2, ' ');
         
@@ -823,12 +1004,12 @@ namespace rocisa
                 
                 if(subModule->name == "Local Read Addresses")
                 {
-                    auto result = _countLocalReadBankConflicts(subModule, numWaves, macros, LocalReadBytesA, LocalReadBytesB);
+                    auto result = _countLocalReadBankConflicts(formocast, subModule, numWaves, macros, LocalReadBytesA, LocalReadBytesB);
                     return std::make_pair(result.ratioA, result.ratioB);
                 }
                 
                 // Recursively search in nested submodules
-                auto result = _findAndAnalyzeLocalReadAddresses(subModule, numWaves, macros, LocalReadBytesA, LocalReadBytesB, depth + 1);
+                auto result = _findAndAnalyzeLocalReadAddresses(formocast, subModule, numWaves, macros, LocalReadBytesA, LocalReadBytesB, depth + 1);
                 if(result.first > 0.0 || result.second > 0.0)
                 {
                     return result;
@@ -840,12 +1021,12 @@ namespace rocisa
     }
 
     // Function to find and analyze Local Read Addresses module for bank conflicts
-    std::pair<double, double> analyzeBankConflicts(std::shared_ptr<Module> module, int numWaves, int LocalReadBytesA, int LocalReadBytesB)
+    std::pair<double, double> analyzeBankConflicts(Tensilelite::Formocast& formocast, std::shared_ptr<Module> module, int numWaves, int LocalReadBytesA, int LocalReadBytesB)
     {
         MacroTable macros;
         _getMacros(module, macros);
 
-        auto result = _findAndAnalyzeLocalReadAddresses(module, numWaves, macros, LocalReadBytesA, LocalReadBytesB);
+        auto result = _findAndAnalyzeLocalReadAddresses(formocast, module, numWaves, macros, LocalReadBytesA, LocalReadBytesB);
         
         // Check if "Local Read Addresses" module was found
         if(result.first == 0.0 && result.second == 0.0)
@@ -857,7 +1038,7 @@ namespace rocisa
     }
 
     // Function to calculate math clocks in an unrolled loop
-    int _calculateMathClocksInUnrolledLoop(std::shared_ptr<Module> module, int numWaves, std::pair<double, double> bankConflicts)
+    int _calculateMathClocksInUnrolledLoop(Tensilelite::Formocast& formocast, std::shared_ptr<Module> module, int numWaves, std::pair<double, double> bankConflicts)
     {
         // Kernel: openLoop->loopBody->noLoadLoop
         int  cycles     = -1;
@@ -872,7 +1053,7 @@ namespace rocisa
             {
                 if(subModule->name == "loopBody")
                 {
-                    cycles = _countCycles(subModule, numWaves, macros, bankConflicts);
+                    cycles = _countCycles(formocast, subModule, numWaves, macros, bankConflicts);
                     return cycles;
                 }
             }
@@ -996,16 +1177,31 @@ namespace rocisa
     // Main function to get cycles
     int getCycles(std::shared_ptr<Module> module, int numWaves)
     {
+        Tensilelite::Formocast formocast;
+        auto isaVersion   = rocIsa::getInstance().getKernel().isaVersion;
+        if (isaVersion == std::array<int, 3>{9, 5, 0}) {
+            formocast.setHardware(Tensilelite::HardwareArchitecture::gfx950);
+        }
+        else if (isaVersion == std::array<int, 3>{9, 4, 2}) {
+            formocast.setHardware(Tensilelite::HardwareArchitecture::gfx942);
+        }
+        else if (isaVersion == std::array<int, 3>{12, 0, 1}) {
+            formocast.setHardware(Tensilelite::HardwareArchitecture::gfx1201);
+        }
+        else {
+            // not supported
+            formocast.setHardware(Tensilelite::HardwareArchitecture::gfx950);
+        }
         // Calculate local read bytes
         auto localReadBytes = _calculateLocalReadBytes(module, numWaves);
         int LocalReadBytesA = localReadBytes.first;
         int LocalReadBytesB = localReadBytes.second;
 
         // Analyze bank conflicts first
-        auto bankConflicts = analyzeBankConflicts(module, numWaves, LocalReadBytesA, LocalReadBytesB);
+        auto bankConflicts = analyzeBankConflicts(formocast, module, numWaves, LocalReadBytesA, LocalReadBytesB);
         
         // Calculate cycles
-        auto cycles = _calculateMathClocksInUnrolledLoop(module, numWaves, bankConflicts);
+        auto cycles = _calculateMathClocksInUnrolledLoop(formocast, module, numWaves, bankConflicts);
         
         return cycles;
     }
