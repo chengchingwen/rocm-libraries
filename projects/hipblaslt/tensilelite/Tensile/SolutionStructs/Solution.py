@@ -554,15 +554,17 @@ class Solution(collections.abc.Mapping):
       state["tailLoopOptB"] = False
 
     if (state["DirectToVgprA"] == -1):
-      state["DirectToVgprA"] = True if (state['MIWaveGroup'][1] == 1 and \
-                                        ((state["MacroTile0"] * state["MacroTile1"] >= 57344 and state["ProblemType"]["TransposeA"]) or \
-                                         not state["ProblemType"]["TransposeA"] or \
-                                         state["ProblemType"]["SwizzleTensorA"])) else False
+      state["DirectToVgprA"] = True
+      # state["DirectToVgprA"] = True if (state['MIWaveGroup'][1] == 1 and \
+      #                                   ((state["MacroTile0"] * state["MacroTile1"] >= 57344 and state["ProblemType"]["TransposeA"]) or \
+      #                                    not state["ProblemType"]["TransposeA"] or \
+      #                                    state["ProblemType"]["SwizzleTensorA"])) else False
     if (state["DirectToVgprB"] == -1):
-      state["DirectToVgprB"] = True if (state['MIWaveGroup'][0] == 1 and \
-                                        ((state["MacroTile0"] * state["MacroTile1"] >= 57344 and not state["ProblemType"]["TransposeB"]) or \
-                                         state["ProblemType"]["TransposeB"] or \
-                                         state["ProblemType"]["SwizzleTensorB"])) else False
+      state["DirectToVgprB"] = True
+      # state["DirectToVgprB"] = True if (state['MIWaveGroup'][0] == 1 and \
+      #                                   ((state["MacroTile0"] * state["MacroTile1"] >= 57344 and not state["ProblemType"]["TransposeB"]) or \
+      #                                    state["ProblemType"]["TransposeB"] or \
+      #                                    state["ProblemType"]["SwizzleTensorB"])) else False
 
     if (not state["ProblemType"]["TLUA"]) and (state["DirectToVgprA"]):
       state["tailLoopOptA"] = False
@@ -1183,6 +1185,10 @@ class Solution(collections.abc.Mapping):
       else:
         if state["GlobalSplitU"] > 1 or state["GlobalSplitU"] == -1:
           state["_GlobalAccumulation"] = 'MultipleBufferSingleKernel'
+
+    if state["DepthU"] == int(16/state["ProblemType"]["DataType"].numRegisters()):
+      state["_GlobalAccumulation"] = 'MultipleBuffer'
+      state["GlobalSplitUAlgorithm"] = 'MultipleBuffer'
 
     if state["_GlobalAccumulation"] == 'MultipleBufferSingleKernel':
       state["SynchronizerSizeCheck"] = 1
@@ -2193,7 +2199,7 @@ class Solution(collections.abc.Mapping):
 
         if autoLRVW:
           if state["LocalReadVectorWidth"] // state["MIInputPerThread"] > 1:
-            if (sol["DepthU"] // sol["MatrixInstK"] // sol["LocalSplitU"] <= sol["LocalReadVectorWidth"] // sol["MIInputPerThread"]):
+            if (state["DepthU"] // state["MatrixInstK"] // state["LocalSplitU"] <= state["LocalReadVectorWidth"] // state["MIInputPerThread"]):
               # if only have 1 iteration with wider local read, reduce LRVW to have better scheduling (at least 2 iterations)
               state["LocalReadVectorWidth"] //= 2
           if state["LocalReadVectorWidth"] // state["MIInputPerThread"] > 1:
