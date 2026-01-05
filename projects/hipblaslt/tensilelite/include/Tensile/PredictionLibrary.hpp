@@ -134,6 +134,8 @@ namespace TensileLite
             sm.VectorWidthA       = sizeMapping.VectorWidthA;
             sm.VectorWidthB       = sizeMapping.VectorWidthB;
             sm.LocalSplitU        = sizeMapping.LocalSplitU;
+            sm.DirectToLdsA       = sizeMapping.DirectToLdsA;
+            sm.DirectToLdsB       = sizeMapping.DirectToLdsB;
 
             sm.waveGroup = sizeMapping.waveGroup;
 

@@ -174,6 +174,8 @@ namespace TensileLite
         int VectorWidthA = 1;
         int VectorWidthB = 1;
         int LocalSplitU = 1;
+        bool DirectToLdsA = false;
+        bool DirectToLdsB = false;
 
         std::array<int, 2> waveGroup;
     };

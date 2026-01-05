@@ -140,6 +140,8 @@ namespace TensileLite
                 iot::mapRequired(io, "VectorWidthA", s.VectorWidthA);
                 iot::mapRequired(io, "VectorWidthB", s.VectorWidthB);
                 iot::mapRequired(io, "LocalSplitU", s.LocalSplitU);
+                iot::mapRequired(io, "DirectToLdsA", s.DirectToLdsA);
+                iot::mapRequired(io, "DirectToLdsB", s.DirectToLdsB);
             }
 
             const static bool flow = false;

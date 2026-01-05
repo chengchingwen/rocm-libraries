@@ -619,7 +619,9 @@ class SizeMapping:
                  'WaveGroup',
                  'VectorWidthA',
                  'VectorWidthB',
-                 'LocalSplitU'
+                 'LocalSplitU',
+                 'DirectToLdsA',
+                 'DirectToLdsB'
                  ]
 
     @classmethod
@@ -654,6 +656,8 @@ class SizeMapping:
 
         dtva = False if d['DirectToVgprA'] == 0 else True
         dtvb = False if d['DirectToVgprB'] == 0 else True
+        dtlA = False if d['DirectToLdsA'] == 0 else True
+        dtlB = False if d['DirectToLdsB'] == 0 else True
 
         return cls(waveNum                  = d['NumThreads'] // d['WavefrontSize'],
                    workGroup                = d['WorkGroup'],
@@ -703,6 +707,8 @@ class SizeMapping:
                    VectorWidthA             = d["VectorWidthA"],
                    VectorWidthB             = d["VectorWidthB"],
                    LocalSplitU              = d["LocalSplitU"],
+                   DirectToLdsA             = dtlA,
+                   DirectToLdsB             = dtlB,
                    )
     @classmethod
     def ReadOriginalMacroTile(cls, d):
