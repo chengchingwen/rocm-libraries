@@ -812,6 +812,10 @@ class Solution(collections.abc.Mapping):
 
     MT = state["MacroTile0"] if tc == 'A' else state["MacroTile1"]
 
+    if state["UnrollLoopSwapGlobalReadOrder"]:
+      reject(state, printRejectionReason, "DirectToLds does not support UnrollLoopSwapGlobalReadOrder")
+      return False
+
     if (MT & (MT-1)) != 0 and not state["UseGeneralizedNLCOne%s"%tc]: # Check of MT not power of 2
       # so far, numBytesAB<4 case, TLU=False only (continue with False)
       if (numBytesAB < 4 or state["UseF32XEmulation"]) and state["ProblemType"]["TLU%c"%tc]:
