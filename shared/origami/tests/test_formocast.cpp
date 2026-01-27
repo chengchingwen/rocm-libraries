@@ -440,8 +440,8 @@ TEST_CASE("Formocast: Intermediate metrics calculation", "[formocast]") {
         REQUIRE(metrics.output_write_cost_edge == Approx(0.0).epsilon(0.01));
         REQUIRE(metrics.split_accumulation_overhead == Approx(0.0).epsilon(0.01));
         REQUIRE(metrics.local_split_overhead == Approx(0.0).epsilon(0.01));
-        REQUIRE(metrics.cache_hits.A_L1_hit == Approx(0.5).epsilon(0.01));
-        REQUIRE(metrics.cache_hits.B_L1_hit == Approx(0.5).epsilon(0.01));
+        REQUIRE(metrics.cache_hits.L1_hit.tile0HitRate == Approx(0.5).epsilon(0.01));
+        REQUIRE(metrics.cache_hits.L1_hit.tile1HitRate == Approx(0.5).epsilon(0.01));
     }
     
     SECTION("Calculate final performance from intermediate metrics") {
@@ -666,7 +666,7 @@ TEST_CASE("Formocast: Memory access costs calculation", "[formocast]") {
         hr.totalL2HitRate = 0.8;
         hr.totalL3HitRate = 0.6;
         
-        auto mem_costs = simulator.calculateMemoryAccessCosts(
+        auto mem_costs = simulator.calculateMTMemoryAccessCosts(
             128, 128, hw, hr,
             1000.0, 800.0, 600.0, // Bandwidths
             false, false,

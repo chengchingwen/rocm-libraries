@@ -338,8 +338,59 @@ namespace TensileLite
                     //  formocast.getTieBreakerInfo(); // or getMinTieBreakerInfo()
                     auto perf = formocast.predictedPerformance().microSeconds;
                     bestMS    = std::min(bestMS, perf);
+                    // auto perf = formocast.predictedPerformance(); //VictorWu
+                    // bestMS    = std::min(bestMS, perf.microSeconds);
+                    // if(1)//(m_predictionThreshold > 0.0)
+                    // {
+                    //     std::cout << "=== Performance Info ===" << std::endl;
+                    //     std::cout << "perf: " << perf.perf << " us" << std::endl;
+                    //     std::cout << "MT0: " << perf.MT0 << std::endl;
+                    //     std::cout << "MT1: " << perf.MT1 << std::endl;
+                    //     std::cout << "depthU: " << perf.depthU << std::endl;
+                    //     std::cout << "NumCUs: " << perf.NumCUs << std::endl;
+                    //     std::cout << "WorkGroupMapping: " << perf.WorkGroupMapping << std::endl;
+                    //     std::cout << "CUOccupancy: " << perf.CUOccupancy << std::endl;
+                    //     std::cout << "GlobalSplitU: " << perf.GlobalSplitU << std::endl;
+                    //     std::cout << "LocalSplitU: " << perf.LocalSplitU << std::endl;
+                    //     std::cout << "loopCnt: " << perf.loopCnt << std::endl;
+                    //     std::cout << "init: " << perf.init << " us" << std::endl;
+                    //     std::cout << "preloop: " << perf.preloop << " us" << std::endl;
+                    //     std::cout << "Loop: " << perf.loop << " us" << std::endl;
+                    //     std::cout << "lsu: " << perf.lsu << " us" << std::endl;
+                    //     std::cout << "tail: " << perf.tail << " us" << std::endl;
+                    //     std::cout << "math_overall: " << perf.math_overall << std::endl;
+                    //     std::cout << "mem_overall: " << perf.mem_overall << std::endl;
+                    //     std::cout << "A_loop_hitrate_l1: " << perf.memCosts.cache_hits.L1_hit.tile0HitRate << std::endl;
+                    //     std::cout << "B_loop_hitrate_l1: " << perf.memCosts.cache_hits.L1_hit.tile1HitRate << std::endl;
+                    //     std::cout << "A_loop_hitrate_l2: " << perf.memCosts.cache_hits.L2_hit.tile0HitRate << std::endl;
+                    //     std::cout << "B_loop_hitrate_l2: " << perf.memCosts.cache_hits.L2_hit.tile1HitRate << std::endl;
+                    //     std::cout << "A_loop_hitrate_l3: " << perf.memCosts.cache_hits.L3_hit.tile0HitRate << std::endl;
+                    //     std::cout << "B_loop_hitrate_l3: " << perf.memCosts.cache_hits.L3_hit.tile1HitRate << std::endl;
+                    //     std::cout << "request_l1: "<< perf.memCosts.mem_l1_req << std::endl;
+                    //     std::cout << "request_l2: "<< perf.memCosts.mem_l2_req << std::endl;
+                    //     std::cout << "request_l3: "<< perf.memCosts.mem_l3_req << std::endl;
+                    //     std::cout << "request_hbm: "<< perf.memCosts.mem_hbm_req << std::endl;
+                    //     std::cout << "loop_request_l1: "<< perf.memCosts.mem_loop_l1_req << std::endl;
+                    //     std::cout << "loop_request_l2: "<< perf.memCosts.mem_loop_l2_req << std::endl;
+                    //     std::cout << "loop_request_l3: "<< perf.memCosts.mem_loop_l3_req << std::endl;
+                    //     std::cout << "loop_request_hbm: "<< perf.memCosts.mem_loop_hbm_req << std::endl;
+                    //     std::cout << "A_MT_request_l1: " << perf.memCosts.MT_A_L1_req << std::endl;
+                    //     std::cout << "B_MT_request_l1: " << perf.memCosts.MT_B_L1_req << std::endl;
+                    //     std::cout << "A_MT_request_l2: " << perf.memCosts.MT_A_L2_req << std::endl;
+                    //     std::cout << "B_MT_request_l2: " << perf.memCosts.MT_B_L2_req << std::endl;
+                    //     std::cout << "A_MT_request_l3: " << perf.memCosts.MT_A_L3_req << std::endl;
+                    //     std::cout << "B_MT_request_l3: " << perf.memCosts.MT_B_L3_req << std::endl;
+                    //     std::cout << "A_MT_request_hbm: " << perf.memCosts.MT_A_hbm_req << std::endl;
+                    //     std::cout << "B_MT_request_hbm: " << perf.memCosts.MT_B_hbm_req << std::endl;
+                    //     std::cout << "store: " << perf.store << " us" << std::endl;
+                    //     std::cout << "gsu: " << perf.gsu << " us" << std::endl;
+                    //     std::cout << "num_tiles: " << perf.num_tiles << std::endl;
+                    //     std::cout << "=== Performance Info End ===" << std::endl;
+                    //     std::cout.unsetf(std::ios::fixed);
+                    // }
                     perfMetric.push_back(
                         std::make_tuple(sol_idx, perf, formocast.getMinTieBreakerInfo()));
+                        // std::make_tuple(sol_idx, perf.microSeconds, formocast.getMinTieBreakerInfo())); //VictorWu
                 }
             }
 
@@ -387,6 +438,7 @@ namespace TensileLite
             for(int i = 0; i < perfMetric.size(); i++)
             {
                 auto solution = solutionmap_fc.at(std::get<0>(perfMetric[i]));
+                // std::cout << "perf: " << std::get<1>(perfMetric[i]) << " us" << std::endl; //VictorWu
                 rv.emplace_back(solution);
                 if(rv.size() == numSolutions)
                 {
