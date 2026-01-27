@@ -35,7 +35,7 @@ namespace origami
          * @param tcc_ea0_coalesced Output parameter for TCC EA0 coalesced value
          * @return The calculated load request value
          */
-        double getLoadRequest(double   MTX,
+        double getL1LoadRequest(double   MTX,
                              double   DU,
                              double   L1CacheLineSize,
                              uint32_t grvw,
@@ -48,6 +48,17 @@ namespace origami
                              int      NumLoadsCoalesced,
                              uint32_t numWaveX,
                              double&  tcc_ea0_coalesced);
+
+        inline double getL2LoadRequest(double   L1_req,
+                             double   L1_hit,
+                             double   tcc_ea0_coalsced) { return L1_req * (1 - L1_hit) / 2 * tcc_ea0_coalsced; }
+
+        inline double getL3LoadRequest(double   L2_req,
+                             double   L2_hit,
+                             double   tcc_ea0_coalsced) { return L2_req * (1 - L2_hit) / tcc_ea0_coalsced; }
+
+        inline double getHBMLoadRequest(double   L3_req,
+                             double   L3_hit) { return L3_req * (1 - L3_hit); }
 
         // GSU overhead calculation functions
 

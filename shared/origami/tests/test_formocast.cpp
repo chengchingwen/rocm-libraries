@@ -658,7 +658,7 @@ TEST_CASE("Formocast: Memory access costs calculation", "[formocast]") {
         hr.totalL2HitRate = 0.8;
         hr.totalL3HitRate = 0.6;
         
-        auto mem_costs = simulator.calculateMemoryAccessCosts(
+        auto mem_costs = simulator.calculateMTMemoryAccessCosts(
             128, 128, hw, hr,
             1000.0, 800.0, 600.0, // Bandwidths
             false, false,

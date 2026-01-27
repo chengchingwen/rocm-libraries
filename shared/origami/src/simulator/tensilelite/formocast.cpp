@@ -37,7 +37,7 @@ namespace origami
          * @param tcc_ea0_coalesced Output parameter for TCC coalesced factor
          * @return L1 load request value
          */
-        double getLoadRequest(double   MTX,
+        double getL1LoadRequest(double   MTX,
                              double   DU,
                              double   L1CacheLineSize,
                              uint32_t grvw,
