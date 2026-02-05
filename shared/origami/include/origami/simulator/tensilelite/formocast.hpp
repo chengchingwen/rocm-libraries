@@ -179,7 +179,7 @@ namespace origami
          * @return L1CacheHitRate structure containing hit rates for both tiles
          */
         L1CacheHitRate computeL1CacheHitRate(double L1CacheCapacity, double L1CacheLineSize,
-                                             double L1BusWidthPerCU, double MT0, double MT1,
+                                             double L1BusWidthPerCU, double MT0, double MT1, uint32_t depthU, //VictorWu
                                              uint32_t bpeA, uint32_t bpeB, int NTA, int NTB,
                                              uint32_t GRVWA, uint32_t GRVWB, bool DTVA, bool DTVB,
                                              bool isSwizzleA, bool isSwizzleB, uint32_t VWA, uint32_t VWB,
