@@ -410,7 +410,7 @@ namespace origami
          * @param store Output parameter for store cost
          * @param store_edge Output parameter for edge case store cost
          */
-         void calculateStorePerformance(double M,
+         double calculateStorePerformance(double M,
                                        double N,
                                        double M_WGs_total,
                                        double num_tiles,
@@ -558,7 +558,7 @@ namespace origami
          */
         L1CacheHitRate
         computeL1CacheHitRate(const HardwareConstants& hw,
-                            double MT0, double MT1, uint32_t bpeA, uint32_t bpeB,
+                            double MT0, double MT1, uint32_t depthU, uint32_t bpeA, uint32_t bpeB, //VictorWu
                             int NTA, int NTB, uint32_t GRVWA, uint32_t GRVWB,
                             bool DTVA, bool DTVB, bool isSwizzleA, bool isSwizzleB,
                             uint32_t VWA, uint32_t VWB, bool transA, bool transB,

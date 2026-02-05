@@ -165,6 +165,8 @@ namespace origami
             double WGs = std::min(NumCUs, double(numWGs)) / GlobalSplitU;
             double L2BandWidthPerCU_local = L2ReadArbEff * 128 * 16 / WGs; //90% eff
             double atomic_overhead = GlobalSplitU * 0.1;
+// #define EXPERIMENTAL 0 //VictorWu
+// #if EXPERIMENTAL
             double GSU_L1_req      = (bpeIn * (GlobalSplitU - 1) * MT0 * MT1 * bpeIn) / 64;
             if (GlobalSplitU > 2)
             {
@@ -176,7 +178,20 @@ namespace origami
             double GSU_L2_clk = GSU_L2_req / 2 * 128 / std::min(L2BandWidthPerCU_local, L2BusWidthPerCU);
 
             double cost_overhead = 2*1024.0/1900/(GlobalSplitU-1);
+
+            // gsu_overall       = atomic_overhead + (1 * std::max(GSU_L1_clk/cu_freq, GSU_L2_clk/cu_freq) + 2*1024.0/1900/std::floor(GSUtotal-1)); //VictorWu
             return 0 + (GlobalSplitU * std::max(std::max(GSU_L1_clk/cu_freq, GSU_L2_clk/cu_freq), cost_overhead));
+// #else //VictorWu
+//             double GSU_L1_req      = ((GlobalSplitU - 1) * MT0 * MT1 * bpeIn) / 64;
+//             if (GlobalSplitU > 2)
+//             {
+//                 GSU_L1_req += (MT0 * MT1 * bpeIn) / 64;
+//             }
+//             double GSU_L1_clk      = GSU_L1_req * 64 / L1BusWidthPerCU;
+//             double GSU_L2_clk = GSU_L1_req / 2 * 128 / std::min(L2BandWidthPerCU_local, L2BusWidthPerCU);
+
+//             return atomic_overhead + (std::max(GSU_L1_clk/cu_freq, GSU_L2_clk/cu_freq)) + storeGSU;
+// #endif
         }
 
         double getLocalSplitKOverhead(double MT0, double MT1, double lsu, uint32_t svw,
@@ -230,7 +245,7 @@ namespace origami
 
         // Cache hit rate calculation functions
         L1CacheHitRate computeL1CacheHitRate(double L1CacheCapacity, double L1CacheLineSize,
-                                             double L1BusWidthPerCU, double MT0, double MT1,
+                                             double L1BusWidthPerCU, double MT0, double MT1, uint32_t depthU, //VictorWu
                                              uint32_t bpeA, uint32_t bpeB, int NTA, int NTB,
                                              uint32_t GRVWA, uint32_t GRVWB, bool DTVA, bool DTVB,
                                              bool isSwizzleA, bool isSwizzleB, uint32_t VWA, uint32_t VWB,
@@ -255,6 +270,11 @@ namespace origami
                     A_L1_hit *= 4;
                 A_L1_hit = isL1BypassA ? 0: 1 - 1 / A_L1_hit;
                 A_L1_hit = isSwizzleA ? 1 - 1 / safe_ceil_div(VWA, uint32_t(2)) : A_L1_hit;
+
+                // if(depthU * bpeA <= L1CacheLineSize) //VictorWu
+                // {
+                //     A_L1_hit = std::min(1.0, A_L1_hit * 2);
+                // }
             }
             else
             {
@@ -332,6 +352,11 @@ namespace origami
                     B_L1_hit *= 4;
                 B_L1_hit = isL1BypassB ? 0: 1 - 1 / B_L1_hit;
                 B_L1_hit = isSwizzleB ? 1 - 1 / safe_ceil_div(VWB, uint32_t(2)) : B_L1_hit;
+
+                // if(depthU * bpeB <= L1CacheLineSize) //VictorWu
+                // {
+                //     B_L1_hit = std::min(1.0, B_L1_hit * 2);
+                // }
             }
 
             hr.tile0HitRate = A_L1_hit;
@@ -662,6 +687,7 @@ namespace origami
             double edge_size     = std::fmod(M, MT0);
             double numWGsNonEdge = std::floor(M / MT0);
             result = N * ((numWGsNonEdge * ceiling_math(MT0 / 32)) + ceiling_math(edge_size / 32));
+            // result = N * ((std::floor(M / 32)) + ceiling_math(edge_size / 32)); //VictorWu
 
             double maxMT1              = std::min(N, MT1);
             double nonEdgeRequestPerMT = maxMT1 * (ceiling_math(MT0 / 32));
