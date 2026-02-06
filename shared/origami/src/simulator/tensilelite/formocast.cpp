@@ -270,10 +270,10 @@ namespace origami
                 A_L1_hit = isL1BypassA ? 0: 1 - 1 / A_L1_hit;
                 A_L1_hit = isSwizzleA ? 1 - 1 / safe_ceil_div(VWA, uint32_t(2)) : A_L1_hit;
 
-                // if(depthU * bpeA <= L1CacheLineSize) //VictorWu
-                // {
-                //     A_L1_hit = std::min(1.0, A_L1_hit * 2);
-                // }
+                if(depthU * bpeA <= L1CacheLineSize) //VictorWu
+                {
+                    A_L1_hit = std::min(1.0, A_L1_hit * 2);
+                }
             }
             else
             {
@@ -352,10 +352,10 @@ namespace origami
                 B_L1_hit = isL1BypassB ? 0: 1 - 1 / B_L1_hit;
                 B_L1_hit = isSwizzleB ? 1 - 1 / safe_ceil_div(VWB, uint32_t(2)) : B_L1_hit;
 
-                // if(depthU * bpeB <= L1CacheLineSize) //VictorWu
-                // {
-                //     B_L1_hit = std::min(1.0, B_L1_hit * 2);
-                // }
+                if(depthU * bpeB <= L1CacheLineSize) //VictorWu
+                {
+                    B_L1_hit = std::min(1.0, B_L1_hit * 2);
+                }
             }
 
             hr.tile0HitRate = A_L1_hit;
@@ -702,8 +702,8 @@ namespace origami
 
             double edge_size     = std::fmod(M, MT0);
             double numWGsNonEdge = std::floor(M / MT0);
-            result = N * ((numWGsNonEdge * ceiling_math(MT0 / 32)) + ceiling_math(edge_size / 32));
-            // result = N * ((std::floor(M / 32)) + ceiling_math(edge_size / 32)); //VictorWu
+            // result = N * ((numWGsNonEdge * ceiling_math(MT0 / 32)) + ceiling_math(edge_size / 32));
+            result = N * ((std::floor(M / 32)) + ceiling_math(edge_size / 32)); //VictorWu
 
             double maxMT1              = std::min(N, MT1);
             double nonEdgeRequestPerMT = maxMT1 * (ceiling_math(MT0 / 32));
