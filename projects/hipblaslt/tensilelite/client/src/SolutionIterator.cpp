@@ -328,7 +328,7 @@ namespace TensileLite
                             m_hitrate[i] = predPerf.hitRate;
 
                             std::cout.setf(std::ios::fixed); //VictorWu
-                            if(0)//(m_predictionThreshold > 0.0)
+                            if(1)//(m_predictionThreshold > 0.0)
                             {
                                 std::cout << "=== Performance Info ===" << std::endl;
                                 std::cout << "perf: " << predPerf.perf << " us" << std::endl;

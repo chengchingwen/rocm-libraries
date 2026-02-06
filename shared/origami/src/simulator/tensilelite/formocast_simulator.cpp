@@ -265,12 +265,12 @@ namespace origami
         double B_L1_mem_req=0, B_L2_mem_req=0, B_L3_mem_req=0, B_hbm_mem_req=0;
 
         auto calcLClk = [&](double num_tiles, double L1BandWidthPerCU, uint32_t WGs_per_tile, uint32_t WGs_per_tile_XCD) {
-
-            double L2BandWidthPerCU = hw_consts.L2ReadArbEff * 128 * 16 / WGs_per_tile_XCD; //90% eff
-            if (L2BandWidthPerCU > hw_consts.L2ReadArbEff * 128 * 16 / (hw_consts.NumCUs/hw_consts.NumXCDs))
-                L2BandWidthPerCU = hw_consts.L2ReadArbEff * 128 * 16 / (hw_consts.NumCUs/hw_consts.NumXCDs);
-            // double L2BandWidthPerCU = hw_consts.L2ReadArbEff * 128 * 16 / WGs_per_tile_XCD;
-            // L2BandWidthPerCU = std::min(L2BandWidthPerCU, hw.L2BusWidthPerCU);
+            
+            // double L2BandWidthPerCU = hw_consts.L2ReadArbEff * 128 * 16 / WGs_per_tile_XCD; //90% eff
+            // if (L2BandWidthPerCU > hw_consts.L2ReadArbEff * 128 * 16 / (hw_consts.NumCUs/hw_consts.NumXCDs))
+            //     L2BandWidthPerCU = hw_consts.L2ReadArbEff * 128 * 16 / (hw_consts.NumCUs/hw_consts.NumXCDs);
+            double L2BandWidthPerCU = hw_consts.L2ReadArbEff * 128 * 16 / WGs_per_tile_XCD;
+            L2BandWidthPerCU = std::min(L2BandWidthPerCU, hw.L2BusWidthPerCU);
             double L3BandWidthPerCU = hw_consts.L3BandWidth / WGs_per_tile;
             double HBMBandWidthPerCU = hw_consts.hbmBandWidth / WGs_per_tile;
             
@@ -307,11 +307,11 @@ namespace origami
             B_hbm_mem_req += B_hbm_req * num_tiles * WGs_per_tile;
         };
 
-        calcLClk(num_tiles, hw.L1BusWidthPerCU, (num_tiles==1 and WGs_per_tile_last!=0)? WGs_per_tile_last:hw_consts.NumCUs, WGs_per_tile_XCD_full);
+        // calcLClk(num_tiles, hw.L1BusWidthPerCU, (num_tiles==1 and WGs_per_tile_last!=0)? WGs_per_tile_last:hw_consts.NumCUs, WGs_per_tile_XCD_full);
 
-        // calcLClk(num_tiles-1, hw.L1BusWidthPerCU, hw_consts.NumCUs, WGs_per_tile_XCD_full); //VictorWu
+        calcLClk(num_tiles-1, hw.L1BusWidthPerCU, hw_consts.NumCUs, WGs_per_tile_XCD_full); //VictorWu
 
-        // calcLClk(1, hw.L1BusWidthPerCU, WGs_per_tile_last, WGs_per_tile_XCD_last); //VictorWu
+        calcLClk(1, hw.L1BusWidthPerCU, WGs_per_tile_last, WGs_per_tile_XCD_last); //VictorWu
 
         double L1_overall = (A_L1_clk + B_L1_clk) / hw.math_frequency;
         double L2_overall = (A_L2_clk + B_L2_clk) / hw.math_frequency;
@@ -416,14 +416,11 @@ namespace origami
     {
         if ((num_tiles > 1)  && CUOccupancy >= 2)
         {
-            perf = (prefetch/num_tiles + mathCost + storeCost) - storeCost/num_tiles;
+            perf = hw_consts.initialCost + (prefetch/num_tiles + mathCost + storeCost) - storeCost/num_tiles;
         }
         else
         {
-            if (num_tiles <= 1)
-            {
-                perf -= hw_consts.initialCost;
-            }
+            perf *= 1;
         }
         return perf;
     }
@@ -645,7 +642,7 @@ namespace origami
 
         // 5.7 Calculate GSU Overhead
         // double storeGSU = store_total * 2; //FIXME: incorrect   //VictorWu
-        double storeGSU = store * 2; //FIXME: incorrect
+        double storeGSU = store_total * 2; //FIXME: incorrect
         auto vgprUsageCheck = MT0 * MT1 / miSize / miSize;
         double gsu_overall = calculateGlobalSplitUOverhead(M, N, K, NumBatches, GlobalSplitU, gsuMethod,
                                                   problem, hw_consts, WGs_per_tile_full, WGs_per_tile_XCD_full,
@@ -720,7 +717,7 @@ namespace origami
         // prediction modle implementation
 
         // 7. Aggregate Performance: pre-loop + unrolled-loop + Tail Loop + post-loop
-        double perf = doinit +prefetch + loop_overall + tail_overall + store;
+        double perf = doinit +prefetch + loop_overall + tail_overall + store_total;
 
         // 9. Add LSU Reduction Part might be removed before 8.
         perf += lsu_overall;
@@ -728,7 +725,7 @@ namespace origami
         // 8. Apply CU Occupancy
         // perf = resolveOccupancy(hw_consts, perf, prefetch, loop_overall + tail_overall, store_total, num_tiles, CUOccupancy); //VictorWu
         // std::cout << "prefetch: " << prefetch/num_tiles << ", loop_overall: " << loop_overall/num_tiles << ", tail_overall: " << tail_overall/num_tiles << ", store: " << store/num_tiles << std::endl; //VictorWu
-        perf = resolveOccupancy(hw_consts, perf, prefetch, loop_overall + tail_overall, store, num_tiles, CUOccupancy);
+        perf = resolveOccupancy(hw_consts, perf, doinit +prefetch, loop_overall + tail_overall, store_total, num_tiles, CUOccupancy);
         // std::cout << "perf after occupancy: " << perf << std::endl; //VictorWu
 
         // perf += doinit;
@@ -740,6 +737,10 @@ namespace origami
             perf = perf + std::max(store_edge, store/num_tiles);
         // if (int(M) % int(MT0) != 0) //VictorWu
         //     perf = perf + std::max(store_edge, store);
+
+        std::cout << "store_total: " << store_total << std::endl; //VictorWu
+        std::cout << "store_edge: " << store_edge << std::endl; //VictorWu
+        std::cout << "store: " << store << std::endl; //VictorWu
 
         pp.microSeconds = perf;
         pp.hitRate = mem_costs.l2_hit * 100;
@@ -763,8 +764,8 @@ namespace origami
         pp.preloop = prefetch;
         pp.loop = loop_overall;
         pp.tail = tail_overall;
-        // pp.store = store_total; //VictorWu
-        pp.store = store;
+        pp.store = store_total; //VictorWu
+        // pp.store = store;
         pp.gsu = gsu_overall;
         pp.lsu = lsu_overall;
         pp.num_tiles = num_tiles;
