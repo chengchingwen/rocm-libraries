@@ -22,3 +22,13 @@ target_sources(tensilelite-client
     "${CMAKE_CURRENT_SOURCE_DIR}/SolutionIterator.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/LibraryUpdateReporter.cpp"
 )
+
+if (ENABLE_ROCPROFSDK)
+
+target_sources(tensilelite-client
+    PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/Profiler.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/RocProfiler.cpp"
+)
+
+endif()

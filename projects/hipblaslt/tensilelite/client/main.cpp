@@ -52,6 +52,13 @@
 
 #include "Utility.hpp"
 
+#ifndef ENABLE_ROCPROFSDK
+#define ENABLE_ROCPROFSDK 0
+#endif
+#if ENABLE_ROCPROFSDK
+#include "Profiler.hpp"
+#endif
+
 #include <boost/algorithm/string/classification.hpp>
 #include <boost/algorithm/string/split.hpp>
 #include <boost/program_options.hpp>
@@ -365,6 +372,9 @@ namespace TensileLite
                 ("rotating-buffer-size",      po::value<int32_t>()->default_value(0), "Size of rotating buffer in the unit of MB.")
                 ("rotating-buffer-mode",      po::value<int32_t>()->default_value(0), "Rotating mode.")
                 ("output-amaxD",              po::value<bool>()->default_value(false), "Output AmaxD.")
+#if ENABLE_ROCPROFSDK
+                ("rocprof-counter",           vector_default_empty<std::string>(), "Rocprof counters.")
+#endif
                 ;
             // clang-format on
 
@@ -703,6 +713,10 @@ int main(int argc, const char* argv[])
         benchmarkTimer = std::make_shared<BenchmarkTimer>(args, *hardware, flushTimeMs * 1000);
         listeners.addListener(benchmarkTimer);
         listeners.addListener(std::make_shared<HardwareMonitorListener>(args));
+#if ENABLE_ROCPROFSDK
+        if (!args["rocprof-counter"].as<std::vector<std::string>>().empty())
+            listeners.addListener(Profiler::Default(args));
+#endif
     }
 
     auto reporters = std::make_shared<MetaResultReporter>();
@@ -829,6 +843,17 @@ int main(int argc, const char* argv[])
                                             inputs, warmupStartEvents, warmupStopEvents);
                                 }
                                 listeners.postWarmup(warmupStartEvents, warmupStopEvents, stream);
+
+#if ENABLE_ROCPROFSDK
+                                TimingEvents ProfilerStartEvents(1, 1);
+                                TimingEvents ProfilerStopEvents(1, 1);
+                                listeners.preProfiler();
+                                HIP_CHECK_EXC(adapter.launchKernels(kernels[warmupInvocations % kernels.size()],
+                                                                    stream,
+                                                                    ProfilerStartEvents[0],
+                                                                    ProfilerStopEvents[0]));
+                                listeners.postProfiler();
+#endif
 
                                 size_t syncs      = listeners.numSyncs();
                                 size_t enq        = listeners.numEnqueuesPerSync();
