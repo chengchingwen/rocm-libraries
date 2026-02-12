@@ -178,12 +178,15 @@ namespace TensileLite
         return stream_write(stream << std::forward<T>(val), std::forward<Ts>(vals)...);
     }
 
-    template <typename... Ts>
+    template <bool useFixed = false, typename... Ts>
     inline std::string concatenate(Ts&&... vals)
     {
         std::ostringstream msg;
+        if constexpr(useFixed)
+            msg.setf(std::ios::fixed);
         stream_write(msg, std::forward<Ts>(vals)...);
-
+        if constexpr(useFixed)
+            msg.unsetf(std::ios::fixed);
         return msg.str();
     }
 
