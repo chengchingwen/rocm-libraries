@@ -308,8 +308,7 @@ namespace origami
         };
 
         // calcLClk(num_tiles, hw.L1BusWidthPerCU, (num_tiles==1 and WGs_per_tile_last!=0)? WGs_per_tile_last:hw_consts.NumCUs, WGs_per_tile_XCD_full);
-
-        calcLClk(num_tiles-1, hw.L1BusWidthPerCU, hw_consts.NumCUs, WGs_per_tile_XCD_full); //VictorWu
+        calcLClk(num_tiles - 1, hw.L1BusWidthPerCU, hw_consts.NumCUs, WGs_per_tile_XCD_full); //VictorWu
 
         calcLClk(1, hw.L1BusWidthPerCU, WGs_per_tile_last, WGs_per_tile_XCD_last); //VictorWu
 
@@ -616,9 +615,10 @@ namespace origami
             = std::min(N_WGs_total, static_cast<uint32_t>(N_WGs_per_tile_XCD * safe_ceil_div(M_WGs_per_tile, M_WGs_total)));
         uint32_t numberWGs = M_WGs_total * N_WGs_total * NumBatches * GlobalSplitU;
         uint32_t num_tiles = safe_ceil_div(numberWGs, uint32_t(hw_consts.NumCUs));
-        uint32_t WGs_per_tile_last = numberWGs % uint32_t(hw_consts.NumCUs);
+        uint32_t NumCUs = hw_consts.NumCUs;
+        uint32_t WGs_per_tile_last = numberWGs % NumCUs == 0 ? NumCUs : numberWGs % NumCUs;
         uint32_t WGs_per_tile_XCD_last = safe_ceil_div(WGs_per_tile_last, hw_consts.NumXCDs);
-        uint32_t WGs_per_tile_full = (num_tiles==1 and WGs_per_tile_last!=0)? WGs_per_tile_last:hw_consts.NumCUs;
+        uint32_t WGs_per_tile_full = num_tiles == 1 ? WGs_per_tile_last : NumCUs;
         uint32_t WGs_per_tile_XCD_full = safe_ceil_div(WGs_per_tile_full, hw_consts.NumXCDs);
         uint32_t loopCnt = K_AfterGSU / depthU;
         uint32_t K_tail = K_AfterGSU - (loopCnt * depthU);

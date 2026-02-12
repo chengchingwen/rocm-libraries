@@ -69,7 +69,7 @@ namespace origami
                     if(grvw * bpe == 8 || grvw * bpe <= 2)
                         L1_req *= 2;
                     if(dtv)
-                        L1_req *= 4;
+                        L1_req *= 4 * numWaveX;
                 }
             }
             else
