@@ -148,11 +148,11 @@ namespace origami
         // Use the max of edge/non-edge store
         store      = store_non_edge_overall;
         store_edge = store_edge_overall;
-        store = (GWVWD==1) ? store*2: store;
-        store = (GWVWD==2) ? store*1.5: store;
+        // store = (GWVWD==1) ? store*2: store;
+        // store = (GWVWD==2) ? store*1.5: store;
 
-        store_edge = (GWVWD==1) ? store_edge*2: store_edge;
-        store_edge = (GWVWD==2) ? store_edge*1.5: store_edge;
+        // store_edge = (GWVWD==1) ? store_edge*2: store_edge;
+        // store_edge = (GWVWD==2) ? store_edge*1.5: store_edge;
 
         if (num_tiles > 1)
         {
@@ -274,8 +274,8 @@ namespace origami
             double L3BandWidthPerCU = hw_consts.L3BandWidth / WGs_per_tile;
             double HBMBandWidthPerCU = hw_consts.hbmBandWidth / WGs_per_tile;
             
-            // A_L1_clk += A_L1_req * 64 / L1BandWidthPerCU * num_tiles;
-            A_L1_clk += A_L1_req * mem_costs.cache_hits.L1_hit.tile0HitRate * 64 / L1BandWidthPerCU * num_tiles;
+            A_L1_clk += A_L1_req * 64 / L1BandWidthPerCU * num_tiles;
+            // A_L1_clk += A_L1_req * mem_costs.cache_hits.L1_hit.tile0HitRate * 64 / L1BandWidthPerCU * num_tiles;
             A_L1_mem_req += A_L1_req * num_tiles * WGs_per_tile *M/(safe_ceil_div(static_cast<uint32_t>(M),static_cast<uint32_t>(MT0))*MT0);
             
             if(isSwizzleA)
@@ -290,8 +290,8 @@ namespace origami
             A_hbm_clk += A_hbm_req * 8 / HBMBandWidthPerCU * num_tiles;
             A_hbm_mem_req += A_hbm_req * num_tiles * WGs_per_tile;
 
-            // B_L1_clk += B_L1_req * 64 / L1BandWidthPerCU * num_tiles;
-            B_L1_clk += B_L1_req * mem_costs.cache_hits.L1_hit.tile1HitRate * 64 / L1BandWidthPerCU * num_tiles;
+            B_L1_clk += B_L1_req * 64 / L1BandWidthPerCU * num_tiles;
+            // B_L1_clk += B_L1_req * mem_costs.cache_hits.L1_hit.tile1HitRate * 64 / L1BandWidthPerCU * num_tiles;
             B_L1_mem_req += B_L1_req * num_tiles * WGs_per_tile *N/(safe_ceil_div(static_cast<uint32_t>(N),static_cast<uint32_t>(MT1))*MT1);
 
             if(isSwizzleB)
@@ -928,8 +928,8 @@ namespace origami
 
         // 8. Calculate Memory Access and Math Costs
         double L2BandWidthPerCU     = hw_consts.L2ReadArbEff * 128 * 16 / WGs_per_tile_XCD; //90% eff
-        if (L2BandWidthPerCU > hw_consts.L2ReadArbEff * 128 * 16 / (hw_consts.NumCUs/hw_consts.NumXCDs))
-            L2BandWidthPerCU = hw_consts.L2ReadArbEff * 128 * 16 / (hw_consts.NumCUs/hw_consts.NumXCDs);
+        // if (L2BandWidthPerCU > hw_consts.L2ReadArbEff * 128 * 16 / (hw_consts.NumCUs/hw_consts.NumXCDs))
+        //     L2BandWidthPerCU = hw_consts.L2ReadArbEff * 128 * 16 / (hw_consts.NumCUs/hw_consts.NumXCDs);
         double L3BandWidthPerCU     = hw_consts.L3BandWidth / WGs_per_tile;
         double HBMBandWidthPerCU    = hw_consts.hbmBandWidth / WGs_per_tile;
 
@@ -1084,13 +1084,14 @@ namespace origami
         double math_overall = metrics.compute_cycles / hw_consts.math_frequency;
         double loop_overall = getLoop_time(mem_costs, math_overall, loopCnt, PGR, num_tiles);
 
-        loop_overall += loopCnt * 0.2;
+        // loop_overall += loopCnt * 0.2;
 
         // 3. Handle Tail Loop
         double tail_overall = 0.0;
         if (K_tail > 0)
         {
             tail_overall = (mem_costs.mem_overall * K_tail / depthU + math_overall) + metrics.prefetch_cost * 2;
+            // tail_overall = (mem_costs.mem_hbm + math_overall);
         }
 
         // 4. Calculate preLoopCost
@@ -1109,7 +1110,7 @@ namespace origami
             store = edge_percentage * store_edge + (1 - edge_percentage) * store;
             perf = preLoopCost + loop_overall + store;
         }
-        else { store = std::max(store_edge, store); perf = metrics.prefetch_cost + loop_overall + store;}
+        // else { store = std::max(store_edge, store); perf = metrics.prefetch_cost + loop_overall + store;}
 
         // 6. Add tail loop cost
         perf += tail_overall;
