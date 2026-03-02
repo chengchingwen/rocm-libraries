@@ -10,6 +10,7 @@
 #include <vector>
 #include <array>
 #include <queue>
+#include <tuple>
 #include <iostream>
 #include <unordered_map>
 #include <origami/simulator/tensilelite/formocast.hpp>
@@ -108,6 +109,7 @@ namespace origami
          */
          struct CacheHitRates
          {
+             L1CacheHitRate prefetch_L1_hit;
              L1CacheHitRate L1_hit;
              L2CacheHitRate L2_hit;
              L3CacheHitRate L3_hit;
@@ -134,6 +136,10 @@ namespace origami
              double l3_hit;
              double mem_overall;
              //for debug
+             double A_mem_l1_req;
+             double B_mem_l1_req;
+             double tcc_ea0_coalscedA;
+             double tcc_ea0_coalscedB;
              double MT_A_L1_req;
              double MT_B_L1_req;
              double MT_A_L2_req;
@@ -556,7 +562,7 @@ namespace origami
          * @param NumWave1 Number of waves in dimension 1
          * @return L1CacheHitRate structure with hit rates for both matrices
          */
-        L1CacheHitRate
+        std::tuple<L1CacheHitRate, L1CacheHitRate>
         computeL1CacheHitRate(const HardwareConstants& hw,
                             double MT0, double MT1, uint32_t depthU, uint32_t bpeA, uint32_t bpeB, //VictorWu
                             int NTA, int NTB, uint32_t GRVWA, uint32_t GRVWB,

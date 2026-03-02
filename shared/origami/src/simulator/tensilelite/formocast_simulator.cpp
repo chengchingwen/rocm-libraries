@@ -169,7 +169,7 @@ namespace origami
         return store_total / 256;
     }
 
-    Formocast::L1CacheHitRate
+    std::tuple<Formocast::L1CacheHitRate, Formocast::L1CacheHitRate>
     Formocast::computeL1CacheHitRate(const HardwareConstants& hw,
                                           double MT0, double MT1, uint32_t depthU, uint32_t bpeA, uint32_t bpeB, //VictorWu
                                           int NTA, int NTB, uint32_t GRVWA, uint32_t GRVWB,
@@ -178,16 +178,19 @@ namespace origami
                                           double lda, double ldb, int NLCA, int NLCB,
                                           uint32_t threadnum, uint32_t NumWave0, uint32_t NumWave1) const
     {
-        auto hr = simulator::computeL1CacheHitRate(
+        auto hrs = simulator::computeL1CacheHitRate(
             hw.L1CacheCapacity, hw.L1CacheLineSize, hw.L1BusWidthPerCU,
             MT0, MT1, depthU, bpeA, bpeB, NTA, NTB, GRVWA, GRVWB, DTVA, DTVB, //VictorWu
             isSwizzleA, isSwizzleB, VWA, VWB, transA, transB, lda, ldb,
             NLCA, NLCB, threadnum, NumWave0, NumWave1, hw.architecture == hardware_t::architecture_t::gfx942);
-
+        
+        L1CacheHitRate prefetch_result;
         L1CacheHitRate result;
-        result.tile0HitRate = hr.tile0HitRate;
-        result.tile1HitRate = hr.tile1HitRate;
-        return result;
+        prefetch_result.tile0HitRate = std::get<0>(hrs).tile0HitRate;
+        prefetch_result.tile1HitRate = std::get<0>(hrs).tile1HitRate;
+        result.tile0HitRate = std::get<1>(hrs).tile0HitRate;
+        result.tile1HitRate = std::get<1>(hrs).tile1HitRate;
+        return std::make_tuple(prefetch_result, result);
     }
 
     Formocast::L3CacheHitRate
@@ -273,38 +276,46 @@ namespace origami
             L2BandWidthPerCU = std::min(L2BandWidthPerCU, hw.L2BusWidthPerCU);
             double L3BandWidthPerCU = hw_consts.L3BandWidth / WGs_per_tile;
             double HBMBandWidthPerCU = hw_consts.hbmBandWidth / WGs_per_tile;
-            
+            // std::cout << "L2ReadArbff: " << hw_consts.L2ReadArbEff << std::endl;
+            // std::cout << "L2BandWidthPerCU: " << L2BandWidthPerCU << std::endl;
+            // std::cout << "L2BusWidthPerCU: " << hw.L2BusWidthPerCU << std::endl;
+
             A_L1_clk += A_L1_req * 64 / L1BandWidthPerCU * num_tiles;
             // A_L1_clk += A_L1_req * mem_costs.cache_hits.L1_hit.tile0HitRate * 64 / L1BandWidthPerCU * num_tiles;
             A_L1_mem_req += A_L1_req * num_tiles * WGs_per_tile *M/(safe_ceil_div(static_cast<uint32_t>(M),static_cast<uint32_t>(MT0))*MT0);
-
+            // std::cout << "num_tiles: " << num_tiles << std::endl;
+            // std::cout << "WGs_per_tile: " << WGs_per_tile << std::endl;
+            // std::cout << "A_L1_req: " << A_L1_req << std::endl;
+            // std::cout << "A_L1_mem_req: " << A_L1_mem_req << std::endl;
             if(isSwizzleA)
                 A_L2_clk += A_L2_req * 128 / L2BandWidthPerCU * num_tiles;
             else
                 A_L2_clk += A_L2_req * 128 / L2BandWidthPerCU * num_tiles;
-            A_L2_mem_req += A_L2_req * num_tiles * WGs_per_tile;
+            A_L2_mem_req += A_L2_req * num_tiles * WGs_per_tile *M/(safe_ceil_div(static_cast<uint32_t>(M),static_cast<uint32_t>(MT0))*MT0);
 
             A_L3_clk += A_L3_req * 64 / L3BandWidthPerCU * num_tiles;
-            A_L3_mem_req += A_L3_req * num_tiles * WGs_per_tile;
+            A_L3_mem_req += A_L3_req * num_tiles * WGs_per_tile *M/(safe_ceil_div(static_cast<uint32_t>(M),static_cast<uint32_t>(MT0))*MT0);
 
             A_hbm_clk += A_hbm_req * 8 / HBMBandWidthPerCU * num_tiles;
-            A_hbm_mem_req += A_hbm_req * num_tiles * WGs_per_tile;
+            A_hbm_mem_req += A_hbm_req * num_tiles * WGs_per_tile *M/(safe_ceil_div(static_cast<uint32_t>(M),static_cast<uint32_t>(MT0))*MT0);
 
             B_L1_clk += B_L1_req * 64 / L1BandWidthPerCU * num_tiles;
             // B_L1_clk += B_L1_req * mem_costs.cache_hits.L1_hit.tile1HitRate * 64 / L1BandWidthPerCU * num_tiles;
             B_L1_mem_req += B_L1_req * num_tiles * WGs_per_tile *N/(safe_ceil_div(static_cast<uint32_t>(N),static_cast<uint32_t>(MT1))*MT1);
+            // std::cout << "B_L1_req: " << B_L1_req << std::endl;
+            // std::cout << "B_L1_mem_req: " << B_L1_mem_req << std::endl;
 
             if(isSwizzleB)
                 B_L2_clk += B_L2_req * 128 / L2BandWidthPerCU * num_tiles;
             else
                 B_L2_clk += B_L2_req * 128 / L2BandWidthPerCU * num_tiles;
-            B_L2_mem_req += B_L2_req * num_tiles * WGs_per_tile;
+            B_L2_mem_req += B_L2_req * num_tiles * WGs_per_tile *N/(safe_ceil_div(static_cast<uint32_t>(N),static_cast<uint32_t>(MT1))*MT1);
 
             B_L3_clk += B_L3_req * 64 / L3BandWidthPerCU * num_tiles;
-            B_L3_mem_req += B_L3_req * num_tiles * WGs_per_tile;
+            B_L3_mem_req += B_L3_req * num_tiles * WGs_per_tile *N/(safe_ceil_div(static_cast<uint32_t>(N),static_cast<uint32_t>(MT1))*MT1);
 
             B_hbm_clk += B_hbm_req * 8 / HBMBandWidthPerCU * num_tiles;
-            B_hbm_mem_req += B_hbm_req * num_tiles * WGs_per_tile;
+            B_hbm_mem_req += B_hbm_req * num_tiles * WGs_per_tile *N/(safe_ceil_div(static_cast<uint32_t>(N),static_cast<uint32_t>(MT1))*MT1);
         };
 
         // calcLClk(num_tiles, hw.L1BusWidthPerCU, (num_tiles==1 and WGs_per_tile_last!=0)? WGs_per_tile_last:hw_consts.NumCUs, WGs_per_tile_XCD_full);
@@ -317,8 +328,12 @@ namespace origami
         double L3_overall = (A_L3_clk + B_L3_clk) / hw.mem_frequency;
         double hbm_overall = (A_hbm_clk + B_hbm_clk) / hw.mem_frequency;
         double mem_overall = L1_overall + L2_overall + L3_overall + hbm_overall;
-
+        // std::cout << "final_A_L1_req: " << A_L1_mem_req << std::endl;
+        // std::cout << "final_B_L1_req: " << B_L1_mem_req << std::endl;
+        // std::cout << "final_L1_req: " << A_L1_mem_req + B_L1_mem_req << std::endl;
         mem_costs.mem_overall = mem_overall;
+        mem_costs.A_mem_l1_req = A_L1_mem_req;
+        mem_costs.B_mem_l1_req = B_L1_mem_req;
         mem_costs.mem_l1_req = A_L1_mem_req + B_L1_mem_req;
         mem_costs.mem_l2_req = A_L2_mem_req + B_L2_mem_req;
         mem_costs.mem_l3_req = A_L3_mem_req + B_L3_mem_req;
@@ -348,13 +363,15 @@ namespace origami
         MemoryAccessCosts mem;
 
         // 1. Calculate Cache Hit Rates
-        mem.cache_hits.L1_hit = computeL1CacheHitRate(hw,
+        auto l1_cache_hits = computeL1CacheHitRate(hw,
                                                 MT0, MT1, depthU, bpeA, bpeB, //VictorWu
                                                 0, 0, GRVWA, GRVWB,
                                                 DTVA, DTVB, isSwizzleA, isSwizzleB,
                                                 VWA, VWB, transA, transB,
                                                 M, N, NLCA, NLCB,
                                                 NumThreads, NumWave0, NumWave1);
+        mem.cache_hits.prefetch_L1_hit = std::get<0>(l1_cache_hits);
+        mem.cache_hits.L1_hit = std::get<1>(l1_cache_hits);
         mem.cache_hits.L2_hit = computeL2CacheHitRate(M,
                                                 N,
                                                 K_AfterGSU,
@@ -395,7 +412,8 @@ namespace origami
                                          NLCB,
                                          NumWave0,
                                          tcc_ea0_coalscedB);
-
+        mem.tcc_ea0_coalscedA = tcc_ea0_coalscedA;
+        mem.tcc_ea0_coalscedB = tcc_ea0_coalscedB;
         mem.MT_A_L2_req = simulator::getL2LoadRequest(mem.MT_A_L1_req, mem.cache_hits.L1_hit.tile0HitRate, tcc_ea0_coalscedA);
         mem.MT_A_L3_req = simulator::getL3LoadRequest(mem.MT_A_L2_req, mem.cache_hits.L2_hit.tile0HitRate, tcc_ea0_coalscedA);
         mem.MT_A_hbm_req = simulator::getHBMLoadRequest(mem.MT_A_L3_req, mem.cache_hits.L3_hit.tile0HitRate);
@@ -738,9 +756,9 @@ namespace origami
         // if (int(M) % int(MT0) != 0) //VictorWu
         //     perf = perf + std::max(store_edge, store);
 
-        std::cout << "store_total: " << store_total << std::endl; //VictorWu
-        std::cout << "store_edge: " << store_edge << std::endl; //VictorWu
-        std::cout << "store: " << store << std::endl; //VictorWu
+        // std::cout << "store_total: " << store_total << std::endl; //VictorWu
+        // std::cout << "store_edge: " << store_edge << std::endl; //VictorWu
+        // std::cout << "store: " << store << std::endl; //VictorWu
 
         pp.microSeconds = perf;
         pp.hitRate = mem_costs.l2_hit * 100;

@@ -65,7 +65,7 @@ namespace origami
                 else
                 {
                     L1_req = MTX * DU * bpe / 64;
-                    tcc_ea0_coalesced = safe_ceil_div((uint32_t)L1CacheLineSize, (uint32_t)DU * bpe);
+                    tcc_ea0_coalesced = L1CacheLineSize / (DU * bpe);
                     if(grvw * bpe == 8 || grvw * bpe <= 2)
                         L1_req *= 2;
                     if(dtv)
@@ -244,7 +244,7 @@ namespace origami
         }
 
         // Cache hit rate calculation functions
-        L1CacheHitRate computeL1CacheHitRate(double L1CacheCapacity, double L1CacheLineSize,
+        std::tuple<L1CacheHitRate,L1CacheHitRate> computeL1CacheHitRate(double L1CacheCapacity, double L1CacheLineSize,
                                              double L1BusWidthPerCU, double MT0, double MT1, uint32_t depthU, //VictorWu
                                              uint32_t bpeA, uint32_t bpeB, int NTA, int NTB,
                                              uint32_t GRVWA, uint32_t GRVWB, bool DTVA, bool DTVB,
@@ -254,12 +254,19 @@ namespace origami
                                              uint32_t NumWave0, uint32_t NumWave1, bool isL1FourBank)
         {
             L1CacheHitRate hr;
+            L1CacheHitRate prefetch_hr;
             double A_L1_hit = 1.0;
             double B_L1_hit = 1.0;
-
+            double prefetch_A_L1_hit = 1.0;
+            double prefetch_B_L1_hit = 1.0;
+            // std::cout << "L1CacheCapacity: " << L1CacheCapacity << std::endl;
+            // std::cout << "L1CacheLineSIze: " << L1CacheLineSize << std::endl;
+            // std::cout << "L1BusWidthPerCU: " << L1BusWidthPerCU << std::endl;
             // Calculate L1 hit rate, assume bpeA==bpeB, TN only
             bool isL1BypassA = (NTA >= 2);
             bool isL1BypassB = (NTB >= 2);
+            // std::cout << "NTA " << NTA << std::endl;
+            // std::cout << "bypass A " << isL1BypassA << std::endl;
 
             if(transA)
             {
@@ -267,14 +274,19 @@ namespace origami
                 if(GRVWA * bpeA == 8 || GRVWA * bpeA <= 2)
                     A_L1_hit *= 2;
                 if(DTVA)
-                    A_L1_hit *= 4;
-                A_L1_hit = isL1BypassA ? 0: 1 - 1 / A_L1_hit;
-                A_L1_hit = isSwizzleA ? 1 - 1 / safe_ceil_div(VWA, uint32_t(2)) : A_L1_hit;
+                    A_L1_hit *= 4 * ((MT0 * ceiling_math(depthU * bpeA, L1CacheLineSize) >= L1CacheCapacity) ? 1 : NumWave1);
 
-                if(depthU * bpeA <= L1CacheLineSize) //VictorWu
-                {
-                    A_L1_hit = std::min(1.0, A_L1_hit * 2);
-                }
+                // std::cout << "A_l1_hit " << A_L1_hit << std::endl;
+                A_L1_hit = isL1BypassA ? 0 : (1 - 1 / A_L1_hit);
+                // std::cout << "A_l1_hit " << A_L1_hit << std::endl;
+                A_L1_hit = isSwizzleA ? 1 - 1 / safe_ceil_div(VWA, uint32_t(2)) : A_L1_hit;
+                // std::cout << "A_l1_hit " << A_L1_hit << std::endl;
+                prefetch_A_L1_hit = A_L1_hit;
+
+                // if(depthU * bpeA <= L1CacheLineSize) //VictorWu
+                // {
+                //     A_L1_hit = std::min(1.0, A_L1_hit * 2);
+                // }
             }
             else
             {
@@ -305,9 +317,11 @@ namespace origami
                 }
                 if((GRVWA * bpeA == 8 || GRVWA * bpeA <= 2) && (MT0 / NLCA * bpeA) >= L1BusWidthPerCU)
                     A_L1_hit /= 2;
+                prefetch_A_L1_hit = A_L1_hit;
                 if(DTVA)
                     A_L1_hit /= NumWave0;
                 A_L1_hit = isL1BypassA ? 0: 1 - A_L1_hit;
+                prefetch_A_L1_hit = isL1BypassA ? 0: 1 - prefetch_A_L1_hit;
             }
 
             if(transB)
@@ -339,9 +353,11 @@ namespace origami
                 }
                 if((GRVWB * bpeB == 8 || GRVWB * bpeB <= 2) && (MT1 / NLCB * bpeB) >= L1BusWidthPerCU)
                     B_L1_hit /= 2;
+                prefetch_B_L1_hit = B_L1_hit;
                 if(DTVB)
                     B_L1_hit /= NumWave1;
                 B_L1_hit = isL1BypassB ? 0: 1 - B_L1_hit;
+                prefetch_B_L1_hit = isL1BypassB ? 0: 1 - prefetch_B_L1_hit;
             }
             else
             {
@@ -349,19 +365,24 @@ namespace origami
                 if(GRVWB * bpeB == 8 || GRVWB * bpeB <= 2)
                     B_L1_hit *= 2;
                 if(DTVB)
-                    B_L1_hit *= 4;
+                    B_L1_hit *= 4 * ((MT1 * ceiling_math(depthU * bpeB, L1CacheLineSize) >= L1CacheCapacity) ? 1 : NumWave0);
                 B_L1_hit = isL1BypassB ? 0: 1 - 1 / B_L1_hit;
                 B_L1_hit = isSwizzleB ? 1 - 1 / safe_ceil_div(VWB, uint32_t(2)) : B_L1_hit;
+                prefetch_B_L1_hit = B_L1_hit;
 
-                if(depthU * bpeB <= L1CacheLineSize) //VictorWu
-                {
-                    B_L1_hit = std::min(1.0, B_L1_hit * 2);
-                }
+                // if(depthU * bpeB <= L1CacheLineSize) //VictorWu
+                // {
+                //     B_L1_hit = std::min(1.0, B_L1_hit * 2);
+                // }
             }
 
+            prefetch_hr.tile0HitRate = prefetch_A_L1_hit;
+            prefetch_hr.tile1HitRate = prefetch_B_L1_hit;
             hr.tile0HitRate = A_L1_hit;
             hr.tile1HitRate = B_L1_hit;
-            return hr;
+            // std::cout << "A l1 hit " << A_L1_hit << std::endl;
+            // std::cout << "A prefetch l1 hit " << prefetch_A_L1_hit << std::endl;
+            return std::make_tuple(prefetch_hr, hr);
         }
 
         L3CacheHitRate computeL3CacheHitRate(double M, double N, double K, double L3CacheCapacity,

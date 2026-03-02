@@ -5,9 +5,11 @@
 
 #include <cstdint>
 #include <queue>
+#include <tuple>
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <cmath>
 
 namespace origami
 {
@@ -50,12 +52,12 @@ namespace origami
                              double&  tcc_ea0_coalesced);
 
         inline double getL2LoadRequest(double   L1_req,
-                             double   L1_hit,
-                             double   tcc_ea0_coalsced) { return L1_req * (1 - L1_hit) / 2 * tcc_ea0_coalsced; }
+                                       double   L1_hit,
+                                       double   tcc_ea0_coalsced) { return L1_req * (1 - L1_hit) / (tcc_ea0_coalsced > 1 ? 1 : 2); }
 
         inline double getL3LoadRequest(double   L2_req,
-                             double   L2_hit,
-                             double   tcc_ea0_coalsced) { return L2_req * (1 - L2_hit) / tcc_ea0_coalsced; }
+                                       double   L2_hit,
+                                       double   tcc_ea0_coalsced) { return L2_req * (1 - L2_hit) / std::ceil(tcc_ea0_coalsced); }
 
         inline double getHBMLoadRequest(double   L3_req,
                              double   L3_hit) { return L3_req * (1 - L3_hit); }
@@ -178,7 +180,7 @@ namespace origami
          * @param isL1FourBank Whether L1 cache has four banks
          * @return L1CacheHitRate structure containing hit rates for both tiles
          */
-        L1CacheHitRate computeL1CacheHitRate(double L1CacheCapacity, double L1CacheLineSize,
+        std::tuple<L1CacheHitRate, L1CacheHitRate> computeL1CacheHitRate(double L1CacheCapacity, double L1CacheLineSize,
                                              double L1BusWidthPerCU, double MT0, double MT1, uint32_t depthU, //VictorWu
                                              uint32_t bpeA, uint32_t bpeB, int NTA, int NTB,
                                              uint32_t GRVWA, uint32_t GRVWB, bool DTVA, bool DTVB,
