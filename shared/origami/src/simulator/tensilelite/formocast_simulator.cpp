@@ -533,6 +533,8 @@ namespace origami
         double MT1 = sizeMapping.macroTile[1];
         int      WGM = sizeMapping.workGroupMapping != 0 ? sizeMapping.workGroupMapping : 1;
         int      CUOccupancy = sizeMapping.CUOccupancy;
+        uint32_t XCC  = sizeMapping.workGroupMappingXCC;
+        uint32_t XCCG = (sizeMapping.workGroupMappingXCCGroup < 0)? hw_consts.NumCUs : sizeMapping.workGroupMappingXCCGroup;
         uint32_t depthU = sizeMapping.depthU;
 
         // Global split
@@ -808,25 +810,22 @@ namespace origami
 
     Formocast::L2CacheHitRate
         Formocast::computeL2CacheHitRate(uint32_t M,
-                                                   uint32_t N,
-                                                   uint32_t K,
-                                                   const HardwareConstants& hw,
-                                                   uint32_t gsu,
-                                                   int32_t  wgm,
-                                                   uint32_t batches,
-                                                   uint32_t bpeA,
-                                                   uint32_t bpeB,
-                                                   int32_t  NTA,
-                                                   int32_t  NTB,
-                                                   bool     isGSUWGMRR) const
+                                         uint32_t N,
+                                         uint32_t K,
+                                         const HardwareConstants& hw,
+                                         uint32_t XCC, uint32_t XCCG,
+                                         uint32_t gsu,
+                                         int32_t  wgm,
+                                         uint32_t batches,
+                                         uint32_t bpeA,
+                                         uint32_t bpeB,
+                                         int32_t  NTA,
+                                         int32_t  NTB,
+                                         bool     isGSUWGMRR) const
     {
         uint32_t MT0 = sizeMapping.macroTile[0];
         uint32_t MT1 = sizeMapping.macroTile[1];
         uint32_t depthU = sizeMapping.depthU;
-
-        // can't make these two unsigned, they could be -1 in special cases
-        int XCC = sizeMapping.workGroupMappingXCC;
-        int XCCG = (sizeMapping.workGroupMappingXCCGroup < 0)? hw.NumCUs : sizeMapping.workGroupMappingXCCGroup;
 
         auto hr = simulator::computeL2CacheHitRate(
             M, N, K, MT0, MT1, depthU, hw.L2CacheCapacity, hw.NumCUs, hw.NumXCDs,
