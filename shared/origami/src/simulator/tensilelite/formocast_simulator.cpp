@@ -183,7 +183,7 @@ namespace origami
             MT0, MT1, depthU, bpeA, bpeB, NTA, NTB, GRVWA, GRVWB, DTVA, DTVB, //VictorWu
             isSwizzleA, isSwizzleB, VWA, VWB, transA, transB, lda, ldb,
             NLCA, NLCB, threadnum, NumWave0, NumWave1, hw.architecture == hardware_t::architecture_t::gfx942);
-        
+
         L1CacheHitRate prefetch_result;
         L1CacheHitRate result;
         prefetch_result.tile0HitRate = std::get<0>(hrs).tile0HitRate;
@@ -257,6 +257,7 @@ namespace origami
         double A_L1_req, double A_L2_req, double A_L3_req, double A_hbm_req,
         double B_L1_req, double B_L2_req, double B_L3_req, double B_hbm_req,
         bool isSwizzleA, bool isSwizzleB,
+        bool transA, bool transB,
         const Formocast::HardwareConstants& hw_consts, const Formocast::HardwareConstants& hw,
         double M, double N, double MT0, double MT1, uint32_t WGs_per_tile_XCD_full, uint32_t WGs_per_tile_last, uint32_t WGs_per_tile_XCD_last,
         uint32_t num_tiles)
@@ -267,8 +268,12 @@ namespace origami
         double A_L1_mem_req=0, A_L2_mem_req=0, A_L3_mem_req=0, A_hbm_mem_req=0;
         double B_L1_mem_req=0, B_L2_mem_req=0, B_L3_mem_req=0, B_hbm_mem_req=0;
 
+        bool TLUA = !transA, TLUB = transB;
+        double scale_edge_A = TLUA ? 1.0 : (M / math::ceiling_math(M, MT0));
+        double scale_edge_B = TLUB ? 1.0 : (N / math::ceiling_math(N, MT1));
+
         auto calcLClk = [&](double num_tiles, double L1BandWidthPerCU, uint32_t WGs_per_tile, uint32_t WGs_per_tile_XCD) {
-            
+
             // double L2BandWidthPerCU = hw_consts.L2ReadArbEff * 128 * 16 / WGs_per_tile_XCD; //90% eff
             // if (L2BandWidthPerCU > hw_consts.L2ReadArbEff * 128 * 16 / (hw_consts.NumCUs/hw_consts.NumXCDs))
             //     L2BandWidthPerCU = hw_consts.L2ReadArbEff * 128 * 16 / (hw_consts.NumCUs/hw_consts.NumXCDs);
@@ -282,7 +287,7 @@ namespace origami
 
             A_L1_clk += A_L1_req * 64 / L1BandWidthPerCU * num_tiles;
             // A_L1_clk += A_L1_req * mem_costs.cache_hits.L1_hit.tile0HitRate * 64 / L1BandWidthPerCU * num_tiles;
-            A_L1_mem_req += A_L1_req * num_tiles * WGs_per_tile *M/(safe_ceil_div(static_cast<uint32_t>(M),static_cast<uint32_t>(MT0))*MT0);
+            A_L1_mem_req += A_L1_req * num_tiles * WGs_per_tile * scale_edge_A;
             // std::cout << "num_tiles: " << num_tiles << std::endl;
             // std::cout << "WGs_per_tile: " << WGs_per_tile << std::endl;
             // std::cout << "A_L1_req: " << A_L1_req << std::endl;
@@ -291,17 +296,17 @@ namespace origami
                 A_L2_clk += A_L2_req * 128 / L2BandWidthPerCU * num_tiles;
             else
                 A_L2_clk += A_L2_req * 128 / L2BandWidthPerCU * num_tiles;
-            A_L2_mem_req += A_L2_req * num_tiles * WGs_per_tile *M/(safe_ceil_div(static_cast<uint32_t>(M),static_cast<uint32_t>(MT0))*MT0);
+            A_L2_mem_req += A_L2_req * num_tiles * WGs_per_tile * scale_edge_A;
 
             A_L3_clk += A_L3_req * 64 / L3BandWidthPerCU * num_tiles;
-            A_L3_mem_req += A_L3_req * num_tiles * WGs_per_tile *M/(safe_ceil_div(static_cast<uint32_t>(M),static_cast<uint32_t>(MT0))*MT0);
+            A_L3_mem_req += A_L3_req * num_tiles * WGs_per_tile * scale_edge_A;
 
             A_hbm_clk += A_hbm_req * 8 / HBMBandWidthPerCU * num_tiles;
-            A_hbm_mem_req += A_hbm_req * num_tiles * WGs_per_tile *M/(safe_ceil_div(static_cast<uint32_t>(M),static_cast<uint32_t>(MT0))*MT0);
+            A_hbm_mem_req += A_hbm_req * num_tiles * WGs_per_tile * scale_edge_A;
 
             B_L1_clk += B_L1_req * 64 / L1BandWidthPerCU * num_tiles;
             // B_L1_clk += B_L1_req * mem_costs.cache_hits.L1_hit.tile1HitRate * 64 / L1BandWidthPerCU * num_tiles;
-            B_L1_mem_req += B_L1_req * num_tiles * WGs_per_tile *N/(safe_ceil_div(static_cast<uint32_t>(N),static_cast<uint32_t>(MT1))*MT1);
+            B_L1_mem_req += B_L1_req * num_tiles * WGs_per_tile * scale_edge_B;
             // std::cout << "B_L1_req: " << B_L1_req << std::endl;
             // std::cout << "B_L1_mem_req: " << B_L1_mem_req << std::endl;
 
@@ -309,13 +314,13 @@ namespace origami
                 B_L2_clk += B_L2_req * 128 / L2BandWidthPerCU * num_tiles;
             else
                 B_L2_clk += B_L2_req * 128 / L2BandWidthPerCU * num_tiles;
-            B_L2_mem_req += B_L2_req * num_tiles * WGs_per_tile *N/(safe_ceil_div(static_cast<uint32_t>(N),static_cast<uint32_t>(MT1))*MT1);
+            B_L2_mem_req += B_L2_req * num_tiles * WGs_per_tile * scale_edge_B;
 
             B_L3_clk += B_L3_req * 64 / L3BandWidthPerCU * num_tiles;
-            B_L3_mem_req += B_L3_req * num_tiles * WGs_per_tile *N/(safe_ceil_div(static_cast<uint32_t>(N),static_cast<uint32_t>(MT1))*MT1);
+            B_L3_mem_req += B_L3_req * num_tiles * WGs_per_tile * scale_edge_B;
 
             B_hbm_clk += B_hbm_req * 8 / HBMBandWidthPerCU * num_tiles;
-            B_hbm_mem_req += B_hbm_req * num_tiles * WGs_per_tile *N/(safe_ceil_div(static_cast<uint32_t>(N),static_cast<uint32_t>(MT1))*MT1);
+            B_hbm_mem_req += B_hbm_req * num_tiles * WGs_per_tile * scale_edge_B;
         };
 
         // calcLClk(num_tiles, hw.L1BusWidthPerCU, (num_tiles==1 and WGs_per_tile_last!=0)? WGs_per_tile_last:hw_consts.NumCUs, WGs_per_tile_XCD_full);
@@ -709,6 +714,7 @@ namespace origami
             mem_costs.MT_A_L1_req, mem_costs.MT_A_L2_req, mem_costs.MT_A_L3_req, mem_costs.MT_A_hbm_req,
             mem_costs.MT_B_L1_req, mem_costs.MT_B_L2_req, mem_costs.MT_B_L3_req, mem_costs.MT_B_hbm_req,
             isSwizzleA, isSwizzleB,
+            transA, transB,
             hw_consts, hw_consts,
             M, N, MT0, MT1, WGs_per_tile_XCD_full, WGs_per_tile_last, WGs_per_tile_XCD_last,
             num_tiles);
