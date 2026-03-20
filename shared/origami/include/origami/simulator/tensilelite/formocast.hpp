@@ -5,7 +5,6 @@
 
 #include <cstdint>
 #include <queue>
-#include <tuple>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -180,7 +179,7 @@ namespace origami
          * @param isL1FourBank Whether L1 cache has four banks
          * @return L1CacheHitRate structure containing hit rates for both tiles
          */
-        std::tuple<L1CacheHitRate, L1CacheHitRate> computeL1CacheHitRate(double L1CacheCapacity, double L1CacheLineSize,
+        L1CacheHitRate computeL1CacheHitRate(double L1CacheCapacity, double L1CacheLineSize,
                                              double L1BusWidthPerCU, double MT0, double MT1, uint32_t depthU, //VictorWu
                                              uint32_t bpeA, uint32_t bpeB, int NTA, int NTB,
                                              uint32_t GRVWA, uint32_t GRVWB, bool DTVA, bool DTVB,

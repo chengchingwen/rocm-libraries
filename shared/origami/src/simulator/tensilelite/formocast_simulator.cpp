@@ -169,7 +169,7 @@ namespace origami
         return store_total / 256;
     }
 
-    std::tuple<Formocast::L1CacheHitRate, Formocast::L1CacheHitRate>
+    Formocast::L1CacheHitRate
     Formocast::computeL1CacheHitRate(const HardwareConstants& hw,
                                           double MT0, double MT1, uint32_t depthU, uint32_t bpeA, uint32_t bpeB, //VictorWu
                                           int NTA, int NTB, uint32_t GRVWA, uint32_t GRVWB,
@@ -178,19 +178,16 @@ namespace origami
                                           double lda, double ldb, int NLCA, int NLCB,
                                           uint32_t threadnum, uint32_t NumWave0, uint32_t NumWave1) const
     {
-        auto hrs = simulator::computeL1CacheHitRate(
+        auto hr = simulator::computeL1CacheHitRate(
             hw.L1CacheCapacity, hw.L1CacheLineSize, hw.L1BusWidthPerCU,
             MT0, MT1, depthU, bpeA, bpeB, NTA, NTB, GRVWA, GRVWB, DTVA, DTVB, //VictorWu
             isSwizzleA, isSwizzleB, VWA, VWB, transA, transB, lda, ldb,
             NLCA, NLCB, threadnum, NumWave0, NumWave1, hw.architecture == hardware_t::architecture_t::gfx942);
 
-        L1CacheHitRate prefetch_result;
         L1CacheHitRate result;
-        prefetch_result.tile0HitRate = std::get<0>(hrs).tile0HitRate;
-        prefetch_result.tile1HitRate = std::get<0>(hrs).tile1HitRate;
-        result.tile0HitRate = std::get<1>(hrs).tile0HitRate;
-        result.tile1HitRate = std::get<1>(hrs).tile1HitRate;
-        return std::make_tuple(prefetch_result, result);
+        result.tile0HitRate = hr.tile0HitRate;
+        result.tile1HitRate = hr.tile1HitRate;
+        return result;
     }
 
     Formocast::L3CacheHitRate
@@ -368,15 +365,13 @@ namespace origami
         MemoryAccessCosts mem;
 
         // 1. Calculate Cache Hit Rates
-        auto l1_cache_hits = computeL1CacheHitRate(hw,
+        mem.cache_hits.L1_hit = computeL1CacheHitRate(hw,
                                                 MT0, MT1, depthU, bpeA, bpeB, //VictorWu
                                                 0, 0, GRVWA, GRVWB,
                                                 DTVA, DTVB, isSwizzleA, isSwizzleB,
                                                 VWA, VWB, transA, transB,
                                                 M, N, NLCA, NLCB,
                                                 NumThreads, NumWave0, NumWave1);
-        mem.cache_hits.prefetch_L1_hit = std::get<0>(l1_cache_hits);
-        mem.cache_hits.L1_hit = std::get<1>(l1_cache_hits);
         mem.cache_hits.L2_hit = computeL2CacheHitRate(M,
                                                 N,
                                                 K_AfterGSU,

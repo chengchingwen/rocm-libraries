@@ -184,8 +184,6 @@ namespace TensileLite
                                 "tail: ",predPerf.tail," us,",
                                 "math_overall: ",predPerf.math_overall,",",
                                 "mem_overall: ",predPerf.mem_overall,",",
-                                "A_prefetch_hitrate_l1: ",predPerf.memCosts.cache_hits.prefetch_L1_hit.tile0HitRate,",",
-                                "B_prefetch_hitrate_l1: ",predPerf.memCosts.cache_hits.prefetch_L1_hit.tile1HitRate,",",
                                 "A_loop_hitrate_l1: ",predPerf.memCosts.cache_hits.L1_hit.tile0HitRate,",",
                                 "B_loop_hitrate_l1: ",predPerf.memCosts.cache_hits.L1_hit.tile1HitRate,",",
                                 "A_loop_hitrate_l2: ",predPerf.memCosts.cache_hits.L2_hit.tile0HitRate,",",
@@ -492,7 +490,6 @@ namespace TensileLite
             {
                 m_reporter->report(ResultKey::SolutionProgress,
                      concatenate(m_currentSolutionIdx, "/", m_lastSolutionIdx));
-                
             }
             else
             {
