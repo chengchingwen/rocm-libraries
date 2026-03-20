@@ -667,6 +667,7 @@ namespace origami
         double gsu_overall = calculateGlobalSplitUOverhead(M, N, K, NumBatches, GlobalSplitU, gsuMethod,
                                                   problem, hw_consts, WGs_per_tile_full, WGs_per_tile_XCD_full,
                                                   MT0, MT1, numberWGs, vgprUsageCheck, storeGSU);
+        gsu_overall *= num_tiles;
 
         // 5.4 Calcupate LSU Overhead
         double lsu_overall = calculateLocalSplitUOverhead(MT0, MT1, LSU, GWVWD, NumThreads, problem, hw_consts);

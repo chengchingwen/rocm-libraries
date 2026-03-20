@@ -157,7 +157,7 @@ namespace origami
                               double L2ReadArbEff, double L1BusWidthPerCU, double L2BusWidthPerCU,
                               double storeGSU)
         {
-            // MBSK (MultiBuffer with StreamK) GSU overhead calculation
+            // MBSK (MultiBufferSingleKernel) GSU overhead calculation
             // FIXME: Modify with the MBSK changes.
             // FIXME: add sync overhead.
             double cu_freq  = boost_frequency;
@@ -167,30 +167,31 @@ namespace origami
             double atomic_overhead = GlobalSplitU * 0.1;
 // #define EXPERIMENTAL 0 //VictorWu
 // #if EXPERIMENTAL
-            // double GSU_L1_req      = (bpeIn * (GlobalSplitU - 1) * MT0 * MT1 * bpeIn) / 64;
+            double GSU_L1_req      = (bpeIn * (GlobalSplitU - 1) * MT0 * MT1 * bpeIn) / 64;
+            if (GlobalSplitU > 2)
+            {
+                GSU_L1_req += (MT0 * MT1 * bpeIn) / 64;
+            }
+            // double GSU_L1_req      = (bpeIn * GlobalSplitU * MT0 * MT1 * bpeIn) / 64;
+            double GSU_L1_clk      = GSU_L1_req * 64 / L1BusWidthPerCU;
+
+            double GSU_L2_req = MT0 * MT1 * bpeIn * GlobalSplitU / 128; //hw_consts.L1CacheLineSize;
+            double GSU_L2_clk = GSU_L2_req /*/ 2*/ * 128 / std::min(L2BandWidthPerCU_local, L2BusWidthPerCU);
+
+            double cost_overhead = 2*1024.0/1900/(GlobalSplitU-1);
+
+            // gsu_overall       = atomic_overhead + (1 * std::max(GSU_L1_clk/cu_freq, GSU_L2_clk/cu_freq) + 2*1024.0/1900/std::floor(GSUtotal-1)); //VictorWu
+            return /*0*/ + atomic_overhead + (GlobalSplitU * std::max(std::max(GSU_L1_clk/cu_freq, GSU_L2_clk/cu_freq), cost_overhead));
+// #else //VictorWu
+            // double GSU_L1_req      = ((GlobalSplitU - 1) * MT0 * MT1 * bpeIn) / 64;
             // if (GlobalSplitU > 2)
             // {
             //     GSU_L1_req += (MT0 * MT1 * bpeIn) / 64;
             // }
             // double GSU_L1_clk      = GSU_L1_req * 64 / L1BusWidthPerCU;
+            // double GSU_L2_clk = GSU_L1_req / 2 * 128 / std::min(L2BandWidthPerCU_local, L2BusWidthPerCU);
 
-            // double GSU_L2_req = MT0 * MT1 * bpeIn * GlobalSplitU / 128; //hw_consts.L1CacheLineSize;
-            // double GSU_L2_clk = GSU_L2_req / 2 * 128 / std::min(L2BandWidthPerCU_local, L2BusWidthPerCU);
-
-            // double cost_overhead = 2*1024.0/1900/(GlobalSplitU-1);
-
-            // // gsu_overall       = atomic_overhead + (1 * std::max(GSU_L1_clk/cu_freq, GSU_L2_clk/cu_freq) + 2*1024.0/1900/std::floor(GSUtotal-1)); //VictorWu
-            // return 0 + (GlobalSplitU * std::max(std::max(GSU_L1_clk/cu_freq, GSU_L2_clk/cu_freq), cost_overhead));
-// #else //VictorWu
-            double GSU_L1_req      = ((GlobalSplitU - 1) * MT0 * MT1 * bpeIn) / 64;
-            if (GlobalSplitU > 2)
-            {
-                GSU_L1_req += (MT0 * MT1 * bpeIn) / 64;
-            }
-            double GSU_L1_clk      = GSU_L1_req * 64 / L1BusWidthPerCU;
-            double GSU_L2_clk = GSU_L1_req / 2 * 128 / std::min(L2BandWidthPerCU_local, L2BusWidthPerCU);
-
-            return atomic_overhead + (std::max(GSU_L1_clk/cu_freq, GSU_L2_clk/cu_freq)) + storeGSU;
+            // return atomic_overhead + (std::max(GSU_L1_clk/cu_freq, GSU_L2_clk/cu_freq)) + storeGSU;
 // #endif
         }
 
