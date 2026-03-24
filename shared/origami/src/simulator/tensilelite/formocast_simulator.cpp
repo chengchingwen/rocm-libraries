@@ -148,11 +148,14 @@ namespace origami
         // Use the max of edge/non-edge store
         store      = store_non_edge_overall;
         store_edge = store_edge_overall;
-        // store = (GWVWD==1) ? store*2: store;
-        // store = (GWVWD==2) ? store*1.5: store;
+        store_total = (GWVWD==1) ? store_total*2: store_total;
+        store_total = (GWVWD==2) ? store_total*1.5: store_total;
 
-        // store_edge = (GWVWD==1) ? store_edge*2: store_edge;
-        // store_edge = (GWVWD==2) ? store_edge*1.5: store_edge;
+        store = (GWVWD==1) ? store*2: store;
+        store = (GWVWD==2) ? store*1.5: store;
+
+        store_edge = (GWVWD==1) ? store_edge*2: store_edge;
+        store_edge = (GWVWD==2) ? store_edge*1.5: store_edge;
 
         if (num_tiles > 1)
         {
@@ -747,7 +750,7 @@ namespace origami
         // 8. Apply CU Occupancy
         // perf = resolveOccupancy(hw_consts, perf, prefetch, loop_overall + tail_overall, store_total, num_tiles, CUOccupancy); //VictorWu
         // std::cout << "prefetch: " << prefetch/num_tiles << ", loop_overall: " << loop_overall/num_tiles << ", tail_overall: " << tail_overall/num_tiles << ", store: " << store/num_tiles << std::endl; //VictorWu
-        perf = resolveOccupancy(hw_consts, perf, doinit +prefetch, loop_overall + tail_overall, store_total, num_tiles, CUOccupancy);
+        perf = resolveOccupancy(hw_consts, perf, prefetch, loop_overall + tail_overall, store_total, num_tiles, CUOccupancy);
         // std::cout << "perf after occupancy: " << perf << std::endl; //VictorWu
 
         // perf += doinit;
