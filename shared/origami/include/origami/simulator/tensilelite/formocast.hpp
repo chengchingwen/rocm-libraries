@@ -52,7 +52,7 @@ namespace origami
 
         inline double getL2LoadRequest(double   L1_req,
                                        double   L1_hit,
-                                       double   tcc_ea0_coalsced) { return L1_req * (1 - L1_hit) / (tcc_ea0_coalsced > 1 ? 1 : 2); }
+                                       double   tcc_ea0_coalsced) { return L1_req * (1 - L1_hit) / (tcc_ea0_coalsced >= 1 ? 1 : 2); }
 
         inline double getL3LoadRequest(double   L2_req,
                                        double   L2_hit,
