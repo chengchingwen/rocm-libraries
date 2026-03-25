@@ -213,6 +213,7 @@ namespace origami
                                                         double NumBatches, double GlobalSplitU,
                                                         uint32_t gsuMethod, ProblemInfo problem,
                                                         const HardwareConstants& hw_consts,
+                                                        uint32_t num_tiles, uint32_t CUOccupancy,
                                                         uint32_t WGs_per_tile_full, uint32_t WGs_per_tile_XCD_full,
                                                         double MT0, double MT1, uint32_t numWGs, double vgprCheck,
                                                         double storeGSU) const
@@ -234,7 +235,7 @@ namespace origami
         {
             gsu_overall = simulator::getMultipleBufferSingleKernelOverhead(
                 GlobalSplitU, MT0, MT1, problem.bpeCompute,
-                hw_consts.NumCUs, numWGs, hw_consts.boost_frequency,
+                hw_consts.NumCUs, numWGs, num_tiles, CUOccupancy, hw_consts.boost_frequency,
                 hw_consts.L2ReadArbEff, hw_consts.L1BusWidthPerCU, hw_consts.L2BusWidthPerCU,
                 storeGSU
             );
@@ -668,7 +669,7 @@ namespace origami
         double storeGSU = store_total * 2; //FIXME: incorrect
         auto vgprUsageCheck = MT0 * MT1 / miSize / miSize;
         double gsu_overall = calculateGlobalSplitUOverhead(M, N, K, NumBatches, GlobalSplitU, gsuMethod,
-                                                  problem, hw_consts, WGs_per_tile_full, WGs_per_tile_XCD_full,
+                                                  problem, hw_consts, num_tiles, CUOccupancy, WGs_per_tile_full, WGs_per_tile_XCD_full,
                                                   MT0, MT1, numberWGs, vgprUsageCheck, storeGSU);
         gsu_overall *= num_tiles;
 

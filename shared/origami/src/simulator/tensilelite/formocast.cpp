@@ -153,7 +153,7 @@ namespace origami
         }
 
         double getMultipleBufferSingleKernelOverhead(double GlobalSplitU, double MT0, double MT1, uint32_t bpeCompute,
-                              double NumCUs, uint32_t numWGs, double boost_frequency,
+                              double NumCUs, uint32_t numWGs, uint32_t num_tiles, uint32_t CUOccupancy, double boost_frequency,
                               double L2ReadArbEff, double L1BusWidthPerCU, double L2BusWidthPerCU,
                               double storeGSU)
         {
@@ -164,6 +164,8 @@ namespace origami
             auto   bpeIn    = bpeCompute;
             double WGs = std::min(NumCUs, double(numWGs)) / GlobalSplitU;
             double L2BandWidthPerCU_local = L2ReadArbEff * 128 * 16 / WGs; //90% eff
+            double scale_occupancy = (num_tiles == 1 && CUOccupancy > 1) ? CUOccupancy : 1;
+
             double atomic_overhead = GlobalSplitU * 0.1;
 // #define EXPERIMENTAL 0 //VictorWu
 // #if EXPERIMENTAL
@@ -173,10 +175,10 @@ namespace origami
                 GSU_L1_req += (MT0 * MT1 * bpeIn) / 64;
             }
             // double GSU_L1_req      = (bpeIn * GlobalSplitU * MT0 * MT1 * bpeIn) / 64;
-            double GSU_L1_clk      = GSU_L1_req * 64 / L1BusWidthPerCU;
+            double GSU_L1_clk      = GSU_L1_req * 64 / L1BusWidthPerCU * scale_occupancy;
 
             double GSU_L2_req = MT0 * MT1 * bpeIn * GlobalSplitU / 128; //hw_consts.L1CacheLineSize;
-            double GSU_L2_clk = GSU_L2_req /*/ 2*/ * 128 / std::min(L2BandWidthPerCU_local, L2BusWidthPerCU);
+            double GSU_L2_clk = GSU_L2_req /*/ 2*/ * 128 / std::min(L2BandWidthPerCU_local, L2BusWidthPerCU) * scale_occupancy;
 
             double cost_overhead = 2*1024.0/1900/(GlobalSplitU-1);
 

@@ -440,6 +440,8 @@ namespace origami
          * @param gsuMethod Global Split U method (2=MultiBuffer, 3=MultiBufferSingleKernel)
          * @param problem Problem specification
          * @param hw_consts Hardware constants
+         * @param num_tiles Number of tiles
+         * @param CUOccupancy Target CU occupancy
          * @param WGs_per_tile Workgroups per tile
          * @param WGs_per_tile_XCD Workgroups per tile per XCD
          * @param MT0 Macro tile dimension 0
@@ -453,6 +455,7 @@ namespace origami
                                     double NumBatches, double GlobalSplitU,
                                     uint32_t gsuMethod, ProblemInfo problem,
                                     const HardwareConstants& hw_consts,
+                                    uint32_t num_tiles, uint32_t CUOccupancy,
                                     uint32_t WGs_per_tile, uint32_t WGs_per_tile_XCD,
                                     double MT0, double MT1, uint32_t numWGs, double vgprCheck,
                                     double storeGSU) const;

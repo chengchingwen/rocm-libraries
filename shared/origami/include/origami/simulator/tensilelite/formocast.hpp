@@ -100,6 +100,8 @@ namespace origami
          * @param bpeCompute Bytes per element for computation
          * @param NumCUs Number of compute units
          * @param numWGs Total number of workgroups
+         * @param num_tiles Number of tiles
+         * @param CUOccupancy Target CU occupancy
          * @param boost_frequency Boost frequency in MHz
          * @param L2ReadArbEff L2 read arbitration efficiency
          * @param L1BusWidthPerCU L1 bus width per compute unit
@@ -108,7 +110,7 @@ namespace origami
          * @return The calculated overhead for MBSK (Multiple Buffer Single Kernel) approach
          */
         double getMultipleBufferSingleKernelOverhead(double GlobalSplitU, double MT0, double MT1, uint32_t bpeCompute,
-                              double NumCUs, uint32_t numWGs, double boost_frequency,
+                              double NumCUs, uint32_t numWGs, uint32_t num_tiles, uint32_t CUOccupancy, double boost_frequency,
                               double L2ReadArbEff, double L1BusWidthPerCU, double L2BusWidthPerCU,
                               double storeGSU);
 
