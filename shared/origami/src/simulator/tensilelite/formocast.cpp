@@ -271,13 +271,27 @@ namespace origami
             if(transA)
             {
                 //A is T
+                if(depthU / NLCA * bpeA < L1CacheLineSize)
+                {
+                    bool isL1CacheFull = (L1CacheLineSize * threadnum / (depthU / NLCA / GRVWA)) > L1CacheCapacity;
+                    if(isL1CacheFull)
+                    {
+                        A_L1_hit = 1;
+                    }
+                    else
+                    {
+                        A_L1_hit = std::ceil(NLCA / (L1CacheLineSize / (depthU / NLCA * bpeA))) / NLCA;
+                    }
+                } else if((uint32_t)lda % (uint32_t)L1CacheLineSize == 0) {
+                    A_L1_hit = 0.5;
+                }
                 if(GRVWA * bpeA == 8 || GRVWA * bpeA <= 2)
-                    A_L1_hit *= 2;
+                    A_L1_hit /= 2;
                 if(DTVA)
-                    A_L1_hit *= 4 * ((MT0 * ceiling_math(depthU * bpeA, L1CacheLineSize) >= L1CacheCapacity) ? 1 : NumWave1);
+                    A_L1_hit /= 4 * ((MT0 * ceiling_math(depthU * bpeA, L1CacheLineSize) >= L1CacheCapacity) ? 1 : NumWave1);
 
                 // std::cout << "A_l1_hit " << A_L1_hit << std::endl;
-                A_L1_hit = isL1BypassA ? 0 : (1 - 1 / A_L1_hit);
+                A_L1_hit = isL1BypassA ? 0 : 1 - A_L1_hit;
                 // std::cout << "A_l1_hit " << A_L1_hit << std::endl;
                 A_L1_hit = isSwizzleA ? 1 - 1 / safe_ceil_div(VWA, uint32_t(2)) : A_L1_hit;
                 // std::cout << "A_l1_hit " << A_L1_hit << std::endl;
@@ -317,7 +331,7 @@ namespace origami
                 if((GRVWA * bpeA == 8 || GRVWA * bpeA <= 2) && (MT0 / NLCA * bpeA) >= L1BusWidthPerCU)
                     A_L1_hit /= 2;
                 if(DTVA)
-                    A_L1_hit /= NumWave0;
+                    A_L1_hit /= NumWave1;
                 A_L1_hit = isL1BypassA ? 0: 1 - A_L1_hit;
             }
 
@@ -351,17 +365,31 @@ namespace origami
                 if((GRVWB * bpeB == 8 || GRVWB * bpeB <= 2) && (MT1 / NLCB * bpeB) >= L1BusWidthPerCU)
                     B_L1_hit /= 2;
                 if(DTVB)
-                    B_L1_hit /= NumWave1;
+                    B_L1_hit /= NumWave0;
                 B_L1_hit = isL1BypassB ? 0: 1 - B_L1_hit;
             }
             else
             {
                 //B is N
+                if(depthU / NLCB * bpeB < L1CacheLineSize)
+                {
+                    bool isL1CacheFull = (L1CacheLineSize * threadnum / (depthU / NLCB / GRVWB)) > L1CacheCapacity;
+                    if(isL1CacheFull)
+                    {
+                        B_L1_hit = 1;
+                    }
+                    else
+                    {
+                        B_L1_hit = std::ceil(NLCB / (L1CacheLineSize / (depthU / NLCB * bpeB))) / NLCB;
+                    }
+                } else if((uint32_t)ldb % (uint32_t)L1CacheLineSize == 0) {
+                    B_L1_hit = 0.5;
+                }
                 if(GRVWB * bpeB == 8 || GRVWB * bpeB <= 2)
-                    B_L1_hit *= 2;
+                    B_L1_hit /= 2;
                 if(DTVB)
-                    B_L1_hit *= 4 * ((MT1 * ceiling_math(depthU * bpeB, L1CacheLineSize) >= L1CacheCapacity) ? 1 : NumWave0);
-                B_L1_hit = isL1BypassB ? 0: 1 - 1 / B_L1_hit;
+                    B_L1_hit /= 4 * ((MT1 * ceiling_math(depthU * bpeB, L1CacheLineSize) >= L1CacheCapacity) ? 1 : NumWave0);
+                B_L1_hit = isL1BypassB ? 0 : 1 - B_L1_hit;
                 B_L1_hit = isSwizzleB ? 1 - 1 / safe_ceil_div(VWB, uint32_t(2)) : B_L1_hit;
 
                 // if(depthU * bpeB <= L1CacheLineSize) //VictorWu
