@@ -627,7 +627,6 @@ namespace origami
         }
 
         // 4. Derived Problem/Workgroup Dimensions
-        double K_AfterGSU = safe_ceil_div(static_cast<uint32_t>(K), static_cast<uint32_t>(GlobalSplitU));
         uint32_t M_WGs_total = safe_ceil_div(static_cast<uint32_t>(M), static_cast<uint32_t>(MT0));
         uint32_t N_WGs_total = safe_ceil_div(static_cast<uint32_t>(N), static_cast<uint32_t>(MT1));
         int N_WGs_per_tile_XCD = std::min((uint32_t)WGM, N_WGs_total);
@@ -643,10 +642,16 @@ namespace origami
         uint32_t WGs_per_tile_XCD_last = safe_ceil_div(WGs_per_tile_last, hw_consts.NumXCDs);
         uint32_t WGs_per_tile_full = num_tiles == 1 ? WGs_per_tile_last : NumCUs;
         uint32_t WGs_per_tile_XCD_full = safe_ceil_div(WGs_per_tile_full, hw_consts.NumXCDs);
-        uint32_t loopCnt = K_AfterGSU / depthU;
-        uint32_t K_tail = K_AfterGSU - (loopCnt * depthU);
-        PGR = (std::floor(K_AfterGSU/depthU > 1)) ? sizeMapping.PrefetchGlobalRead : int(K_AfterGSU/depthU);
-        int      PLR = (std::floor(K_AfterGSU/sizeMapping.LocalSplitU/depthU) < 1) ? 0: 1;//sizeMapping.PrefetchLocalRead;
+
+        // compute K
+        uint32_t total_loop = safe_ceil_div(static_cast<uint32_t>(K), static_cast<uint32_t>(depthU));
+        uint32_t loopCnt = safe_ceil_div(total_loop, static_cast<uint32_t>(GlobalSplitU));
+        double K_AfterGSU = depthU * loopCnt;
+        uint32_t K_tail = static_cast<uint32_t>(K) - static_cast<uint32_t>(int(K / depthU) * depthU);
+        PGR = std::ceil((K - K_tail) / depthU / GlobalSplitU);
+        if(PGR > 1)
+          PGR = sizeMapping.PrefetchGlobalRead;
+        int PLR = loopCnt < sizeMapping.LocalSplitU ? 0 : 1;
 
         if (PLR == 0)
         {
