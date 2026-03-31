@@ -387,56 +387,6 @@ namespace TensileLite
                             performance.push_back(std::pair(i,predPerf.microSeconds));
                             m_hitrate[i] = predPerf.hitRate;
                             m_predPerf[i] = predPerf;
-
-                            std::cout.setf(std::ios::fixed); //VictorWu
-                            if(0)//(m_predictionThreshold > 0.0)
-                            {
-                                std::cout << "=== Performance Info ===" << std::endl;
-                                std::cout << "perf: " << predPerf.perf << " us" << std::endl;
-                                std::cout << "MT0: " << predPerf.MT0 << std::endl;
-                                std::cout << "MT1: " << predPerf.MT1 << std::endl;
-                                std::cout << "depthU: " << predPerf.depthU << std::endl;
-                                std::cout << "NumCUs: " << predPerf.NumCUs << std::endl;
-                                std::cout << "WorkGroupMapping: " << predPerf.WorkGroupMapping << std::endl;
-                                std::cout << "CUOccupancy: " << predPerf.CUOccupancy << std::endl;
-                                std::cout << "GlobalSplitU: " << predPerf.GlobalSplitU << std::endl;
-                                std::cout << "LocalSplitU: " << predPerf.LocalSplitU << std::endl;
-                                std::cout << "loopCnt: " << predPerf.loopCnt << std::endl;
-                                std::cout << "init: " << predPerf.init << " us" << std::endl;
-                                std::cout << "preloop: " << predPerf.preloop << " us" << std::endl;
-                                std::cout << "Loop: " << predPerf.loop << " us" << std::endl;
-                                std::cout << "lsu: " << predPerf.lsu << " us" << std::endl;
-                                std::cout << "tail: " << predPerf.tail << " us" << std::endl;
-                                std::cout << "math_overall: " << predPerf.math_overall << std::endl;
-                                std::cout << "mem_overall: " << predPerf.mem_overall << std::endl;
-                                std::cout << "A_loop_hitrate_l1: " << predPerf.memCosts.cache_hits.L1_hit.tile0HitRate << std::endl;
-                                std::cout << "B_loop_hitrate_l1: " << predPerf.memCosts.cache_hits.L1_hit.tile1HitRate << std::endl;
-                                std::cout << "A_loop_hitrate_l2: " << predPerf.memCosts.cache_hits.L2_hit.tile0HitRate << std::endl;
-                                std::cout << "B_loop_hitrate_l2: " << predPerf.memCosts.cache_hits.L2_hit.tile1HitRate << std::endl;
-                                std::cout << "A_loop_hitrate_l3: " << predPerf.memCosts.cache_hits.L3_hit.tile0HitRate << std::endl;
-                                std::cout << "B_loop_hitrate_l3: " << predPerf.memCosts.cache_hits.L3_hit.tile1HitRate << std::endl;
-                                std::cout << "request_l1: "<< predPerf.memCosts.mem_l1_req << std::endl;
-                                std::cout << "request_l2: "<< predPerf.memCosts.mem_l2_req << std::endl;
-                                std::cout << "request_l3: "<< predPerf.memCosts.mem_l3_req << std::endl;
-                                std::cout << "request_hbm: "<< predPerf.memCosts.mem_hbm_req << std::endl;
-                                std::cout << "loop_request_l1: "<< predPerf.memCosts.mem_loop_l1_req << std::endl;
-                                std::cout << "loop_request_l2: "<< predPerf.memCosts.mem_loop_l2_req << std::endl;
-                                std::cout << "loop_request_l3: "<< predPerf.memCosts.mem_loop_l3_req << std::endl;
-                                std::cout << "loop_request_hbm: "<< predPerf.memCosts.mem_loop_hbm_req << std::endl;
-                                std::cout << "A_MT_request_l1: " << predPerf.memCosts.MT_A_L1_req << std::endl;
-                                std::cout << "B_MT_request_l1: " << predPerf.memCosts.MT_B_L1_req << std::endl;
-                                std::cout << "A_MT_request_l2: " << predPerf.memCosts.MT_A_L2_req << std::endl;
-                                std::cout << "B_MT_request_l2: " << predPerf.memCosts.MT_B_L2_req << std::endl;
-                                std::cout << "A_MT_request_l3: " << predPerf.memCosts.MT_A_L3_req << std::endl;
-                                std::cout << "B_MT_request_l3: " << predPerf.memCosts.MT_B_L3_req << std::endl;
-                                std::cout << "A_MT_request_hbm: " << predPerf.memCosts.MT_A_hbm_req << std::endl;
-                                std::cout << "B_MT_request_hbm: " << predPerf.memCosts.MT_B_hbm_req << std::endl;
-                                std::cout << "store: " << predPerf.store << " us" << std::endl;
-                                std::cout << "gsu: " << predPerf.gsu << " us" << std::endl;
-                                std::cout << "num_tiles: " << predPerf.num_tiles << std::endl;
-                                std::cout << "=== Performance Info End ===" << std::endl;
-                            }
-                            std::cout.unsetf(std::ios::fixed);
                         }
                     }
                 }

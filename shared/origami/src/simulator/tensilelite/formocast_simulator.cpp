@@ -155,18 +155,6 @@ namespace origami
         store_edge = (GWVWD==1) ? store_edge*2: store_edge;
         store_edge = (GWVWD==2) ? store_edge*1.5: store_edge;
 
-        if (num_tiles > 1)
-        {
-            // consider edge percentage
-            double edge_percentage = 0.0;
-            if (M_WGs_total * MT0 > M)
-            {
-                edge_percentage = 1 / (double)M_WGs_total;
-            }
-            store = edge_percentage * store_edge + (1 - edge_percentage) * store;
-        }
-        else { store = std::max(store_edge, store); }
-
         return store_total / std::fmin(hw_consts.NumCUs, WGs_per_tile_full);
     }
 
