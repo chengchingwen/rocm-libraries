@@ -105,7 +105,7 @@ namespace origami
         return hw;
     }
 
-    double Formocast::calculateStorePerformance(double M, double N, double M_WGs_total, double num_tiles, double NumBatches, double MT0, double MT1, uint32_t GWVWD, uint32_t bpeD, const HardwareConstants& hw_consts, uint32_t WGs_per_tile_full, uint32_t WGs_per_tile_XCD_full, double &store, double &store_edge) const
+    double Formocast::calculateStorePerformance(double M, double N, double num_tiles, double NumBatches, double MT0, double MT1, uint32_t GWVWD, uint32_t bpeD, const HardwareConstants& hw_consts, uint32_t WGs_per_tile_full, uint32_t WGs_per_tile_XCD_full, double &store, double &store_edge) const
     {
         double D_L1_req = 0.0;
         double D_L2_req = 0.0;
@@ -397,6 +397,17 @@ namespace origami
         mem.l2_hit = mem.cache_hits.L2_hit.totalHitRate;
         mem.l3_hit = mem.cache_hits.L3_hit.totalHitRate;
 
+        // Calculate memory overall using GetMemoryOverall function
+        calculateTilesMemory_req_time(mem,
+            mem.MT_A_L1_req, mem.MT_A_L2_req, mem.MT_A_L3_req, mem.MT_A_hbm_req,
+            mem.MT_B_L1_req, mem.MT_B_L2_req, mem.MT_B_L3_req, mem.MT_B_hbm_req,
+            isSwizzleA, isSwizzleB,
+            transA, transB,
+            hw_consts,
+            M, N, MT0, MT1,
+            WGs_per_tile_XCD_full, WGs_per_tile_last, WGs_per_tile_XCD_last,
+            num_tiles);
+
         return mem;
     }
 
@@ -639,7 +650,7 @@ namespace origami
 
         // 5.6 Calculate Store Performance (D matrix writes)
         double store, store_edge;
-        double store_total = calculateStorePerformance(M, N, M_WGs_total, num_tiles, NumBatches, MT0, MT1, GWVWD, bpeD, hw_consts, WGs_per_tile_full, WGs_per_tile_XCD_full, store, store_edge);
+        double store_total = calculateStorePerformance(M, N, num_tiles, NumBatches, MT0, MT1, GWVWD, bpeD, hw_consts, WGs_per_tile_full, WGs_per_tile_XCD_full, store, store_edge);
 
         // 5.7 Calculate GSU Overhead
         double storeGSU = 4 * store_total * GlobalSplitU;
@@ -684,21 +695,8 @@ namespace origami
                                                  MT1,
                                                  hw_consts.math_frequency, 0,
                                                  numAccPerWave);
-
-         // Calculate memory overall using GetMemoryOverall function
-         calculateTilesMemory_req_time(mem_costs,
-            mem_costs.MT_A_L1_req, mem_costs.MT_A_L2_req, mem_costs.MT_A_L3_req, mem_costs.MT_A_hbm_req,
-            mem_costs.MT_B_L1_req, mem_costs.MT_B_L2_req, mem_costs.MT_B_L3_req, mem_costs.MT_B_hbm_req,
-            isSwizzleA, isSwizzleB,
-            transA, transB,
-            hw_consts,
-            M, N, MT0, MT1, WGs_per_tile_XCD_full, WGs_per_tile_last, WGs_per_tile_XCD_last,
-            num_tiles);
-
         prefetch *= num_tiles;
         prefetch += mem_costs.mem_overall;
-
-        mem_costs.mem_overall = mem_costs.mem_overall;
 
         // 6. Calculate loop Performance
         double math_overall = math_clk / hw_consts.math_frequency; math_overall *= num_tiles;

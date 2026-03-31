@@ -404,6 +404,7 @@ namespace origami
          * @brief Calculate store (write-back) performance for matrix output
          * @param M Matrix dimension M
          * @param N Matrix dimension N
+         * @param num_tiles Number of tiles
          * @param NumBatches Number of batches
          * @param MT0 Macro tile dimension 0 (M dimension)
          * @param MT1 Macro tile dimension 1 (N dimension)
@@ -417,7 +418,6 @@ namespace origami
          */
          double calculateStorePerformance(double M,
                                        double N,
-                                       double M_WGs_total,
                                        double num_tiles,
                                        double NumBatches,
                                        double MT0,
