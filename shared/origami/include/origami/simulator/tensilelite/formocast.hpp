@@ -87,7 +87,7 @@ namespace origami
          */
         double getMultipleBufferOverhead(double M, double N, double GlobalSplitU, double NumBatches,
                             uint32_t bpeCompute, uint32_t bpeD, double hbmBandWidth,
-                            double L1CacheLineSize, double NumCUs, double boost_frequency,
+                            double L1CacheLineSize, double NumCUs, uint32_t num_tiles, uint32_t CUOccupancy, double boost_frequency,
                             double mem_frequency, double L2WriteArbEff, double L2ReadArbEff,
                             double L3BandWidth, double L1BusWidthPerCU, double L2BusWidthPerCU,
                             double L1WriteBusWidthPerCU, double L2WriteBusWidthPerCU);
