@@ -172,7 +172,7 @@ namespace origami
 
     Formocast::L1CacheHitRate
     Formocast::computeL1CacheHitRate(const HardwareConstants& hw,
-                                          double MT0, double MT1, uint32_t depthU, uint32_t bpeA, uint32_t bpeB, //VictorWu
+                                          double MT0, double MT1, uint32_t depthU, uint32_t bpeA, uint32_t bpeB,
                                           int NTA, int NTB, uint32_t GRVWA, uint32_t GRVWB,
                                           bool DTVA, bool DTVB, bool isSwizzleA, bool isSwizzleB,
                                           uint32_t VWA, uint32_t VWB, bool transA, bool transB,
@@ -181,7 +181,7 @@ namespace origami
     {
         auto hr = simulator::computeL1CacheHitRate(
             hw.L1CacheCapacity, hw.L1CacheLineSize, hw.L1BusWidthPerCU,
-            MT0, MT1, depthU, bpeA, bpeB, NTA, NTB, GRVWA, GRVWB, DTVA, DTVB, //VictorWu
+            MT0, MT1, depthU, bpeA, bpeB, NTA, NTB, GRVWA, GRVWB, DTVA, DTVB,
             isSwizzleA, isSwizzleB, VWA, VWB, transA, transB, lda, ldb,
             NLCA, NLCB, threadnum, NumWave0, NumWave1, hw.architecture == hardware_t::architecture_t::gfx942);
 
@@ -350,7 +350,7 @@ namespace origami
 
         // 1. Calculate Cache Hit Rates
         mem.cache_hits.L1_hit = computeL1CacheHitRate(hw,
-                                                MT0, MT1, depthU, bpeA, bpeB, //VictorWu
+                                                MT0, MT1, depthU, bpeA, bpeB,
                                                 0, 0, GRVWA, GRVWB,
                                                 DTVA, DTVB, isSwizzleA, isSwizzleB,
                                                 VWA, VWB, transA, transB,
@@ -408,7 +408,6 @@ namespace origami
         mem.l1_hit = (mem.cache_hits.L1_hit.tile0HitRate * MT0 + mem.cache_hits.L1_hit.tile1HitRate * MT1) / (MT0 + MT1);
         mem.l2_hit = mem.cache_hits.L2_hit.totalHitRate;
         mem.l3_hit = mem.cache_hits.L3_hit.totalHitRate;
-        //for debug
 
         return mem;
     }
@@ -708,19 +707,15 @@ namespace origami
             M, N, MT0, MT1, WGs_per_tile_XCD_full, WGs_per_tile_last, WGs_per_tile_XCD_last,
             num_tiles);
 
-        prefetch *= num_tiles; //VictorWu
+        prefetch *= num_tiles;
         prefetch += mem_costs.mem_overall;
-        // prefetch += mem_costs.mem_overall;//*0.4;
-        // //prefetch = (prefetch/2-0.5);
 
-        mem_costs.mem_overall = mem_costs.mem_overall;//*0.8+0.0/loopCnt;
+        mem_costs.mem_overall = mem_costs.mem_overall;
 
         // 6. Calculate loop Performance
         double math_overall = math_clk / hw_consts.math_frequency; math_overall *= num_tiles;
         bool large = M*K*bpeA > 67108864 || N*K*bpeB > 67108864;
         double loop_overall = getLoop_time(mem_costs, math_overall, loopCnt, PGR, num_tiles, large);
-        // std::cout << "math_overall: " << math_overall << std::endl; //VictorWu
-        // std::cout << "mem_costs.mem_overall: " << mem_costs.mem_overall << std::endl; //VictorWu
 
         // 5.5 tail loop Overhead
         double tail_overall = 0.0;
@@ -731,7 +726,7 @@ namespace origami
             tail_overall *= num_tiles;
         }
 
-        // prediction modle implementation
+        // prediction model implementation
 
         // 7. Aggregate Performance: pre-loop + unrolled-loop + Tail Loop + post-loop
         double perf = doinit +prefetch + loop_overall + tail_overall + store_total;
@@ -740,19 +735,10 @@ namespace origami
         perf += lsu_overall;
 
         // 8. Apply CU Occupancy
-        // perf = resolveOccupancy(hw_consts, perf, prefetch, loop_overall + tail_overall, store_total, num_tiles, CUOccupancy); //VictorWu
-        // std::cout << "prefetch: " << prefetch/num_tiles << ", loop_overall: " << loop_overall/num_tiles << ", tail_overall: " << tail_overall/num_tiles << ", store: " << store/num_tiles << std::endl; //VictorWu
         perf = resolveOccupancy(hw_consts, perf, prefetch, loop_overall + tail_overall, store_total, num_tiles, CUOccupancy, loopCnt);
-        // std::cout << "perf after occupancy: " << perf << std::endl; //VictorWu
-
-        // perf += doinit;
 
         // 10. Add GSU Reduction Part might be removed before 8.
         perf += gsu_overall;
-
-        // std::cout << "store_total: " << store_total << std::endl; //VictorWu
-        // std::cout << "store_edge: " << store_edge << std::endl; //VictorWu
-        // std::cout << "store: " << store << std::endl; //VictorWu
 
         pp.microSeconds = perf;
         pp.hitRate = mem_costs.l2_hit * 100;

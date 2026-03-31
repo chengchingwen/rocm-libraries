@@ -566,7 +566,7 @@ namespace origami
          */
         L1CacheHitRate
         computeL1CacheHitRate(const HardwareConstants& hw,
-                            double MT0, double MT1, uint32_t depthU, uint32_t bpeA, uint32_t bpeB, //VictorWu
+                            double MT0, double MT1, uint32_t depthU, uint32_t bpeA, uint32_t bpeB,
                             int NTA, int NTB, uint32_t GRVWA, uint32_t GRVWB,
                             bool DTVA, bool DTVB, bool isSwizzleA, bool isSwizzleB,
                             uint32_t VWA, uint32_t VWB, bool transA, bool transB,
