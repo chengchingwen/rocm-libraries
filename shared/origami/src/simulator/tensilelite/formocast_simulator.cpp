@@ -131,13 +131,12 @@ namespace origami
             = D_L2_edge_req * 64 / std::min(hw_consts.L2WriteBusWidthPerCU, L2WriteBandWidthPerCU);
         double D_L3_clk_edge  = D_L3_edge_req * 64 / L3BandWidthPerCU;
         double D_hbm_clk_edge = 0 * 64 / HBMBandWidthPerCU;
+
         double D_L1_clk_total = total_store_req1 * 64 / hw_consts.L1WriteBusWidthPerCU;
         double D_L2_clk_total
             = total_store_req2 * 64 / std::min(hw_consts.L2WriteBusWidthPerCU, L2WriteBandWidthPerCU);
-            // = total_store_req2 * 128 / std::min(hw_consts.L2WriteBusWidthPerCU, L2WriteBandWidthPerCU); //VictorWu
         double D_L3_clk_total  = total_store_req3 * 64 / L3BandWidthPerCU;
         double D_hbm_clk_total = 0 * 64 / HBMBandWidthPerCU;
-        // double D_hbm_clk_total = 0 * 8 / HBMBandWidthPerCU; //VictorWu
 
         double store_edge_overall = ((D_L1_clk_edge + D_L2_clk_edge) / hw_consts.math_frequency)
                                     + ((D_L3_clk_edge + D_hbm_clk_edge) / hw_consts.mem_frequency);
@@ -169,7 +168,7 @@ namespace origami
         }
         else { store = std::max(store_edge, store); }
 
-        return store_total / 256;
+        return store_total / std::fmin(hw_consts.NumCUs, WGs_per_tile_full);
     }
 
     Formocast::L1CacheHitRate
@@ -662,7 +661,6 @@ namespace origami
         // 5.6 Calculate Store Performance (D matrix writes)
         double store, store_edge;
         double store_total = calculateStorePerformance(M, N, M_WGs_total, num_tiles, NumBatches, MT0, MT1, GWVWD, bpeD, hw_consts, WGs_per_tile_full, WGs_per_tile_XCD_full, store, store_edge);
-        store *= num_tiles; //VictorWu
 
         // 5.7 Calculate GSU Overhead
         // double storeGSU = store_total * 2; //FIXME: incorrect   //VictorWu
@@ -759,11 +757,6 @@ namespace origami
         // 10. Add GSU Reduction Part might be removed before 8.
         perf += gsu_overall;
 
-        if (int(M) % int(MT0) != 0)
-            perf = perf + std::max(store_edge, store/num_tiles);
-        // if (int(M) % int(MT0) != 0) //VictorWu
-        //     perf = perf + std::max(store_edge, store);
-
         // std::cout << "store_total: " << store_total << std::endl; //VictorWu
         // std::cout << "store_edge: " << store_edge << std::endl; //VictorWu
         // std::cout << "store: " << store << std::endl; //VictorWu
@@ -790,8 +783,7 @@ namespace origami
         pp.preloop = prefetch;
         pp.loop = loop_overall;
         pp.tail = tail_overall;
-        pp.store = store_total; //VictorWu
-        // pp.store = store;
+        pp.store = store_total;
         pp.gsu = gsu_overall;
         pp.lsu = lsu_overall;
         pp.num_tiles = num_tiles;

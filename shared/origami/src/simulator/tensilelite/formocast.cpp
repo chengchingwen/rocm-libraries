@@ -699,11 +699,10 @@ namespace origami
 
             double edge_size     = std::fmod(M, MT0);
             double numWGsNonEdge = std::floor(M / MT0);
-            // result = N * ((numWGsNonEdge * ceiling_math(MT0 / 32)) + ceiling_math(edge_size / 32));
-            result = N * ((std::floor(M / 32)) + ceiling_math(edge_size / 32)); //VictorWu
+            result = N * ((std::floor(M / 32)) + ceiling_math(edge_size / 32));
 
             double maxMT1              = std::min(N, MT1);
-            double nonEdgeRequestPerMT = maxMT1 * (ceiling_math(MT0 / 32));
+            double nonEdgeRequestPerMT = maxMT1 * std::floor(M / 32);
             double edgeRequestPerMT    = maxMT1 * ceiling_math(edge_size / 32);
             if(numWGsNonEdge > 0.0)
                 non_edge_req = nonEdgeRequestPerMT;
@@ -722,20 +721,27 @@ namespace origami
             double edge_size     = std::fmod(M, MT0);
             double numWGsNonEdge = std::floor(M / MT0);
             double M_MOD_16SVW   = std::fmod(M, 16 * SVW);
+            double M_MOD_32      = std::fmod(M, 32);
+            double M_MOD_8       = std::fmod(M, 8);
+            double M_MOD_4       = std::fmod(M, 4);
 
-            double non_edge_0 = MT0 * 2 / 64 * ceiling_math(64 / (16 * 2 * SVW));
-            double edge_0     = (ceiling_math(std::floor(edge_size / (16 * SVW)) * (16 * SVW) * 2 / 64
-                                          * ceiling_math(64 / (16 * 2 * SVW)))
-                             * SVW);
-            double edge_1     = (std::floor(M_MOD_16SVW * 2 / 64 * ceiling_math(64 / (16 * 2 * SVW)))
-                             * std::min(M_MOD_16SVW, SVW));
-            double edge_2     = (std::min(std::fmod(M, std::min(16 * SVW, 32.0)), SVW));
+            double non_edge_0 = MT0 * 2 / 64 * ceiling_math(64 / (16 * 2 * SVW)) *
+              ((M_MOD_32 == 0 || M_MOD_32 == 16) ?
+               (M_MOD_32 == 16 ? (SVW == 1 ? 1 : SVW == 2 ? (3.0/2) : SVW == 4 ? (5.0/4) : (9.0/8)) : 1) :
+               (SVW == 1 ? (3.0/2) : SVW == 2 ? (4.0/2) : SVW == 4 ? (3.0/2) : (5.0/4)));
+            double edge_0     = std::floor(edge_size / (16 * SVW)) * (16 * SVW) * 2 / 64
+                                 * ceiling_math(64 / (16 * 2 * SVW)) * SVW;
+            double edge_1     = std::min(M_MOD_16SVW, SVW) * ceiling_math(M_MOD_16SVW / 32);
+            double edge_2     = SVW == 1 ? 0 : (M_MOD_8 == 0 ? 0 : (std::fmod(edge_size, 32) - SVW) / (32 / SVW));
+            double edge_3     = SVW == 1 ? 0 : (M_MOD_8 == 0 ? 0 : std::floor(edge_size / (16 * SVW)) * (32 - SVW) / (32 / SVW));
+            double edge_4     = SVW == 1 ? (M_MOD_4 == 0 ? 0 : ((std::fmod(edge_size, 32) - SVW) / (32 / SVW))) : 0;
+            double edge_5     = SVW == 1 ? (M_MOD_4 == 0 ? 0 : (std::floor(edge_size / 32) * (32 - SVW) / (32 / SVW))) : 0;
 
-            result = N * ((numWGsNonEdge * non_edge_0) + (edge_0) + (edge_1) + (edge_2));
+            result = N * ((numWGsNonEdge * non_edge_0) + (edge_0) + (edge_1) + (edge_2) + (edge_3) + (edge_4) + (edge_5));
 
             double maxMT1              = std::min(N, MT1);
             double nonEdgeRequestPerMT = maxMT1 * (non_edge_0);
-            double edgeRequestPerMT    = maxMT1 * (edge_0 + edge_1 + edge_2);
+            double edgeRequestPerMT    = maxMT1 * (edge_0 + edge_1 + edge_2 + edge_3 + edge_4 + edge_5);
             if(numWGsNonEdge > 0.0)
                 non_edge_req = nonEdgeRequestPerMT;
             else
