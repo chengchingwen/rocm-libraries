@@ -525,7 +525,7 @@ namespace origami
          * @param pgr Prefetch global read parameter
          * @return Overall loop performance cost in cycles
          */
-        double getLoop_time(MemoryAccessCosts& mem, double math, uint32_t loopCnt, double pgr, uint32_t num_tiles) const;
+        double getLoop_time(MemoryAccessCosts& mem, double math, uint32_t loopCnt, double pgr, uint32_t num_tiles, bool large) const;
 
         double calculateInitialCost(double num_tiles) const;
 
@@ -637,7 +637,7 @@ namespace origami
          * @param CUOccupancy Target CU occupancy
          * @return Resolved occupancy value
          */
-        double resolveOccupancy(const HardwareConstants& hw, double perf, double prefetch, double mathCost, double storeCost, uint32_t num_tiles, uint32_t CUOccupancy) const;
+        double resolveOccupancy(const HardwareConstants& hw, double perf, double prefetch, double mathCost, double storeCost, uint32_t num_tiles, uint32_t CUOccupancy, uint32_t loopCnt) const;
 
         /**
          * @brief Compare if current configuration is better than previous solution

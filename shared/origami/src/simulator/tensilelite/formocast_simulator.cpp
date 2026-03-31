@@ -48,12 +48,12 @@ namespace origami
 
 
 
-    double Formocast::getLoop_time(MemoryAccessCosts& mem, double math, uint32_t loopCnt, double pgr, uint32_t num_tiles) const
+    double Formocast::getLoop_time(MemoryAccessCosts& mem, double math, uint32_t loopCnt, double pgr, uint32_t num_tiles, bool large) const
     {
         double loop_overall;
-
+        double mem_overall = mem.mem_overall;
         if(pgr > 1 && loopCnt > 0)
-            loop_overall = std::max(math, mem.mem_overall) * (loopCnt - 1) + (math);
+            loop_overall = (large || (mem_overall / math >= 1.5) ? (math + mem_overall) / 2 : math) * (loopCnt - 1) + mem_overall;
         else
             loop_overall = std::max(math, mem.mem_overall) * loopCnt;
 
@@ -61,8 +61,7 @@ namespace origami
         mem.mem_loop_l2_req = mem.mem_l2_req * (loopCnt - 1);
         mem.mem_loop_l3_req = mem.mem_l3_req * (loopCnt - 1);
         mem.mem_loop_hbm_req = mem.mem_hbm_req * (loopCnt - 1);
-
-        return loop_overall + loopCnt*0.2*num_tiles;
+        return loop_overall;
     }
 
     Formocast::HardwareConstants archConstantMap(const unsigned char* magic, size_t magicSize) {
@@ -432,15 +431,20 @@ namespace origami
         return mem;
     }
 
-    double Formocast::resolveOccupancy(const HardwareConstants& hw, double perf, double prefetch, double mathCost, double storeCost, uint32_t num_tiles, uint32_t CUOccupancy) const
+    double Formocast::resolveOccupancy(const HardwareConstants& hw, double perf, double prefetch, double mathCost, double storeCost, uint32_t num_tiles, uint32_t CUOccupancy, uint32_t loopCnt) const
     {
         if ((num_tiles > 1)  && CUOccupancy >= 2)
         {
-            perf = hw_consts.initialCost + (prefetch/num_tiles + mathCost + storeCost) - storeCost/num_tiles;
+            uint32_t tiles = safe_ceil_div(num_tiles, CUOccupancy);
+            perf = hw.initialCost + (prefetch/tiles + mathCost + storeCost * 4 * num_tiles) + loopCnt * tiles * 0.1;
+        }
+        else if (CUOccupancy >= 2)
+        {
+            perf += (CUOccupancy - 1) * 4 * storeCost - storeCost + loopCnt * 0.1;
         }
         else
         {
-            perf *= 1;
+            perf += loopCnt * 0.1;
         }
         return perf;
     }
@@ -723,6 +727,7 @@ namespace origami
             num_tiles);
 
         prefetch *= num_tiles; //VictorWu
+        prefetch += mem_costs.mem_overall;
         // prefetch += mem_costs.mem_overall;//*0.4;
         // //prefetch = (prefetch/2-0.5);
 
@@ -730,7 +735,8 @@ namespace origami
 
         // 6. Calculate loop Performance
         double math_overall = math_clk / hw_consts.math_frequency; math_overall *= num_tiles;
-        double loop_overall = getLoop_time(mem_costs, math_overall, loopCnt, PGR, num_tiles);
+        bool large = M*K*bpeA > 67108864 || N*K*bpeB > 67108864;
+        double loop_overall = getLoop_time(mem_costs, math_overall, loopCnt, PGR, num_tiles, large);
         // std::cout << "math_overall: " << math_overall << std::endl; //VictorWu
         // std::cout << "mem_costs.mem_overall: " << mem_costs.mem_overall << std::endl; //VictorWu
 
@@ -754,7 +760,7 @@ namespace origami
         // 8. Apply CU Occupancy
         // perf = resolveOccupancy(hw_consts, perf, prefetch, loop_overall + tail_overall, store_total, num_tiles, CUOccupancy); //VictorWu
         // std::cout << "prefetch: " << prefetch/num_tiles << ", loop_overall: " << loop_overall/num_tiles << ", tail_overall: " << tail_overall/num_tiles << ", store: " << store/num_tiles << std::endl; //VictorWu
-        perf = resolveOccupancy(hw_consts, perf, prefetch, loop_overall + tail_overall, store_total, num_tiles, CUOccupancy);
+        perf = resolveOccupancy(hw_consts, perf, prefetch, loop_overall + tail_overall, store_total, num_tiles, CUOccupancy, loopCnt);
         // std::cout << "perf after occupancy: " << perf << std::endl; //VictorWu
 
         // perf += doinit;
