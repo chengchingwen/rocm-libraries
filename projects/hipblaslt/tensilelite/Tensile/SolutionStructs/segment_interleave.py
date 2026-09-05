@@ -41,6 +41,9 @@ Every layout is either tight (no extra LDS) or aligned (padded to a segment boun
 LDS and needs PrefetchGlobalRead=2).
 """
 
+from Tensile import tdm_split as _tdm_split
+
+
 # gfx1250 LDS segment size (5 x 64 KiB segments).
 SEG = 65536
 
@@ -93,7 +96,9 @@ def _coarse(state, tc):
 
 def _port_split(state, tc):
     # VW==WaveTile/2 (2 vIdx per port) with TDMSplit. A smaller VW would need a >2-way split.
-    if _coarse(state, tc) or not state.get("TDMSplit"):
+    # Per operand: the two ports ARE this tensor's two split halves, so a kernel-wide reading
+    # gives a one-region tile a within-port stride whenever the OTHER tensor is split.
+    if _coarse(state, tc) or _tdm_split.split_of(state, tc)[0] <= 1:
         return False
     idx = 0 if tc == "A" else 1
     vw = state["VectorWidthA"] if tc == "A" else state["VectorWidthB"]
@@ -159,7 +164,7 @@ def _evaluate_asymmetric(state):
         if bMXSB is not None: o["ldsBaseMXSB"] = bMXSB
         return o
 
-    if state.get("TDMSplit"):
+    if _tdm_split.split_of(state, activeTC)[0] > 1:
         if not (_coarse(state, activeTC) or _port_split(state, activeTC)):
             return _no("TDMSplit asymmetric: active VW must be WaveTile or WaveTile/2")
         # VW==WaveTile splits by read port; VW==WaveTile/2 can't (needs >2-way) so it splits by component.

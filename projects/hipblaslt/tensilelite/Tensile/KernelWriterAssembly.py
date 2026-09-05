@@ -114,6 +114,7 @@ from functools import lru_cache
 from typing import List, Mapping, NamedTuple, Optional, Tuple, Union
 
 import os
+from Tensile import tdm_split as _tdm_split
 
 @dataclass
 class TailOptParams:
@@ -364,7 +365,15 @@ class KernelWriterAssembly(KernelWriter):
     return sgpr("GlobalReadIncs%s+%u"%(tc, loopIdx))
 
   def isTdmWaveSeparated(self, kernel) -> bool:
-    return kernel["enableTDMA"] and kernel["enableTDMB"] and kernel["NumWaves"] > 1
+    """Are A and B FUSED onto one descriptor, wave parity selecting which tensor a wave moves?
+
+    A STATED FACT now, not a re-derivation.  `Solution.py` resolves `TDMFuse` to a plain 0/1 at
+    the point both its inputs are live, using `-1` to reproduce the historical rule
+    (`enableTDMA and enableTDMB and NumWaves > 1`) so no existing kernel changes.  Re-deriving
+    the condition here is what let the fuse and the things that depend on it drift: the register
+    aliasing, the increment path, θ's `TDMFuse`, and `Solution.py`'s gates each spelled it out
+    separately."""
+    return bool(kernel["TDMFuse"])
 
   def isTdmWaveIdxLive(self, kernel) -> bool:
     if not (kernel["enableTDMA"] or kernel["enableTDMB"]):
@@ -716,13 +725,24 @@ class KernelWriterAssembly(KernelWriter):
     # uses tdm*Incs only. GlobalReadIncs* are released afterward — do not pin them here,
     # UNLESS stagger code needs them (calculateStagger references GlobalReadIncs for all tensors).
     needsStaggerSgprs = kernel["StaggerU"] > 0 or kernel["InternalSupportParams"]["SupportCustomStaggerU"]
-    if not self.isTdmWaveSeparated(kernel) or needsStaggerSgprs:
-      self.removeSgprVarFromPool("GlobalReadIncsA")
-      self.removeSgprVarFromPool("GlobalReadIncsB")
-      if kernel["ProblemType"]["MXBlockA"]:
-        self.removeSgprVarFromPool("GlobalReadIncsMXSA")
-      if kernel["ProblemType"]["MXBlockB"]:
-        self.removeSgprVarFromPool("GlobalReadIncsMXSB")
+    # PER-OPERAND, not per-kernel.  `isTdmWaveSeparated` is `bool(TDMFuse)`; it says "this kernel
+    # has a Φ group somewhere", NOT "every operand's stride was copied into a shared sgpr".  With
+    # the MX groupings an operand can be UNFUSED while the flag is true (`A_MX` groups
+    # {A,MXSA,MXSB} and leaves B alone), and an unfused operand's `tdmIncrementGir` reads
+    # `GlobalReadIncs{tc}` on EVERY iteration of the main loop — so releasing it hands a live
+    # register back to `allocTmpSgpr`.  Ask who OWNS the descriptor, the same question
+    # `tdmIssuesOwnLoad` and the unfused-advance assert ask.
+    _owners = self.tdmDescriptorOwners(kernel)
+    def _incIsShared(_tc: str) -> bool:
+      return _owners.get(_tc, _tc) != _tc or any(
+          _o == _tc for _m, _o in _owners.items() if _m != _tc)
+    for _tc in ("A", "B", "MXSA", "MXSB"):
+      if _tc == "MXSA" and not kernel["ProblemType"]["MXBlockA"]:
+        continue
+      if _tc == "MXSB" and not kernel["ProblemType"]["MXBlockB"]:
+        continue
+      if not self.isTdmWaveSeparated(kernel) or needsStaggerSgprs or not _incIsShared(_tc):
+        self.removeSgprVarFromPool(f"GlobalReadIncs{_tc}")
 
     return module
 
@@ -736,13 +756,22 @@ class KernelWriterAssembly(KernelWriter):
     module = Module("ReleaseGlobalReadIncsAfterTdmWaveSep")
     if not self.isTdmWaveSeparated(kernel):
       return module
-    if self.states.a.numSgprGlobalReadIncs > 0:
+    # PER-OPERAND (see `removeGROffsetsVariableSgprsFromPool`).  Only an operand whose stride was
+    # actually folded into a group's shared `tdm*Incs` is dead after setup; an UNFUSED operand
+    # under a partial grouping still reads `GlobalReadIncs{tc}` every iteration.
+    _owners = self.tdmDescriptorOwners(kernel)
+    def _incIsShared(_tc: str) -> bool:
+      return _owners.get(_tc, _tc) != _tc or any(
+          _o == _tc for _m, _o in _owners.items() if _m != _tc)
+    if self.states.a.numSgprGlobalReadIncs > 0 and _incIsShared("A"):
       module.add(self.addSgprVarToPool("GlobalReadIncsA"))
-    if self.states.b.numSgprGlobalReadIncs > 0:
+    if self.states.b.numSgprGlobalReadIncs > 0 and _incIsShared("B"):
       module.add(self.addSgprVarToPool("GlobalReadIncsB"))
-    if kernel["ProblemType"]["MXBlockA"] and self.states.mxsa.numSgprGlobalReadIncs > 0:
+    if kernel["ProblemType"]["MXBlockA"] and self.states.mxsa.numSgprGlobalReadIncs > 0 \
+        and _incIsShared("MXSA"):
       module.add(self.addSgprVarToPool("GlobalReadIncsMXSA"))
-    if kernel["ProblemType"]["MXBlockB"] and self.states.mxsb.numSgprGlobalReadIncs > 0:
+    if kernel["ProblemType"]["MXBlockB"] and self.states.mxsb.numSgprGlobalReadIncs > 0 \
+        and _incIsShared("MXSB"):
       module.add(self.addSgprVarToPool("GlobalReadIncsMXSB"))
     return module
 
@@ -951,10 +980,140 @@ class KernelWriterAssembly(KernelWriter):
 
   ##############################################################################
 
+  def tdmDescriptorOwners(self, kernel):
+    """`{member: owner}` — which operand's SGPRs each TDM descriptor physically lives in.
+
+    The FIRST member of a Φ group owns the real registers and the rest `RegSet` onto it, so the
+    group is one physical descriptor (the aliasing IS the fuse).  An operand in no group owns its
+    own.  Read from `LoopModel.fuse`, so this cannot disagree with what θ modelled or with
+    `gir_to_rocisa._fused_tp`'s realizability check.
+
+    For the shipping groupings this reproduces the historical map exactly — `TDMFuse: 1` gives
+    `{A:A, B:A, MXSA:MXSA, MXSB:MXSA}`, which is the `B→A` and `MXSB→MXSA` chain spelled out
+    below."""
+    from .LoopModel.adapter import fuse_groups
+    present = []
+    if kernel["enableTDMA"]:
+      present.append("A")
+      if kernel["ProblemType"]["MXBlockA"]:
+        present.append("MXSA")
+    if kernel["enableTDMB"]:
+      present.append("B")
+      if kernel["ProblemType"]["MXBlockB"]:
+        present.append("MXSB")
+    owners = {m: m for m in present}
+    if self.isTdmWaveSeparated(kernel) and not kernel.get("UseSubtileImpl"):
+      for g in fuse_groups(kernel["TDMFuse"], present):
+        # The member with the most regions owns the descriptor: it drives the region walk, and
+        # the walk's stride and per-region load must come from the set that holds them.
+        head = max(g, key=lambda m: _tdm_split.split_of(kernel, m)[0])
+        for m in g:
+          if m != head:
+            owners[m] = head
+    return owners
+
+  def tdmFuseGroupOf(self, kernel, tc):
+    """`(member_tensorChars, ranges)` for the Φ group containing `tc`, or `(None, None)`.
+
+    `ranges` is `LoopModel.fuse.wave_ranges` for that group: None means the historical PARITY
+    rule, a list means CONTIGUOUS uneven ranges.  Every site that has to name ALL members of a
+    group — not just "me and my peer" — asks this, so a 3-way group cannot silently degrade to
+    the first two.  That degradation is exactly what `_fused_tp`'s `(members[0], members[1])`
+    return does, and why `A_MX` dropped MXSB at every fused hop."""
+    from .LoopModel.adapter import fuse_groups, wave_ranges
+    present = ["A", "B"]
+    _mxA, _mxB = self.tPA.get("MX"), self.tPB.get("MX")
+    if _mxA is not None and _mxB is not None:
+      present += [_mxA["tensorChar"], _mxB["tensorChar"]]
+    for gi, g in enumerate(fuse_groups(kernel["TDMFuse"], present)):
+      if tc in g:
+        return list(g), wave_ranges(kernel["TDMFuse"], gi, kernel["NumWaves"])
+    return None, None
+
+  def tdmTpByChar(self, tc):
+    """The tensor-parameter dict for a tensorChar, across the data and scale operands."""
+    for tp in (self.tPA, self.tPB):
+      if tp is None:
+        continue
+      if tp["tensorChar"] == tc:
+        return tp
+      mx = tp.get("MX")
+      if mx is not None and mx["tensorChar"] == tc:
+        return mx
+    raise KeyError(f"no tensor parameters for {tc}")
+
+  def tdmIssuesOwnLoad(self, kernel, tc) -> bool:
+    """Does `tc` issue its OWN `tensor_load_to_lds`, or is it served by another member's?
+
+    A Φ group is ONE physical descriptor, so exactly ONE instruction is issued for it — by the
+    member that owns the registers — and every other member rides that instruction, its own wave
+    having written its own values into the shared descriptor.
+
+    ASK THE GROUP, NOT THE WAVE COUNT.  `numWaves == 1` is "B is not aliased onto A" written as
+    a wave count -- exact only while the grouping is {A,B} + {MXSA,MXSB}.  Under `paired` the
+    owners are MXSA and B, so a wave-count gate issues A's and MXSA's loads (both resolving,
+    through the `A->MXSA` alias, to ONE descriptor) and never loads the `(B,MXSB)` group at all:
+    a kernel that assembles, runs, and reads stale LDS for half its operands.
+
+    Asking the owner map instead makes this the sixth consumer of the ONE grouping table rather
+    than a seventh restatement of it."""
+    owners = self.tdmDescriptorOwners(kernel)
+    return owners.get(tc, tc) == tc
+
+  def defineTdmDescriptorSgprsGrouped(self, kernel):
+    """`Group0`/`Group1` (+`Group2`/`3`) for a grouping that CROSSES data and scale.
+
+    The FIRST member of each Φ group owns real SGPRs and the rest `RegSet` onto it — the aliasing
+    IS the fuse.  Every descriptor is 4 + 8 SGPRs regardless of member, which is what makes
+    re-pointing `MXSA→A` a rename rather than a resize.  Returns ONLY the descriptor registers;
+    the increments and metadata are the caller's common tail."""
+    module = Module("DefineTdmSgprsGrouped")
+    owners = self.tdmDescriptorOwners(kernel)
+    iterate = {"A": bool(kernel.get("_TDMIterateModeA", False) or self.states.subtileIterateModeA),
+               "B": bool(kernel.get("_TDMIterateModeB", False) or self.states.subtileIterateModeB)}
+    needG2 = {}
+    for m, o in owners.items():                 # an owner needs Group2 if ANY sharer is iterate-mode
+      needG2[o] = needG2.get(o, False) or iterate.get(m, False)
+
+    # OWNERS FIRST, THEN ALIASES.  A group's owner is not always the first member in this order
+    # (`TDMFuse` 3 and 5 alias onto a later one), and an alias emitted before its owner names an
+    # undefined symbol, which loses part of the aliased operand's descriptor init.
+    for m in ("A", "MXSA", "B", "MXSB"):        # allocation order, as in the historical body
+      if m not in owners or owners[m] != m:
+        continue
+      module.add(self.defineSgpr(f"tdm{m}Group0", 4, 4))
+      module.add(self.defineSgpr(f"tdm{m}Group1", 8, 4))
+      if needG2.get(m, False):
+        module.add(self.defineSgpr(f"tdm{m}Group2", 4, 4))
+        module.add(RegSet("s", f"sgprtdm{m}Group3", f"sgprtdm{m}Group2"))
+    for m in ("A", "MXSA", "B", "MXSB"):
+      if m not in owners or owners[m] == m:
+        continue
+      o = owners[m]
+      module.add(RegSet("s", f"sgprtdm{m}Group0", f"sgprtdm{o}Group0"))
+      module.add(RegSet("s", f"sgprtdm{m}Group1", f"sgprtdm{o}Group1"))
+      if needG2.get(o, False):
+        module.add(RegSet("s", f"sgprtdm{m}Group2", f"sgprtdm{o}Group2"))
+        module.add(RegSet("s", f"sgprtdm{m}Group3", f"sgprtdm{o}Group2"))
+    return module
+
   def defineTdmSgprs(self, kernel):
     """Allocate TDM descriptor SGPRs. Extracted so subtile can defer this."""
     module = Module("DefineTdmSgprs")
-    if kernel["enableTDMA"]:
+    # THE DESCRIPTOR ALLOCATION BRANCHES; EVERYTHING AFTER IT DOES NOT.  The historical body below
+    # hardcodes the two alias chains `B→A` and `MXSB→MXSA`, which is right for every grouping that
+    # pairs like with like (`TDMFuse` 0/1/4) and wrong for the ones that put a data operand and a
+    # scale in one group (`A_MX`/`B_MX`/`paired`).  Only the `Group0`/`Group1` defines and RegSets
+    # differ — the increment SGPRs, the single-wave TDMSplit increments and the metadata descriptor
+    # below are COMMON, which is why this is a branch here and not a second function.  (A second
+    # function was tried and reverted: returning early orphaned that shared tail and dropped
+    # `sgprtdmMXSAMXSBIncs` from every fused kernel.)
+    from .LoopModel.adapter import crosses_data_and_scale
+    _crossing = (crosses_data_and_scale(kernel["TDMFuse"])
+                 and self.isTdmWaveSeparated(kernel) and not kernel.get("UseSubtileImpl"))
+    if _crossing:
+      module.add(self.defineTdmDescriptorSgprsGrouped(kernel))
+    elif kernel["enableTDMA"]:
       module.add(self.defineSgpr("tdmAGroup0", 4, 4))
       module.add(self.defineSgpr("tdmAGroup1", 8, 4))
 
@@ -973,12 +1132,18 @@ class KernelWriterAssembly(KernelWriter):
         module.add(self.defineSgpr("tdmMXSAGroup0", 4, 4))
         module.add(self.defineSgpr("tdmMXSAGroup1", 8, 4))
 
-    if kernel["enableTDMB"]:
-      # Alias B descriptor onto A for multi-wave to reduce SGPR pressure.
+    if kernel["enableTDMB"] and not _crossing:
+      # Alias B descriptor onto A for the FUSED multi-wave path, to reduce SGPR pressure.
       # Subtile uses separate descriptors -- deferred allocation provides
       # enough SGPR headroom, and separate descriptors avoid the reinit
       # overhead before each tensor_load_to_lds.
-      if kernel["NumWaves"] > 1 and not kernel.get("UseSubtileImpl"):
+      #
+      # THE ALIASING IS WHAT THE FUSE IS, not a consequence of it: with one physical descriptor
+      # there is only one thing to advance, which is why `tdmIncrementGir` refuses "multi-wave
+      # without a fused peer".  `TDMFuse: 0` therefore has to give B its own set back (+12 SGPRs),
+      # and that is precisely what makes an ASYMMETRIC `TDMSplitA/B` expressible at NumWaves > 1 —
+      # two independent descriptors can hold two different region counts, one cannot.
+      if self.isTdmWaveSeparated(kernel) and not kernel.get("UseSubtileImpl"):
         module.add(RegSet("s", "sgprtdmBGroup0", "sgprtdmAGroup0"))
         module.add(RegSet("s", "sgprtdmBGroup1", "sgprtdmAGroup1"))
         if kernel.get("_TDMIterateModeA", False) or kernel.get("_TDMIterateModeB", False):
@@ -997,24 +1162,38 @@ class KernelWriterAssembly(KernelWriter):
           module.add(self.defineSgpr("tdmMXSBGroup0", 4, 4))
           module.add(self.defineSgpr("tdmMXSBGroup1", 8, 4))
 
-    if kernel["enableTDMA"] and kernel["enableTDMB"] and kernel["NumWaves"] > 1:
+    # The shared A/B increment exists only for the FUSED path — one descriptor, one advance.
+    if self.isTdmWaveSeparated(kernel):
       module.add(self.defineSgpr("tdmABIncs", 1))
 
-      # Multi-wave TDMSplit recomputes the LDS/global split increments (and the
-      # dim1 H0/H1 boundaries) transiently at point of use (see
-      # _tdmSplitMultiWaveInc); nothing is persisted here.
+    # Multi-wave TDMSplit recomputes the LDS/global split increments (and the
+    # dim1 H0/H1 boundaries) transiently at point of use (see
+    # _tdmSplitMultiWaveInc); nothing is persisted here.
 
-      if kernel["ProblemType"]["MXBlockA"] and kernel["ProblemType"]["MXBlockB"]:
-        module.add(self.defineSgpr("tdmMXSAMXSBIncs", 1))
+    if kernel["ProblemType"]["MXBlockA"] and kernel["ProblemType"]["MXBlockB"]:
+      module.add(self.defineSgpr("tdmMXSAMXSBIncs", 1))
+
+    # ONE SHARED INCREMENT PER FUSED GROUP, named the way the INCREMENT PATH names it.
+    # `tdmIncrementGir` derives the sgpr as `tdm{tcA}{tcB}Incs` from the group's first two members,
+    # so `(A,B)` is `tdmABIncs` and `(MXSA,MXSB)` is `tdmMXSAMXSBIncs` — which is exactly what the
+    # two hardcoded lines above allocate, and why they were never noticed as a grouping spelled out
+    # a fifth time.  They stop matching the moment the groups change: `paired` wants
+    # `tdmMXSAAIncs` / `tdmBMXSBIncs`, and the assembler caught it as "expected absolute
+    # expression" on an undefined symbol rather than anything semantic.
+    if _crossing:
+      from .LoopModel.adapter import fuse_groups as _fg
+      for _g in _fg(kernel["TDMFuse"], list(self.tdmDescriptorOwners(kernel))):
+        module.add(self.defineSgpr(f"tdm{_g[0]}{_g[1]}Incs", 1))
 
     # Single-wave (NumWaves == 1): descriptors are independent, so TDMSplit
     # uses per-tensor increment SGPRs instead of the aliased AB pair.
-    if (kernel["enableTDMA"] and kernel["enableTDMB"] and kernel["NumWaves"] == 1
-        and kernel["TDMSplit"] and not kernel["ProblemType"]["Sparse"]):
-      module.add(self.defineSgpr("tdmAGlobalSplitIncs", 1))
-      module.add(self.defineSgpr("tdmALdsSplitIncs", 1))
-      module.add(self.defineSgpr("tdmBGlobalSplitIncs", 1))
-      module.add(self.defineSgpr("tdmBLdsSplitIncs", 1))
+    # PER OPERAND, because `TDMSplitA`/`TDMSplitB` are independent: an unsplit tensor has no
+    # region step and so needs no increment registers.
+    if not self.isTdmWaveSeparated(kernel):
+      for _tc in ("A", "B"):
+        if kernel[f"enableTDM{_tc}"] and _tdm_split.split_of(kernel, _tc)[0] > 1:
+          module.add(self.defineSgpr(f"tdm{_tc}GlobalSplitIncs", 1))
+          module.add(self.defineSgpr(f"tdm{_tc}LdsSplitIncs", 1))
         
     if kernel["enableTDMMetadata"]:
       module.add(self.defineSgpr("tdmMetadataGroup0", 4, 4))
@@ -4821,7 +5000,7 @@ class KernelWriterAssembly(KernelWriter):
     moduleLoadGeneralBatch.add(SBranch(labelName = stridedBatchedGemmLoad_End.getLabelName()))
     moduleLoadGeneralBatch.add(stridedBatchedGemmLoad)                     
 
-    module.add(moduleLoadGeneralBatch) # Logic for General Batched GEMM comes first 
+    module.add(moduleLoadGeneralBatch) # Logic for General Batched GEMM comes first
     module.add(moduleLoadStridedBatch) # Logic for Strided Batched GEMM comes second
     module.add(stridedBatchedGemmLoad_End)
 
@@ -6510,14 +6689,54 @@ class KernelWriterAssembly(KernelWriter):
     skipLabel = None
     if useParityGate:
       skipLabel = Label(label=f"{labelName}{tc}", comment="")
-
-      self._emitTdmWaveParitySCCAuto(imod, kernel, comment="check wave parity",
-                                    tmpTag="_applyStaggerTDM_waveIdTmp")
-
-      if "A" in tc:
-        imod.add(SCBranchSCC1(labelName=skipLabel.getLabelName(), comment="skip: odd waves handle B"))
+      # WHICH WAVES OWN THIS MEMBER IS THE GROUP'S ANSWER, not the spelling of its name.
+      #
+      # Gating on `"A" in tc` coincides with the real partition only when the groups are {A,B}
+      # and {MXSA,MXSB} and the selector is parity.  Under `A_MX` the group is (A, MXSA, MXSB) on
+      # waves 0-1 / 2 / 3 sharing ONE descriptor, so a parity gate has every EVEN wave add all
+      # three members' stagger offsets to it and every ODD wave -- including wave 1, which moves
+      # A -- add none, and every wave reads from a wrong global address.
+      _members, _ranges = self.tdmFuseGroupOf(kernel, tc)
+      _mi = _members.index(tc) if _members and tc in _members else None
+      if _mi is None:
+        # Not in any group: this operand owns its descriptor and every wave cooperates on it, so
+        # the stagger is wave-uniform — there is no other member to skip for.
+        skipLabel = None
+      elif _ranges is None:
+        # PARITY: member 0 takes the even waves, member 1 the odd — the POSITION in the group, which
+        # is what `tdmWaveSelect` dispatches on.  For {A,B}/{MXSA,MXSB} this is instruction-identical
+        # to the old name test, so those kernels do not move.
+        self._emitTdmWaveParitySCCAuto(imod, kernel, comment="check wave parity",
+                                      tmpTag="_applyStaggerTDM_waveIdTmp")
+        _other = _members[1 - _mi]
+        if _mi == 0:
+          imod.add(SCBranchSCC1(labelName=skipLabel.getLabelName(),
+                                comment=f"skip: odd waves handle {_other}"))
+        else:
+          imod.add(SCBranchSCC0(labelName=skipLabel.getLabelName(),
+                                comment=f"skip: even waves handle {_other}"))
       else:
-        imod.add(SCBranchSCC0(labelName=skipLabel.getLabelName(), comment="skip: even waves handle A"))
+        # CONTIGUOUS RANGE: this member owns [first, first+count); skip outside it.
+        _mi2, _first, _count = _ranges[_mi]
+        assert _mi2 == _mi
+        def _emitRangeGate(_w):
+          if _first > 0:
+            imod.add(SCmpLtU32(src0=sgpr(_w), src1=_first,
+                               comment=f"wId < {_first}? not {tc}'s wave"))
+            imod.add(SCBranchSCC1(labelName=skipLabel.getLabelName(),
+                                  comment=f"skip: {tc} owns waves {_first}..{_first + _count - 1}"))
+          if _first + _count < kernel["NumWaves"]:
+            imod.add(SCmpLtU32(src0=sgpr(_w), src1=_first + _count,
+                               comment=f"wId < {_first + _count}? still {tc}'s wave"))
+            imod.add(SCBranchSCC0(labelName=skipLabel.getLabelName(),
+                                  comment=f"skip: past {tc}'s range"))
+        # The range test compares the wave INDEX, not its parity bit, so a reclaimed `WaveIdx`
+        # comes from the packed ArgType field rather than a Serial remat.
+        if not self._tdmWaveIdxNeedsTmp(kernel):
+          _emitRangeGate(self._emitTdmWaveIdx(imod, kernel))
+        else:
+          with self.allocTmpSgpr(1, tag="_applyStaggerTDM_waveIdTmp") as waveIdTmp:
+            _emitRangeGate(self._emitTdmWaveIdx(imod, kernel, waveIdTmp.idx))
 
     imod.add(SAddU32(dst=sgpr(f"{tdmGroup0}+2"), src0=sgpr(f"{tdmGroup0}+2"), \
               src1=sgpr(offsetSgpr), comment=f"TDM addr += {commentTag} offset (lo)"))
@@ -7545,8 +7764,7 @@ class KernelWriterAssembly(KernelWriter):
             # Undo HPLR last-body dangling +=split (matching -= lives in next body).
             # Leak only happens when >= 2 unrolled bodies executed (LC_init > 1), since
             # the first body's end-of-body +=split is undone by the next body's incCode.
-            if kernel["TDMSplit"] and not kernel["ProblemType"]["Sparse"] \
-                and kernel["PrefetchGlobalRead"] >= 2:
+            if _tdm_split.any_split(kernel) and kernel["PrefetchGlobalRead"] >= 2:
               SkipUndoLabel = Label("Skip_TDMSplit_Undo", "")
               module.add(SCmpLeU32(src0=sgpr("OrigLoopCounter"), src1=1,
                                     comment="skip TDMSplit undo if only 1 main iter ran (no cross-body leak)"))
@@ -11258,7 +11476,7 @@ class KernelWriterAssembly(KernelWriter):
   # Global Read: Do It A/B
   ##############################################################################
   def globalReadDo(self, kernel, mode, tP, unrollLoopIdx=-1, g2lBufIdx=0, \
-                   doTailOpt = 0, optParams = None, tPM = None):
+                   doTailOpt = 0, optParams = None, tPM = None, girMemToken = None):
     tc = tP["tensorChar"]
     problemType = self.states.kernel["ProblemType"]
     numWaves: int = kernel["NumWaves"]
@@ -11301,9 +11519,15 @@ class KernelWriterAssembly(KernelWriter):
 
     if tc == "A" and kernel["enableTDMA"]:
       comp: TensorDataMoverLoad = TensorDataMoverLoad.find(self)
-      useSplitTokens = bool(kernel["TDMSplit"]) and not kernel["ProblemType"]["Sparse"]
+      useSplitTokens = _tdm_split.split_of(kernel, tc)[0] > 1
       tdmParity = self.states.ldsTensorTokenIdx
-      if useSplitTokens:
+      # GIR-OWNED TOKENS: when the caller states which LDS buffer this load FILLS, use it.
+      # The scaffold's own choice below reads a mutable parity field and a split table, which
+      # cannot express a ring deeper than two or say which half a fused movement lands in; GIR
+      # names the buffer `(unit, region, generation)` and hands the ids in.
+      if girMemToken is not None:
+        comp.setMemToken([int(t) for t in girMemToken])
+      elif useSplitTokens:
         comp.setMemToken([self.states.memTokenLdsSplit[tdmParity][0]])
       else:
         comp.setMemToken([self.states.ldsTensorTokenIdx])
@@ -11318,19 +11542,19 @@ class KernelWriterAssembly(KernelWriter):
           imod.middle.add(self.tdmResetTailLdsBuffer(kernel, ldsAddrSgprName))
       # WS mode: this single shared load also serves B (odd waves) via
       # A's aliased SGPRs, so pass iter operands when either tile is iterate.
-      isIterA = kernel.get("_TDMIterateModeA", False)
-      if self.isTdmWaveSeparated(kernel):
-        isIterA = isIterA or kernel.get("_TDMIterateModeB", False)
+      # A's load carries A's Φ GROUP, which is only (A,B) at `TDMFuse: 1`.  Ask the group.
+      isIterA = self._tdmGirIsIter(kernel, "A")
       tdmAGroup2 = "tdmAGroup2" if isIterA else None
       tdmAGroup3 = "tdmAGroup3" if isIterA else None
-      imod.middle.add(comp.issueLoad("tdmAGroup0", "tdmAGroup1", tdmAGroup2, tdmAGroup3))
+      if self.tdmIssuesOwnLoad(kernel, "A"):
+        imod.middle.add(comp.issueLoad("tdmAGroup0", "tdmAGroup1", tdmAGroup2, tdmAGroup3))
       # TODO: Embed metadata TDM issueLoad here (mirrors non-TDM pattern where globalReadBody(tP["tpsMetadata"])
       # is called after globalReadBody(tP) for the sparse tensor). This would allow _splitTdmLoad in SIA.py
       # to extract and defer both A and metadata TDM loads together, eliminating the separate globalReadMetadata
       # module and the special-case handling in noSchedGlobalRead.
       # if kernel["enableTDMMetadata"] and tP["is_sparse"]:
       #     imod.middle.add(comp.issueLoad("tdmMetadataGroup0", "tdmMetadataGroup1", None, None))
-      if kernel["TDMSplit"] and not kernel["ProblemType"]["Sparse"]:
+      if _tdm_split.split_of(kernel, tc)[0] > 1:
         if numWaves > 1:
           # Multi-wave: recompute the LDS split boundary and global split increment
           # transiently per use (see _tdmSplitMultiWaveInc).
@@ -11353,8 +11577,10 @@ class KernelWriterAssembly(KernelWriter):
           # (MacroTile1//2).
           group1 = f"tdm{tc}Group1"
           group2 = f"tdm{tc}Group2"
-          halfRowsA = kernel["MacroTile0"] // 2
-          halfRowsB = kernel["MacroTile1"] // 2
+          # PER-REGION dim1 EXTENT, from the geometry rather than `MacroTile // 2`: it is 0
+          # when the operand's split took dim0, and it follows the named axis and factor.
+          halfRowsA = self.tdmSplitGeometry(kernel, self.tPA).dim1SpanPerRegion
+          halfRowsB = self.tdmSplitGeometry(kernel, self.tPB).dim1SpanPerRegion
           # The walk length does not follow dim1, so the second load needs its own count.
           splitIterConsts = self._tdmSplitIterConsts(kernel) if isIterA else [None, None]
           needIterCount = any(c is not None for c in splitIterConsts)
@@ -11383,20 +11609,24 @@ class KernelWriterAssembly(KernelWriter):
             if needIterCount:
               self._emitTdmSplitIterCount(imod.middle, kernel, splitIterConsts, group2,
                                           h1, sIter)
-            comp.setMemToken([self.states.memTokenLdsSplit[tdmParity][1]])
-            imod.middle.add(comp.issueLoad("tdmAGroup0", "tdmAGroup1", tdmAGroup2, tdmAGroup3))
+            comp.setMemToken([int(t) for t in girMemToken] if girMemToken is not None
+                             else [self.states.memTokenLdsSplit[tdmParity][1]])
+            if self.tdmIssuesOwnLoad(kernel, "A"):
+              imod.middle.add(comp.issueLoad("tdmAGroup0", "tdmAGroup1", tdmAGroup2, tdmAGroup3))
             imod.middle.add(comp.setTensorDim1(group1, h0, self))
             if needIterCount:
               self._emitTdmSplitIterCount(imod.middle, kernel, splitIterConsts, group2,
                                           h0, sIter)
         else:
-          comp.setMemToken([self.states.memTokenLdsSplit[tdmParity][1]])
-          imod.middle.add(comp.issueLoad("tdmAGroup0", "tdmAGroup1", tdmAGroup2, tdmAGroup3))
+          comp.setMemToken([int(t) for t in girMemToken] if girMemToken is not None
+                           else [self.states.memTokenLdsSplit[tdmParity][1]])
+          if self.tdmIssuesOwnLoad(kernel, "A"):
+            imod.middle.add(comp.issueLoad("tdmAGroup0", "tdmAGroup1", tdmAGroup2, tdmAGroup3))
       return imod
 
     if tc == "MXSA" and kernel["enableTDMA"]:
       comp: TensorDataMoverLoad = TensorDataMoverLoad.find(self)
-      comp.setMemToken([self.states.ldsTensorTokenIdx])
+      comp.setMemToken([int(t) for t in girMemToken] if girMemToken is not None else [self.states.ldsTensorTokenIdx])
       if kernel["ProblemType"]["MXBlockA"]:
         if self.states.inTailLoop and not kernel["1LDSBuffer"] and kernel["StreamK"]:
           ldsAddrSgprName = comp.getLdsAddrSgprName("tdmMXSAGroup0")
@@ -11407,22 +11637,30 @@ class KernelWriterAssembly(KernelWriter):
               imod.middle.add(self.papTdmSetTailLdsBank(kernel, ldsAddrSgprName, tailBankSgpr))
           else:
             imod.middle.add(self.tdmResetTailLdsBuffer(kernel, ldsAddrSgprName))
-        imod.middle.add(comp.issueLoad("tdmMXSAGroup0", "tdmMXSAGroup1", None, None))
+        if self.tdmIssuesOwnLoad(kernel, "MXSA"):
+          imod.middle.add(comp.issueLoad("tdmMXSAGroup0", "tdmMXSAGroup1", None, None))
       return imod
 
     if tc == "Metadata" and kernel["enableTDMMetadata"]:
       comp: TensorDataMoverLoad = TensorDataMoverLoad.find(self)
-      comp.setMemToken([self.states.ldsTensorTokenIdx])
+      comp.setMemToken([int(t) for t in girMemToken] if girMemToken is not None else [self.states.ldsTensorTokenIdx])
       imod.add(comp.issueLoad("tdmMetadataGroup0", "tdmMetadataGroup1", None, None))
       return imod 
 
     if tc == "B" and kernel["enableTDMB"]:
-      #TODO: TDM refactor, wave separated TDM only issues 1 tensor load
-      if numWaves == 1:
+      # A Φ group issues ONE load, by the member that OWNS the descriptor.  `numWaves == 1` is
+      # that spelled as a wave count, exact only while the groups are {A,B}+{MXSA,MXSB}; under
+      # `paired` B owns a descriptor at 4 waves and the wave-count form suppresses its load.
+      if self.tdmIssuesOwnLoad(kernel, "B"):
         comp: TensorDataMoverLoad = TensorDataMoverLoad.find(self)
-        useSplitTokens = bool(kernel["TDMSplit"]) and not kernel["ProblemType"]["Sparse"]
+        useSplitTokens = _tdm_split.split_of(kernel, tc)[0] > 1
         tdmParity = self.states.ldsTensorTokenIdx
-        if useSplitTokens:
+        # GIR-OWNED TOKENS -- see the A arm above.  Nothing else updates `ldsTensorTokenIdx`, so
+        # without this arm B's loads sit on a stale token while B's reads carry GIR's ids, and B
+        # never waits on its own loads.
+        if girMemToken is not None:
+          comp.setMemToken([int(t) for t in girMemToken])
+        elif useSplitTokens:
           comp.setMemToken([self.states.memTokenLdsSplit[tdmParity][0]])
         else:
           comp.setMemToken([self.states.ldsTensorTokenIdx])
@@ -11435,7 +11673,10 @@ class KernelWriterAssembly(KernelWriter):
               imod.middle.add(self.papTdmSetTailLdsBank(kernel, ldsAddrSgprName, tailBankSgpr))
           else:
             imod.middle.add(self.tdmResetTailLdsBuffer(kernel, ldsAddrSgprName))
-        isIterB = kernel.get("_TDMIterateModeB", False)
+        # Symmetric with A: B's iterate form follows B's Φ GROUP, not B's own flag.  This arm
+        # runs whenever B OWNS a descriptor -- including `B_MX`, where B's group is
+        # (B, MXSA, MXSB) -- so the other members have to be consulted too.
+        isIterB = self._tdmGirIsIter(kernel, "B")
         tdmBGroup2 = "tdmBGroup2" if isIterB else None
         tdmBGroup3 = "tdmBGroup3" if isIterB else None
         imod.middle.add(comp.issueLoad("tdmBGroup0", "tdmBGroup1", tdmBGroup2, tdmBGroup3))
@@ -11445,21 +11686,32 @@ class KernelWriterAssembly(KernelWriter):
         # module and the special-case handling in noSchedGlobalRead.
         # if kernel["enableTDMMetadata"] and tP["is_sparse"]:
         #     imod.middle.add(comp.issueLoad("tdmMetadataGroup0", "tdmMetadataGroup1", None, None))
-        if kernel["TDMSplit"] and not kernel["ProblemType"]["Sparse"]:
-          ldsIncSgprName = f"tdm{tc}LdsSplitIncs"
-          globalIncSgprName = f"tdm{tc}GlobalSplitIncs"
-          imod.middle.add(SAddU32(sgpr(f"tdm{tc}Group0+1"), sgpr(f"tdm{tc}Group0+1"), sgpr(ldsIncSgprName)))
-          imod.middle.add(SAddU32(sgpr(f"tdm{tc}Group0+2"), sgpr(f"tdm{tc}Group0+2"), sgpr(globalIncSgprName)))
-          imod.middle.add(SAddCU32(sgpr(f"tdm{tc}Group0+3"), sgpr(f"tdm{tc}Group0+3"), 0, f"tdm{tc} split carry"))
-          comp.setMemToken([self.states.memTokenLdsSplit[tdmParity][1]])
+        if _tdm_split.split_of(kernel, tc)[0] > 1:
+          if numWaves > 1:
+            # Multi-wave keeps NO persistent split SGPRs -- they are recomputed per use, exactly
+            # as on A's arm above.  Reading the names here emits a use with no `.set`.
+            with self.allocTmpSgpr(2, tag="tdmSplitIncB") as incTmp:
+              gIncIdx, scratchIdx = incTmp.idx, incTmp.idx + 1
+              ldsIncOp = self._tdmSplitMultiWaveInc(imod.middle, kernel, gIncIdx, scratchIdx,
+                                                    self.tPA, self.tPB)
+              imod.middle.add(SAddU32(sgpr(f"tdm{tc}Group0+1"), sgpr(f"tdm{tc}Group0+1"), ldsIncOp))
+              imod.middle.add(SAddU32(sgpr(f"tdm{tc}Group0+2"), sgpr(f"tdm{tc}Group0+2"), sgpr(gIncIdx)))
+              imod.middle.add(SAddCU32(sgpr(f"tdm{tc}Group0+3"), sgpr(f"tdm{tc}Group0+3"), 0, f"tdm{tc} split carry"))
+          else:
+            ldsIncSgprName = f"tdm{tc}LdsSplitIncs"
+            globalIncSgprName = f"tdm{tc}GlobalSplitIncs"
+            imod.middle.add(SAddU32(sgpr(f"tdm{tc}Group0+1"), sgpr(f"tdm{tc}Group0+1"), sgpr(ldsIncSgprName)))
+            imod.middle.add(SAddU32(sgpr(f"tdm{tc}Group0+2"), sgpr(f"tdm{tc}Group0+2"), sgpr(globalIncSgprName)))
+            imod.middle.add(SAddCU32(sgpr(f"tdm{tc}Group0+3"), sgpr(f"tdm{tc}Group0+3"), 0, f"tdm{tc} split carry"))
+          comp.setMemToken([int(t) for t in girMemToken] if girMemToken is not None else [self.states.memTokenLdsSplit[tdmParity][1]])
           imod.middle.add(comp.issueLoad("tdmBGroup0", "tdmBGroup1", tdmBGroup2, tdmBGroup3))
       return imod
 
     if tc == "MXSB" and kernel["enableTDMB"]:
       #TODO: TDM refactor, wave separated TDM only issues 1 tensor load
-      if kernel["NumWaves"] == 1:
+      if self.tdmIssuesOwnLoad(kernel, "MXSB"):
         comp: TensorDataMoverLoad = TensorDataMoverLoad.find(self)
-        comp.setMemToken([self.states.ldsTensorTokenIdx])
+        comp.setMemToken([int(t) for t in girMemToken] if girMemToken is not None else [self.states.ldsTensorTokenIdx])
         if self.states.inTailLoop and not kernel["1LDSBuffer"] and kernel["StreamK"]:
           ldsAddrSgprName = comp.getLdsAddrSgprName("tdmMXSBGroup0")
           if self.isPrefetchAcrossPersistentEnabled(kernel):
@@ -13944,7 +14196,7 @@ class KernelWriterAssembly(KernelWriter):
       module.add(SCBranchSCC0(labelName=RegularSrdInitialization.getLabelName()))
       # Check for StreamK Kernel when ArgType == 3 (General Batched GEMM)
       # AddressFlags == 0, then parallel reduction in StreamK and SrdC/D needs to be initialized to workspace pointer (AddressC/D)
-      # AddressFlags != 0, then not parallel reduction in StreamK and SrdC/D should be initialized to batch matrix address from pointer array (AddressC/D)      
+      # AddressFlags != 0, then not parallel reduction in StreamK and SrdC/D should be initialized to batch matrix address from pointer array (AddressC/D)
       if kernel["StreamKForceDPOnly"]:
         # DP-only: reduction is always forced to the tree path (AddressFlags != 0
         # invariant), so initializeSrdAddressFlagsCheck always branches to the
@@ -19215,17 +19467,57 @@ class KernelWriterAssembly(KernelWriter):
                                src=sgpr(dstTmpIdx), comment="waveId"))
     module.add(SBitcmp1B32(src0=sgpr(dstTmpIdx), src1=0, comment=comment))
 
-  def tdmSplitLdsBoundary(self, kernel: Mapping, tP: Mapping) -> int:
-    """LDS split boundary (bytes) for the second half of a TDMSplit tile. Assumes
-    the TDMSplit && !MXS && !Sparse precondition, i.e. dim1Divisor == 2."""
+  def _emitTdmWrapUSelectChain(self, module: Module, members, ranges, waveIdx, dstLo, dstHi):
+    """Leave this wave's member's `WrapU` pair in `(dstLo, dstHi)`, branchlessly.
+
+    `ranges` is ascending and contiguous, so seeding with the first member and then, for each
+    later one, keeping the running value only for waves BELOW its `first` settles on the owner.
+    """
+    ordered = sorted(ranges, key=lambda r: r[1])
+    seed = members[ordered[0][0]]
+    module.add(SMovB32(dst=sgpr(dstLo), src=sgpr(f"WrapU{seed}+0"), comment=f"WrapU{seed} lo"))
+    module.add(SMovB32(dst=sgpr(dstHi), src=sgpr(f"WrapU{seed}+1"), comment=f"WrapU{seed} hi"))
+    for mi, first, _count in ordered[1:]:
+      m = members[mi]
+      module.add(SCmpLtU32(src0=waveIdx, src1=first, comment=f"wId < {first}? -> keep, else {m}"))
+      module.add(SCSelectB32(dst=sgpr(dstLo), src0=sgpr(dstLo), src1=sgpr(f"WrapU{m}+0"),
+                             comment=f"WrapU{m} lo"))
+      module.add(SCSelectB32(dst=sgpr(dstHi), src0=sgpr(dstHi), src1=sgpr(f"WrapU{m}+1"),
+                             comment=f"WrapU{m} hi"))
+
+  def tdmSplitGeometry(self, kernel: Mapping, tP: Mapping):
+    """`TdmSplitGeometry` for this operand — the ONE derivation of what its split means.
+
+    Everything downstream (which descriptor dim the divisor lands on, the global and LDS region
+    steps, whether the regions are separately packed) comes from here, so the descriptor, the
+    walk and the read side cannot disagree.  The axis is STATED by `TDMSplitA/B`, never inferred
+    from whether UseLoopModel is on."""
     tc: str = tP['tensorChar']
     ti: int = tP["idx"]
-    mt: int = kernel[f"MacroTile{ti}"]
-    du: int = kernel["DepthU"]
+    factor, axis = _tdm_split.split_of(kernel, tc)
     bpe: float = tP["bpeGR"] if not tP["isM"] else 1
-    dim1Divisor = 2
-    ldsBlockSizePerPad: int = kernel[f"LdsBlockSizePerPad{tc}"]
-    ldsPadSize: int = int(kernel[f"LdsPad{tc}"] * bpe)
+    return _tdm_split.derive(
+        factor, axis,
+        tlu=bool(tP["tlu"]), mt=kernel[f"MacroTile{ti}"], du=kernel["DepthU"], bpe=bpe,
+        ldsBlockSizePerPad=kernel[f"LdsBlockSizePerPad{tc}"],
+        ldsPadBytes=int(kernel[f"LdsPad{tc}"] * bpe))
+
+  def tdmSplitLdsBoundary(self, kernel: Mapping, tP: Mapping) -> int:
+    """LDS bytes between consecutive storage regions of a split tile.
+
+    `TdmSplitGeometry.ldsStepBytes` is the answer on both axes — a split partitions ONE tile
+    however the image is ordered, so region r sits at `r * tileBytes/factor` whether the cut was
+    MT or DU.  Only whether the READER owes that displacement differs, and that is `packed`.
+
+    The LDSSegmentInterleave cases below are unrelated overrides: they replace the region step
+    with a segment-layout stride that this module knows nothing about."""
+    tc: str = tP['tensorChar']
+    ti: int = tP["idx"]
+    geo = self.tdmSplitGeometry(kernel, tP)
+    # An unsplit tile has no second region, so its step is 0 whatever the LDS layout is; the
+    # segment overrides below answer a layout question and would hand it a whole segment jump.
+    if not geo.isSplit:
+      return 0
     if kernel.get("LDSSegmentInterleave") == 1 and tc in ("A", "B"):
       _segOff = kernel["LDSSegInterleaveOffsets"]
       _portSplit = (tc == "A" and _segOff.get("portSplitA", False)) or \
@@ -19234,13 +19526,17 @@ class KernelWriterAssembly(KernelWriter):
       # rides the wave base (initTDMDescriptorWaveSeparatedImpl), not ldsSplit.
       _componentSplit = _segOff.get("componentSplit", False) and _segOff.get("activeTC") == tc
       if _portSplit or _componentSplit:
+        bpe: float = tP["bpeGR"] if not tP["isM"] else 1
+        ldsBlockSizePerPad: int = kernel[f"LdsBlockSizePerPad{tc}"]
+        ldsPadSize: int = int(kernel[f"LdsPad{tc}"] * bpe)
         vw = kernel["VectorWidthA"] if tc == "A" else kernel["VectorWidthB"]
         numVec = kernel["MIWaveTile"][ti] // vw
         numComp = kernel["NumWaves"] // 2
         # Both halves stay in one segment, so the boundary is the per-vIdx footprint, not a segment
         # jump. splitDiv = numVec (VW==WaveTile/2) or numComp (VW==WaveTile).
         splitDiv = numVec if numVec > 1 else numComp
-        halfFootprint = round(mt * du * bpe // dim1Divisor // splitDiv)
+        halfFootprint = round(kernel[f"MacroTile{ti}"] * kernel["DepthU"] * bpe
+                              // max(1, geo.factor) // splitDiv)
         halfPad = halfFootprint // ldsBlockSizePerPad * ldsPadSize if ldsBlockSizePerPad != 0 and ldsPadSize != 0 else 0
         return halfFootprint + halfPad
       # Otherwise the boundary is a segment jump (writeStrideBytes): the second half lands in the next
@@ -19248,22 +19544,40 @@ class KernelWriterAssembly(KernelWriter):
       if (tc == "A" and not _segOff.get("aBaseline", False)) or \
          (tc == "B" and not _segOff.get("bBaseline", False)):
         return _segOff["writeStrideBytes"]
-    half = round(mt * du * bpe // dim1Divisor)
-    extraPadSize = half // ldsBlockSizePerPad * ldsPadSize if ldsBlockSizePerPad != 0 and ldsPadSize != 0 else 0
-    return half + extraPadSize
+    return geo.ldsStepBytes
 
   def tdmSplitGlobalInc(self, kernel: Mapping, tP: Mapping):
-    """Return (strideRef, const) for the TDMSplit global split increment
-    (stride * mt*bpe//2). strideRef mirrors the descriptor init: strideRef(tc, ti)
-    for unrolled-major, else strideRef(tc, 3). const is a compile-time integer.
-    Assumes the TDMSplit && !MXS && !Sparse precondition (dim1Divisor == 2)."""
+    """`(strideRef, const)` for the global region step: the stride of the axis the split CUTS,
+    times that axis's per-region extent in bytes.
+
+    Both halves come from `TdmSplitGeometry`, so they cannot be paired from different axes —
+    which is precisely what went wrong before `TDMSplitA/B`: the stride mirrored the descriptor's
+    dim1 while the constant was always `mt*bpe/2`, so under `tlu` a REDUCTION stride was scaled by
+    a FREE-axis extent.  It emitted the right number only at `mt*bpe/2 == du/2`.
+
+    `strideRef` may be a compile-time `constStride*` STRING rather than an sgpr — the split axis
+    is the unit-stride index whenever it is the contiguous one, i.e. the free axis under `tlu`.
+    Callers must handle both; see `_splitIncOperand`."""
     tc: str = tP["tensorChar"]
     ti: int = tP["idx"]
-    unrolledMajor = not tP["tlu"]
-    mt: int = kernel[f"MacroTile{ti}"]
-    bpe = tP["bpeGR"] if not tP["isM"] else 1
-    strideRef = self.strideRef(tc, ti) if unrolledMajor else self.strideRef(tc, 3)
-    return strideRef, round(mt * bpe) // 2
+    geo = self.tdmSplitGeometry(kernel, tP)
+    # The reduction index is the LAST summation index in this operand's assignment, which for a
+    # dense GEMM is the global index 3 the descriptor already uses for `SizeL`/`StrideL`.
+    idx = ti if geo.strideAxis == "free" else 3
+    return self.strideRef(tc, idx), geo.globalConstBytes
+
+  def _splitIncOperand(self, mod: Module, dstIdx: int | str, strideRef, const: int, comment: str):
+    """Materialize `strideRef * const` (a `tdmSplitGlobalInc` pair) into sgpr `dstIdx`.
+
+    `strideRef` is either a live sgpr (`RegisterContainer`) or the compile-time string
+    `constStride<tc><idx>`, which the unit-stride index assembles to 1 — so the product is
+    just `const` and a multiply would be both wasteful and, since the operand is not an
+    sgpr, malformed."""
+    if isinstance(strideRef, str):                     # constStride* == 1
+      mod.add(SMovB32(sgpr(dstIdx), const, comment=comment))
+    else:
+      mod.add(SMulI32(sgpr(dstIdx), strideRef, const, comment=comment))
+    return mod
 
   def _tdmSplitMultiWaveInc(self, module: Module, kernel: Mapping, gIncIdx: int,
                             scratchIdx: int, tPA=None, tPB=None):
@@ -19281,12 +19595,21 @@ class KernelWriterAssembly(KernelWriter):
     ldsBoundB = self.tdmSplitLdsBoundary(kernel, tPB)
     strideRefA, constA = self.tdmSplitGlobalInc(kernel, tPA)
     strideRefB, constB = self.tdmSplitGlobalInc(kernel, tPB)
-    # The split advances along the tile's free dimension, whose stride is never the
-    # unit-stride (constStride*) index, so strideRef is always a live SGPR here.
-    assert isinstance(strideRefA, RegisterContainer) and isinstance(strideRefB, RegisterContainer), \
-        "TDMSplit multi-wave split stride must be a live SGPR, not a constStride symbol"
-    strideArgA = strideRefA
-    strideArgB = strideRefB
+    # The one caller that does not gate on the split, so it owes the check: an unsplit operand
+    # steps zero on BOTH axes, or its waves walk into another segment with the global pointer put.
+    for _tp, _lds, _const in ((tPA, ldsBoundA, constA), (tPB, ldsBoundB, constB)):
+      assert _tdm_split.split_of(kernel, _tp["tensorChar"])[0] > 1 or not (_lds or _const), \
+          "unsplit %s has a nonzero region step (lds=%s global=%s)" % (
+              _tp["tensorChar"], _lds, _const)
+    # THE FREE-AXIS STRIDE IS THE UNIT-STRIDE INDEX WHENEVER THE OPERAND IS `tlu`.  This used
+    # to assert `RegisterContainer`, on the reasoning that a split never advances along the
+    # unit-stride dimension — true only for unrolled-major operands, where dim1 (the split
+    # axis) is the free axis and dim0 is the contiguous one.  Under `tlu` the free axis IS
+    # contiguous, so `strideRef` hands back the compile-time `constStride*` symbol, which
+    # assembles to 1.  Substituting the literal 1 keeps the parity select well-formed (SALU
+    # permits one literal operand) and costs nothing when both sides are constant.
+    strideArgA = 1 if isinstance(strideRefA, str) else strideRefA
+    strideArgB = 1 if isinstance(strideRefB, str) else strideRefB
     self._emitTdmWaveParitySCCAuto(module, kernel, comment="wave parity (A=even/B=odd)",
                                   tmpTag="tdmSplitParity")
 
@@ -19299,12 +19622,18 @@ class KernelWriterAssembly(KernelWriter):
       module.add(SCSelectB32(sgpr(dstIdx), valB, sgpr(dstIdx), comment))
 
     # All parity selects run while SCC holds the parity result.
-    module.add(SCSelectB32(sgpr(gIncIdx), strideArgB, strideArgA, "split stride = parity ? B : A"))
-    if constA == constB:
-      module.add(SMulI32(sgpr(gIncIdx), sgpr(gIncIdx), constA, f"globalSplitInc = stride * {constA}"))
+    if strideArgA == 1 and strideArgB == 1:
+      # Both operands `tlu`: the whole increment is compile-time, so select the PRODUCT and
+      # skip the multiply.  Selecting the strides here instead would put two literals in one
+      # SALU instruction, which is not encodable.
+      selectByParity(gIncIdx, constB, constA, "globalSplitInc = parity ? B : A (unit free stride)")
     else:
-      selectByParity(scratchIdx, constB, constA, "globalSplit const = parity ? B : A")
-      module.add(SMulI32(sgpr(gIncIdx), sgpr(gIncIdx), sgpr(scratchIdx), "globalSplitInc = stride * const"))
+      module.add(SCSelectB32(sgpr(gIncIdx), strideArgB, strideArgA, "split stride = parity ? B : A"))
+      if constA == constB:
+        module.add(SMulI32(sgpr(gIncIdx), sgpr(gIncIdx), constA, f"globalSplitInc = stride * {constA}"))
+      else:
+        selectByParity(scratchIdx, constB, constA, "globalSplit const = parity ? B : A")
+        module.add(SMulI32(sgpr(gIncIdx), sgpr(gIncIdx), sgpr(scratchIdx), "globalSplitInc = stride * const"))
     if ldsBoundA == ldsBoundB:
       return ldsBoundA
     selectByParity(scratchIdx, ldsBoundB, ldsBoundA, "ldsSplit = parity ? B : A")
@@ -19347,7 +19676,29 @@ class KernelWriterAssembly(KernelWriter):
     ldsConstOffset: int = kernel[f"LdsOffset{tc}"]
     ldsBlockSizePerPad: int = kernel[f"LdsBlockSizePerPad{tc}"]
     ldsPadSize: int = int(kernel[f"LdsPad{tc}"] * bpe)
-    dim1Divisor = 2 if (kernel["TDMSplit"] and not ("MXS" in tc) and not kernel["ProblemType"]["Sparse"]) else 1
+    # THE SPLIT DIVISOR GOES ON THE AXIS `TDMSplitA/B` NAMED; THE WAVE DIVISOR STAYS ON dim1.
+    #
+    # dim0 is always the CONTIGUOUS dimension and dim1 the strided one (`setTensorStride0`
+    # advances dim1), so which of them carries the MacroTile is layout-decided, never chosen —
+    # `geo.splitDim` is that decision.  Putting the divisor on dim1 unconditionally is what made
+    # `TDMSplit: True` perform a DU split on `tlu` operands.
+    #
+    # THE WAVE DIVISOR MUST NOT FOLLOW IT, and that is not conservatism — it is what keeps the
+    # LDS image intact.  On tile-major, LDS is `[unroll][free]`.  Partitioning the waves along
+    # dim1 (= du there) gives each cooperating component a slab of consecutive K rows, which in
+    # that image is a CONTIGUOUS byte range, so the components' dense writes reproduce exactly
+    # the image one wave would have written — the read side needs to know nothing.  Moving the
+    # wave divisor to the free axis instead makes each component a separately packed narrow
+    # block -- the same image change the split makes, but with no read-side handling, which fails
+    # multi-wave NT whether or not the tile is split.  The split
+    # can move because `region_bytes` / `region_row_elems` teach the read side about it; the wave
+    # partition has no such counterpart.
+    geo = self.tdmSplitGeometry(kernel, tP)
+    dim1Divisor = geo.factor            # kept for the emitted comments and the seg-interleave math
+    if geo.splitDim == 0:
+      tile0Emit, tile1Emit = sizeTile0 // geo.factor, sizeTile1 // numWaves
+    else:
+      tile0Emit, tile1Emit = sizeTile0, sizeTile1 // numWaves // geo.factor
     isSparseTrack: bool = (kernel["ProblemType"]["Sparse"] == 1 and tP["isA"]) or (kernel["ProblemType"]["Sparse"] == 2 and tP["isB"])
     isMetadata: bool = tP["isM"]
     isMetadataML1: bool = isMetadata and kernel["ProblemType"]["Sparse"] and kernel["ProblemType"]["MetadataLayout"]
@@ -19415,14 +19766,14 @@ class KernelWriterAssembly(KernelWriter):
                                   isSparseTrack=isSparseTrack if not dim0IsK else False,
                                   isMetadata=isMetadata if not dim0IsK else False))
       if is6bit:
-        mod.add(comp.setTensorTile0(descSgprName(1), sizeTile0 * 3 // 4, self, 0))
+        mod.add(comp.setTensorTile0(descSgprName(1), tile0Emit * 3 // 4, self, 0))
       else:
-        mod.add(comp.setTensorTile0(descSgprName(1), sizeTile0, self, sizeShifter))
+        mod.add(comp.setTensorTile0(descSgprName(1), tile0Emit, self, sizeShifter))
       if isTdmIter:
         mod.add(comp.setTensorTile1(descSgprName(1),
                                     self._tdmIterTileDim1(kernel, tc, du, dtype), self))
       else:
-        mod.add(comp.setTensorTile1(descSgprName(1), sizeTile1 // numWaves // dim1Divisor, self))
+        mod.add(comp.setTensorTile1(descSgprName(1), tile1Emit, self))
 
     # --- Tensor stride ---
     if isMetadata and not kernel["ProblemType"]["MetadataLayout"]:
@@ -19442,11 +19793,12 @@ class KernelWriterAssembly(KernelWriter):
     else:
       mod.add(comp.setTensorStride0(descSgprName(1), strideRefName(), sizeShifter))
 
-    if (kernel["TDMSplit"] and not ("MXS" in tc) and not kernel["ProblemType"]["Sparse"]):
+    if _tdm_split.split_of(kernel, tc)[0] > 1:
       splitBoundary: int = self.tdmSplitLdsBoundary(kernel, tP)
       strideRefG, globalIncConst = self.tdmSplitGlobalInc(kernel, tP)
       mod.add(SMovB32(sgpr(f"tdm{tc}LdsSplitIncs"), splitBoundary, comment=f"tdm{tc} Lds Split Incs({round(mt * du * bpe // dim1Divisor)})"))
-      mod.add(SMulI32(sgpr(f"tdm{tc}GlobalSplitIncs"), strideRefG, globalIncConst, comment=f"tdm{tc} Global Split Incs(stride * {mt * bpe // dim1Divisor})"))
+      self._splitIncOperand(mod, f"tdm{tc}GlobalSplitIncs", strideRefG, globalIncConst,
+                            f"tdm{tc} Global Split Incs(stride * {mt * bpe // dim1Divisor})")
 
     if isTdmIter:
       # Solution.py rejects iterate mode on a tlu tensor, so dim1 is the tile height.
@@ -19469,7 +19821,23 @@ class KernelWriterAssembly(KernelWriter):
 
     return mod
 
-  def initTDMDescriptorWaveSeparatedImpl(self, kernel, tP, waveIdxSgpr: int | str = "WaveIdx") -> Module:
+  def initTDMDescriptorWaveSeparatedImpl(self, kernel, tP, waveIdxSgpr: int | str = "WaveIdx",
+                                         waveFirst: int = None, waveCount: int = None) -> Module:
+    """`waveFirst`/`waveCount` — this member's CONTIGUOUS wave range, exactly as
+    `calculateStartAddrWaveSeparated` takes them.
+
+    Omitted means the historical PARITY partition: two members, `NumWaves // 2` waves each, slice
+    index `waveIdx >> 1`.
+
+    THE GLOBAL SIDE GOT THIS AND THE LDS SIDE DID NOT.  `calculateStartAddrWaveSeparated` was
+    taught the range, but `initTDMDescriptorWaveSeparatedGroup`'s lambda dropped `first`/`count`
+    on the floor, so THIS function kept computing `numComp = NumWaves // 2` and
+    `wId = waveIdx >> 1`.  Under `A_MX`'s `[2,1,1]` shares MXSA owns wave 2 ALONE: the right slice
+    is 0 of 1, but the parity arithmetic gives `2>>1 = 1` of 2 — so the scale is written at a
+    half-tile LDS offset under a descriptor declaring half the tile, and MXSB (wave 3) computes the
+    same `1`.  Both scale tensors land at the wrong address with the wrong extent, which is the
+    all-inf output.  Invisible at every equal-share grouping, because there `count == NumWaves//2`
+    and `waveIdx - first == waveIdx >> 1` coincide."""
     comp: TensorDataMoverLoad = TensorDataMoverLoad.find(self)
     tc: str = tP['tensorChar']
     tlu: int = tP["tlu"]
@@ -19503,13 +19871,24 @@ class KernelWriterAssembly(KernelWriter):
     bpe: float = tP["bpeGR"] if not tP["isM"] else 1
     #TODO: temp hack
     numWaves: int = kernel["NumWaves"]
-    numComp: int = numWaves // 2
-    assert numComp & (numComp - 1) == 0
+    _ranged: bool = waveCount is not None
+    numComp: int = waveCount if _ranged else numWaves // 2
+    assert numComp >= 1, "numComp must be >= 1"
+    if not _ranged:
+        assert numComp & (numComp - 1) == 0
     wavelen: int = kernel["WavefrontSize"]
     ldsConstOffset: int = kernel[f"LdsOffset{tc}"]
     ldsBlockSizePerPad: int = kernel[f"LdsBlockSizePerPad{tc}"]
     ldsPadSize: int = int(kernel[f"LdsPad{tc}"] * bpe)
-    dim1Divisor = 2 if (kernel["TDMSplit"] and not ("MXS" in tc) and not kernel["ProblemType"]["Sparse"]) else 1
+    # Split divisor on the axis `TDMSplitA/B` named, component divisor left on dim1 — see
+    # `initTDMDescriptor` for why the two must not travel together.  Here the cooperating unit
+    # is `numComp` (two waves per component) rather than `numWaves`; the axis rule is the same.
+    geo = self.tdmSplitGeometry(kernel, tP)
+    dim1Divisor = geo.factor
+    if geo.splitDim == 0:
+      tile0Emit, tile1Emit = sizeTile0 // geo.factor, sizeTile1 // numComp
+    else:
+      tile0Emit, tile1Emit = sizeTile0, sizeTile1 // numComp // geo.factor
     if ("MXS" in tc):
         subTc = tc[3]
         mxUnit: int = kernel["MatrixInstK"] // kernel["ProblemType"][f"MXBlock{subTc}"]
@@ -19530,12 +19909,34 @@ class KernelWriterAssembly(KernelWriter):
     mod.add(comp.setGlobalAddr(descSgprName(0), f"Address{tc}"))
     clusterComp = ClusterLoadTDM.find(self)
     if clusterComp:
-      mod.add(clusterComp.applyToDescriptor(self, kernel, descSgprName(1), tc, waveSeparated=True))
+      mod.add(clusterComp.applyToDescriptor(self, kernel, descSgprName(1), tc))
 
     with self.allocTmpSgpr(2, tag="initTDMDescriptorWaveSeparatedImpl_tmpSgprRes") as tmpSgprRes:
       waveOffsetSgprIdx: int = tmpSgprRes.idx
       tmpPadSgprIdx: int = tmpSgprRes.idx + 1
-      mod.add(SLShiftRightB32(sgpr(waveOffsetSgprIdx), 1, sgpr(waveIdxSgpr), "wId=WaveIdx // 2 (each component covers 2 waves: numComp = numWaves // 2)"))
+      if _ranged:
+        # This member owns waves [waveFirst, waveFirst+waveCount); its slice index is the offset
+        # INTO that range, over `waveCount` cooperating waves — not `waveIdx >> 1` over two.
+        if waveFirst:
+          mod.add(SSubU32(sgpr(waveOffsetSgprIdx), sgpr(waveIdxSgpr), waveFirst,
+                          f"wId = waveIdx - waveFirst({waveFirst}), {waveCount} wave(s) on {tc}"))
+        else:
+          mod.add(SMovB32(sgpr(waveOffsetSgprIdx), sgpr(waveIdxSgpr),
+                          f"wId = waveIdx (range starts at 0, {waveCount} wave(s) on {tc})"))
+      else:
+        mod.add(SLShiftRightB32(sgpr(waveOffsetSgprIdx), 1, sgpr(waveIdxSgpr), "wId=WaveIdx // 2 (each component covers 2 waves: numComp = numWaves // 2)"))
+      # THE SHARES MUST PARTITION THE TILE.  `mt // numComp` is integer division and nothing
+      # checked it: `FUSE_WAVE_SHARES` [3,1] at mt=64 gives 64//3 = 21, and 3 waves x 21 = 63 --
+      # the kernel assembles, runs, and silently drops a row of the tile.  A share that does not
+      # divide the tile is not a legal partition; refuse it here (RuntimeError = per-kernel)
+      # rather than emit a load that covers less than it claims.
+      if mt % numComp:
+        raise RuntimeError(
+            f"TDMFuse wave share for {tc} gives numComp={numComp}, which does not divide its tile "
+            f"MacroTile={mt} ({mt} % {numComp} = {mt % numComp}).  `mt // numComp` would truncate "
+            f"and the cooperating waves would cover {numComp * (mt // numComp)} of {mt} rows -- a "
+            f"silent short load.  Choose shares that partition the tile (see LoopModel/fuse.py "
+            f"FUSE_WAVE_SHARES).")
       dataBytes = mt // numComp * du * int(bpe * 4) // (4 * dim1Divisor)
       _segOffAB = kernel["LDSSegInterleaveOffsets"] if kernel.get("LDSSegmentInterleave") == 1 else {}
       # Active tensor only gets the component wave jump; the baseline tensor (aBaseline/bBaseline) is untouched.
@@ -19547,11 +19948,38 @@ class KernelWriterAssembly(KernelWriter):
       # componentSplit: the wave base carries the component segment jump (wId * writeStrideBytes);
       # the per-vIdx split stays within the segment.
       _segComponentSplit = _segAB and _segOffAB.get("componentSplit", False) and _segOffAB.get("activeTC") == tc
-      _segWaveJump = (_segAB and not kernel["TDMSplit"]) or _segPortSplit or _segComponentSplit
+      # Per operand: a split tensor gets the component displacement from its region walk, an
+      # unsplit one needs it on the wave base -- and the reads look for it there either way.
+      _segWaveJump = ((_segAB and _tdm_split.split_of(kernel, tc)[0] <= 1)
+                      or _segPortSplit or _segComponentSplit)
       _segFootprint = _segWaveJump and kernel["LDSSegInterleaveOffsets"].get("footprintPacked", False)
+      _wavesPerComp, _withinBytes = 1, 0
       if _segWaveJump:
+          # `writeStrideBytes` steps between LDS COMPONENTS, so only a component index may scale it.
+          # An operand owning more waves than components (a solo operand at 4 waves against the
+          # layout's 2) has several waves per component, which step by `_withinBytes` instead.
+          _wavesPerComp, _withinBytes = _tdm_split.seg_component_fold(
+              numComp, kernel["NumWaves"] // 2, dataBytes,
+              kernel["LDSSegInterleaveOffsets"]["writeStrideBytes"])
+          # The component jump is post-pad, so the within-component step must be too.
+          if _withinBytes and ldsBlockSizePerPad != 0 and ldsPadSize != 0:
+            _withinBytes += _withinBytes // ldsBlockSizePerPad * ldsPadSize
           dataBytes = kernel["LDSSegInterleaveOffsets"]["writeStrideBytes"]
-      mod.add(SMulI32(sgpr(waveOffsetSgprIdx), sgpr(waveOffsetSgprIdx), dataBytes, f"woffset = wId * (mt // numComp * du * bpe // dim1Divisor)"))
+      if _wavesPerComp > 1:
+        assert _wavesPerComp & (_wavesPerComp - 1) == 0, \
+            "waves per LDS component must be a power of two, got %d" % _wavesPerComp
+        mod.add(SLShiftRightB32(sgpr(tmpPadSgprIdx), int(log2(_wavesPerComp)), sgpr(waveOffsetSgprIdx),
+                f"component = wId // {_wavesPerComp} (waves per component)"))
+        mod.add(SAndB32(sgpr(waveOffsetSgprIdx), sgpr(waveOffsetSgprIdx), _wavesPerComp - 1,
+                f"wId within its component"))
+        mod.add(SMulI32(sgpr(waveOffsetSgprIdx), sgpr(waveOffsetSgprIdx), _withinBytes,
+                f"woffset = wIdInComp * {_withinBytes}"))
+        mod.add(SMulI32(sgpr(tmpPadSgprIdx), sgpr(tmpPadSgprIdx), dataBytes,
+                f"componentJump = component * {dataBytes}"))
+        mod.add(SAddU32(sgpr(waveOffsetSgprIdx), sgpr(waveOffsetSgprIdx), sgpr(tmpPadSgprIdx),
+                "woffset += componentJump"))
+      else:
+        mod.add(SMulI32(sgpr(waveOffsetSgprIdx), sgpr(waveOffsetSgprIdx), dataBytes, f"woffset = wId * (mt // numComp * du * bpe // dim1Divisor)"))
       # footprintPacked: writeStrideBytes is the post-pad footprint fA+fB; A/B tiles are packed
       # exactly, so the component jump must NOT be re-padded (tile-internal pad is set below).
       if ldsBlockSizePerPad != 0 and ldsPadSize != 0 and not _segFootprint:
@@ -19596,8 +20024,24 @@ class KernelWriterAssembly(KernelWriter):
           tmpSgprWaveOffset = tmpSgpr.idx
           if numMxKGroups < numComp:
             # M/N-splitting: offset within same k_group along tile dimension
-            mod.add(VReadfirstlaneB32(sgpr(tmpSgprWaveOffset), vgpr("Serial"), "first tId"))
-            mod.add(SLShiftRightB32(sgpr(tmpSgprWaveOffset), ceil(log2(wavelen)) + 1, sgpr(tmpSgprWaveOffset), "wId=fTid // wavelen // 2"))
+            # THE SECOND SLICE.  This recomputes the member's wave index for the tensor-DIM clamp,
+            # independently of the LDS-offset slice above -- and it was still the PARITY form
+            # (`fTid // wavelen // 2`, i.e. two waves per member) after that one was taught the
+            # range.  Under `[2,1,1]` or `[1,1,1,1]` a member on ONE wave got index `waveIdx >> 1`
+            # over an assumed two, so `dim0` was clamped by the wrong wave's share and
+            # `SCMovB32(dim0, 0)` zeroed the dim for waves the member does own.  Same defect as the
+            # LDS slice, same function, ten lines apart -- the reason converting the first one was
+            # necessary but not sufficient.
+            if _ranged:
+              if waveFirst:
+                mod.add(SSubU32(sgpr(tmpSgprWaveOffset), sgpr(waveIdxSgpr), waveFirst,
+                                f"wId = waveIdx - waveFirst({waveFirst}), {waveCount} wave(s) on {tc}"))
+              else:
+                mod.add(SMovB32(sgpr(tmpSgprWaveOffset), sgpr(waveIdxSgpr),
+                                f"wId = waveIdx (range starts at 0, {waveCount} wave(s) on {tc})"))
+            else:
+              mod.add(VReadfirstlaneB32(sgpr(tmpSgprWaveOffset), vgpr("Serial"), "first tId"))
+              mod.add(SLShiftRightB32(sgpr(tmpSgprWaveOffset), ceil(log2(wavelen)) + 1, sgpr(tmpSgprWaveOffset), "wId=fTid // wavelen // 2"))
             mod.add(SMulI32(sgpr(tmpSgprWaveOffset), sgpr(tmpSgprWaveOffset), round(mt // numComp), "woffset = wId * (mt // numComp)"))
             mod.add(SSubU32(sgpr(dim0), sgpr(dim0), sgpr(tmpSgprWaveOffset), "consider multiple waves"))
             mod.add(SCMovB32(sgpr(dim0), 0, "set to 0 for waves that no enough data to load"))
@@ -19622,8 +20066,24 @@ class KernelWriterAssembly(KernelWriter):
         with self.allocTmpSgpr(1, tag="initTDMDescriptorWaveSeparatedImpl_tmpSgpr3") as tmpSgpr:
           tmpSgprWaveOffset = tmpSgpr.idx
           if unrolledMajor:
-            mod.add(VReadfirstlaneB32(sgpr(tmpSgprWaveOffset), vgpr("Serial"), "first tId"))
-            mod.add(SLShiftRightB32(sgpr(tmpSgprWaveOffset), ceil(log2(wavelen)) + 1, sgpr(tmpSgprWaveOffset), "wId=fTid // wavelen // 2"))
+            # THE SECOND SLICE.  This recomputes the member's wave index for the tensor-DIM clamp,
+            # independently of the LDS-offset slice above -- and it was still the PARITY form
+            # (`fTid // wavelen // 2`, i.e. two waves per member) after that one was taught the
+            # range.  Under `[2,1,1]` or `[1,1,1,1]` a member on ONE wave got index `waveIdx >> 1`
+            # over an assumed two, so `dim0` was clamped by the wrong wave's share and
+            # `SCMovB32(dim0, 0)` zeroed the dim for waves the member does own.  Same defect as the
+            # LDS slice, same function, ten lines apart -- the reason converting the first one was
+            # necessary but not sufficient.
+            if _ranged:
+              if waveFirst:
+                mod.add(SSubU32(sgpr(tmpSgprWaveOffset), sgpr(waveIdxSgpr), waveFirst,
+                                f"wId = waveIdx - waveFirst({waveFirst}), {waveCount} wave(s) on {tc}"))
+              else:
+                mod.add(SMovB32(sgpr(tmpSgprWaveOffset), sgpr(waveIdxSgpr),
+                                f"wId = waveIdx (range starts at 0, {waveCount} wave(s) on {tc})"))
+            else:
+              mod.add(VReadfirstlaneB32(sgpr(tmpSgprWaveOffset), vgpr("Serial"), "first tId"))
+              mod.add(SLShiftRightB32(sgpr(tmpSgprWaveOffset), ceil(log2(wavelen)) + 1, sgpr(tmpSgprWaveOffset), "wId=fTid // wavelen // 2"))
             mod.add(SMulI32(sgpr(tmpSgprWaveOffset), sgpr(tmpSgprWaveOffset), round(mt // numComp // dim1Divisor), "woffset = wId * (mt // numComp // dim1Divisor)"))
             mod.add(SSubU32(sgpr(dim1), sgpr(dim1), sgpr(tmpSgprWaveOffset), "consider multiple waves"))
             mod.add(SCMovB32(sgpr(dim1), 0, "set to 0 for waves that no enough data to load"))
@@ -19657,14 +20117,14 @@ class KernelWriterAssembly(KernelWriter):
     else:
       is6bit = dtype.is6bitFloat()
       if is6bit:
-        mod.add(comp.setTensorTile0(descSgprName(1), sizeTile0 * 3 // 4, self, 0))
+        mod.add(comp.setTensorTile0(descSgprName(1), tile0Emit * 3 // 4, self, 0))
       else:
-        mod.add(comp.setTensorTile0(descSgprName(1), sizeTile0, self, sizeShifter))
+        mod.add(comp.setTensorTile0(descSgprName(1), tile0Emit, self, sizeShifter))
       if isTdmIter:
         mod.add(comp.setTensorTile1(descSgprName(1),
                                     self._tdmIterTileDim1(kernel, tc, du, dtype), self))
       else:
-        mod.add(comp.setTensorTile1(descSgprName(1), sizeTile1 // numComp // dim1Divisor, self))
+        mod.add(comp.setTensorTile1(descSgprName(1), tile1Emit, self))
       if is6bit:
         with self.allocTmpSgpr(1, tag="initTDMDescriptorWaveSeparatedImpl_tmpF62") as tmpF6:
           strRef = strideRefName()
@@ -19682,25 +20142,76 @@ class KernelWriterAssembly(KernelWriter):
 
     return mod
 
-  def initTDMDescriptorWaveSeparated(self, kernel, tPA, tPB, waveIdxSgpr: int | str = "WaveIdx") -> Module:
-    #TODO: TDM implement
-    mod = Module("TDM Init Wave Separated")
-    tcA: str = tPA["tensorChar"]
-    tcB: str = tPB["tensorChar"]
-    tdmInitLblA = Label(self.labels.getNameInc(f"TDMInit{tcA}"), "")
-    tdmInitLblB = Label(self.labels.getNameInc(f"TDMInit{tcB}"), "")
-    tdmInitLblEnd = Label(self.labels.getNameInc(f"TDMInit{tcA}{tcB}End"), "")
-    mod.add(tdmInitLblA)
+  def tdmWaveSelect(self, tps, ranges, waveIdxSgpr, tag: str, bodyFn) -> Module:
+    """Dispatch on the wave index across a Φ group's members, running `bodyFn(tp, first, count)`
+    in the arm that member owns.
 
-    mod.add(SBitcmp1B32(sgpr(waveIdxSgpr), 0, "Check parity of wId"))
-    mod.add(SCBranchSCC1(tdmInitLblB.getLabelName(), "Jump to B if wId is odd"))
+    TWO SELECTORS, and which one is used is `ranges`:
 
-    mod.add(self.initTDMDescriptorWaveSeparatedImpl(kernel, tPA, waveIdxSgpr))
-    mod.add(SBranch(tdmInitLblEnd.getLabelName()))
-    mod.add(tdmInitLblB)
-    mod.add(self.initTDMDescriptorWaveSeparatedImpl(kernel, tPB, waveIdxSgpr))
-    mod.add(tdmInitLblEnd)
+      ranges is None   the historical PARITY rule.  Exactly two members; `SBitcmp1B32(waveIdx, 0)`
+                       sends odd waves to member 1 and even to member 0.  This is what the shipping
+                       `TDMFuse: 1` emits, and it is reproduced instruction-for-instruction so those
+                       kernels stay byte-identical.
+
+      ranges given     `[(member_index, first_wave, count)]` from `LoopModel.fuse.wave_ranges` —
+                       CONTIGUOUS ranges, so the arm is chosen by an ascending bound chain
+                       (`waveIdx < first+count`).  A range partition is what lets a group split
+                       UNEVENLY: `A_MX` gives A two waves and each scale one, because A is ~32x the
+                       bytes of a scale and an equal split would idle half the waves.
+
+    The chain tests every member but the last and falls through to it, so N members cost N-1
+    compares and the common (parity) path costs the one `SBitcmp1B32` it always did."""
+    mod = Module(tag)
+    names = [tp["tensorChar"] for tp in tps]
+
+    if ranges is None:
+      assert len(tps) == 2, f"{tag}: the parity selector takes exactly two members, got {names}"
+      # LABEL CREATION ORDER IS LOAD-BEARING: `getNameInc` is a counter, so naming End first would
+      # renumber every label in the shipping parity path and diff the assembly for no reason.
+      # A, B, End — exactly the order the two-member form used before this was factored out.
+      lblA = Label(self.labels.getNameInc(f"{tag}{names[0]}"), "")
+      lblB = Label(self.labels.getNameInc(f"{tag}{names[1]}"), "")
+      end = Label(self.labels.getNameInc(f"{tag}{names[0]}{names[1]}End"), "")
+      mod.add(lblA)
+      mod.add(SBitcmp1B32(sgpr(waveIdxSgpr), 0, "Check parity of wId"))
+      mod.add(SCBranchSCC1(lblB.getLabelName(), f"Jump to {names[1]} if wId is odd"))
+      mod.add(bodyFn(tps[0], None, None))
+      mod.add(SBranch(end.getLabelName()))
+      mod.add(lblB)
+      mod.add(bodyFn(tps[1], None, None))
+      mod.add(end)
+      return mod
+
+    labels = [Label(self.labels.getNameInc(f"{tag}{names[mi]}"), "") for mi, _f, _c in ranges]
+    end = Label(self.labels.getNameInc(f"{tag}{''.join(names)}End"), "")
+    for i, (mi, first, count) in enumerate(ranges[:-1]):
+      mod.add(SCmpLtU32(src0=sgpr(waveIdxSgpr), src1=first + count,
+                        comment=f"wId < {first + count}? -> {names[mi]} owns waves "
+                                f"{first}..{first + count - 1}"))
+      mod.add(SCBranchSCC1(labels[i].getLabelName(), f"Jump to {names[mi]}"))
+    # fallthrough is the LAST member: every earlier bound failed, so wId is in its range
+    _mi, _first, _count = ranges[-1]
+    mod.add(bodyFn(tps[_mi], _first, _count))
+    mod.add(SBranch(end.getLabelName()))
+    for i, (mi, first, count) in enumerate(ranges[:-1]):
+      mod.add(labels[i])
+      mod.add(bodyFn(tps[mi], first, count))
+      mod.add(SBranch(end.getLabelName()))
+    mod.add(end)
     return mod
+
+  def initTDMDescriptorWaveSeparated(self, kernel, tPA, tPB, waveIdxSgpr: int | str = "WaveIdx", ranges=None) -> Module:
+    #TODO: TDM implement
+    return self.tdmWaveSelect(
+        [tPA, tPB], ranges, waveIdxSgpr, "TDMInit",
+        lambda tp, first, count: self.initTDMDescriptorWaveSeparatedImpl(kernel, tp, waveIdxSgpr))
+
+  def initTDMDescriptorWaveSeparatedGroup(self, kernel, tps, ranges, waveIdxSgpr: int | str = "WaveIdx") -> Module:
+    """N-member form — the 2-member `initTDMDescriptorWaveSeparated` is the special case."""
+    return self.tdmWaveSelect(
+        tps, ranges, waveIdxSgpr, "TDMInit",
+        lambda tp, first, count: self.initTDMDescriptorWaveSeparatedImpl(
+            kernel, tp, waveIdxSgpr, first, count))
 
   def tdmGlobalOffset(self, kernel: Mapping, tP: Mapping) -> Module:
     comp: TensorDataMoverLoad = TensorDataMoverLoad.find(self)
@@ -19708,26 +20219,22 @@ class KernelWriterAssembly(KernelWriter):
     return comp.calculateStartAddr(self, kernel, tP, f"Address{tc}")
 
   def tdmGlobalOffsetWaveSeparated(self, kernel: Mapping, tPA: Mapping, tPB: Mapping, waveIdxSgpr: int | str = "WaveIdx") -> Module:
-    mod = Module("TDM Global Offset Wave Separated")
+    return self.tdmGlobalOffsetWaveSeparatedGroup(kernel, [tPA, tPB], None, waveIdxSgpr)
+
+  def tdmGlobalOffsetWaveSeparatedGroup(self, kernel: Mapping, tps, ranges, waveIdxSgpr: int | str = "WaveIdx") -> Module:
+    """N-member wave-separated start-address setup; see `tdmWaveSelect` for the two selectors.
+
+    The per-member `waveFirst`/`waveCount` are threaded into `calculateStartAddrWaveSeparated`,
+    which is where the slice index actually differs: parity takes `waveIdx >> 1` over
+    `NumWaves // 2` cooperating waves, a range takes `waveIdx - first` over `count` of them."""
     comp: TensorDataMoverLoad = TensorDataMoverLoad.find(self)
-    tcA: str = tPA["tensorChar"]
-    tcB: str = tPB["tensorChar"]
-    tdmGlobalOffsetLblA = Label(self.labels.getNameInc(f"TDMGlobalOffset{tcA}"), "")
-    tdmGlobalOffsetLblB = Label(self.labels.getNameInc(f"TDMGlobalOffset{tcB}"), "")
-    tdmGlobalOffsetLblEnd = Label(self.labels.getNameInc(f"TDMGlobalOffset{tcA}{tcB}End"), "")
-    mod.add(tdmGlobalOffsetLblA)
 
-    mod.add(SBitcmp1B32(sgpr(waveIdxSgpr), 0, "Check parity of wId"))
-    mod.add(SCBranchSCC1(tdmGlobalOffsetLblB.getLabelName(), "Jump to B if wId is odd"))
+    def _body(tp, first, count):
+      tc: str = tp["tensorChar"]
+      return comp.calculateStartAddrWaveSeparated(
+          self, kernel, tp, f"Address{tc}", f"tdm{tc}Group0", waveIdxSgpr, first, count)
 
-    dstGroup0A = f"tdm{tcA}Group0"
-    dstGroup0B = f"tdm{tcB}Group0"
-    mod.add(comp.calculateStartAddrWaveSeparated(self, kernel, tPA, f"Address{tcA}", dstGroup0A, waveIdxSgpr))
-    mod.add(SBranch(tdmGlobalOffsetLblEnd.getLabelName()))
-    mod.add(tdmGlobalOffsetLblB)
-    mod.add(comp.calculateStartAddrWaveSeparated(self, kernel, tPB, f"Address{tcB}", dstGroup0B, waveIdxSgpr))
-    mod.add(tdmGlobalOffsetLblEnd)
-    return mod
+    return self.tdmWaveSelect(tps, ranges, waveIdxSgpr, "TDMGlobalOffset", _body)
 
   def tdmApplyStreamKOffsetWaveSeparated(self, kernel: Mapping, tPA: Mapping, tPB: Mapping) -> Module:
     mod = Module("TDM StreamK K-offset Wave Separated")
@@ -20080,10 +20587,417 @@ class KernelWriterAssembly(KernelWriter):
                         src1=sgpr(tailBankSgpr), comment=f"shift tail LocalReadAddr{tcMX} to TDM write bank"))
     return mod
 
+  def tdmIncrementGir(self, kernel, tP, wrapLead=None, tPFused=None) -> Module:
+    """TDM descriptor advance for the UseLoopModel path — the GIR-owned variant.
+
+    A SEPARATE entry point from `tdmIncrementAB`, which is left exactly as it is for every
+    non-LoopModel caller.  The two share no code on purpose: `tdmIncrementAB` decides *which*
+    iteration wraps by reconstructing it from `PrefetchGlobalRead` and the pipeline phase, and that
+    reconstruction is precisely what GIR has to override — it knows the chunk each advance targets,
+    while the scaffold only sees a loop counter.  Recalibrating the shared function for both
+    conventions is how the `prefetchIndex` value ended up being re-derived three separate ways.
+
+    The three pieces, in the order the hardware needs them:
+
+      1. DELTA.  Either the plain per-iteration stride, or — on the wrap iteration — `WrapU`, which
+         walks the address back to the tensor base.  `wrapLead` is the offset GIR supplies between
+         the chunk this advance produces and the frame the loop counter denotes; `None` means this
+         advance is on a path with no StaggerU wrap at all and takes the plain stride.
+      2. APPLY.  `addr += delta`, 64-bit.
+      3. TDMSplit correction.  A region-split copy advances by one region less on each of the
+         global and LDS halves, so the split increments are subtracted back off.  This stays on the
+         L3 side: the split is a per-region byte quantity, and GIR does not model the region-split
+         copy's the axes it varies over set yet — it will matter for the 6-axis reorder.
+
+    `tPFused` — the PEER operand of a Φ-fused movement (move 9), i.e. multi-wave TDM's aliased
+    descriptor, where `tdm{tc}Group0` is one register set serving both operands and wave parity
+    decides which each wave addresses.  ONE movement is ONE advance, so the placement, the frame
+    and `wrapLead` are exactly the unfused ones — GIR's schedule does not know about waves.  Only
+    two DATA sources change, and both are per-wave quantities the setup already prepared:
+
+      stride  `tdm{tc}{tcPeer}Incs` (set once by `tdmSetupIncrementWaveSeparated`, an s_cselect of
+              the two operands' `GlobalReadIncs` on WaveIdx bit0) instead of `GlobalReadIncs{tc}`.
+              This is not a preference: once the fused stride exists the per-operand
+              `GlobalReadIncs*` SGPRs are RETURNED TO THE POOL
+              (`releaseGlobalReadIncsSgprsAfterTdmWaveSep`), so reading them here reads freed
+              registers.
+      wrap    `WrapU` parity-selected between the two operands, since each walks back to its own
+              tensor base.
+
+    Hence one function with a peer argument rather than a second emitter: duplicating it would
+    duplicate the wrap-lead compare, which is the delicate part and was got wrong three times.
+
+    Sparse metadata is absent by construction: `Solution.py` rejects Sparse under UseLoopModel.
+    """
+    fused: bool = tPFused is not None
+    if not (kernel.get("UseSubtileImpl") or fused):
+      # UNFUSED: one descriptor per operand, so the advance is per-operand.  The invariant is
+      # about REGISTER INDEPENDENCE, not wave count.  `NumWaves == 1` coincides with it only
+      # while aliasing is unconditional at multi-wave; with `TDMFuse` selectable, unfused
+      # multi-wave allocates B its own descriptor and is legal.  What is forbidden is asking for
+      # two independent advances against ONE aliased set.
+      # PER-OPERAND, not per-kernel.  `isTdmWaveSeparated` is `bool(TDMFuse)` — a whole-kernel
+      # flag — and that was an exact proxy while every fuse grouped BOTH data operands.  It stops
+      # being one with the MX groupings: under `A_MX` the group is {A, MXSA, MXSB} and B is
+      # genuinely unfused, so it owns its descriptor and an unfused advance against it is correct.
+      # Ask who OWNS this operand's descriptor instead; the answer is the same for 0/1/4.
+      _tcHere = tP["tensorChar"]
+      _owner = self.tdmDescriptorOwners(kernel).get(_tcHere, _tcHere)
+      assert _owner == _tcHere, \
+          (f"unfused advance requested for {_tcHere} while it aliases {_owner}'s descriptor "
+           f"(TDMFuse={kernel['TDMFuse']}) — two independent advances against one aliased set")
+    comp: TensorDataMoverLoad = TensorDataMoverLoad.find(self)
+    tc: str = tP['tensorChar']
+    mod = Module("TDM increment (GIR, fused)" if fused else "TDM increment (GIR)")
+    tdmGroup0 = f"tdm{tc}Group0"
+    if fused:
+      tcPeer: str = tPFused['tensorChar']
+      incSgprName = f"tdm{tc}{tcPeer}Incs"
+    else:
+      incSgprName = f"GlobalReadIncs{tc}"
+
+    if self.states.staggerUCode and wrapLead is not None:
+      # A fused advance needs two more temporaries to hold the parity-selected WrapU pair: the
+      # parity compare and the wrap-lead compare BOTH land in SCC, so the wrap value has to be
+      # materialized out of SCC before the second compare overwrites it.
+      with self.allocTmpSgpr(4 if fused else 2, tag="tdmIncrementGir_tmpSgprInfo") as tmpSgprInfo:
+        incTmpLo = tmpSgprInfo.idx
+        incTmpHi = tmpSgprInfo.idx + 1
+        if fused:
+          # Each operand walks back to its OWN tensor base, so the wrap is per-operand even though
+          # the descriptor is shared.  Select it first (see the SCC note above).
+          wrapTmpLo = tmpSgprInfo.idx + 2
+          wrapTmpHi = tmpSgprInfo.idx + 3
+          _members, _ranges = self.tdmFuseGroupOf(kernel, tc)
+          if _ranges is None:
+            # PARITY, two members: keep the 2-instruction s_cselect.  Routing this through
+            # `tdmWaveSelect` would emit a branch chain instead and diff every shipping kernel.
+            if self.isTdmWaveIdxLive(kernel):
+              self._emitTdmWaveParitySCC(mod, kernel, comment="check wave parity")
+            else:
+              with self.allocTmpSgpr(1, tag="tdmIncrementGir_waveIdTmp") as waveIdTmp:
+                self._emitTdmWaveParitySCC(mod, kernel, waveIdTmp.idx, "check wave parity")
+            mod.add(SCSelectB32(dst=sgpr(wrapTmpLo), src0=sgpr(f"WrapU{tcPeer}+0"),
+                                src1=sgpr(f"WrapU{tc}+0"),
+                                comment="select WrapU by wave parity (lo)"))
+            mod.add(SCSelectB32(dst=sgpr(wrapTmpHi), src0=sgpr(f"WrapU{tcPeer}+1"),
+                                src1=sgpr(f"WrapU{tc}+1"),
+                                comment="select WrapU by wave parity (hi)"))
+          else:
+            # UNEVEN / 3-WAY: more members than an `s_cselect` names, but the ranges are ascending
+            # and contiguous, so a chain of them settles on the right one -- each member's wrap
+            # overwrites the running value for every wave at or above its first.  Each member walks
+            # back to its OWN tensor base, so dropping the third would advance MXSB by MXSA's wrap.
+            # The chain compares the wave INDEX, not its parity bit, so a reclaimed `WaveIdx`
+            # comes from the packed ArgType field rather than a Serial remat.
+            if not self._tdmWaveIdxNeedsTmp(kernel):
+              self._emitTdmWrapUSelectChain(mod, _members, _ranges,
+                                            sgpr(self._emitTdmWaveIdx(mod, kernel)),
+                                            wrapTmpLo, wrapTmpHi)
+            else:
+              with self.allocTmpSgpr(1, tag="tdmIncrementGir_waveIdTmp") as waveIdTmp:
+                _wid = self._emitTdmWaveIdx(mod, kernel, waveIdTmp.idx)
+                self._emitTdmWrapUSelectChain(mod, _members, _ranges,
+                                              sgpr(_wid), wrapTmpLo, wrapTmpHi)
+          wrapLo, wrapHi = sgpr(wrapTmpLo), sgpr(wrapTmpHi)
+        else:
+          wrapLo, wrapHi = sgpr(f"WrapU{tc}+0"), sgpr(f"WrapU{tc}+1")
+        # (1) DELTA: pick WrapU on the wrap iteration, else the plain stride.  `wrapLead` shifts the
+        # comparison to the frame the ADVANCE runs in — an advance issued `n` chunks ahead of the
+        # counter's frame must compare `counter + n`.  GIR derives `n` from where it placed the
+        # advance relative to the copy it serves; the scaffold guessed it from PGR and the phase.
+        if wrapLead:
+          # `wrapLead` may be NEGATIVE: a steady advance under GIR's copy-then-advance convention
+          # runs one chunk BEHIND the frame the scaffold's counter denotes, so the compare shifts
+          # the other way.  `SAddU32` with a negative literal is not expressible, so subtract.
+          if wrapLead > 0:
+            mod.add(SAddU32(dst=sgpr(incTmpLo),
+                            src0=self.loopCounter(kernel, self.states.unrollIdx),
+                            src1=wrapLead, comment="GIR wrap lead(+%u)" % wrapLead))
+          else:
+            mod.add(SSubU32(dst=sgpr(incTmpLo),
+                            src0=self.loopCounter(kernel, self.states.unrollIdx),
+                            src1=-wrapLead, comment="GIR wrap lead(-%u)" % -wrapLead))
+          mod.add(SCmpEQU32(src0=sgpr("StaggerUIter"), src1=sgpr(incTmpLo),
+                            comment="Is this wrapIter? (GIR lead)"))
+        else:
+          mod.add(SCmpEQU32(src0=self.loopCounter(kernel, self.states.unrollIdx),
+                            src1=sgpr("StaggerUIter"), comment="Is this the wrapIter? (GIR)"))
+        mod.add(SCSelectB32(dst=sgpr(incTmpLo), src0=wrapLo, src1=sgpr(incSgprName),
+                            comment="select WrapU or normal inc (lo)"))
+        mod.add(SCSelectB32(dst=sgpr(incTmpHi), src0=wrapHi, src1=0,
+                            comment="select WrapU or normal inc (hi)"))
+        # (2) APPLY
+        mod.add(SAddU64(dst=sgpr(f"{tdmGroup0}+2", 2), src0=sgpr(f"{tdmGroup0}+2", 2),
+                        src1=sgpr(incTmpLo, 2), comment="TDM addr += inc (with wrap, 64-bit)"))
+    else:
+      # `incSgprName` is the FUSED stride when fused — this branch matters as much as the staggered
+      # one, because `GlobalReadIncs{tc}` has been returned to the pool by then (see the docstring).
+      mod.add(comp.incrementGlobalAddr(self, tdmGroup0, incSgprName))
+
+    # (3) NO TDMSplit CORRECTION HERE.
+    #
+    # GIR walks the regions itself -- `tdmRegionIncrementGir` forward between regions and once
+    # with `back=True` after the last -- so the descriptor is already back at the chunk base when
+    # this runs and the stride above is the whole advance.  The transient multi-wave recompute
+    # lives in `tdmRegionIncrementGir`'s multi-wave branch; this function owes the split nothing.
+    #
+    # Subtracting anyway double-counts: the balance is `(#fwd - #back)*splitInc + duInc ==
+    # stride`, checked as G-WALK in `Lowering/gir/verify.py` rather than left to whoever edits
+    # these two functions next.
+    return mod
+
+  # ---------------------------------------------------------------------------------------------
+  # TDMSplit primitives for the UseLoopModel path.
+  #
+  # EXTRACTED, NOT REFACTORED.  `globalReadDo`'s TDM arms are untouched and keep serving every
+  # non-ULM caller.  These two are the same work with the REGION LOOP TAKEN OUT, because that loop
+  # is the thing GIR has to own: it emits one copy per region and decides where each descriptor
+  # advance goes, while `globalReadDo` iterates the regions itself and leaves the descriptor one
+  # region ahead for `tdmIncrementGir` to subtract back.  Two owners of one walk miscompare.
+  #
+  # Same split as `tdmIncrementGir` vs `tdmIncrementAB`, for the same reason: the scaffold
+  # RECONSTRUCTS which region it is on from the loop it is running, and that reconstruction is
+  # exactly what GIR replaces.
+  # ---------------------------------------------------------------------------------------------
+
+  def _tdmGirIsIter(self, kernel, tc) -> bool:
+    """Does this operand's descriptor use the iterate-enabled (group2/group3) form?
+
+    Mirrors the `globalReadDo` arms: the operand's own `_TDMIterateMode`, OR the peer's when the
+    descriptors are aliased for wave-separated TDM (one register set serves both, so either
+    operand asking for iterate mode puts the pair in it).
+
+    Written SYMMETRICALLY, where the scaffold applies the peer term only in its `tc == "A"` arm.
+    That is not a divergence: the `tc == "B"` arm is guarded by `numWaves == 1` and
+    `isTdmWaveSeparated` implies `numWaves > 1`, so the peer term is unreachable there and the two
+    forms agree on every input.  Stating the rule once beats reproducing the place it happens to be
+    dead."""
+    # THE PEERS ARE THIS OPERAND'S Φ GROUP, not a hardcoded A/B pair.  The aliasing is what makes
+    # a peer's iterate mode contagious — one register set serves the group — so the set to OR over
+    # is exactly the group's OTHER MEMBERS.  Spelling it `"B" if tc == "A" else "A"` was the
+    # `TDMFuse: 1` pairing again: under `A_MX` the group is (A, MXSA, MXSB) and B is UNFUSED with
+    # its own descriptor, so A inherited the iterate form from an operand it does not carry, and B
+    # from a group it is not in.  Under `paired` it names the wrong peer outright (A's peer is
+    # MXSA, not B).  Whole-kernel `isTdmWaveSeparated` cannot see any of that.
+    members, _ = self.tdmFuseGroupOf(kernel, tc)
+    isIter = kernel.get("_TDMIterateMode%s" % tc, False)
+    for _m in (members or ()):
+      if _m != tc:
+        isIter = isIter or kernel.get("_TDMIterateMode%s" % _m, False)
+    return bool(isIter)
+
+  def _tdmSplitDim1ForRegion(self, mod, kernel, tP, hrIdx, h0Idx, h1Idx):
+    """Recompute (H0, H1) — the FULL and SECOND-HALF dim1 — from the LIVE descriptor.
+
+    Multi-wave only.  The two storage regions of a split tile do not have the same extent along
+    dim1: region 1 covers `H0 - halfRows`, clamped at 0.  `halfRows` is per-wave because even waves
+    move A and odd move B off one aliased descriptor, so it is parity-selected exactly as the
+    increments are.
+
+    Read from the live `Group1+2/+3` rather than cached, which is what makes it safe to call at any
+    point in the walk: it depends on no ordering, only on the descriptor as it stands."""
+    group1 = f"tdm{tP['tensorChar']}Group1"
+    # PER-REGION dim1 EXTENT — see the identical derivation in `globalReadDo`'s multi-wave arm.
+    # Parity only means A-vs-B while they SHARE this descriptor; a Φ grouping that separates them
+    # leaves one tensor here and every wave shortens by its own span.
+    _members, _ = self.tdmFuseGroupOf(kernel, tP["tensorChar"])
+    if not (_members and "A" in _members and "B" in _members):
+      halfRowsA = halfRowsB = self.tdmSplitGeometry(kernel, tP).dim1SpanPerRegion
+    else:
+      halfRowsA = self.tdmSplitGeometry(kernel, self.tPA).dim1SpanPerRegion
+      halfRowsB = self.tdmSplitGeometry(kernel, self.tPB).dim1SpanPerRegion
+    if halfRowsA == halfRowsB:
+      mod.add(SMovB32(sgpr(hrIdx), halfRowsA, "halfRows"))
+    else:
+      if self.isTdmWaveIdxLive(kernel):
+        self._emitTdmWaveParitySCC(mod, kernel)
+      else:
+        with self.allocTmpSgpr(1, tag="tdmSplitDim1ParityGir") as waveIdTmp:
+          self._emitTdmWaveParitySCC(mod, kernel, waveIdTmp.idx)
+      mod.add(SMovB32(sgpr(hrIdx), halfRowsA, "halfRows = A"))
+      mod.add(SCSelectB32(sgpr(hrIdx), halfRowsB, sgpr(hrIdx), "halfRows = parity ? B : A"))
+    mod.add(SLShiftRightB32(sgpr(h0Idx), hex(16), sgpr(f"{group1}+2"), "H0 = dim1 lo"))
+    mod.add(SLShiftLeftB32(sgpr(h1Idx), hex(16), sgpr(f"{group1}+3"), "H0 hi << 16"))
+    mod.add(SOrB32(sgpr(h0Idx), sgpr(h0Idx), sgpr(h1Idx), "H0 = full dim1"))
+    mod.add(SSubU32(sgpr(h1Idx), sgpr(h0Idx), sgpr(hrIdx), "H1 = H0 - halfRows"))
+    mod.add(SCSelectB32(sgpr(h1Idx), 0, sgpr(h1Idx), "clamp H1 to 0"))
+    return group1
+
+  def tdmLoadRegionGir(self, kernel, tP, memToken, region: int = 0) -> Module:
+    """ONE `tensor_load_to_lds` for ONE region, with the token GIR assigned to it.
+
+    No region loop and NO descriptor mutation — the caller (GIR) has already placed the descriptor
+    on the region it wants, via `tdmRegionIncrementGir`.  That is the whole point of the split:
+    `globalReadDo` does load-advance-load internally, so calling it once per region double-walks.
+
+    `memToken` is the id list from `LdsBufferIds` for THIS region's buffer; each region
+    therefore gets its own token instead of both halves sharing the caller's.
+
+    TWO PIECES OF THE SCAFFOLD ARM ARE REFUSED RATHER THAN DROPPED.  The arm also rebinds the tail
+    loop's LDS bank (`tdmResetTailLdsBuffer` / the PAP bank select) and is guarded by
+    `enableTDM{A,B}`.  Both are outside what GIR owns — the tail is unmodelled and StreamK is
+    rejected under ULM — so reaching either here means an assumption has quietly stopped holding.
+    A load emitted against the wrong LDS bank miscompares silently, which is the same failure mode
+    this task exists to remove; refusing keeps the omission from becoming one."""
+    tc = tP["tensorChar"]
+    if not kernel.get(f"enableTDM{tc}", False):
+      raise NotImplementedError(
+          f"tdmLoadRegionGir({tc}): enableTDM{tc} is off, so the scaffold's arm emits nothing "
+          f"while this primitive would emit a load (#236).")
+    if self.states.inTailLoop and not kernel["1LDSBuffer"] and kernel["StreamK"]:
+      raise NotImplementedError(
+          f"tdmLoadRegionGir({tc}): the tail loop rebinds the TDM LDS bank before the load "
+          f"(tdmResetTailLdsBuffer / PAP bank select), which GIR does not model — the tail is "
+          f"#94 and StreamK is rejected under UseLoopModel (#236).")
+    comp: TensorDataMoverLoad = TensorDataMoverLoad.find(self)
+    comp.setMemToken([int(t) for t in memToken] if memToken is not None
+                     else [self.states.ldsTensorTokenIdx])
+    isIter = self._tdmGirIsIter(kernel, tc)
+    g2 = f"tdm{tc}Group2" if isIter else None
+    g3 = f"tdm{tc}Group3" if isIter else None
+    if kernel["NumWaves"] > 1 and region:
+      # A NON-ZERO REGION HAS ITS OWN dim1 under multi-wave (see `_tdmSplitDim1ForRegion`), so the
+      # load is bracketed: narrow to H1, issue, restore H0.  Restoring matters — the descriptor is
+      # loop-carried, and leaving it narrowed would shrink every later load, region 0 included.
+      mod = Module(f"GIR region {region} load {tc}")
+      with self.allocTmpSgpr(3, tag="tdmSplitDim1Gir") as t:
+        h0, h1, hr = t.idx, t.idx + 1, t.idx + 2
+        group1 = self._tdmSplitDim1ForRegion(mod, kernel, tP, hr, h0, h1)
+        mod.add(comp.setTensorDim1(group1, h1, self))
+        mod.add(comp.issueLoad(f"tdm{tc}Group0", f"tdm{tc}Group1", g2, g3))
+        mod.add(comp.setTensorDim1(group1, h0, self))
+      return mod
+    return comp.issueLoad(f"tdm{tc}Group0", f"tdm{tc}Group1", g2, g3)
+
+  def tdmDescriptorEnableGir(self, kernel, tP, enabled: bool) -> Module:
+    """Set the descriptor's `count` for the waves carrying `tP`: 0 = NULL (the load is a no-op),
+    1 = valid.  A fused group whose members own different region counts NULLs the short member on
+    the steps it does not move; the SGPRs are per-wave, so the write is scoped to that member's
+    waves.
+
+    This is a PREDICATE, not a dispatch: only `tc`'s arm writes anything, so it lowers to the
+    ownership test plus one `s_cselect`, with no branch and no label.  These Marks sit in the
+    steady body of every asymmetric-split kernel, where `tdmWaveSelect`'s two-sided form cost a
+    branch and two labels per generation.
+    """
+    tc = tP["tensorChar"]
+    mod = Module("tdmDescriptorEnableGir%s" % tc)
+    if not self.isTdmWaveSeparated(kernel):
+      return mod
+    members, ranges = self.tdmFuseGroupOf(kernel, tc)
+    if not members:
+      return mod
+
+    # Null the descriptor the group's LOAD reads.  `tdmDescriptorOwners` names the first member,
+    # which is the register owner but not always the issuer -- TDMFuse5 groups (MXSA, A) and the
+    # load goes out on A.  Nulling anything else is a no-op.
+    owner = next((m for m in members if self.tdmIssuesOwnLoad(kernel, m)),
+                 self.tdmDescriptorOwners(kernel).get(tc, tc))
+    dst = sgpr(f"tdm{owner}Group0+0")
+    value = 1 if enabled else 0
+    comment = "%s descriptor %s" % (tc, "valid" if enabled else "NULL")
+
+    def _select(owns):
+      """`dst = owns ? value : dst`, reading the SCC just set."""
+      src0, src1 = (value, dst) if owns else (dst, value)
+      return SCSelectB32(dst=dst, src0=src0, src1=src1, comment=comment)
+
+    if ranges is None:
+      # Parity: member 0 is the even waves, member 1 the odd, and SCC carries "odd".
+      self._emitTdmWaveParitySCCAuto(mod, kernel, comment="wave parity",
+                                     tmpTag="tdmDescriptorEnableGir_waveIdTmp")
+      mod.add(_select(members.index(tc) == 1))
+      return mod
+
+    # Contiguous wave ranges: `first <= wId < first+count` is one UNSIGNED compare of `wId - first`,
+    # because a wave below `first` underflows past `count`.
+    first, count = next((f, c) for mi, f, c in ranges if members[mi] == tc)
+    owns = f"{tc} owns waves {first}..{first + count - 1}?"
+    if self.isTdmWaveIdxLive(kernel) and not first:
+      mod.add(SCmpLtU32(src0=sgpr("WaveIdx"), src1=count, comment=owns))
+      mod.add(_select(True))
+      return mod
+    with self.allocTmpSgpr(1, tag="tdmDescriptorEnableGir_waveIdTmp") as tmp:
+      wid = self._emitTdmWaveIdx(mod, kernel, tmp.idx)
+      if first or wid != tmp.idx:
+        mod.add(SSubU32(dst=sgpr(tmp.idx), src0=sgpr(wid), src1=first, comment=f"wId - {first}"))
+      mod.add(SCmpLtU32(src0=sgpr(tmp.idx), src1=count, comment=owns))
+      mod.add(_select(True))
+    return mod
+
+  def tdmRegionIncrementGir(self, kernel, tP, back: bool = False) -> Module:
+    """Move the TDM descriptor by ONE storage region (`back=True` for the inverse).
+
+    The per-region step `globalReadDo` performs inline between its two loads, lifted out so GIR can
+    place it.  GIR walks the regions forward and closes the walk with `back=True` after the last
+    one, so the descriptor ends each chunk where it started and `tdmIncrementGir` can apply the
+    PLAIN stride — one author per displacement, instead of an advance here and a matching
+    subtraction there.
+
+    Multi-wave is REFUSED, not approximated: that path recomputes the split increments transiently
+    (`_tdmSplitMultiWaveInc`) and brackets the second load with `setTensorDim1(h1)` /
+    `setTensorDim1(h0)`, so the advance is not separable from the load the way the single-wave one
+    is.  Splitting it needs its own design; a silent wrong answer here is exactly the failure this
+    task exists to remove."""
+    tc = tP["tensorChar"]
+    if "MXS" in tc or kernel["ProblemType"]["Sparse"]:
+      raise NotImplementedError(
+          f"tdmRegionIncrementGir({tc}): MX-scale / sparse region splits are out of scope (#106).")
+    g0 = f"tdm{tc}Group0"
+    mod = Module(f"GIR region {'back' if back else 'fwd'} {tc}")
+    if kernel["NumWaves"] > 1:
+      # MULTI-WAVE: the increments are not persistent SGPRs.  Even waves move A and odd waves move
+      # B off ONE aliased descriptor, so both the LDS boundary and the global stride are per-tensor
+      # and are recomputed transiently by wave parity (`_tdmSplitMultiWaveInc`, 0 persistent SGPRs).
+      # That is the whole difference from the single-wave branch: same three-instruction advance,
+      # operands computed here instead of read from a name.
+      #
+      # `back` recomputes and SUBTRACTS rather than caching the forward operands, because the temp
+      # SGPRs do not survive the loads in between — and recomputation is exact: the helper reads
+      # only compile-time geometry and the wave id.
+      # The parity select needs A and B on one descriptor; a Φ grouping that separates them
+      # (TDMFuse 2/3/5) would hand half the waves the other tensor's step, which is zero.
+      _members, _ = self.tdmFuseGroupOf(kernel, tc)
+      _shared = bool(_members) and "A" in _members and "B" in _members
+      with self.allocTmpSgpr(2, tag="tdmSplitIncGir") as incTmp:
+        gIncIdx, scratchIdx = incTmp.idx, incTmp.idx + 1
+        if _shared:
+          ldsIncOp = self._tdmSplitMultiWaveInc(mod, kernel, gIncIdx, scratchIdx,
+                                                self.tPA, self.tPB)
+        else:
+          _strideRef, _const = self.tdmSplitGlobalInc(kernel, tP)
+          self._splitIncOperand(mod, gIncIdx, _strideRef, _const,
+                                f"tdm{tc} global region step (sole tensor on this descriptor)")
+          ldsIncOp = self.tdmSplitLdsBoundary(kernel, tP)
+        if back:
+          mod.add(SSubU32(sgpr(f"{g0}+1"), sgpr(f"{g0}+1"), ldsIncOp, f"tdm{tc} region -= lds"))
+          mod.add(SSubU32(sgpr(f"{g0}+2"), sgpr(f"{g0}+2"), sgpr(gIncIdx), f"tdm{tc} region -= glb"))
+          mod.add(SSubBU32(sgpr(f"{g0}+3"), sgpr(f"{g0}+3"), 0, f"tdm{tc} region borrow"))
+        else:
+          mod.add(SAddU32(sgpr(f"{g0}+1"), sgpr(f"{g0}+1"), ldsIncOp, f"tdm{tc} region += lds"))
+          mod.add(SAddU32(sgpr(f"{g0}+2"), sgpr(f"{g0}+2"), sgpr(gIncIdx), f"tdm{tc} region += glb"))
+          mod.add(SAddCU32(sgpr(f"{g0}+3"), sgpr(f"{g0}+3"), 0, f"tdm{tc} region carry"))
+      return mod
+    lds = sgpr(f"tdm{tc}LdsSplitIncs")
+    glb = sgpr(f"tdm{tc}GlobalSplitIncs")
+    if back:
+      mod.add(SSubU32(sgpr(f"{g0}+1"), sgpr(f"{g0}+1"), lds, f"tdm{tc} region -= lds split"))
+      mod.add(SSubU32(sgpr(f"{g0}+2"), sgpr(f"{g0}+2"), glb, f"tdm{tc} region -= global split"))
+      mod.add(SSubBU32(sgpr(f"{g0}+3"), sgpr(f"{g0}+3"), 0, f"tdm{tc} region borrow"))
+    else:
+      mod.add(SAddU32(sgpr(f"{g0}+1"), sgpr(f"{g0}+1"), lds, f"tdm{tc} region += lds split"))
+      mod.add(SAddU32(sgpr(f"{g0}+2"), sgpr(f"{g0}+2"), glb, f"tdm{tc} region += global split"))
+      mod.add(SAddCU32(sgpr(f"{g0}+3"), sgpr(f"{g0}+3"), 0, f"tdm{tc} region carry"))
+    return mod
+
   def tdmIncrementAB(self, kernel, tP, loopIdx=None, prefetchIndex=0) -> Module:
-    # Subtile uses per-wave descriptors, so multi-wave is valid here
+    # Subtile uses per-wave descriptors, so multi-wave is valid here.  Otherwise the requirement
+    # is that this operand OWNS its descriptor — see `tdmIncrementGir` for why that is the real
+    # invariant and `NumWaves == 1` was only its historical proxy.
     if not kernel.get("UseSubtileImpl"):
-      assert kernel["NumWaves"] == 1
+      assert not self.isTdmWaveSeparated(kernel), \
+          "per-operand advance requested while A and B share one aliased descriptor (TDMFuse=1)"
     comp: TensorDataMoverLoad = TensorDataMoverLoad.find(self)
     tc: str = tP['tensorChar']
     mod = Module("TDM increment")
@@ -20113,7 +21027,7 @@ class KernelWriterAssembly(KernelWriter):
     else:
       mod.add(comp.incrementGlobalAddr(self, tdmGroup0, incSgprName))
 
-    if kernel["TDMSplit"] and not ("MXS" in tc) and not kernel["ProblemType"]["Sparse"]:
+    if _tdm_split.split_of(kernel, tc)[0] > 1:
       mod.add(SSubU32(sgpr(f"{tdmGroup0}+2"), sgpr(f"{tdmGroup0}+2"), sgpr(f"tdm{tc}GlobalSplitIncs"), f"tdm{tc} Global Split Incs sub"))
       mod.add(SSubBU32(sgpr(f"{tdmGroup0}+3"), sgpr(f"{tdmGroup0}+3"), 0, f"tdm{tc} Global Split borrow"))
       mod.add(SSubU32(sgpr(f"{tdmGroup0}+1"), sgpr(f"{tdmGroup0}+1"), sgpr(f"tdm{tc}LdsSplitIncs"), f"tdm{tc} Lds Split Incs sub"))
@@ -20156,10 +21070,16 @@ class KernelWriterAssembly(KernelWriter):
     """
     return bool(self.states.staggerUCode and self.isTdmWaveSeparated(kernel))
 
-  def packTdmParityIntoArgType(self, kernel) -> Module:
-    """Pack WaveIdx bit0 into named ArgType bit 8, then callers may release WaveIdx.
+  def tdmWaveIdxArgTypeBits(self, kernel) -> int:
+    """Width of the ArgType side channel holding the wave index; bit 8 is its bit 0."""
+    # THE WHOLE INDEX, not just parity: the uneven Φ groupings gate on `wId < first`, which one
+    # bit cannot answer.  `cmpNamedArgTypeEq` masks 0xFF, so every bit from 8 up is free.
+    return max(1, ceil(log2(max(1, kernel["NumWaves"]))))
 
-    In-place s_and / s_bitcmp1 / s_cbranch / s_or. No allocTmpSgpr (WaveIdx is
+  def packTdmParityIntoArgType(self, kernel) -> Module:
+    """Pack WaveIdx into named ArgType from bit 8 up, then callers may release WaveIdx.
+
+    In-place shift/or through WaveIdx itself, restored after. No allocTmpSgpr (WaveIdx is
     still live at a low index; a nested 1-wide checkout can grow the monotone
     high-water mark). ClusterBarrier and subtile keep WaveIdx and must not pack.
     """
@@ -20177,19 +21097,41 @@ class KernelWriterAssembly(KernelWriter):
     if "ArgType" not in self.sgprs:
       return mod
 
-    skip = Label(label=self.labels.getNameInc("SkipPackTdmParityArgType"),
-                 comment="even wave: ArgType bit 8 stays 0")
-    mod.add(SAndB32(dst=sgpr("ArgType"), src0=sgpr("ArgType"), src1=hex(0xFFFFFEFF),
-                    comment="clear ArgType bit 8 (TDM wave-parity)"))
-    mod.add(SBitcmp1B32(src0=sgpr("WaveIdx"), src1=0,
-                        comment="TDM wave-parity -> ArgType bit 8"))
-    mod.add(SCBranchSCC0(labelName=skip.getLabelName(),
-                         comment="even wave: leave bit 8 clear"))
-    mod.add(SOrB32(dst=sgpr("ArgType"), src0=sgpr("ArgType"), src1=hex(0x100),
-                   comment="odd wave: ArgType bit 8 = 1"))
-    mod.add(skip)
+    # WaveIdx is the shift scratch and is put back, so this still needs no checkout and no label.
+    width = self.tdmWaveIdxArgTypeBits(kernel)
+    mod.add(SAndB32(dst=sgpr("ArgType"), src0=sgpr("ArgType"),
+                    src1=hex(0xFFFFFFFF & ~(((1 << width) - 1) << 8)),
+                    comment=f"clear ArgType bits {8 + width - 1}:8 (TDM wave index)"))
+    mod.add(SLShiftLeftB32(dst=sgpr("WaveIdx"), shiftHex=hex(8), src=sgpr("WaveIdx"),
+                           comment="wave index -> ArgType field position"))
+    mod.add(SOrB32(dst=sgpr("ArgType"), src0=sgpr("ArgType"), src1=sgpr("WaveIdx"),
+                   comment="TDM wave index -> ArgType bit 8 up (bit 8 = parity)"))
+    mod.add(SLShiftRightB32(dst=sgpr("WaveIdx"), shiftHex=hex(8), src=sgpr("WaveIdx"),
+                            comment="restore WaveIdx"))
     self.states.tdmParityPackedInArgType = True
     return mod
+
+  def _emitTdmWaveIdx(self, module: Module, kernel: Mapping, dstTmpIdx: Optional[int] = None):
+    """Leave this wave's INDEX in an sgpr and return its key, preferring a name over a remat.
+
+    Same tiering as `_emitTdmWaveParitySCC`: live `WaveIdx`, else the packed ArgType field
+    (one `s_bfe_u32`), else recompute from `vgpr("Serial")` into `dstTmpIdx`.
+    """
+    if self.isTdmWaveIdxLive(kernel):
+      return "WaveIdx"
+    if self.states.tdmParityPackedInArgType:
+      module.add(SBfeU32(dst=sgpr(dstTmpIdx), src0=sgpr("ArgType"),
+                         src1=hex((self.tdmWaveIdxArgTypeBits(kernel) << 16) | 8),
+                         comment="wave index from ArgType"))
+      return dstTmpIdx
+    module.add(VReadfirstlaneB32(dst=sgpr(dstTmpIdx), src=vgpr("Serial"), comment="get tId"))
+    module.add(SLShiftRightB32(dst=sgpr(dstTmpIdx), shiftHex=ceil(log2(kernel["WavefrontSize"])),
+                               src=sgpr(dstTmpIdx), comment="waveId"))
+    return dstTmpIdx
+
+  def _tdmWaveIdxNeedsTmp(self, kernel) -> bool:
+    """True when `_emitTdmWaveIdx` needs a destination sgpr, i.e. `WaveIdx` is not live."""
+    return not self.isTdmWaveIdxLive(kernel)
 
   def hoistWaveParityWrapUSel(self, kernel, tPA, tPB) -> Module:
     """Preloop: fold the loop-invariant wave-parity WrapU choice into WrapU{tcA}.
@@ -20270,7 +21212,7 @@ class KernelWriterAssembly(KernelWriter):
     else:
       mod.add(comp.incrementGlobalAddr(self, tdmGroup0, incSgprName))
 
-    if kernel["TDMSplit"] and not (("MXS" in tcA) or ("MXS" in tcB)) and not kernel["ProblemType"]["Sparse"]:
+    if _tdm_split.split_of(kernel, tcA)[0] > 1 or _tdm_split.split_of(kernel, tcB)[0] > 1:
       # Recompute the split increments transiently (see _tdmSplitMultiWaveInc). The
       # parity recompute clobbers SCC and runs before the sub chain, so the borrow
       # between the +2 subtract and the +3 borrow remains intact.
@@ -20313,22 +21255,56 @@ class KernelWriterAssembly(KernelWriter):
 
     return mod
 
-  def tdmSetupIncrementWaveSeparated(self, kernel, tpA, tpB) -> Module:
-    mod = Module()
-    tcA: str = tpA["tensorChar"]
-    tcB: str = tpB["tensorChar"]
-    incSgprName = f"tdm{tcA}{tcB}Incs"
-    #TODO: should not directly use GRIA and GRIB
-    incA = self.globalReadIncsOperand(tcA, self.states.unrollIdx)
-    incB = self.globalReadIncsOperand(tcB, self.states.unrollIdx)
-    # s_cselect_b32 accepts at most one literal, so when both increments are
-    # compile-time constants stage the even-wave one in the destination first.
-    if not isinstance(incA, RegisterContainer) and not isinstance(incB, RegisterContainer):
-      mod.add(SMovB32(sgpr(incSgprName), incA, f"incr{tcA} (even wave)"))
-      incA = sgpr(incSgprName)
-    mod.add(SBitcmp1B32(sgpr("WaveIdx"), 0, "Check parity of wId"))
-    mod.add(SCSelectB32(sgpr(incSgprName), incB, incA))
-    return mod
+  def tdmSetupIncrementWaveSeparated(self, kernel, tpA, tpB, ranges=None) -> Module:
+    """Seed the group's shared increment SGPR with THIS wave's member's `GlobalReadIncs`.
+
+    THE SELECTOR HERE MUST MATCH THE ONE THAT PICKED THE MEMBER.  An unconditional
+    `SBitcmp1B32(WaveIdx, 0)` + `s_cselect` is a fourth writing of the 2-way parity rule, after
+    the descriptor branch, the slice arithmetic and the SGPR aliasing -- right while the partition
+    is parity and silently wrong the moment it is a contiguous range.  Under `paired`'s
+    `(MXSA, A)` group MXSA owns waves 0-1 and A owns 2-3, but parity hands waves 0,2 to MXSA and
+    1,3 to A, so waves 1 and 2 advance the descriptor by the OTHER tensor's stride.
+
+    A 3-member group cannot be expressed by a cselect at all, which is the other half of the same
+    bug: `A_MX` would leave one member's increment unwritten.
+
+    So the selection is delegated to `tdmWaveSelect`, the same dispatcher the descriptor init and
+    the global-offset setup use — one selector, four consumers."""
+    return self.tdmSetupIncrementWaveSeparatedGroup(kernel, [tpA, tpB], ranges)
+
+  def tdmSetupIncrementWaveSeparatedGroup(self, kernel, tps, ranges) -> Module:
+    """N-member form; see `tdmSetupIncrementWaveSeparated` for why the selector must be shared.
+
+    THE PARITY CASE KEEPS ITS `s_cselect`.  A branch and a cselect compute the same thing here, but
+    the cselect is two instructions with no control flow and it is what every shipping kernel
+    emits; routing parity through the branch dispatcher changed those kernels' assembly for no
+    behavioural gain.  Only a RANGE partition needs the branch, because a cselect is 2-way and a
+    range can have three arms."""
+    names = [tp["tensorChar"] for tp in tps]
+    incSgprName = f"tdm{names[0]}{names[1]}Incs"
+
+    if ranges is None:
+      assert len(tps) == 2, f"the parity inc seed takes exactly two members, got {names}"
+      mod = Module()
+      incA = self.globalReadIncsOperand(names[0], self.states.unrollIdx)
+      incB = self.globalReadIncsOperand(names[1], self.states.unrollIdx)
+      # s_cselect_b32 accepts at most one literal, so when both increments are
+      # compile-time constants stage the even-wave one in the destination first.
+      if not isinstance(incA, RegisterContainer) and not isinstance(incB, RegisterContainer):
+        mod.add(SMovB32(sgpr(incSgprName), incA, f"incr{names[0]} (even wave)"))
+        incA = sgpr(incSgprName)
+      mod.add(SBitcmp1B32(sgpr("WaveIdx"), 0, "Check parity of wId"))
+      mod.add(SCSelectB32(sgpr(incSgprName), incB, incA))
+      return mod
+
+    def _body(tp, first, count):
+      tc = tp["tensorChar"]
+      m = Module(f"inc seed {tc}")
+      m.add(SMovB32(sgpr(incSgprName), self.globalReadIncsOperand(tc, self.states.unrollIdx),
+                    f"this wave moves {tc}, so the shared inc is {tc}'s stride"))
+      return m
+
+    return self.tdmWaveSelect(tps, ranges, "WaveIdx", "TDMIncSeed", _body)
 
   def resetTDMDescriptorForTail(self, kernel: Mapping, tP: Mapping, tmpSgprWaveOffset = None) -> Module:
     comp: TensorDataMoverLoad = TensorDataMoverLoad.find(self)
@@ -20398,6 +21374,103 @@ class KernelWriterAssembly(KernelWriter):
     return mod
 
   def resetTDMDescriptorForTailWaveSeparated(self, kernel, tPA, tPB) -> Module:
+    """Two-member form; the group form below is the general one."""
+    return self.resetTDMDescriptorForTailWaveSeparatedGroup(kernel, [tPA, tPB], None)
+
+  def resetTDMDescriptorForTailWaveSeparatedGroup(self, kernel, tps, ranges) -> Module:
+    """Reset each group member's tail-loop TDM tensor dim, in the arm that member's waves take.
+
+    LAST of the wave-separated sites to stop assuming two members.  It dispatched on
+    `SBitcmp1B32(wId, 0)` and sliced with `wOffset = wId >> 1` over `NumWaves // 2`, so under
+    `A_MX` — group (A, MXSA, MXSB) on waves 0-1 / 2 / 3 — waves 0 and 2 both reset A's dim and
+    waves 1 and 3 both reset MXSB's, on the ONE shared descriptor, with a half-wave slice index
+    that has nothing to do with the real partition.
+
+    The parity arm is reproduced instruction- and LABEL-identical (no `getNameInc`), so the
+    shipping two-member groupings do not move."""
+    mod = Module("TDM Init Wave Separated")
+    numWaves: int = kernel["NumWaves"]
+    wavelen: int = kernel["WavefrontSize"]
+    du: int = kernel["DepthU"]
+    names = [tp["tensorChar"] for tp in tps]
+    assert numWaves > 1
+
+    def _memberFacts(tp, numComp):
+      tc = tp["tensorChar"]
+      isMX = tc.startswith("MX")
+      unrolledMajor = not tp["tlu"]
+      mxKSplitting = False
+      if isMX:
+        subTc = tc[3]
+        mxUnit = kernel["MatrixInstK"] // kernel["ProblemType"][f"MXBlock{subTc}"]
+        mxDU = kernel["DepthU"] // kernel["ProblemType"][f"MXBlock{subTc}"]
+        mxKSplitting = (mxDU // mxUnit) >= numComp
+      return isMX, unrolledMajor, mxKSplitting
+
+    lbls = [Label(f"TDMResetTail{n}", "") for n in names]
+    end = Label(f"TDMResetTail{''.join(names)}End", "")
+    if ranges is None:
+      # The two-member form opens with member 0's label (unused as a target, but it is what the
+      # shipping assembly contains).  The range chain jumps to every non-fallthrough label
+      # explicitly, so emitting it here too would define it twice.
+      mod.add(lbls[0])
+
+    with self.allocTmpSgpr(2, tag="resetTDMDescriptorForTailWaveSeparated_tmpSgprRes") as tmpSgprRes:
+      waveIdSgprIdx: int = tmpSgprRes.idx
+      waveOfstSgprIdx = waveIdSgprIdx + 1
+      mod.add(VReadfirstlaneB32(sgpr(waveIdSgprIdx), vgpr("Serial"), "first tId"))
+      mod.add(SLShiftRightB32(sgpr(waveIdSgprIdx), ceil(log2(wavelen)), sgpr(waveIdSgprIdx), "wId=fTid // wavelen"))
+
+      def _arm(i, numComp, sliceFn):
+        tp = tps[i]
+        isMX, unrolledMajor, mxKSplitting = _memberFacts(tp, numComp)
+        wOfstSgprId = None if unrolledMajor and not isMX else waveOfstSgprIdx
+        if not unrolledMajor or mxKSplitting:
+          sliceFn()
+          mod.add(SMulI32(sgpr(waveOfstSgprIdx), sgpr(waveOfstSgprIdx), int(du // numComp),
+                          "wOffset = wOffset * du // numpComp"))
+        mod.add(self.resetTDMDescriptorForTail(kernel, tp, wOfstSgprId))
+
+      if ranges is None:
+        assert len(tps) == 2, f"the parity reset takes exactly two members, got {names}"
+        numComp = numWaves // 2
+        mod.add(SBitcmp1B32(sgpr(waveIdSgprIdx), 0, "Check parity of wId"))
+        mod.add(SCBranchSCC1(lbls[1].getLabelName(), "Jump to B if wId is odd"))
+        _arm(0, numComp, lambda: mod.add(SLShiftRightB32(
+            sgpr(waveOfstSgprIdx), 1, sgpr(waveIdSgprIdx), "wOffset=wId // 2")))
+        mod.add(SBranch(end.getLabelName()))
+        mod.add(lbls[1])
+        _arm(1, numComp, lambda: mod.add(SLShiftRightB32(
+            sgpr(waveOfstSgprIdx), 1, sgpr(waveIdSgprIdx), "wOffset=wId // 2")))
+        mod.add(end)
+        return mod
+
+      # CONTIGUOUS RANGES: member i owns [first, first+count); its slice index is wId - first and
+      # it has `count` cooperating waves, not NumWaves // 2.
+      for i, (mi, first, count) in enumerate(ranges[:-1]):
+        mod.add(SCmpLtU32(src0=sgpr(waveIdSgprIdx), src1=first + count,
+                          comment=f"wId < {first + count}? -> {names[mi]} owns waves "
+                                  f"{first}..{first + count - 1}"))
+        mod.add(SCBranchSCC1(lbls[mi].getLabelName(), f"Jump to {names[mi]}"))
+      def _sliceFor(first):
+        def _f():
+          if first:
+            mod.add(SSubU32(sgpr(waveOfstSgprIdx), sgpr(waveIdSgprIdx), first,
+                            f"wOffset = wId - waveFirst({first})"))
+          else:
+            mod.add(SMovB32(sgpr(waveOfstSgprIdx), sgpr(waveIdSgprIdx), "wOffset = wId"))
+        return _f
+      _mi, _first, _count = ranges[-1]
+      _arm(_mi, _count, _sliceFor(_first))
+      mod.add(SBranch(end.getLabelName()))
+      for i, (mi, first, count) in enumerate(ranges[:-1]):
+        mod.add(lbls[mi])
+        _arm(mi, count, _sliceFor(first))
+        mod.add(SBranch(end.getLabelName()))
+      mod.add(end)
+    return mod
+
+  def _resetTDMDescriptorForTailWaveSeparated_OLD(self, kernel, tPA, tPB) -> Module:
     #TODO: TDM implement
     mod = Module("TDM Init Wave Separated")
     tcA: str = tPA["tensorChar"]

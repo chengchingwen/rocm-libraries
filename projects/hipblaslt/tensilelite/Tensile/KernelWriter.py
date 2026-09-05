@@ -61,7 +61,7 @@ from .Common.GlobalParameters import globalParameters
 from .Common.Architectures import ARCH_CAP_OVERRIDES
 from .Common.ValidParameters import resolveSwInstructionPrefetch, \
   SW_INSTRUCTION_PREFETCH_AUTO
-from Tensile.SolutionStructs.Naming import getKernelNameMin
+from Tensile.SolutionStructs.Naming import getKernelFileBase, getKernelNameMin
 from Tensile.Toolchain.Component import Assembler
 
 import rocisa
@@ -79,6 +79,7 @@ import itertools
 
 # TODO: DEBUG ONLY, remove later
 from pprint import pprint
+from Tensile import tdm_split as _tdm_split
 
 
 def _needsPreLoopLocalReadDrain(kernel, numItersPLR, preLoopLocalReadDrainEmitted):
@@ -225,6 +226,10 @@ class StateValues:
 
   numItersPLR: int                       = 0
   numVgprBuffer: int                     = 0
+  # UseLoopModel: {tensorChar: θ rotation width W} that GIR names.  Empty off that path.
+  # `numVgprBuffer` is the MAX over these and the scaffold's own count; this map keeps the
+  # PER-OPERAND width so the `.set` table and the sizing agree operand by operand.
+  loopModelRegBufferWidths: dict         = field(default_factory=dict)
   numVgprBufferPackA: int                = 0
   numVgprBufferPackB: int                = 0
   numVgprBufferPackMXSA: int             = 0
@@ -538,6 +543,11 @@ class KernelWriter(metaclass=abc.ABCMeta):
     ):
     self.assembler = assembler
     self.debugConfig = debugConfig
+
+    # Directory the generated .s files are written to. Set by the library/benchmark
+    # writer before codegen so per-kernel StinkyTofu dumps land alongside the .s.
+    # Empty (default) disables the memtoken-IR structure dump.
+    self.assemblyDir = ""
 
     self.do = {}
     self.do["PreLoop"]     = True
@@ -2752,15 +2762,42 @@ class KernelWriter(metaclass=abc.ABCMeta):
 
     # tile assignments
     if not kernel["UseSubtileImpl"]:
-      # Wave-separated TDM increment: subtile uses per-wave descriptors and
-      # does not need parity-based increment selection.
-      if tdmA and tdmB and kernel["NumWaves"] > 1 and not kernel["UseSubtileImpl"]:
-        module.add(self.initTDMDescriptorWaveSeparated(kernel, tensorParametersA, tensorParametersB))
+      # Wave-separated (FUSED) TDM: subtile uses per-wave descriptors and does not need
+      # parity-based increment selection.  Keyed on `isTdmWaveSeparated` — i.e. on the resolved
+      # `TDMFuse` — rather than re-deriving `NumWaves > 1`, so that `TDMFuse: 0` at multi-wave
+      # takes the per-operand path below, which is what an asymmetric `TDMSplitA/B` needs.
+      if self.isTdmWaveSeparated(kernel) and not kernel["UseSubtileImpl"]:
+        # WHICH OPERANDS SHARE A DESCRIPTOR IS THE TABLE'S ANSWER, not this call site's.  It used
+        # to spell out `(A,B)` and `(MXSA,MXSB)`, which is the `TDMFuse: 1` grouping written a
+        # fourth time; the MX groupings pair differently (`paired` crosses data and scale) and an
+        # operand in no group is not wave-separated at all — it keeps its own descriptor and all
+        # the waves, exactly as at `TDMFuse: 0`.
+        from .LoopModel.adapter import fuse_groups, wave_ranges
+        _tp = {"A": tensorParametersA, "B": tensorParametersB}
         if kernel["ProblemType"]["MXBlockA"] and kernel["ProblemType"]["MXBlockB"]:
-          module.add(self.initTDMDescriptorWaveSeparated(kernel, tensorParametersA["MX"], tensorParametersB["MX"]))
-        module.add(self.tdmGlobalOffsetWaveSeparated(kernel, tensorParametersA, tensorParametersB))
-        if kernel["ProblemType"]["MXBlockA"] and kernel["ProblemType"]["MXBlockB"]:
-          module.add(self.tdmGlobalOffsetWaveSeparated(kernel, tensorParametersA["MX"], tensorParametersB["MX"]))
+          _tp["MXSA"] = tensorParametersA["MX"]
+          _tp["MXSB"] = tensorParametersB["MX"]
+        _groups = fuse_groups(kernel["TDMFuse"], list(_tp))
+        for _gi, _g in enumerate(_groups):
+          _members = [_tp[m] for m in _g]
+          _ranges = wave_ranges(kernel["TDMFuse"], _gi, kernel["NumWaves"])
+          module.add(self.initTDMDescriptorWaveSeparatedGroup(kernel, _members, _ranges))
+        for _gi, _g in enumerate(_groups):
+          _members = [_tp[m] for m in _g]
+          _ranges = wave_ranges(kernel["TDMFuse"], _gi, kernel["NumWaves"])
+          module.add(self.tdmGlobalOffsetWaveSeparatedGroup(kernel, _members, _ranges))
+        # An operand in NO group (e.g. B under `A_MX`) keeps its OWN descriptor with EVERY wave
+        # cooperating on it — which is exactly what the UNFUSED pair already emits.
+        #
+        #
+        #
+        #
+        #
+        _soloRange = [(0, 0, kernel["NumWaves"])]
+        for _n, _p in _tp.items():
+          if not any(_n in _g for _g in _groups):
+            module.add(self.initTDMDescriptorWaveSeparatedGroup(kernel, [_p], _soloRange))
+            module.add(self.tdmGlobalOffsetWaveSeparatedGroup(kernel, [_p], _soloRange))
         tdmInited = True
 
       # Tile offset assignment A(MXSA)
@@ -3019,10 +3056,18 @@ class KernelWriter(metaclass=abc.ABCMeta):
 
       #TODO: TDM wave separated
       if tdmA and tdmB and kernel["NumWaves"] > 1:
-        module.add(self.tdmSetupIncrementWaveSeparated(kernel, tensorParametersA, tensorParametersB))
-
+        # SAME GROUPS, SAME RANGES as the descriptor init above — the increment seed picks WHICH
+        # member's `GlobalReadIncs` this wave advances by, so if it disagrees with the selector
+        # that picked the member, a wave moves one tensor and advances by another's stride.  That
+        # is what made every A_MX/B_MX/paired kernel miscompare while assembling cleanly.
+        from .LoopModel.adapter import fuse_groups as _fgI, wave_ranges as _wrI
+        _tpI = {"A": tensorParametersA, "B": tensorParametersB}
         if kernel["ProblemType"]["MXBlockA"] and kernel["ProblemType"]["MXBlockB"]:
-          module.add(self.tdmSetupIncrementWaveSeparated(kernel, tensorParametersA["MX"], tensorParametersB["MX"]))
+          _tpI["MXSA"] = tensorParametersA["MX"]
+          _tpI["MXSB"] = tensorParametersB["MX"]
+        for _gi, _g in enumerate(_fgI(kernel["TDMFuse"], list(_tpI))):
+          module.add(self.tdmSetupIncrementWaveSeparatedGroup(
+              kernel, [_tpI[m] for m in _g], _wrI(kernel["TDMFuse"], _gi, kernel["NumWaves"])))
 
         if kernel["StreamK"] > 0:
           module.add(self.tdmApplyStreamKOffsetWaveSeparated(kernel, tensorParametersA, tensorParametersB))
@@ -3161,30 +3206,39 @@ class KernelWriter(metaclass=abc.ABCMeta):
         if usePrimedSkip:
           module.add(SCmpEQU32(src0=sgpr("SkPrefetchPrimed"), src1=0, comment="tail prefetch already issued first PGR group?"))
           module.add(SCBranchSCC0(labelName=lbl_prefetchPrimedMerge.getLabelName(), comment="skip first PGR group if primed"))
-        moduleTmp = self.directToLdsM0Update(kernel, 0, tensorParameters1st)
-        module.add(replaceHolder(moduleTmp, 0))
+        # PREFETCH 0.  Under UseLoopModel this whole first-PGR group is GIR's: its prologue block
+        # carries a copy Move for chunk 0 of every operand (and the swap / gr_increment Marks its
+        # dataflows placed), and the prologue fork realizes each one through the copy leaf.  The
+        # `for idxPgr in range(1, PGR)` loop below is gated the same way — gating only that loop
+        # left THIS group emitting chunk 0 a second time, into the same LDS buffer and the same
+        # g2l range, with only one of the two accounted in the address dataflow: a double load and
+        # an out-of-bounds descriptor.  Prefetch 0 is not a separate concept from prefetch 1..N-1;
+        # it only looks like one because the scaffold emits it from a different place.
+        if not kernel["UseLoopModel"]:
+          moduleTmp = self.directToLdsM0Update(kernel, 0, tensorParameters1st)
+          module.add(replaceHolder(moduleTmp, 0))
 
-        module.add(self.globalReadDo(kernel, 0, tensorParameters1st, tPM=tPM))
-        # PAP+MX keeps MX G2L in the durable read range, so scale loads are part
-        # of the same first-PGR handoff as main A/B. When SkPrefetchPrimed is
-        # already set, the branch above skips this whole first-PGR group.
-        if "MX" in tensorParameters1st:
-          moduleTmp = self.directToLdsM0Update(kernel, 0, tensorParameters1st["MX"], skipWait=True)
+          module.add(self.globalReadDo(kernel, 0, tensorParameters1st, tPM=tPM))
+          # PAP+MX keeps MX G2L in the durable read range, so scale loads are part
+          # of the same first-PGR handoff as main A/B. When SkPrefetchPrimed is
+          # already set, the branch above skips this whole first-PGR group.
+          if "MX" in tensorParameters1st:
+            moduleTmp = self.directToLdsM0Update(kernel, 0, tensorParameters1st["MX"], skipWait=True)
+            module.add(replaceHolder(moduleTmp, 0))
+            module.add(self.globalReadDo(kernel, 0, tensorParameters1st["MX"]))
+          if "MX" in tensorParameters2nd:
+            moduleTmp = self.directToLdsM0Update(kernel, 0, tensorParameters2nd["MX"], skipWait=True)
+            module.add(replaceHolder(moduleTmp, 0))
+            module.add(self.globalReadDo(kernel, 0, tensorParameters2nd["MX"]))
+          skip2ndWaitForDtl = kernel["DirectToLds%s"%tensorParameters1st["tensorChar"]]
+          moduleTmp = self.directToLdsM0Update(kernel, 0, tensorParameters2nd, skip2ndWaitForDtl)
           module.add(replaceHolder(moduleTmp, 0))
-          module.add(self.globalReadDo(kernel, 0, tensorParameters1st["MX"]))
-        if "MX" in tensorParameters2nd:
-          moduleTmp = self.directToLdsM0Update(kernel, 0, tensorParameters2nd["MX"], skipWait=True)
-          module.add(replaceHolder(moduleTmp, 0))
-          module.add(self.globalReadDo(kernel, 0, tensorParameters2nd["MX"]))
-        skip2ndWaitForDtl = kernel["DirectToLds%s"%tensorParameters1st["tensorChar"]]
-        moduleTmp = self.directToLdsM0Update(kernel, 0, tensorParameters2nd, skip2ndWaitForDtl)
-        module.add(replaceHolder(moduleTmp, 0))
-        module.add(self.globalReadDo(kernel, 0, tensorParameters2nd, tPM=tPM))
-        if tdmMetadata and kernel["ProblemType"]["Sparse"] and not kernel["DirectToVgprSparseMetadata"]:
-          tPM = tensorParametersA["tpsMetadata"] if tensorParametersA["is_sparse"] else tensorParametersB["tpsMetadata"]
-          moduleTmp = self.directToLdsM0Update(kernel, 0, tPM)
-          module.add(replaceHolder(moduleTmp, 0))
-          module.add(self.globalReadDo(kernel, 0, tPM))
+          module.add(self.globalReadDo(kernel, 0, tensorParameters2nd, tPM=tPM))
+          if tdmMetadata and kernel["ProblemType"]["Sparse"] and not kernel["DirectToVgprSparseMetadata"]:
+            tPM = tensorParametersA["tpsMetadata"] if tensorParametersA["is_sparse"] else tensorParametersB["tpsMetadata"]
+            moduleTmp = self.directToLdsM0Update(kernel, 0, tPM)
+            module.add(replaceHolder(moduleTmp, 0))
+            module.add(self.globalReadDo(kernel, 0, tPM))
         if usePrimedSkip:
           module.add(lbl_prefetchPrimedMerge)
           module.add(SMovB32(dst=sgpr("SkPrefetchPrimed"), src=0, comment="clear after first PGR group merge"))
@@ -3196,10 +3250,12 @@ class KernelWriter(metaclass=abc.ABCMeta):
             tPA = None
           if kernel["DirectToVgprB"]:
             tPB = None
-        module.add(self.globalReadIncrementAB(kernel, tPA, tPB, self.states.unrollIdx, pfi))
-        # swap Tensor memToken
-        self.states.ldsTensorTokenIdx = \
-            self._nextLdsToken(self.states.ldsTensorTokenIdx)
+        if not kernel["UseLoopModel"]:
+          # GIR's gr_increment dataflow places every advance, prefetch 0's included.
+          module.add(self.globalReadIncrementAB(kernel, tPA, tPB, self.states.unrollIdx, pfi))
+          # swap Tensor memToken
+          self.states.ldsTensorTokenIdx = \
+              self._nextLdsToken(self.states.ldsTensorTokenIdx)
 
     module.addComment2("End setupNewTile")
 
@@ -3541,6 +3597,335 @@ class KernelWriter(metaclass=abc.ABCMeta):
     return not condSkip
 
   ##############################################################################
+  # UseLoopModel lowering — build the GIR ONCE per kernel, emit per stage.
+  #
+  ##############################################################################
+  def _loopModelTheta(self, kernel):
+    """`(theta, S)` for this kernel — built ONCE and shared by every consumer.
+
+    θ is the single source of truth for this kernel's schedule, so it must be built once and
+    handed around, not re-derived per consumer.  Two consumers exist and they run at DIFFERENT
+    times: the vgpr sizing (`loopModelRegBuffers`, from `_initKernel`) runs long before the GIR
+    program is built for emission, so neither can be the other's owner — hence this shared cache
+    rather than hanging θ off the Program.  `build_S` is a pure function of θ, so a second S
+    derived from the SAME θ is equal by construction; deriving it from a second θ would only be
+    equal by luck."""
+    from .LoopModel.adapter import kernel_to_params
+    from .LoopModel.adapter import params_to_theta
+    from .LoopModel.schedule import build_S
+    key = getattr(self.states, "kernelName", None) or id(kernel)
+    cache = getattr(self, "_loopModelThetaCache", None)
+    if cache is not None and cache[0] == key:
+      return cache[1]
+    theta = params_to_theta(kernel_to_params(kernel, target=self._loopModelTarget(kernel)))
+    S, _floor = build_S(theta)
+    self._loopModelThetaCache = (key, (theta, S))
+    return theta, S
+
+  def _mxScaleTilesPerRead(self, kernel, tc, lrvw, mxUnit) -> int:
+    """How many scale TILES one `ds_read` of `tc` covers — `blockWidth * 4 // mxUnit`.
+
+    THE AUTHORITY IS the `localReadInstruction` that
+    `KernelWriterAssembly.initLocalReadMemoryInstruction` selects, and the tP that holds it does
+    not exist yet: `tensorParametersA["MX"]` is assigned in `_initKernel` (:7912) long after
+    `loopModelRegBuffers` (:7630) has built and cached θ.  `self.memoryInstructions` (:8189) is
+    not built yet either, so the instruction pool cannot be consulted from here.
+
+    So the width is RECONSTRUCTED FROM THE SOLUTION KEYS THAT DECIDE IT.  That is sound, not a
+    surrogate, because every input to the real selection is itself a pure function of the
+    Solution — the writer merely caches them into `self.states` later:
+
+        lrvwUnrollMXS<x> = LocalReadVectorWidthMXS if UnrollMajorLDSMXS<x> else 1      (:7749)
+        lrvwTileMXS<x>   = VectorWidth<parent>                                          (:7694)
+        localReadWidth   = lrvw * bpeDS / 4, times VectorWidth<parent> under
+                           `HasWMMA_V3 and MXScaleFormat == "InMemorySwizzle"`
+                                                        (KernelWriterAssembly:517-544)
+
+    `bpeDS` is the SCALE element size and `DataTypeMXS<x>` is E8M0 — one byte — so the width in
+    dwords is `lrvw / 4`, which lands exactly on a representable `blockWidth` (`8 -> b64`,
+    `4 -> b32`, `16 -> b128`); `findMemoryInstructionForWidthStride` would clamp anything wider to
+    the widest instruction, which is what `min(width, 4)` reproduces.  The `forceLrvwTile1` clause
+    on the tile branch cannot fire for a scale tensor: it requires a `MacDataType` of >= 4 bytes
+    and every MX parent is narrower.
+
+    IT MUST NOT GUESS, and the trap is specific: `lrvw * bpe // mxUnit` with `lrvw` taken from
+    `MIInputPerThreadMXS*` gives 4 elements at the mxf8 triage shape while the selected
+    instruction is a `ds_load_b64` (8 bytes), because that width carries `duplicateFactor =
+    32 // MatrixInstM`.  This reads `LocalReadVectorWidthMXS`, which is the number the selection
+    itself reads.  Any shape not covered here returns 1 — NO MAP is supplied and
+    `leaves.emitLdsReadTile` keeps its own coverage (correct emission, merely unmodelled by θ).
+
+    WHY IT MATTERS THAT THIS ANSWERS AT ALL.  While it returns 1 the leaf folds `tilePerRead`
+    tiles into one `ds_read` on its own authority — a merge θ never described — and when the
+    folded acts carry different LDS memory tokens the surviving load fetches one buffer for both.
+    Supplied, the axis is absorbed into the read's varying-axis set, the ref stops pinning it, and
+    `lds_buffers._expand` gives the one instruction BOTH ids."""
+    # The coverage ships unconditionally: it is what keeps the folded read's two tokens on the one
+    # instruction that survives the fold.
+    if not lrvw or mxUnit <= 0:
+      return 1
+    parent = tc[-1]                                   # "MXSA" -> "A"
+    pt = kernel["ProblemType"]
+    try:
+      bpeDS = int(pt["DataTypeMXS%s" % parent].numBytes())
+    except Exception:
+      return 1                                        # unknown scale type -> no map, not a guess
+    if bpeDS != 1:
+      # Only E8M0 is covered by the exact-width argument above.  A wider scale element would need
+      # the real pool lookup to know where the width rounds, so refuse instead of rounding here.
+      return 1
+    caps = getattr(self.states, "asmCaps", {}) or {}
+    if kernel.get("UnrollMajorLDS%s" % tc):
+      width = lrvw * bpeDS / 4.0
+      if caps.get("HasWMMA_V3") and kernel.get("MXScaleFormat") == "InMemorySwizzle":
+        width *= int(kernel["VectorWidth%s" % parent])
+    else:
+      width = int(kernel["VectorWidth%s" % parent]) * bpeDS / 4.0
+    if width <= 0:
+      return 1
+    blockWidth = min(width, 4.0)                      # the pool's widest LocalRead is b128
+    return max(1, int(blockWidth * 4) // mxUnit)
+  def _loopModelTarget(self, kernel):
+    """TARGET facts θ cannot see — the domain its fields are chosen from.
+
+    Two entries today, both about the shared→register read:
+
+      ReadVectorElems  {operand: elements one instruction moves per lane}.
+      ReadPhi / ReadRho  the CARRIER GROUP, as the two numbers that NAME it: Φ (how many
+                       movement instances one cooperative instruction merges) and ρ (the sub-agent
+                       span they are distributed over — the MX TileSpan half-wave, which calls
+                       a `tile` of the lane mode).  θ derives the `carrier`/`slot` map from them
+                       (`geometry.derive_quantum`); we do not build it here, because "the coverage is
+                       **not a new field** … both already in θ".  Same standing as `S`: target
+                       facts θ reasons over but does not choose.
+
+    RESOLVED EARLY AND CACHED WITH θ.  `_loopModelTheta` builds θ once and hands it to two
+    consumers that run at different times, so anything it reads must be stable at the FIRST call —
+    which is `loopModelRegBuffers` from `_initKernel`, before `lrvwUnroll*` is assigned.  Everything
+    below therefore comes from the Solution (already derived) or from a pure geometry function, not
+    from `self.states` fields written later in `_initKernel`."""
+    from .LoopModel.ir import CoverageMap, Expr, cst, COVERAGE_VAR
+    from .Component import Component
+
+    # THE REGISTER BUDGET IS A TARGET FACT (: "`S` is theta's while the register budget
+    # bounding it is the target's"), and it is stable at the first theta build: `regCaps` is
+    # assigned at `_initKernel`'s top, before `loopModelRegBuffers` is called.  RESERVE keeps a
+    # margin for the allocations theta does not model (G2L, addresses, temps) -- theta's footprint
+    # is A/B/C/MXS only, so the ceiling it is solved against must sit below the hardware one.
+    _regCaps = getattr(self.states, "regCaps", None) or {}
+    _maxVgpr = int(_regCaps.get("MaxVgpr", 0) or 0)
+
+    elems, phi, rho = {}, {}, {}
+    pt = kernel["ProblemType"]
+    for tc, tile01, mx in (("MXSA", 0, "MXBlockA"), ("MXSB", 1, "MXBlockB")):
+      if not int(pt.get(mx, 0) or 0):
+        continue
+      mxUnit = int(kernel["MatrixInstK"]) // int(pt[mx])
+      lrvw = int(kernel.get("LocalReadVectorWidthMXS", 0) or 0)
+      if mxUnit <= 0 or lrvw <= 0:
+        continue
+      elems[tc] = lrvw
+      # TILES ONE INSTRUCTION MOVES = `blockWidth * 4 // mxUnit`, the SAME expression
+      # `KernelWriterAssembly` uses at its `numReadsPerUnrollMXS*` sites and `buildMxScaleReadContext`
+      # uses for `tilePerRead`.  It must be that expression and not a surrogate:
+      # `lrvw * bpe // mxUnit` looks equivalent but is NOT — `MIInputPerThreadMXS*` is 4 elements
+      # here while the selected instruction is a `ds_load_b64` (8 bytes), the `duplicateFactor
+      # = 32 // MatrixInstM` in `MatrixInstruction.py`.  The surrogate answers `tiles = 1`, which
+      # sends the map down as the identity and miscompares every mxf8 cell.
+      #
+      # `tP["MX"]["localReadInstruction"]` IS NOT REACHABLE HERE — `tensorParametersA["MX"]` is
+      # assigned in `_initKernel` AFTER `loopModelRegBuffers` has already built and cached θ.  So
+      # the width is reconstructed from the Solution keys that DECIDE it, and when they do not
+      # answer, no map is supplied at all and the leaf keeps its own coverage (which is correct, just
+      # unmodelled).  Anything else silently disables the coverage.
+      tiles = self._mxScaleTilesPerRead(kernel, tc, lrvw, mxUnit)
+      span = Component.LocalRead.find(self).getMxsTileSpanInfo(
+          kernel, tc, tile01, self.states.asmCaps) if hasattr(self, "states") else None
+      # ρ IS THE SUB-AGENT COUNT, and TileSpan's partition is the HALF-WAVE: one `ds_load`
+      # holds block 2g (lower half) and 2g+1 (upper), so the group spans TWO sub-agents.
+      #
+      #
+      #
+      #
+      if span:
+        tiles *= 2
+      partner = 2 if span else 0
+      # SUPPLIED.  `geometry.quantum_axes` reads the map and ABSORBS the axes one instruction
+      # spans out of the read hop's the axes it varies over, which is what makes the merged tiles one
+      # the axes it varies over point — one step, one generation — instead of θ modelling `tilePerRead` separate
+      # acts that the leaf then folds on its own authority.  θ's read count then equals the
+      # emitted instruction count and the tokens on each load are the load's own.
+      #
+      # NOT A NARROWING.  An earlier reading of had these cells cutting the `ds_load_b64` into
+      # two `b32`s; that would have made correct emitted code worse to satisfy a model that was
+      # miscounting.  The b64 really does move both tiles from one buffer — absorbing the axis is
+      # the repair, and the instruction stream does not change.
+      # IN THE PAPER'S OWN VOCABULARY.  We hand θ the TWO NUMBERS that name the carrier
+      # group — Φ (`tiles`: movement instances merged into one cooperative instruction) and ρ
+      # (`partner`: the sub-agent span they are distributed over, the MX TileSpan half-wave, which
+      # calls a `tile` of the lane mode) — and θ DERIVES the `carrier`/`slot` pair from them
+      # (`geometry.derive_quantum`).  "The coverage is **not a new field**: a carrier group is
+      # exactly a `Φ` fuse group over the tiles that `ρ` has placed on the agents that one
+      # instruction spans … `θ` names the members."
+      #
+      # WHY NOT BUILD THE MAP HERE ANY MORE.  A prebuilt `CoverageMap` was a THIRD representation
+      # alongside ρ and Φ: nothing checked it against them, so the two could disagree silently, and
+      # a supplied map cannot be SEARCHED, and rho is a searched distribution.  The numbers are the
+      # target facts; the map is θ's derivation of them.  `derive_quantum` is bit-identical to the
+      # `_fold` this replaces over every (Φ, ρ) pair we build (differential, 20/20).
+      phi[tc] = int(tiles)
+      rho[tc] = int(partner)
+    # RESERVE: theta models A/B/C/MXS only, so the ceiling it solves against must leave room for
+    # the allocations it does not see (G2L staging, addresses, temporaries).  The user's number.
+    _RESERVE = 32
+    return {"ReadVectorElems": elems, "ReadPhi": phi, "ReadRho": rho,
+            "RegisterBudget": (_maxVgpr - _RESERVE) if _maxVgpr else None}
+
+  def _loopModelGirProgram(self, kernel):
+    """Build (once) and return the finalized GIR Program for this kernel.  Cached on the writer,
+    keyed by kernel name so a new kernel rebuilds and the same kernel's three forks share one
+    Program (R-ONCE within a kernel)."""
+    from .LoopModel.emit import emit_mainloop
+    from .Lowering import build_gir
+    key = getattr(self.states, "kernelName", None) or id(kernel)
+    cache = getattr(self, "_loopModelGirCache", None)
+    if cache is not None and cache[0] == key:
+      return cache[1]
+    theta, _S = self._loopModelTheta(kernel)
+    # PRESETS (`Program.params`) — kernel parameters a region analysis derives a PLACEMENT from,
+    # but which θ does not and should not model.  the `PrefetchGL2` is the first: the GL2
+    # prefetch stages nothing, files no residency and has no completion class, so it is not an
+    # operand; all GIR decides is WHERE the scaffold's existing issue/increment pair lands.  The
+    # key is `Gl2PrefetchRegions.PARAM` so producer and consumer cannot drift.
+    from .Lowering.gir.analyses import Gl2PrefetchRegions
+    prog = build_gir(theta, mainloop=emit_mainloop(theta),
+                     params={Gl2PrefetchRegions.PARAM: kernel["PrefetchGL2"]})
+    # SEMANTIC GATE — "does this plan compute the right GEMM?", checked here and NOWHERE ELSE.
+    #
+    #
+    from .Lowering.gir import check_plan
+    viol = check_plan(prog)
+    if viol:
+      raise ValueError("UseLoopModel: the GIR plan fails its own semantic check (%d violation(s)) "
+                       "for kernel %s.  This is a decoder/lowering defect to repair — do NOT gate "
+                       "the configuration off.\n  %s"
+                       % (len(viol), key, "\n  ".join(viol[:8])))
+    self._loopModelGirCache = (key, prog)
+    return prog
+
+  def loopModelRegBuffers(self, kernel):
+    """{tensorChar: rotation width W} that GIR will NAME for each register operand, from θ.
+
+    GIR emits `vgprValu<tc>_X<slot>_I<iui>` with `slot = rate_index mod W_g` (/ the
+    `slot = c mod S_Λ(m)`), so the `.set` table must define `X0..X{W-1}` for the SAME W the
+    decoder used.  The scaffold's count is
+
+        numVgprBuffer = LoopIters          if ClusterLocalRead   (the DEFAULT)
+                        PrefetchLocalRead + 1   otherwise
+
+    and `LoopIters == n_s == W` for the unroll width policy, so on the default path the two ALREADY
+    agree at every DepthU — which is why this went unnoticed.  They diverge exactly when
+    `ClusterLocalRead` is forced off, and `Solution.py` does that when `PLR >= LoopIters`, in the
+    same breath forcing `PLR = 0`: the count collapses to `1` while θ still rotates `n_s` slots, so
+    GIR names X1 with no `.set` behind it and the assembler fails on generated text.  The concrete
+    reproducer is `DepthU=64` (LoopIters=2) with a requested `PLR=2`.
+
+    Reconciling the other way — clamping W down to the scaffold's count — would be WRONG, not
+    merely tight.  W is bounded below by the post-WAR live peak, and at `n_s = 4` a
+    K-innermost order has `L = 4`: two generations needed at one instant, the unrescuable
+    simultaneous-input race.  The allocator follows θ; θ does not follow the allocator.
+
+    An operand with several register groups (a width split) needs `max W_g` distinct X
+    indices: the groups share the X axis and are separated by their tile offset, not by the slot.
+
+    Returns {} when the kernel is not on the UseLoopModel path (the scaffold keeps its own count).
+    Reads the SHARED per-kernel θ (`_loopModelTheta`) — the same object the GIR program is built
+    from, so the widths sized here and the slots GIR names cannot come from two different θ."""
+    if not kernel["UseLoopModel"]:
+      return {}
+    from .LoopModel.ir import SHARED_GROUP
+    from .LoopModel.ir import Space
+    theta, S = self._loopModelTheta(kernel)
+    widths = {}
+    for op in theta.operands:
+      if not op.hops or op.hops[-1].dst != Space.REGISTER:
+        continue                                  # no register residence -> no Valu ring
+      w = max((S.get(op.name, g) for g in op.fragment.groups() if g != SHARED_GROUP), default=1)
+      widths[op.name] = max(1, int(w))
+    return widths
+
+  def loopModelValuRegs(self, kernel):
+    """{tensorChar: numVgprValu} — the register cost of theta's PARTITIONED ring.
+
+    `loopModelRegBuffers` answers "how many `X` blocks must the `.set` table define", which is
+    `max W_g`.  That is NOT the cost when the groups have different widths: GIR names `X0` for
+    every tile but `X1..X{W-1}` only for the tiles of the groups that are that deep, so the blocks
+    are RAGGED: at `MIWaveTile[8,8]` with a `{lo:2, hi:1}` split, `X0` holds tiles 0-7 and `X1`
+    holds 0-3.
+
+    So the cost is `frag_regs · Sum_slot |{tiles whose group is deeper than slot}|`, which for the
+    two-level case is `frag · (fan + d·(W-1))` — and at `d = fan/2, W = 2` that is
+    `perBlock · 1.5`, i.e. EXACTLY ULM0's `HalfPLR`.  Sizing it as `perBlock · max W_g` instead
+    charges every tile the deepest group's width and throws the partition's saving away.
+
+    Returns {} off the UseLoopModel path (the scaffold keeps its own sizing)."""
+    if not kernel["UseLoopModel"]:
+      return {}
+    from .LoopModel.ir import SHARED_GROUP
+    from .LoopModel.ir import Space
+    from .LoopModel import traversal as _sizing
+    theta, S = self._loopModelTheta(kernel)
+    out = {}
+    for op in theta.operands:
+      if not op.hops or op.hops[-1].dst != Space.REGISTER:
+        continue
+      groups = [g for g in op.fragment.groups() if g != SHARED_GROUP]
+      if not groups:
+        continue
+      from .LoopModel import traversal as _geom
+      fan = _geom.free_tiles(theta, op)
+      per = max(1, fan // len(groups))            # tiles owned by each group (equal partition)
+      widths = [max(1, int(S.get(op.name, g))) for g in groups]
+      # slot-by-slot: how many tiles are still live at rotation slot `s`
+      slots = max(widths)
+      tiles = sum(sum(per for w in widths if w > s) for s in range(slots))
+      out[op.name] = int(tiles * _geom.frag_regs(theta, op))
+    return out
+
+  def loopModelGirProgramCached(self):
+    """The GIR Program ALREADY built for the kernel just emitted, or None if this kernel did not
+    go through the GIR path.  Read-only accessor for the `OutputLoopIR` dump: the dump must show
+    the very Program the three forks emitted from, so it must NEVER build one — a rebuilt Program
+    could differ from what produced the .s and would make the dump lie."""
+    # HONOUR THE KEY.  `_loopModelGirProgram` caches `(key, prog)`; returning `cache[1]`
+    # unconditionally hands the PREVIOUS kernel's Program to whatever asks next — including a
+    # kernel that never went through GIR — and the dump then writes it out as that kernel's `.gir`,
+    # which is exactly the lie this accessor's contract forbids.
+    cache = getattr(self, "_loopModelGirCache", None)
+    if not cache:
+        return None
+    # The builder keys on `states.kernelName` when it has one and falls back to `id(kernel)`.
+    # Only the NAME is verifiable from here, and an `id()` is not safe to compare against anyway
+    # (CPython recycles them), so an unverifiable key means "no Program", not "probably this one".
+    name = getattr(self.states, "kernelName", None)
+    return cache[1] if (name and cache[0] == name) else None
+
+  def _girEmitStage(self, kernel, tPA, tPB, phase, *,
+                    internalPointerSwap=False):
+    """Emit one GIR stage (phase) via GirToRocisa, reusing the cached Program.  L3 realizes each
+    per-operand swap Mark by calling the scaffold's per-operand swap primitive (no pre-bundled
+    swap Module is passed).
+
+    THE OPERAND -> tensorParameters MAP IS BUILT BY `GirToRocisa`, not here.  The emitter needs
+    that map to build the scale read contexts anyway, so it owns the one copy and derives every
+    key from the tensorParameters' own `tensorChar` -- the names theta uses, so a Mark or copy
+    naming `MXSA` finds it."""
+    from .Lowering.gir_to_rocisa import GirToRocisa
+    prog = self._loopModelGirProgram(kernel)
+    return GirToRocisa(self, kernel, tPA, tPB, prog).emit_block(
+        prog, phase, internalPointerSwap=internalPointerSwap)
+
+  ##############################################################################
   # No Load Loop Body
   ##############################################################################
   def noLoadLoopBody( self, kernel, tensorParametersA, tensorParametersB, pack, packPre, isOptNLL, isNGLL, NLLfirst, NLLlast, NLLindex=0, NLLnum=1, \
@@ -3589,6 +3974,11 @@ class KernelWriter(metaclass=abc.ABCMeta):
 
     if isNGLL:
       self.codes.perIterGlobalRead = [ Module() for i in range (kernel["LoopIters"]) ]
+
+    # UseLoopModel: accumulate the per-u order-independent scaffold across the drain uIdx loop,
+    # emitted once (with the walker's stage="drain" body) at the last uIdx — mirrors the steady
+    # _loopBody fork (KernelWriter ~4907/4925).
+    LoopModelDrainScaffold = Module("LoopModelDrainScaffold")
 
     for uIdx in range(0, kernel["LoopIters"]):
       u = uIdx % kernel["LoopIters"]    #   u: index in compute loop (in contrast to the notion of global read loop)
@@ -4061,10 +4451,33 @@ class KernelWriter(metaclass=abc.ABCMeta):
       if kernel["ProblemType"]["Gradient"] and kernel["ProblemType"]["UseBias"] and (kernel["ProblemType"]["BiasSrc"] == "A" or kernel["ProblemType"]["BiasSrc"] == "B"):
         tP = tensorParametersA if kernel["ProblemType"]["BiasSrc"] == "A" else tensorParametersB
         macIterCode.add(self.exclasses.biasSumUnroll.loopSum(self, kernel, tP, u, kernel["InnerUnroll"]))
-      subIterCode = self._makeSubIterSchedule(kernel, tensorParametersA, tensorParametersB, localReads, \
-                      u, pointerLWCode, pointerLRCode, waitCode, macIterCode, waitLWCode, syncCode, pack[packIdx], packPre[packPreIdx], \
-                      module, NLLlast=NLLlast, tailloopInNll=useTailloopInNll, isNLLorNGLL=True)
-      module.add(subIterCode)
+      if kernel["UseLoopModel"]:
+        # LoopModel NLL fork — mirrors the steady _loopBody fork.  Each noLoadLoopBody call is ONE
+        # drain iteration = ONE step of the IR's M-step DRAIN peel (the Lemma-1 staggered tail).
+        _lmDrainStep = (kernel["PrefetchGlobalRead"] - 1) - remainPgr
+        LoopModelDrainScaffold.add(waitLWCode)
+        LoopModelDrainScaffold.add(syncCode)
+        # NO scaffold per-iteration global read in the drain: GIR's drain blocks carry whatever
+        # copies the peel still issues (a copy drops out of drain step t once its target chunk is
+        # out of range — point 2's `off_p <= M-1-t`), and the drain fork realizes them
+        # through the copy leaf.  Draining `perIterGlobalRead[u]` here as well would re-issue them
+        # on the scaffold's KMN per-substep distribution, which has no meaning for a GIR schedule.
+        _perLW = self.codes.perIterLocalWrite[u][1] \
+            if (self.codes.perIterLocalWrite and u < len(self.codes.perIterLocalWrite)) else None
+        if _perLW is not None and _perLW.count():
+          LoopModelDrainScaffold.add(_perLW)
+        if u == kernel["LoopIters"] - 1:
+          # drain is NGLL: internalPointerSwap forced False (matches the drain path).  GIR owns
+          # swap + gr_inc placement via its dataflow passes.
+          module.add(self._girEmitStage(
+              kernel, tensorParametersA, tensorParametersB, "drain%d" % _lmDrainStep,
+              internalPointerSwap=False))
+          module.add(LoopModelDrainScaffold)
+      else:
+        subIterCode = self._makeSubIterSchedule(kernel, tensorParametersA, tensorParametersB, localReads, \
+                        u, pointerLWCode, pointerLRCode, waitCode, macIterCode, waitLWCode, syncCode, pack[packIdx], packPre[packPreIdx], \
+                        module, NLLlast=NLLlast, tailloopInNll=useTailloopInNll, isNLLorNGLL=True)
+        module.add(subIterCode)
       self.states.SubTileIdx = (self.states.SubTileIdx + 1) % kernel["numSubTiles"]
       pack[packIdx] = Module()
       packPre[packPreIdx] = Module()
@@ -4461,6 +4874,9 @@ class KernelWriter(metaclass=abc.ABCMeta):
     LRCodeBAllIters = []
     PackCodeAAllIters = []
     PackCodeBAllIters = []
+    # UseLoopModel: accumulate the per-u order-independent scaffold (GR-inc + LDS swaps +
+    # tokens) across the uIdx loop; emitted once after the walker's full unroll.
+    LoopModelScaffold = Module("LoopModelScaffold")
 
     ############################################################################
     # unrolled loop: mac iterations
@@ -4927,7 +5343,26 @@ class KernelWriter(metaclass=abc.ABCMeta):
       # Is this test necessary because of the global variable this if was previously always true
       # after removing the global variable it is always false...
       # if self.states.numItersPLR:
-      if not kernel["UseCustomMainLoopSchedule"]:
+      if kernel["UseLoopModel"]:
+        # LoopModel fork (same seam as UseCustomMainLoopSchedule).  The theta-IR walker UNROLLS
+        # the ENTIRE inner loop (all K-substeps x M x N in the IR's LoopOrder) into straight-line
+        # code — that is the walker's whole job, and the only way a non-KMN order is realized.
+        #
+        LoopModelScaffold.add(waitLWCode)
+        LoopModelScaffold.add(syncCode)
+        _perLW = self.codes.perIterLocalWrite[u][1] if u < len(self.codes.perIterLocalWrite) else None
+        if _perLW is not None and _perLW.count():
+          LoopModelScaffold.add(_perLW)
+        if u == kernel["LoopIters"] - 1:
+          # GIR OWNS the copies, the swaps and the GR-increments — every one realized per GIR
+          # node through a leaf emitter (emitCopyTile / tdmSwapLdsOffset / tdmIncrementAB).  No
+          # pre-built scaffold Module is handed in: the copy is a leaf like the read and the wmma,
+          # which is what lets the prologue and drain forks be GIR-owned too.
+          module.add(self._girEmitStage(
+              kernel, tensorParametersA, tensorParametersB, "steady",
+              internalPointerSwap=kernel["ExpandPointerSwap"]))
+          module.add(LoopModelScaffold)
+      elif not kernel["UseCustomMainLoopSchedule"]:
         subIterCode = self._makeSubIterSchedule(kernel, tensorParametersA, tensorParametersB, localReads, \
                       u, pointerLWCode, pointerLRCode, waitCode, macIterCode, waitLWCode, syncCode, pack[packIdx], packPre[packPreIdx], module, localReadsSecondHalf)
         module.add(subIterCode) # add scheduled "other", local reads, local writes
@@ -5555,27 +5990,35 @@ class KernelWriter(metaclass=abc.ABCMeta):
 
       #TODO: TDM
       # Swap local ptrs A(MXSA)
-      if kernel["enableTDMA"]:
+      # GIR OWNS the copy-descriptor swap.  This pre-loop block rotates the TDM descriptor for
+      # EVERY operand before the first prefetch group; GIR's prologue already carries the swap
+      # Marks its dataflow placed (after chunk 0's copies, before chunk 1's), so emitting these too
+      # rotates twice and lands chunk 0 in buffer 1 — inverting the whole ring against what the
+      # reads expect.  Verified in the .s: two `s_xor tdm ^= 0x4000` ahead of the first
+      # `tensor_load_to_lds`, with GIR's own swap+load pairs following.
+      if not kernel["UseLoopModel"] and kernel["enableTDMA"]:
         module.addComment1("TDM swap lds a")
         module.add(self.tdmSwapLdsOffset(kernel, tensorParametersA))
       else:
         module.addComment1("local write swap a")
         module.add(self.localWriteSwapOffsets(kernel, expand, tensorParametersA))
-      if "MX" in tensorParametersA:
+      if "MX" in tensorParametersA and not kernel["UseLoopModel"]:
         module.addComment1("local write swap mxsa")
         if kernel["enableTDMA"]:
           module.add(self.tdmSwapLdsOffset(kernel, tensorParametersA["MX"]))
         else:
           module.add(self.localWriteSwapOffsets(kernel, expand, tensorParametersA["MX"]))
       # Swap local ptrs B(MXSB)
-      if "MX" in tensorParametersB:
+      if "MX" in tensorParametersB and not kernel["UseLoopModel"]:
         module.addComment1("local write swap mxsb")
         if kernel["enableTDMA"] and kernel["enableTDMB"] and kernel["NumWaves"] == 1:
           module.add(self.tdmSwapLdsOffset(kernel, tensorParametersB["MX"]))
         elif not kernel["enableTDMB"]:
           module.add(self.localWriteSwapOffsets(kernel, expand, tensorParametersB["MX"]))
 
-      if kernel["enableTDMB"]:
+      if kernel["UseLoopModel"]:                # GIR owns the copy-descriptor swap (see above)
+        pass
+      elif kernel["enableTDMB"]:
         #TODO: TDM refactor
         if kernel["NumWaves"] == 1:
           module.addComment1("TDM swap lds b")
@@ -5584,7 +6027,7 @@ class KernelWriter(metaclass=abc.ABCMeta):
         module.addComment1("local write swap b")
         module.add(self.localWriteSwapOffsets(kernel, expand, tensorParametersB))
       # Swap Metadata
-      if kernel["enableTDMMetadata"]:
+      if kernel["enableTDMMetadata"] and not kernel["UseLoopModel"]:
           module.addComment1("TDM swap lds metadata")
           module.add(self.tdmSwapLdsOffset(kernel, tPM))
       # swap local write memory token
@@ -5594,6 +6037,15 @@ class KernelWriter(metaclass=abc.ABCMeta):
       # prefetch global read for PGR>=2
       if kernel["PrefetchGlobalRead"] >= 2:
         for idxPgr in range(1, kernel["PrefetchGlobalRead"]):
+          if kernel["UseLoopModel"]:
+            # GIR OWNS the prefetch peel.  Its prologue block carries one copy Move per (operand,
+            # buffer) plus the swap and gr_increment Marks its dataflows placed, and the prologue
+            # fork realizes every one of them through the leaf emitters.  Emitting the scaffold's
+            # PGR peel as well would issue each tensor_load TWICE and rotate both the descriptor
+            # and the global-read address twice per chunk — which is exactly the double swap that
+            # showed up in the prologue while the copies were still scaffold-owned and only the
+            # swaps had moved to GIR.  One owner per phase; for UseLoopModel that owner is GIR.
+            continue
           module.add(self.openPrefetchGlobalRead2orMore(kernel, idxPgr))
           # StreamKMulticast: the cooperative-multicast loads emitted below for
           # this prefetch stage sit inside the single-iteration guard branch,
@@ -5684,9 +6136,11 @@ class KernelWriter(metaclass=abc.ABCMeta):
           self.states.ldsDirectToLDSTokenIdx = \
             self._nextLdsToken(self.states.ldsDirectToLDSTokenIdx)
 
-        # generate exit code
-        for idxPgr in range(0, kernel["PrefetchGlobalRead"] + 1):
-          module.add(self.closePrefetchGlobalRead2orMore(kernel, tensorParametersA, tensorParametersB, idxPgr))
+        # generate exit code.  Under UseLoopModel the guard belongs at GIR's branch point, in the
+        # prologue fork below; emitting the labels here would put the peel past both of them.
+        if not kernel["UseLoopModel"]:
+          for idxPgr in range(0, kernel["PrefetchGlobalRead"] + 1):
+            module.add(self.closePrefetchGlobalRead2orMore(kernel, tensorParametersA, tensorParametersB, idxPgr))
 
       self.states.subTileIdx = 0
 
@@ -5705,7 +6159,39 @@ class KernelWriter(metaclass=abc.ABCMeta):
         usePLRPack = self.states.doFullPackCodePrefetch or (kernel["UseCustomMainLoopSchedule"] and kernel["UsePLRPack"])
 
       # prefetch-local
-      if self.states.numItersPLR:
+      # GATE ON UseLoopModel, NOT on numItersPLR.  GIR now owns the global prefetch (the scaffold's
+      # prefetch-0 and PGR-peel sites are both off under UseLoopModel), and the prologue block is
+      # what emits it.  `numItersPLR` is `PrefetchLocalRead % LoopIters`, so PLR=0 — and PLR=1 with
+      # LoopIters==1 — made it 0 and skipped the fork entirely: no copies before the loop at all,
+      # and the steady body then reads uninitialised LDS.  The read-fill this replaces is PLR-shaped;
+      # the COPIES are not, and they must be emitted for every PLR.
+      if kernel["UseLoopModel"]:
+        # LoopModel PROLOGUE fork — replace the localReadDo read-fill with the walker's
+        # stage="prologue" body (the PLR pipe fill: direct reads of slab-0's first dr substeps into
+        # registers, NO wmma).  The drain is also forked, so nothing downstream uses localReadDo's
+        # localReadOffset/localReadInc state — we can skip the read-fill loop entirely.  We still
+        # init pack[]/packPre[] to empty Modules (consumed later by closeSumAtLeastUnroll / the
+        # steady loop) and advance SubTileIdx.  This makes the walker own the read-token stream from
+        # the prologue onward (fixing the SIA4 token seed to be walker-owned, not inherited).
+        for plrIdx in range(0, self.states.numItersPLR):
+          packPre[plrIdx] = Module()
+          pack[plrIdx] = Module()
+        module.add(self._girEmitStage(
+            kernel, tensorParametersA, tensorParametersB, "prologue"))
+        # The peeled generation a single-iteration loop never consumes is its own GIR block, so the
+        # skipPGR ladder brackets exactly it — the copies, not the advances that both arms need.
+        guard = self._loopModelGirProgram(kernel).meta.get("prefetch_guard")
+        if guard:
+          module.add(self.openPrefetchGlobalRead2orMore(kernel, guard["gen"]))
+          module.add(self._girEmitStage(
+              kernel, tensorParametersA, tensorParametersB, guard["block"]))
+          for idxPgr in range(0, kernel["PrefetchGlobalRead"] + 1):
+            module.add(self.closePrefetchGlobalRead2orMore(
+                kernel, tensorParametersA, tensorParametersB, idxPgr))
+          module.add(self._girEmitStage(
+              kernel, tensorParametersA, tensorParametersB, guard["join"]))
+        self.states.SubTileIdx = (self.states.SubTileIdx + 1) % kernel["numSubTiles"]
+      elif self.states.numItersPLR:
         # in some cases need an extra copy of the LDS read with appropriate double buffer offsets
         for plrIdx in range(0, self.states.numItersPLR):
           packPre[plrIdx] = Module()
@@ -6281,17 +6767,28 @@ class KernelWriter(metaclass=abc.ABCMeta):
 
       if kernel["enableTDMA"] and kernel["enableTDMB"]:
         if kernel["NumWaves"] > 1:
-          if self.isPrefetchAcrossPersistentEnabled(kernel):
-            module.add(self.papResetTDMDescriptorForTailWaveSeparated(kernel, tensorParametersA, tensorParametersB))
-          else:
-            module.add(self.resetTDMDescriptorForTailWaveSeparated(kernel, tensorParametersA, tensorParametersB))
+          # SAME GROUPS, SAME RANGES as the descriptor init and the increment seed.  Resetting
+          # (A,B) then (MXSA,MXSB) instead re-spells the pairing, so under a partial grouping the
+          # reset runs a parity dispatch over a 3-member group and waves reset different tensor
+          # dims on one descriptor.
+          from .LoopModel.adapter import fuse_groups as _fgT, wave_ranges as _wrT
+          _tpT = {"A": tensorParametersA, "B": tensorParametersB}
           if kernel["ProblemType"]["MXBlockA"] and kernel["ProblemType"]["MXBlockB"]:
+            _tpT["MXSA"] = tensorParametersA["MX"]
+            _tpT["MXSB"] = tensorParametersB["MX"]
+          _groupsT = _fgT(kernel["TDMFuse"], list(_tpT))
+          for _gi, _g in enumerate(_groupsT):
+            _mem = [_tpT[m] for m in _g]
+            _rng = _wrT(kernel["TDMFuse"], _gi, kernel["NumWaves"])
             if self.isPrefetchAcrossPersistentEnabled(kernel):
-              module.add(self.papResetTDMDescriptorForTailWaveSeparated(kernel, tensorParametersA["MX"], \
-                                                                        tensorParametersB["MX"]))
+              assert _rng is None, "PAP tail reset has no ranged form yet"
+              module.add(self.papResetTDMDescriptorForTailWaveSeparated(kernel, _mem[0], _mem[1]))
             else:
-              module.add(self.resetTDMDescriptorForTailWaveSeparated(kernel, tensorParametersA["MX"], \
-                                                                     tensorParametersB["MX"]))
+              module.add(self.resetTDMDescriptorForTailWaveSeparatedGroup(kernel, _mem, _rng))
+          # An operand in no group owns its descriptor; every wave cooperates, so reset it plainly.
+          for _n, _p in _tpT.items():
+            if not any(_n in _g for _g in _groupsT):
+              module.add(self.resetTDMDescriptorForTail(kernel, _p))
         else:
           module.add(self.resetTDMDescriptorForTail(kernel, tensorParametersA))
           module.add(self.resetTDMDescriptorForTail(kernel, tensorParametersB))
@@ -6834,7 +7331,13 @@ class KernelWriter(metaclass=abc.ABCMeta):
                                "PrintAfterPass": str(globalParameters.get("StinkyTofuPrintAfterPass") or ""),
                                "DebugPass": str(globalParameters.get("StinkyTofuDebugPass") or ""),
                                "PassOrderSnapshotJson": str(globalParameters.get("StinkyTofuPassOrderSnapshotJson") or ""),
-                               "EnableWaitCntInsertion": True if stinky_opt_level != 0 else not globalParameters.get("DisableSTWaitCnt", True),
+                               # UseLoopModel emits only memory tokens and leaves every wait for
+                               # StinkyTofu to derive from them, so DisableSTWaitCnt cannot apply here.
+                               "EnableWaitCntInsertion": (stinky_opt_level != 0
+                                                          or bool(kernel["UseLoopModel"])
+                                                          or not globalParameters.get("DisableSTWaitCnt", True)),
+                               "EnableLoopCarriedTokenDeps": (bool(kernel["UseLoopModel"])
+                                                              and kernel["MIWaveGroup"][0] * kernel["MIWaveGroup"][1] == 1),
                                # True: expert scheduling mode2; False: mode 0. Independent of ScheduleIterAlg/OptLevel.
                                "EnableESM2": kernel["EnableStinkyTofuESM2"],
                                "EnableESM2TrackValuVsrc": kernel["EnableESM2TrackValuVsrc"],
@@ -6907,6 +7410,15 @@ class KernelWriter(metaclass=abc.ABCMeta):
                                            options=stinky_module_options)
       t1a_end = time.perf_counter()
       print2(f"StinkyTofu (1a) toStinkyTofuModule: {t1a_end - t1a_start:.4f}s")
+
+      # Inject the memtoken-IR structure dump at the end of the pipeline (after
+      # every backend pass, incl. TDMLoadWaveSync) when the assembly dir is set.
+      if self.assemblyDir:
+        dumpBase = getKernelFileBase(self.debugConfig.splitGSU, kernel)
+        stModule.setPluginDataStr("DumpMemTokenIRPath",
+                                  os.path.join(self.assemblyDir, dumpBase + ".txt"))
+        stModule.registerPassAtExtensionPoint(
+            rocisa.PipelineExtensionPoint.EndOfPipeline, "DumpMemTokenIRStructurePass")
 
       # Run pipeline — builder handles O0 internally (skips optimization,
       # still runs required passes like InsertVgprMsb)
@@ -7255,6 +7767,34 @@ class KernelWriter(metaclass=abc.ABCMeta):
     else:
       self.states.numVgprBuffer = kernel["PrefetchLocalRead"] + 1
 
+    # UseLoopModel: GIR names `X0..X{W-1}` per operand from θ's rotation width, which is a
+    # different quantity from the scaffold's prefetch-depth count (see `loopModelRegBuffers`).
+    #
+    # ONE value, not two.  `numVgprBuffer` has two kinds of reader: the STORAGE side (the
+    # `numVgprBufferA/B` -> `valuBlocks` -> `numVgprValu` sizing, the `numVgprValuPack*` sizing,
+    # and `macroAndSet`'s `numBi` that emits the `.set` table) and the INDEX side (`u %
+    # numVgprBuffer` in `mfmaIter`, `plrIdx`/`luIdx` in `_loopBody`/`noLoadLoopBody`, `SumUnroll`).
+    # Only the storage side needs θ's width — so a separate "alloc" field looks tempting, to leave
+    # the index arithmetic bit-identical.  It is not worth it, for two reasons:
+    #   1. `u % numVgprBuffer` derives the buffer from the substep index ALONE, which IS the
+    #      K-outer assumption.  Under a LoopOrder that puts K inner the buffer is not a function
+    #      of `u`, so that formula is already wrong here — preserving its old value preserves a
+    #      wrong index, not a correct one.
+    #   2. On this path its output is DISCARDED.  `mfmaIter` fills `macIterCode`, which is only
+    #      consumed in the `else` of the `if kernel["UseLoopModel"]` fork (`_loopBody` and
+    #      `noLoadLoopBody`); the fork itself emits `_girEmitStage(...) + LoopModelScaffold`.
+    # A second near-identically-named field would be two sources for one quantity — the exact
+    # shape of the bug this fix exists to remove.
+    #
+    # GROW ONLY, though: `max`, never shrink.  Not to protect the index readers above, but because
+    # regions the GIR fork does NOT own still emit from the scaffold (the tail loop and edge
+    # kernels are unimplemented), and the scaffold's own count is the right floor for those.
+    # Over-allocating a buffer is free; under-allocating is an undefined `.set` symbol.
+    self.states.loopModelRegBufferWidths = self.loopModelRegBuffers(kernel)
+    if self.states.loopModelRegBufferWidths:
+      # EXPERIMENT: let theta GOVERN rather than raise.
+      self.states.numVgprBuffer = max(self.states.loopModelRegBufferWidths.values())
+
     if kernel["ClusterLocalRead"]:
       self.states.numVgprBufferPackA = kernel["LoopIters"]
       self.states.numVgprBufferPackB = kernel["LoopIters"]
@@ -7482,6 +8022,10 @@ class KernelWriter(metaclass=abc.ABCMeta):
     self.states.ldsTensorTokenIdx = self.states.memTokenLdsBuffer0
     self.states.ldsDirectToLDSTokenIdx = self.states.memTokenLdsBuffer0
     self.states.ldsWriteTokenIdx = self.states.memTokenLdsBuffer0
+    # The `SBarrier` objects GIR placed.  Holding the OBJECTS (not ids) is deliberate: it
+    # keeps them alive, so `id()` cannot be recycled onto an unrelated node before
+    # `postMainLoopBarrierCheckAndReset` compares against them.
+    self.states.girOwnedBarriers = []
     self.states.lockLdsReadTokenSwap = False
 
     # NamedTuple is immutable
@@ -7928,11 +8472,20 @@ class KernelWriter(metaclass=abc.ABCMeta):
         if kernel["DirectToVgprB"] and not (self.states.packDTVB or self.states.convDTVB):
           self.states.b.numVgprValuPerBlock = 0
 
+        # UseLoopModel: theta's PARTITIONED ring is ragged (`X0` spans the fan, deeper blocks span
+        # only the deep tiles), so `perBlock * valuBlocks` over-charges it — see
+        # `loopModelValuRegs`.  Taking the MIN keeps this a pure reduction: the scaffold's own
+        # number still bounds anything theta does not own.
+        _ulmValu = self.loopModelValuRegs(kernel)
         self.states.a.numVgprValu = int(self.states.a.numVgprValuPerBlock * valuBlocksA)
+        if _ulmValu.get("A"):
+          self.states.a.numVgprValu = min(self.states.a.numVgprValu, _ulmValu["A"])
         if self.states.lrvwTileA > 1 and tensorParametersA["bpe"] < 4 and not (kernel["UsePLRPack"] and self.states.numItersPLR):
           self.states.a.numVgprValu = self.states.a.numVgprValuPerBlock * kernel["InnerUnroll"]
 
         self.states.b.numVgprValu = int(self.states.b.numVgprValuPerBlock * valuBlocksB)
+        if _ulmValu.get("B"):
+          self.states.b.numVgprValu = min(self.states.b.numVgprValu, _ulmValu["B"])
         if self.states.lrvwTileB > 1 and tensorParametersB["bpe"] < 4 and not (kernel["UsePLRPack"] and self.states.numItersPLR):
           self.states.b.numVgprValu = self.states.b.numVgprValuPerBlock * kernel["InnerUnroll"]
 
@@ -9077,7 +9630,7 @@ class KernelWriter(metaclass=abc.ABCMeta):
       #            X4-7
       #            T4-7
       #            X8-11
-      #            ....
+      #....
       #         This works with useDirect32XEmulation=Trie
       #         Wider local read case, we need TransposeCode=True
       #   False: Does not use interleave layout
@@ -9928,27 +10481,11 @@ class KernelWriter(metaclass=abc.ABCMeta):
       self.sgprPool.checkIn(tempSgpr)
 
     # Abs SW instruction prefetch base SGPRs.
-    # Reserve 3 contiguous SGPRs with an even-aligned base for the StinkyTofu abs static pass,
-    # which inserts the prefetch burst
-    #   (s_getpc_b64 -> s_add_i32 -> s_add_u32 -> s_addc_u32 -> s_prefetch_inst)
-    # at kernel entry-begin:
-    #   s[base:base+1] = even-aligned 64-bit address pair (s_getpc_b64 / s_prefetch_inst base)
-    #   s[base+2]      = scratch (PC-rel offset, then klength=31 for the slength operand)
-    # The burst runs BEFORE the kernarg preload shuffle has moved preloaded arguments out of their
-    # launch SGPRs, so with PreloadKernArgs the base pair MUST NOT alias the live-in preload region
-    # s[0:MaxSgprPreload). checkOutAligned() returns the lowest free aligned block, which can fall
-    # inside that region (e.g. s20 == SrdC, holding a preloaded stride at entry), so temporarily
-    # reserve s[0:MaxSgprPreload) to force the base above it (mirrors the preloadGuard above). The
-    # base triple's check-in is DEFERRED to label_MultiGemmEnd (KernelWriterAssembly), so it stays
-    # reserved across the prolog for the dynamic CFG-target ladder and is reclaimed by
-    # defineVariableSgprs right after MGE (net +0). Fallback: immediate check-in when do["PreLoop"]
-    # is off. Stream-K / non-gfx1250 are excluded from allocation entirely (see below).
     self.states.swPrefetchAbsBaseSgpr = -1
     self.states.swPrefetchAbsBaseSgprPendingCheckIn = -1
     # Only gfx1250 non-Stream-K kernels reserve the abs base; leaving baseSgpr = -1 makes both
     # abs passes no-op. Stream-K is unsupported (may be GSU0, so sgprGSU can be unset, and its
     # SrdWS prolog SGPRs would collide with the base); non-gfx1250 never uses s_prefetch_inst.
-    # The StreamK/ISA guards below mirror the resolver (defense-in-depth).
     swpAbsRequested = resolveSwInstructionPrefetch(
         kernel.get("SwInstructionPrefetch", SW_INSTRUCTION_PREFETCH_AUTO),
         self.states.version == (12, 5, 0),
@@ -11019,10 +11556,46 @@ class KernelWriter(metaclass=abc.ABCMeta):
   def _tailLoopBarrierTokens(self, kernel):
     # Explicit tail barriers must list every token; the auto-barrier pass doesn't cover them.
     tokens = [self.states.memTokenLdsBuffer0]
-    if kernel["TDMSplit"] and not kernel["ProblemType"]["Sparse"]:
+    if _tdm_split.any_split(kernel):
       for row in self.states.memTokenLdsSplit:
         tokens.extend(row)
     return sorted(set(tokens))
+
+  @staticmethod
+  def _stripBarriers(rootModule, keep=()):
+    """Remove every `SBarrier` under `rootModule`, except those in `keep`.  -> (removed, kept).
+
+    `keep` is matched by OBJECT IDENTITY, not by comment text.  The barriers GIR places are the
+    same `SBarrier` class the scaffold emits and carry no distinguishing field — rocisa nodes are
+    nanobind objects and reject an added attribute — so the emitter registers the objects it
+    created and this compares against those.  Keying on the comment would work until someone
+    reworded it."""
+    keepIds = {id(b) for b in keep}
+    removedCount = kept = 0
+    modulesToScan = [rootModule]
+    while modulesToScan:
+      currentModule = modulesToScan.pop()
+      keptItems = []
+      for item in currentModule.items():
+        if isinstance(item, Module):
+          modulesToScan.append(item)
+          keptItems.append(item)
+        elif (isinstance(item, SBarrier) and id(item) not in keepIds
+              and "-3" not in str(item).split("//", 1)[0]):
+          # Pass-2 rebuilds only workgroup-scope barriers from token-state
+          # transitions, so only those are cleared here. Cluster-scope split
+          # barriers (s_barrier_signal/wait -3), e.g. the StreamKMulticast
+          # prologue arrive, are placed deliberately by other components and
+          # carry no LDS token, so preserve them rather than dropping a half of
+          # a cluster handshake.
+          removedCount += 1
+          continue
+        else:
+          if isinstance(item, SBarrier):
+            kept += 1
+          keptItems.append(item)
+      currentModule.setItems(keptItems)
+    return removedCount, kept
 
   ##############################################################################
   # PostMainLoopBarrierCheckAndReset
@@ -11037,6 +11610,19 @@ class KernelWriter(metaclass=abc.ABCMeta):
       - Writing -> Read transition: insert barrier, state=Reading
       - Reading -> Write transition: insert barrier, state=Writing
     """
+    if kernel["UseLoopModel"]:
+      # GIR OWNS LDS FENCE PLACEMENT — its own reset, at every ScheduleIterAlg.
+      #
+      #
+      _removed, kept = self._stripBarriers(rootModule, keep=self.states.girOwnedBarriers)
+      print2(f"[postMainLoopBarrierCheckAndReset] UseLoopModel: stripped {_removed} scaffold "
+             f"barrier(s), kept {kept} GIR fence(s); placement is GIR's")
+      # THE LIVENESS CHECK THE EMPTY-LEDGER GATE DOES NOT SUBSUME.
+      from .Lowering.barrier_uniformity_asm import check_barrier_uniformity
+      check_barrier_uniformity(rootModule, self.states.girOwnedBarriers,
+                              kernelName=getattr(self.states, "kernelName", ""))
+      return
+
     numWaves = kernel["NumThreads"] // kernel["WavefrontSize"]
     stOptLevel = kernel.get("_StinkyTofuOptLevel", 0)
     scheduleIterAlg = kernel.get("_ScheduleIterAlg", self.states.scheduleIterAlg)
@@ -11054,26 +11640,7 @@ class KernelWriter(metaclass=abc.ABCMeta):
     insertedCount = 0
 
     # Pass-1: remove existing barriers first.
-    modulesToScan = [rootModule]
-    while modulesToScan:
-      currentModule = modulesToScan.pop()
-      keptItems = []
-      for item in currentModule.items():
-        if isinstance(item, Module):
-          modulesToScan.append(item)
-          keptItems.append(item)
-        elif isinstance(item, SBarrier) and "-3" not in str(item).split("//", 1)[0]:
-          # Pass-2 rebuilds only workgroup-scope barriers from token-state
-          # transitions, so only those are cleared here. Cluster-scope split
-          # barriers (s_barrier_signal/wait -3), e.g. the StreamKMulticast
-          # prologue arrive, are placed deliberately by other components and
-          # carry no LDS token, so preserve them rather than dropping a half of
-          # a cluster handshake.
-          removedCount += 1
-          continue
-        else:
-          keptItems.append(item)
-      currentModule.setItems(keptItems)
+    removedCount, _kept = self._stripBarriers(rootModule)
 
     # Pass-2: insert barriers by token state transitions.
     tokenState = {}

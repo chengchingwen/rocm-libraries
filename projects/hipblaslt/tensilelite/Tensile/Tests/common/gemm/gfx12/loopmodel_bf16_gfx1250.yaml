@@ -1,0 +1,520 @@
+# Copyright Advanced Micro Devices, Inc., or its affiliates.
+# SPDX-License-Identifier: MIT
+TestParameters:
+  marks: [skip-gfx900, skip-gfx906, skip-gfx908, skip-gfx90a, skip-gfx940, skip-gfx941, skip-gfx942, skip-gfx950, skip-gfx1010, skip-gfx1011, skip-gfx1012, skip-gfx1030, skip-gfx1100, skip-gfx1101, skip-gfx1102, skip-gfx1200, skip-gfx1201]
+
+GlobalParameters:
+  SyncsPerBenchmark: 0
+  NumElementsToValidate: -1
+  BoundsCheck: 0
+  PrintSolutionRejectionReason: True
+  Architecture: gfx1250
+  CpuThreads: 1
+  KeepBuildTmp: True
+  OutputLoopIR: True
+  PrintLevel: 2
+
+BenchmarkProblems:
+
+  -
+    -
+      OperationType: GEMM
+      DataType: b
+      DestDataType: b
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: False
+      TransposeB: True
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 32, 1,  1,  2, 2,  1, 1]
+        - DepthU: [64]
+        - AssertSummationElementMultiple: [64]
+        - WavefrontSize: [32]
+        - PrefetchGlobalRead: [1, 2, 3]
+        - PrefetchLocalRead: [0, 1]
+        - StaggerU: [0, 32]
+        - ScheduleIterAlg: [0, 4]
+        - UseSubtileImpl: [false]
+        - UseLoopModel: [true]
+        - TDMInst: [3]
+        - LDSTrInst: [true]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - LoopOrder: [KMN, KNM, MKN, MNK, NKM, NMK]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 256]
+          - Exact: [256, 256, 1, 128]
+          - Exact: [256, 256, 1, 64]
+
+  -
+    -
+      OperationType: GEMM
+      DataType: b
+      DestDataType: b
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: False
+      TransposeB: True
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 32, 1,  1,  1, 1,  1, 1]
+          - [16, 16, 32, 1,  1,  4, 1,  1, 1]
+          - [16, 16, 32, 1,  1,  1, 4,  1, 1]
+          - [16, 16, 32, 1,  1,  2, 2,  1, 1]
+          - [16, 16, 32, 1,  1,  4, 4,  1, 1]
+          - [16, 16, 32, 1,  1,  4, 1,  2, 2]
+          - [16, 16, 32, 1,  1,  1, 4,  2, 2]
+          - [16, 16, 32, 1,  1,  4, 4,  2, 2]
+        - DepthU: [64]
+        - AssertSummationElementMultiple: [64]
+        - WavefrontSize: [32]
+        - PrefetchGlobalRead: [1]
+        - PrefetchLocalRead: [1]
+        - StaggerU: [32]
+        - ScheduleIterAlg: [0, 4]
+        - UseSubtileImpl: [false]
+        - UseLoopModel: [true]
+        - TDMInst: [3]
+        - LDSTrInst: [true]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - LoopOrder: [KMN, KNM, MKN, MNK, NKM, NMK]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 256]
+          - Exact: [256, 256, 1, 128]
+
+  -
+    -
+      OperationType: GEMM
+      DataType: b
+      DestDataType: b
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: False
+      TransposeB: True
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 32, 1,  1,  2, 2,  1, 1]
+        - DepthU: [128]
+        - AssertSummationElementMultiple: [128]
+        - WavefrontSize: [32]
+        - PrefetchGlobalRead: [1, 2]
+        - PrefetchLocalRead: [0, 1, 2]
+        - StaggerU: [32]
+        - ScheduleIterAlg: [0, 4]
+        - UseSubtileImpl: [false]
+        - UseLoopModel: [true]
+        - TDMInst: [3]
+        - LDSTrInst: [true]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - LoopOrder: [KMN, KNM, MKN, MNK, NKM, NMK]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 256]
+          - Exact: [256, 256, 1, 128]
+
+  -
+    -
+      OperationType: GEMM
+      DataType: b
+      DestDataType: b
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: True
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 32, 1,  1,  2, 2,  1, 1]
+          - [16, 16, 32, 1,  1,  2, 2,  2, 2]
+          - [16, 16, 32, 1,  1,  4, 4,  1, 1]
+        - DepthU: [64]
+        - AssertSummationElementMultiple: [64]
+        - WavefrontSize: [32]
+        - PrefetchGlobalRead: [1, 2]
+        - PrefetchLocalRead: [0, 1]
+        - StaggerU: [32]
+        - ScheduleIterAlg: [0, 4]
+        - UseSubtileImpl: [false]
+        - UseLoopModel: [true]
+        - TDMInst: [3]
+        - TDMSplitA: [0, 1, 2]
+        - TDMSplitB: [0, 1, 2]
+        - VectorWidthA: [1, 2]
+        - VectorWidthB: [1, 2]
+        - LDSTrInst: [false]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - LoopOrder: [KMN, KNM, MKN, MNK, NKM, NMK]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 256]
+          - Exact: [256, 256, 1, 128]
+
+  -
+    -
+      OperationType: GEMM
+      DataType: b
+      DestDataType: b
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: True
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 32, 1,  1,  2, 2,  1, 1]
+        - DepthU: [64]
+        - AssertSummationElementMultiple: [64]
+        - WavefrontSize: [32]
+        - PrefetchGlobalRead: [1, 2]
+        - PrefetchLocalRead: [1]
+        - StaggerU: [32]
+        - ScheduleIterAlg: [0, 4]
+        - UseSubtileImpl: [false]
+        - UseLoopModel: [true]
+        - TDMInst: [3]
+        - LDSTrInst: [false]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - LoopOrder: [KMN, KNM, MKN, MNK, NKM, NMK]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 256]
+          - Exact: [256, 256, 1, 128]
+
+  -
+    -
+      OperationType: GEMM
+      DataType: b
+      DestDataType: b
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: False
+      TransposeB: True
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 32, 1,  1,  2, 2,  2, 1]
+          - [16, 16, 32, 1,  1,  2, 2,  2, 2]
+        - DepthU: [64]
+        - AssertSummationElementMultiple: [64]
+        - WavefrontSize: [32]
+        - PrefetchGlobalRead: [1, 2]
+        - PrefetchLocalRead: [0, 1]
+        - StaggerU: [32]
+        - ScheduleIterAlg: [0]
+        - UseSubtileImpl: [false]
+        - UseLoopModel: [true]
+        - TDMInst: [3]
+        - LDSTrInst: [true]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - LoopOrder: [KMN, KNM, MKN, MNK, NKM, NMK]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 256]
+          - Exact: [256, 256, 1, 128]
+
+  -
+    -
+      OperationType: GEMM
+      DataType: b
+      DestDataType: b
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: False
+      TransposeB: True
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 32, 1,  1,  2, 2,  2, 1]
+          - [16, 16, 32, 1,  1,  2, 2,  2, 2]
+        - DepthU: [64]
+        - AssertSummationElementMultiple: [64]
+        - WavefrontSize: [32]
+        - PrefetchGlobalRead: [1, 2]
+        - PrefetchLocalRead: [0, 1]
+        - StaggerU: [32]
+        - ScheduleIterAlg: [4]
+        - UseSubtileImpl: [false]
+        - UseLoopModel: [true]
+        - TDMInst: [3]
+        - LDSTrInst: [true]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - LoopOrder: [KMN, KNM, MKN, MNK, NKM, NMK]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 256]
+          - Exact: [256, 256, 1, 128]
+
+  -
+    -
+      OperationType: GEMM
+      DataType: b
+      DestDataType: b
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: True
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 32, 1,  1,  2, 2,  1, 1]
+        - DepthU: [64]
+        - AssertSummationElementMultiple: [64]
+        - WavefrontSize: [32]
+        - PrefetchGlobalRead: [1, 2]
+        - PrefetchLocalRead: [0, 1]
+        - StaggerU: [32]
+        - ScheduleIterAlg: [0, 4]
+        - UseSubtileImpl: [false]
+        - UseLoopModel: [true]
+        - TDMInst: [3]
+        - LDSTrInst: [true]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - LoopOrder: [KMN, KNM, MKN, MNK, NKM, NMK]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 256]
+          - Exact: [256, 256, 1, 128]
+  -
+    -
+      OperationType: GEMM
+      DataType: b
+      DestDataType: b
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: False
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 32, 1,  1,  2, 2,  1, 1]
+        - DepthU: [64]
+        - AssertSummationElementMultiple: [64]
+        - WavefrontSize: [32]
+        - PrefetchGlobalRead: [1, 2]
+        - PrefetchLocalRead: [0, 1]
+        - StaggerU: [32]
+        - ScheduleIterAlg: [0, 4]
+        - UseSubtileImpl: [false]
+        - UseLoopModel: [true]
+        - TDMInst: [3]
+        - LDSTrInst: [true]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - LoopOrder: [KMN, KNM, MKN, MNK, NKM, NMK]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 256]
+          - Exact: [256, 256, 1, 128]
+  -
+    -
+      OperationType: GEMM
+      DataType: b
+      DestDataType: b
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: True
+      TransposeB: True
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 32, 1,  1,  2, 2,  1, 1]
+        - DepthU: [64]
+        - AssertSummationElementMultiple: [64]
+        - WavefrontSize: [32]
+        - PrefetchGlobalRead: [1, 2]
+        - PrefetchLocalRead: [0, 1]
+        - StaggerU: [32]
+        - ScheduleIterAlg: [0, 4]
+        - UseSubtileImpl: [false]
+        - UseLoopModel: [true]
+        - TDMInst: [3]
+        - LDSTrInst: [true]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - LoopOrder: [KMN, KNM, MKN, MNK, NKM, NMK]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 256]
+          - Exact: [256, 256, 1, 128]
+
+  -
+    -
+      OperationType: GEMM
+      DataType: b
+      DestDataType: b
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: True
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 32, 1,  1,  4, 4,  1, 1]
+          - [16, 16, 32, 1,  1,  2, 2,  2, 2]
+        - DepthU: [64]
+        - AssertSummationElementMultiple: [64]
+        - WavefrontSize: [32]
+        - PrefetchGlobalRead: [1, 2]
+        - PrefetchLocalRead: [0, 1]
+        - StaggerU: [32]
+        - ScheduleIterAlg: [0, 4]
+        - UseSubtileImpl: [false]
+        - UseLoopModel: [true]
+        - TDMInst: [3]
+        - TDMSplitA: [1]
+        - TDMSplitB: [1]
+        - VectorWidthA: [1, 2]
+        - VectorWidthB: [1, 2]
+        - LDSTrInst: [false]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - LoopOrder: [KMN, KMKNMN, KMNKMN, KMNMNK]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 256]
+          - Exact: [256, 256, 1, 128]
+
+  -
+    -
+      OperationType: GEMM
+      DataType: b
+      DestDataType: b
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: False
+      TransposeB: True
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 32, 1,  1,  2, 2,  1, 1]
+          - [16, 16, 32, 1,  1,  2, 2,  2, 2]
+          - [16, 16, 32, 1,  1,  4, 4,  1, 1]
+        - DepthU: [64]
+        - AssertSummationElementMultiple: [64]
+        - WavefrontSize: [32]
+        - PrefetchGlobalRead: [1, 2]
+        - PrefetchLocalRead: [0, 1]
+        - StaggerU: [32]
+        - ScheduleIterAlg: [0, 4]
+        - UseSubtileImpl: [false]
+        - UseLoopModel: [true]
+        - TDMInst: [3]
+        - TDMSplitA: [0, 1, 2]
+        - TDMSplitB: [0, 1, 2]
+        - LDSTrInst: [true]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - LoopOrder: [KMN, KNM, MKN, MNK, NKM, NMK]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 256]
+          - Exact: [256, 256, 1, 128]

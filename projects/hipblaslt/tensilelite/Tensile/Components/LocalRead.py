@@ -33,6 +33,8 @@ from rocisa.instruction import SMovB32, SWaitCnt, VOrB32, VPermB32, VLShiftLeftO
 from ..Component import LocalRead
 
 from math import ceil
+from .. import tdm_split as _tdm_split
+from ..Lowering.lds_geometry import region_row_elems, fold_inner_offset
 
 class LocalReadVALU(LocalRead):
     kernel = {"EnableMatrixInstruction": False}
@@ -735,11 +737,20 @@ class LocalReadMFMA(LocalRead):
                             kernel["MatrixInstN"] * kernel["MatrixInstBN"] * kernel["MIWaveGroup"][1] * kernel["VectorWidthB"]]
 
         LdsPad           = kernel["LdsPad%s"%tc] if kernel["LdsBlockSizePerPad%s"%tc] == 0 else 0
+        # A PACKED TDMSplit REGION SHORTENS THE ROW HERE TOO.
+        #
+        _nsplit, _splitAxis = _tdm_split.split_of(kernel, tc)
+        _umlds           = bool(kernel["UnrollMajorLDS%s" % tP["tensorChar"]])
+        splitInnerExtent = 0            # the unroll extent, read ONLY where the old code read it
+        splitBoundaryBytes = 0
         tileStride       = 1
         UnrollStride     = kernel["MacroTile%s" % tP["tensorChar"]] + LdsPad
-        if kernel["UnrollMajorLDS%s" % tP["tensorChar"]]:
-            tileStride   = kernel["_DepthU%s"%tc] + LdsPad
+        if _umlds:
+            splitInnerExtent = kernel["_DepthU%s"%tc]
+            tileStride   = region_row_elems(splitInnerExtent, LdsPad, True, _nsplit, _splitAxis)
             UnrollStride = 1
+        if _nsplit > 1:
+            splitBoundaryBytes = int(writer.tdmSplitLdsBoundary(kernel, tP))
 
         if "MXS" in tc:
             subTc = tc[3]
@@ -1638,19 +1649,31 @@ class LocalReadMFMA(LocalRead):
                                     # degenerates to the pre-existing incOffset=0 behavior.
                                     incOffset = rIdx * numElementPerRead * UnrollStride
                                 elif kernel["UnrollMajorLDS%s" % tP["tensorChar"]]:
-                                    incOffset = rIdx * numElementPerRead * UnrollStride * 2
+                                    # THE UNROLL COORDINATE IS THE INNER ONE HERE, so it is what a
+                                    # packed region cuts.
+                                    uElems = (rIdx * numElementPerRead * UnrollStride * 2
+                                              + tP["localReadOffset"])
+                                    region, uInRow = fold_inner_offset(
+                                        uElems, splitInnerExtent, True, _nsplit, _splitAxis)
+                                    incOffset = uInRow
                                     incOffset += tiIdx * matrixInstTO * vectorWidth * tileStride
+                                    return (int((incOffset + offset_val) * tP["bpeDS"]),
+                                            region * splitBoundaryBytes)
                                 else:
                                     vw = kernel[f"LocalReadVectorWidth{tc if('MXS' not in tc) else 'MXS'}"]
                                     incOffset = (rIdx // vw) * UnrollStride * vw
                                     incOffset += rIdx * numElementPerRead * UnrollStride
-                                return int((incOffset + offset_val + tP["localReadOffset"]) * tP["bpeDS"])
+                                return int((incOffset + offset_val + tP["localReadOffset"]) * tP["bpeDS"]), 0
 
                             for oIdx in range(0, numOffsets):
                                 # segment-interleave: a vIdx group can cross the LDS component
                                 # boundary. Split it into within-component (vCols) + component jump
                                 # (segCompByteOff, added post-pad below).
                                 segCompByteOff = 0
+                                # TDMSplit region jump -- also post-pad, also a whole padded block.
+                                # Only `calcGfx1250LdsOffset` produces one; every other formula
+                                # below leaves it zero, which is the unsplit answer.
+                                splitRegionByteOff = 0
                                 # port-split with VW==WaveTile/2: the per-vIdx column stride carries the
                                 # within-port offset. With VW==WaveTile (numVectorsPerTile==1) the whole
                                 # segment jump is on the wave axis (LraTileAssignment), so it takes the
@@ -1726,7 +1749,7 @@ class LocalReadMFMA(LocalRead):
                                     # so we need to adjust the offsets accordingly for the second ds_read.
                                     if tuple(kernel["ISA"][:2]) == (12, 5):
                                         # gfx1250 WMMA V3: shared offset formula with BF16/Half (see calcGfx1250LdsOffset)
-                                        offset_val = calcGfx1250LdsOffset()
+                                        offset_val, splitRegionByteOff = calcGfx1250LdsOffset()
                                     else:
                                         # Numbers here are specific to the mfma layout (gfx950)
                                         incOffset = 0
@@ -1749,14 +1772,16 @@ class LocalReadMFMA(LocalRead):
                                         and (kernel["ProblemType"][MacDataType].is8bitFloat() or kernel["ProblemType"][MacDataType].isBFloat16() \
                                             or kernel["ProblemType"][MacDataType].isHalf() or kernel["ProblemType"][MacDataType].isFloat4() \
                                                 or kernel["ProblemType"][MacDataType].is6bitFloat() or kernel["ProblemType"][MacDataType].isInt8()):
-                                    offset_val = calcGfx1250LdsOffset()
+                                    offset_val, splitRegionByteOff = calcGfx1250LdsOffset()
                                 else:
                                     offset_val = int((rIdx * numElementPerRead * UnrollStride + offset_val + tP["localReadOffset"]) * tP["bpeDS"])
 
                                 if (kernel["LdsBlockSizePerPad%s"%tc] != 0) and (kernel["LdsPad%s"%tc] != 0):
                                     offset_val = int(offset_val + (offset_val // kernel["LdsBlockSizePerPad%s"%tc]) * kernel["LdsPad%s"%tc] * tP["bpeDS"])
                                 # component jump is post-pad: writeStrideBytes already includes pad.
-                                offset_val = int(offset_val + segCompByteOff)
+                                # so is the TDMSplit region jump: `tdmSplitLdsBoundary` is a padded
+                                # block size, so padding it again would double-count.
+                                offset_val = int(offset_val + segCompByteOff + splitRegionByteOff)
                                 offset_val = offset_val + tP["localReadSwapByteOffset"]
                                 # TODO: Add NLC>1 offset calcs here? 
                                 if (kernel["DirectToLds%s" % tc] and  \
@@ -1794,8 +1819,8 @@ class LocalReadMFMA(LocalRead):
                             # would tag every read half0 and leave the half1 tensor_load un-waited.
                             # Such reads' combined region depends on BOTH half loads -> carry both
                             # half tokens.
-                            tdmBothHalves = (kernel["TDMSplit"] and not kernel["ProblemType"]["Sparse"]
-                                             and not tP.get("isM", False) and numVectorsPerTile == 1)
+                            tdmBothHalves = (_tdm_split.split_of(kernel, tc)[0] > 1
+                                             and numVectorsPerTile == 1)
                             self._emitLdsRead(writer, kernel, tP, LocalReadX, dst=destVgpr, src=srcAddr, ds=ds, module=localReadCodeT, ldsByteOffset=tdmFullLdsOffset, bothHalves=tdmBothHalves, comment=comment)
                             # TODO - handle vector-load
                             with writer.allocTmpSgpr(1, tag="LocalReadVALU_tmpSgprInfo2") as tmpSgprInfo:

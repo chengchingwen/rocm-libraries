@@ -1382,7 +1382,8 @@ void init_stinkytofu(nb::module_ m) {  // NOLINT(misc-use-internal-linkage)
         .value("BeforeRegionPasses", PipelineExtensionPoint::BeforeRegionPasses)
         .value("InnerRegionBegin", PipelineExtensionPoint::InnerRegionBegin)
         .value("InnerRegionEnd", PipelineExtensionPoint::InnerRegionEnd)
-        .value("AfterRegionPasses", PipelineExtensionPoint::AfterRegionPasses);
+        .value("AfterRegionPasses", PipelineExtensionPoint::AfterRegionPasses)
+        .value("EndOfPipeline", PipelineExtensionPoint::EndOfPipeline);
 
     m.def("loadPlugin", &PassBuilder::loadPlugin, nb::arg("path"),
           "Load a plugin shared library (.so/.dll) that exports registerPlugin()");

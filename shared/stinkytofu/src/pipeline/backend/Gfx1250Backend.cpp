@@ -342,6 +342,16 @@ bool buildGfx1250Pipeline(ModulePassManager& mpm, StinkyAsmModule& module, const
                                                     module.getFunctions())) {
             pm.addPass(std::move(pass));
         }
+
+        // Whole-kernel scope, after every backend pass. Plugin passes registered
+        // here (e.g. the memtoken-IR structure dump) observe the final stream,
+        // including TDMLoadWaveSync barriers and SW-prefetch insertion.
+        //
+        // Inside this block, and before `pm` is moved into the adaptor below: the upstream
+        // patch placed it after the move, which is a use-after-move (the extension point's
+        // passes would be added to an emptied PassManager and never run).
+        PB.applyExtensionPoint(PipelineExtensionPoint::EndOfPipeline, pm, module);
+
         mpm.addPass(createMainOnlyAdaptor(std::move(pm)));
     }
     return true;
