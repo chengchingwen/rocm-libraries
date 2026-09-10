@@ -130,6 +130,17 @@ void setPseudoRegistersInBlock(BasicBlock& bb, PassContext& passCtx) {
         // Always attach implicit special registers (SCC/VCC/EXEC) declared by HW flags
         legalizeImplicitSpecialRegisters(inst, wavefrontSize);
 
+        // Ordered but NOT waited on: a barrier's WAR tokens pin every access naming one of them
+        // to its own side, through the same pseudo-registers the DAG already reads.
+        if (const OrderTokenData* wt = inst->getModifier<OrderTokenData>()) {
+            if (isBarrier(*inst)) {
+                for (int tokenId : wt->tokens) {
+                    addUniqueLdsDest(*inst, tokenId);
+                    addUniqueLdsSrc(*inst, tokenId);
+                }
+            }
+        }
+
         const MemTokenData* mt = inst->getModifier<MemTokenData>();
         if (!mt) continue;
         assert(!mt->tokens.empty() && "MemTokenData with empty tokens");

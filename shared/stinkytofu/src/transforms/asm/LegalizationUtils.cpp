@@ -277,6 +277,14 @@ Legalized legalizeBarrier(StinkyInstruction* inst, AsmIRBuilder& irBuilder, GfxA
         signalInst->addModifier<MemTokenData>(MemTokenData{memTokenMod->tokens});
         waitInst->addModifier<MemTokenData>(MemTokenData{memTokenMod->tokens});
     }
+    if (inst->getModifier<NoWaitCntData>() != nullptr) {
+        signalInst->addModifier<NoWaitCntData>(NoWaitCntData{});
+        waitInst->addModifier<NoWaitCntData>(NoWaitCntData{});
+    }
+    if (const OrderTokenData* orderMod = inst->getModifier<OrderTokenData>()) {
+        signalInst->addModifier<OrderTokenData>(OrderTokenData{orderMod->tokens});
+        waitInst->addModifier<OrderTokenData>(OrderTokenData{orderMod->tokens});
+    }
 
     // Remove the original s_barrier instruction
     inst->erase();

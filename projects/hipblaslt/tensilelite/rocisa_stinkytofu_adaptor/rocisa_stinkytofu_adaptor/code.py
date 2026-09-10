@@ -56,6 +56,33 @@ def _forward_memtoken(rocisa_item: Any, logical: Any) -> None:
             setter(tokens)
 
 
+def _forward_barrier_modifiers(rocisa_item: Any, logical: Any) -> None:
+    """Copy the ordering-only barrier modifiers onto lowered logical instruction(s).
+
+    ``NoWaitCntData`` marks a barrier that orders execution but takes no conservative wait;
+    ``OrderTokenData`` names the LDS tokens it orders without waiting on. Without these a fence
+    lowered through this backend would drain where it should only order.
+    """
+    targets = logical if isinstance(logical, list) else (logical,)
+    noWait = getattr(rocisa_item, "getNoWaitCnt", None)
+    if callable(noWait) and noWait():
+        for inst in targets:
+            setter = getattr(inst, "set_nowaitcnt", None)
+            if callable(setter):
+                setter(True)
+    getOrder = getattr(rocisa_item, "getOrderToken", None)
+    if not callable(getOrder):
+        return
+    ot = getOrder()
+    tokens = getattr(ot, "tokens", None) if ot is not None else None
+    if not tokens:
+        return
+    for inst in targets:
+        setter = getattr(inst, "set_ordertoken", None)
+        if callable(setter):
+            setter(tokens)
+
+
 # Synthetic instruction-group name that marks the DAG-scheduler region spanning
 # the persistent prefetch prologue + main loop. Must match the registered gfx125x
 # group name (see Gfx1250Backend.cpp) and native's kPGR literal.
@@ -363,6 +390,16 @@ class _PostProcessModule:
 # We mirror every one of these points so an adapter swap is byte-identical
 # at both the asm-emit layer (``Module.toString``) and the debug-dump layer
 # (``Module.prettyPrint``).
+
+    def __getattr__(self, name: str) -> Any:
+        """Delegate anything not overridden to the wrapped module.
+
+        The explicit methods above exist to ADD behaviour; everything else on
+        ``StinkyAsmModule`` (setPluginDataStr, pass controls, ...) should reach it
+        unchanged rather than be enumerated one at a time.
+        """
+        return getattr(self._inner, name)
+
 class TextBlock(Item):
     """Raw text leaf; mirror of ``rocisa::TextBlock`` (code.hpp:133-160).
 
@@ -1537,6 +1574,7 @@ class Module(Item):
         # this the DAG scheduler cannot see LDS store->load / barrier ordering
         # and may reorder tensor_load_to_lds, corrupting the tensor descriptor.
         _forward_memtoken(it, logical)
+        _forward_barrier_modifiers(it, logical)
         if isinstance(logical, list):
             for inst in logical:
                 if comment and not inst.comment:
@@ -1561,6 +1599,7 @@ class Module(Item):
             if logical is None:
                 continue
             _forward_memtoken(it, logical)
+            _forward_barrier_modifiers(it, logical)
             if isinstance(logical, list):
                 out.extend(logical)
             else:

@@ -1175,6 +1175,12 @@ static std::shared_ptr<StinkyAsmModule> toStinkyTofuModule(
         if (auto memToken = inst->getMemToken()) {
             stinkyInst->addModifier<MemTokenData>(MemTokenData{memToken->tokens});
         }
+        if (inst->getNoWaitCnt()) {
+            stinkyInst->addModifier<NoWaitCntData>(NoWaitCntData{});
+        }
+        if (auto orderToken = inst->getOrderToken()) {
+            stinkyInst->addModifier<OrderTokenData>(OrderTokenData{orderToken->tokens});
+        }
 
         Legalized legalizedInsts =
             legalizeInstruction(stinkyInst, inst, irBuilder, archId, asmCaps, archCaps, hasVgprMsb);
@@ -1383,7 +1389,8 @@ void init_stinkytofu(nb::module_ m) {  // NOLINT(misc-use-internal-linkage)
         .value("BeforeRegionPasses", PipelineExtensionPoint::BeforeRegionPasses)
         .value("InnerRegionBegin", PipelineExtensionPoint::InnerRegionBegin)
         .value("InnerRegionEnd", PipelineExtensionPoint::InnerRegionEnd)
-        .value("AfterRegionPasses", PipelineExtensionPoint::AfterRegionPasses);
+        .value("AfterRegionPasses", PipelineExtensionPoint::AfterRegionPasses)
+        .value("EndOfPipeline", PipelineExtensionPoint::EndOfPipeline);
 
     m.def("loadPlugin", &PassBuilder::loadPlugin, nb::arg("path"),
           "Load a plugin shared library (.so/.dll) that exports registerPlugin()");

@@ -11,6 +11,7 @@ Capability-selected (``HasTDM`` + ``TDMInst == 3``), like ``TensorDataMoverLoad`
 
 from ..Component import ClusterLoad
 from ..Common import clusterEnabled, streamK2DMulticast, streamKMulticast
+from ..tdm_fuse import pairs_a_and_b_by_parity
 from typing import Mapping
 from rocisa.code import Module, Label
 from rocisa.container import sgpr
@@ -29,29 +30,27 @@ class ClusterLoadTDM(ClusterLoad):
     # -- topology decision ---------------------------------------------------
 
     def usesCombinedMask(self, kernel: Mapping) -> bool:
-        """True when the single-parity combined ``MulticastMask`` applies.
+        """True when A and B share one descriptor selected by WAVE PARITY.
 
-        Subtile and StreamK cluster multicast both need the split A/B masks
-        (subtile issues A and B on every wave; the StreamK cluster broadcasts A
-        and B along different cluster axes), so the combined parity mask applies
-        only to the wave-separated dense case.
+        Only A and B have masks -- a scale borrows its parent's (`removeprefix('MXS')`), and
+        `computeMasks` never builds one for it -- so the topology is decided by their group alone.
+        The combined form collapses the two mask SGPRs into one when, and only when, `tdmWaveSelect`
+        picks between an A-side and a B-side member with the same `s_bitcmp1 WaveIdx, 0` the mask
+        uses: a two-member group with no explicit wave ranges. A range-selected group
+        (`TDMFuse: 2`/`3`), a same-side pair (`5` fuses `MXSA` with `A`), or no group at all leaves
+        each descriptor naming its own tensor's mask.
         """
-        if streamKMulticast(kernel):
+        if streamKMulticast(kernel) or kernel.get("UseSubtileImpl"):
             return False
-        tdmA: bool = kernel["enableTDMA"]
-        tdmB: bool = kernel["enableTDMB"]
-        return tdmA and tdmB and kernel["NumWaves"] > 1 and not kernel.get("UseSubtileImpl")
+        return pairs_a_and_b_by_parity(kernel.get("TDMFuse", 0) or 0)
 
-    def maskSgprName(self, kernel: Mapping, tc: str, *, subtile: bool = False,
-                     waveSeparated: bool = False) -> str:
-        """Resolve the multicast-mask SGPR name.
+    def maskSgprName(self, kernel: Mapping, tc: str, *, subtile: bool = False) -> str:
+        """Resolve the multicast-mask SGPR name; a scale borrows its parent tensor's.
 
-        Wave-separated (non-subtile, non-StreamK-multicast) uses the combined
-        ``"MulticastMask"``; dense/subtile and StreamK multicast use the split
-        ``f"MulticastMask{tc}"`` (any ``MXS`` prefix stripped) so B never resolves
-        to the never-declared combined SGPR.
+        `subtile` is the caller's own statement that it issues A and B on every wave, so no
+        descriptor is parity-shared and the split names always apply.
         """
-        if waveSeparated and not subtile and not streamKMulticast(kernel):
+        if not subtile and self.usesCombinedMask(kernel):
             return "MulticastMask"
         return f"MulticastMask{tc.removeprefix('MXS')}"
 
@@ -200,8 +199,7 @@ class ClusterLoadTDM(ClusterLoad):
     # -- descriptor attach ---------------------------------------------------
 
     def applyToDescriptor(self, writer: "KernelWriterAssembly", kernel: Mapping,
-                          group1: int | str, tc: str, *, subtile: bool = False,
-                          waveSeparated: bool = False) -> Module:
+                          group1: int | str, tc: str, *, subtile: bool = False) -> Module:
         """OR the multicast mask into descriptor ``Group1[word0]``.
 
         Folds the ``Multicast and enableCluster`` gate, mask-name choice, and the
@@ -210,7 +208,7 @@ class ClusterLoadTDM(ClusterLoad):
         from .TensorDataMover import TensorDataMoverLoad
         mod = Module()
         if kernel["Multicast"] and clusterEnabled(kernel["ClusterDim"]):
-            mask = self.maskSgprName(kernel, tc, subtile=subtile, waveSeparated=waveSeparated)
+            mask = self.maskSgprName(kernel, tc, subtile=subtile)
             # Under PAP the self-only A-side mask SGPR is freed (see
             # papDropsSelfOnlyMaskA): with Ck == 1 the A mask carries no multicast
             # peers, so re-applying it is a no-op. Skip it so the freed SGPR is not

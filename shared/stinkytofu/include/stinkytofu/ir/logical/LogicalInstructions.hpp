@@ -93,6 +93,9 @@ class LogicalInstruction : public IRBase {
     std::optional<std::vector<int>> memtoken;  ///< Memory token IDs for LDS dependency tracking
     std::optional<std::array<int, 5>>
         swaitcnt;  ///< s_waitcnt values {vlcnt,vscnt,dlcnt,dscnt,kmcnt} for gfx12+ split
+    bool nowaitcnt = false;  ///< Barrier orders execution but takes no conservative wait
+    std::optional<std::vector<int>>
+        ordertoken;  ///< LDS tokens a barrier ORDERS without waiting on
 
     /// LLVM-style casting support
     static bool classof(const IRBase* ir) {
