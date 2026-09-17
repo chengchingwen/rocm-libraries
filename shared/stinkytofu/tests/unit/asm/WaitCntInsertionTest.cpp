@@ -923,6 +923,30 @@ st.func @test_loop_carried_memtoken_header_enabled() {
     EXPECT_EQ(countTensorWaitCnt(loopHeader), 1);
 }
 
+TEST_F(WaitCntInsertionTest, LoopWaitRelationDrainsTensorAtSingleWaveConsumer) {
+    gemmConfig.NumWaves = 1;
+    std::string irString = R"(
+st.func @test_loop_wait_single_wave_consumer() {
+^entry:
+  "st.tensor_load_to_lds"(s[0:3], s[4:11]) { mod.memtoken = { tokens = [10] }, mod.loop_wait = { opId = 1, accesses = [0,0,2,0,1], dependencies = [] } }
+  v[0:3] = "st.ds_load_b128"(v10) { mod.ds = { na = 1, offset = 0, gds = false }, mod.memtoken = { tokens = [20] }, mod.loop_wait = { opId = 2, accesses = [0,0,2,0,0], dependencies = [1,2,0,0,0,3,0,0] } }
+}
+)";
+
+    StinkyIRConverter converter(getArch());
+    auto* func = parseIR(irString, converter);
+    ASSERT_NE(func, nullptr);
+
+    BasicBlock& entry = *func->begin();
+    runInsertionPass(*func);
+
+    StinkyInstruction* read = findNthInst(entry, GFX::ds_load_b128, 0);
+    ASSERT_NE(read, nullptr);
+    SWaitTensorCntData* tensorWait = findTensorWaitCntBefore(entry, read);
+    ASSERT_NE(tensorWait, nullptr);
+    EXPECT_EQ(tensorWait->tlcnt, 0);
+}
+
 /**
  * @brief Diamond CFG with multi-predecessor merge.
  *

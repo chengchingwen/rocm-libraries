@@ -56,6 +56,26 @@ def _forward_memtoken(rocisa_item: Any, logical: Any) -> None:
             setter(tokens)
 
 
+def _forward_loopwait(rocisa_item: Any, logical: Any) -> None:
+    """Copy LoopModel wait metadata onto lowered logical instruction(s)."""
+    getter = getattr(rocisa_item, "getLoopWait", None)
+    if not callable(getter):
+        return
+    loop_wait = getter()
+    if loop_wait is None:
+        return
+    op_id = getattr(loop_wait, "opId", -1)
+    accesses = getattr(loop_wait, "accesses", None)
+    dependencies = getattr(loop_wait, "dependencies", None)
+    if accesses is None or dependencies is None:
+        return
+    targets = logical if isinstance(logical, list) else (logical,)
+    for inst in targets:
+        setter = getattr(inst, "set_loopwait", None)
+        if callable(setter):
+            setter(op_id, accesses, dependencies)
+
+
 def _forward_barrier_modifiers(rocisa_item: Any, logical: Any) -> None:
     """Copy the ordering-only barrier modifiers onto lowered logical instruction(s).
 
@@ -1574,6 +1594,7 @@ class Module(Item):
         # this the DAG scheduler cannot see LDS store->load / barrier ordering
         # and may reorder tensor_load_to_lds, corrupting the tensor descriptor.
         _forward_memtoken(it, logical)
+        _forward_loopwait(it, logical)
         _forward_barrier_modifiers(it, logical)
         if isinstance(logical, list):
             for inst in logical:
@@ -1599,6 +1620,7 @@ class Module(Item):
             if logical is None:
                 continue
             _forward_memtoken(it, logical)
+            _forward_loopwait(it, logical)
             _forward_barrier_modifiers(it, logical)
             if isinstance(logical, list):
                 out.extend(logical)

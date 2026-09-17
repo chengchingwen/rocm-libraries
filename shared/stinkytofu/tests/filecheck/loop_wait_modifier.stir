@@ -1,0 +1,14 @@
+# Copyright Advanced Micro Devices, Inc., or its affiliates.
+# SPDX-License-Identifier: MIT
+#
+# RUN: %stinkytofu-opt --arch gfx1250 %s --StinkyIRVerifierPass --print-output 2>&1
+#
+# CHECK-LABEL: @loop_wait_roundtrip
+# CHECK-NOT: [StinkyIRVerifier]
+# CHECK: "st.s_nop"(0)
+# CHECK-SAME: mod.loop_wait = { opId = 9, accesses = [1,2,4,-1,3], dependencies = [7,9,0,1,1,2,0,4] }
+
+st.func @loop_wait_roundtrip() {
+^entry:
+  "st.s_nop"(0) { issueCycles = 1, latencyCycles = 1, mod.loop_wait = { opId = 9, accesses = [1,2,4,-1,3], dependencies = [7,9,0,1,1,2,0,4] } }
+}

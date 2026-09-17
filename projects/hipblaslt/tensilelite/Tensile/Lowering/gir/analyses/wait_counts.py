@@ -23,6 +23,12 @@ from ..emit_plan import plan_block
 TENSORCNT = "tensorcnt"   # global -> shared
 DSCNT = "dscnt"           # shared -> register
 
+# Values in stinkytofu::waitcnt::CounterKind and the LoopWaitData transport schema.
+_COUNTER_IDS = {DSCNT: 0, TENSORCNT: 3}
+_KIND_IDS = {"RAW": 0, "WAR": 1, "WAW": 2}
+_WAVE_SCOPE = 0
+_WORKGROUP_SCOPE = 1
+
 #: `Program.meta` key: `{operand: read instructions one fill issues}`, from Fragment.
 FANOUT_META = "read_instructions"
 
@@ -76,6 +82,24 @@ def emitting_reads(prog, phase) -> int:
 
 
 @dataclass(frozen=True)
+class WaitDependency:
+    """One explicit frame-hazard relation, independent of its temporary numeric rank."""
+    producer_op_id:    int
+    consumer_op_id:    int
+    producer_frame_id: int
+    consumer_frame_id: int
+    generation_gap:    int
+    counter:           int
+    kind:              int
+    scope:             int
+
+    def flatten(self) -> tuple:
+        return (self.producer_op_id, self.consumer_op_id,
+                self.producer_frame_id, self.consumer_frame_id,
+                self.generation_gap, self.counter, self.kind, self.scope)
+
+
+@dataclass(frozen=True)
 class WaitSite:
     """One consumer and the residual it owes on one counter class."""
     block:    str
@@ -89,6 +113,9 @@ class WaitSite:
     #: `_emit_fence` makes between `memoryToken` and `orderToken`.
     tokens:       tuple = ()
     order_tokens: tuple = ()
+    #: Frame-hazard relations carried to StinkyTofu. Register hazards deliberately stay numeric
+    #: here because register SSA reconstructs dscnt dependencies after scheduling.
+    dependencies: tuple = ()
 
     @property
     def is_drain(self) -> bool:
@@ -273,6 +300,12 @@ def _instance_ranks(prog, fm, preds, hazard, fp, fc, counter, regs, site):
                  for a in fm.frames(p) for b in fm.frames(c)) or (None,)
 
 
+def _merge_dependencies(*groups):
+    """Deterministic set-union of explicit dependency records."""
+    by_record = {dep.flatten(): dep for group in groups for dep in (group or ())}
+    return tuple(by_record[key] for key in sorted(by_record))
+
+
 def _prune_redundant(prog, charged, regs):
     """Drop sites an earlier wait on the same counter already discharged, within a block."""
     keep, by_line = {}, {}
@@ -291,7 +324,9 @@ def _prune_redundant(prog, charged, regs):
                         keep[held],
                         tokens=tuple(sorted(set(keep[held].tokens) | set(site.tokens))),
                         order_tokens=tuple(sorted(set(keep[held].order_tokens)
-                                                  | set(site.order_tokens))))
+                                                  | set(site.order_tokens))),
+                        dependencies=_merge_dependencies(
+                            keep[held].dependencies, site.dependencies))
                 continue
             forced = need if forced is None else max(forced, need)
             held = (site.block, site.pos, site.counter)
@@ -305,6 +340,8 @@ class WaitCounts(Analysis):
     def run(self, prog, am):
         regs = (prog.meta or {}).get(FANOUT_META) or {}
         fm = am.get(FrameMap(), prog)
+        frame_ids = {frame: i for i, frame in enumerate(
+            sorted({frame for _block, frame in fm.nodes()}))}
         preds = _predecessors(fm)
         fences = fences_of(prog)
         toks = am.get(DependenceTokens(), prog)
@@ -332,13 +369,30 @@ class WaitCounts(Analysis):
             raw = tuple(sorted(set(prior.tokens if prior else ()) | (seen if isRaw else set())))
             war = tuple(sorted(set(prior.order_tokens if prior else ())
                                | (set() if isRaw else seen)))
+            explicit = ()
+            if fp is not None and fc is not None:
+                explicit = (WaitDependency(
+                    producer_op_id=int(getattr(hazard.producer.inst, "op_id", -1)),
+                    consumer_op_id=int(getattr(hazard.consumer.inst, "op_id", -1)),
+                    producer_frame_id=frame_ids[fp],
+                    consumer_frame_id=frame_ids[fc],
+                    generation_gap=int(hazard.gap),
+                    counter=_COUNTER_IDS[counter],
+                    kind=_KIND_IDS[hazard.kind],
+                    scope=(_WORKGROUP_SCOPE if hazard.cross_agent else _WAVE_SCOPE)),)
+            dependencies = _merge_dependencies(
+                prior.dependencies if prior else (), explicit)
             if prior is None or n < prior.n:
-                charged[key] = WaitSite(site[0], site[1], counter, n,
-                                        hazard.kind, hazard.producer.operand,
-                                        (prior.frames + 1) if prior else 1, raw, war)
+                charged[key] = WaitSite(
+                    block=site[0], pos=site[1], counter=counter, n=n,
+                    kind=hazard.kind, producer=hazard.producer.operand,
+                    frames=(prior.frames + 1) if prior else 1,
+                    tokens=raw, order_tokens=war, dependencies=dependencies)
             else:
-                charged[key] = WaitSite(prior.block, prior.pos, prior.counter, prior.n,
-                                        prior.kind, prior.producer, prior.frames + 1, raw, war)
+                charged[key] = WaitSite(
+                    block=prior.block, pos=prior.pos, counter=prior.counter, n=prior.n,
+                    kind=prior.kind, producer=prior.producer, frames=prior.frames + 1,
+                    tokens=raw, order_tokens=war, dependencies=dependencies)
         return WaitCountSet(charged, lambda: _prune_redundant(prog, charged, regs))
 
     @staticmethod

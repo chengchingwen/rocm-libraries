@@ -85,16 +85,13 @@ constexpr std::array<int, 3> GFX1250_ARCH{12, 5, 0};
 /// bring-up phase. Once the pipeline stabilizes, pass selection should
 /// be controlled by OptLevel.
 void addGfx1250RegionPasses(PassManager& pm, const StinkyAsmModule& module, OptLevel optLevel,
-                            bool enableWaitCnt, bool runScheduler, bool disableWaitCntRemoval) {
+                            bool enableWaitCnt, bool runScheduler) {
     // Verify IR integrity before running any passes
     // This catches IR corruption early before it propagates through optimization
     pm.addPass(createStinkyIRVerifierPass());
 
     pm.addPass(createCFGBuilderPass());
-    // Removal and insertion are separable: keeping the incoming waits lets a producer that already
-    // derived them hand them over, and insertion CREDITS them (`observedWaitDrains`) rather than
-    // duplicating.  Insertion still covers every edge the producer did not name.
-    if (enableWaitCnt && !disableWaitCntRemoval) {
+    if (enableWaitCnt) {
         // Only O3 has the hazard pass that re-places xcnt. kmcnt and tensor keep
         // the defaults; RemoveWaitCntOptions documents why each is exempt.
         RemoveWaitCntOptions removeOptions;
@@ -180,10 +177,6 @@ bool buildGfx1250Pipeline(ModulePassManager& mpm, StinkyAsmModule& module, const
                 // Same option as InsertClusterBarrierPass below (see
                 // cluster-barrier.md).
                 passFeatureConfig.dagFeatures.clusterBarrier = moduleOptions.ClusterBarrier;
-                // Insertion off: nothing recomputes tensorcnt after scheduling, so the incoming
-                // waits must keep both their in-flight count and their FIFO order.
-                passFeatureConfig.dagFeatures.preserveTensorLoadOrder =
-                    moduleOptions.DisableTensorcntInsertion;
                 if (moduleOptions.DsReadPerWmma >= 0)
                     passFeatureConfig.dagFeatures.dsReadPerWmma = moduleOptions.DsReadPerWmma;
                 if (moduleOptions.DsReadOrder >= 0)
@@ -198,14 +191,12 @@ bool buildGfx1250Pipeline(ModulePassManager& mpm, StinkyAsmModule& module, const
                                               "loopWithPrefetch+noLoadLoopBody", debugStreams);
             PB.applyExtensionPoint(PipelineExtensionPoint::InnerRegionBegin, innerPM, module);
             addGfx1250RegionPasses(innerPM, module, optLevel, moduleOptions.EnableWaitCntInsertion,
-                                   runScheduler, moduleOptions.DisableWaitCntRemoval);
+                                   runScheduler);
             PB.applyExtensionPoint(PipelineExtensionPoint::InnerRegionEnd, innerPM, module);
             if (moduleOptions.EnableWaitCntInsertion) {
                 WaitCntInsertionOptions waitCntOptions;
                 waitCntOptions.enableLoopCarriedTokenDeps =
                     moduleOptions.EnableLoopCarriedTokenDeps;
-                waitCntOptions.disableTensorcntInsertion =
-                    moduleOptions.DisableTensorcntInsertion;
                 innerPM.addPass(createStinkyWaitCntInsertionPass(waitCntOptions));
                 if (runScheduler) innerPM.addPass(createRemoveDscntPass());
             }

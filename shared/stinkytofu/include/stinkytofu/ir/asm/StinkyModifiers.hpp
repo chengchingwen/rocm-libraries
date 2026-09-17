@@ -311,6 +311,7 @@ struct Modifier {
         COMMENT,
         MATRIX_FMT,
         MEM_TOKEN,
+        LOOP_WAIT,
         WMMA_POOL_INDEX,
         CALL_TARGETS,
         EXEC_GROUP,
@@ -1088,6 +1089,28 @@ struct MemTokenData : public TypedModifier<MemTokenData> {
 
     MemTokenData(const std::vector<int>& tokens = {})
         : TypedModifier<MemTokenData>(), tokens(tokens) {}
+};
+
+/// LoopModel wait-dependency metadata attached to an instruction.
+///
+/// accesses uses stride 5:
+///   [classId, regionId, ringSize, generationRelation, flags]
+/// dependencies uses stride 8:
+///   [producerOpId, consumerOpId, producerFrameId, consumerFrameId,
+///    generationGap, counter, kind, scope]
+struct LoopWaitData : public TypedModifier<LoopWaitData> {
+    static constexpr Modifier::Type Type = Modifier::Type::LOOP_WAIT;
+
+    int opId = -1;
+    std::vector<int> accesses;
+    std::vector<int> dependencies;
+
+    LoopWaitData(int opId = -1, const std::vector<int>& accesses = {},
+                 const std::vector<int>& dependencies = {})
+        : TypedModifier<LoopWaitData>(),
+          opId(opId),
+          accesses(accesses),
+          dependencies(dependencies) {}
 };
 
 /// A barrier carrying this orders execution but takes NO conservative wait: it has no

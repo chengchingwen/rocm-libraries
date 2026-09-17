@@ -5,6 +5,7 @@
 ### Key characteristics
 
 - **SSA def-use dependencies** via `buildUseDefChain(includePseudo=true)` — memtoken pseudo-registers become first-class edges, so `inst->getSources()` lists the memops a consumer depends on (including through PHIs at CFG joins)
+- **LoopModel dependency relations** via `LoopWaitData` — GEMM IR identifies the producer occurrence while frame/generation semantics are available; this pass derives only the post-scheduling FIFO depth
 - **Four counter types**: DS (`dlcnt`), vector load (`vlcnt`), scalar memory (`kmcnt`), tensor (`tlcnt`), tracked as `CounterKind` in `WaitDataflow`
 - **Per-predecessor queues** — each counter keeps separate in-flight FIFOs tagged by CFG predecessor edge, so join consumers see each path's depth instead of a collapsed union queue
 - **Tensor loop policy** — TensileLite promises tagged tensor-token deps are correct without propagating `CK_Tensor` through loop back-edges, so by default exact `CK_Tensor` queues are frozen after the first solver sweep; blocks with untagged tensor anchors keep their live tensor queues because those anchors are fences, and `loopCarriedTokenDepsEnabled` restores normal tensor fixed-point iteration when conservative propagation is needed
@@ -87,6 +88,29 @@ With `includePseudo=true`, memtoken pseudo-regs are treated like ordinary regist
 - At a CFG merge, a memtoken value becomes a **PHI** whose incoming sources are the per-predecessor producers.
 
 Token overlap (`MemTokenData`) is still consulted for **anti-dependencies** the SSA RAW chain does not capture (WAR-on-LDS, barrier ordering, untagged fallbacks).
+
+### LoopModel relations are separate from physical tokens
+
+`MemTokenData` is a storage/scheduling name. It is intentionally not overloaded
+with dynamic generation identity: a rotating LDS slot may be reused by several
+loop iterations, and a modulo slot number cannot identify which producer
+instance a consumer needs.
+
+LoopModel kernels therefore carry a separate `LoopWaitData` modifier:
+
+- `opId` identifies the GEMM-IR operation that emitted the physical instruction.
+- `accesses` is a flat list of logical shared-memory accesses. Each five-word
+  record is `(class, region, ring size, unreduced generation relation, flags)`.
+- `dependencies` is a flat list of resolved obligations. Each eight-word record
+  is `(producer op, consumer op, producer frame, consumer frame, generation gap,
+  counter, hazard kind, scope)`.
+
+GEMM IR resolves the relation and legal anchor, but does not pass a numeric wait
+immediate. `WaitDataflow` maps the stable producer id to the actual scheduled
+counter-producing instruction(s), then computes the wait from their live queue
+position. A fused tensor load may describe several logical accesses while still
+occupying one tensor-counter entry; a logical LDS read that lowers to several DS
+instructions maps to all of those physical entries.
 
 ---
 
@@ -208,7 +232,7 @@ df.setLoopCarriedTokenDepsEnabled(options.enableLoopCarriedTokenDeps);
 
 By default this option is **disabled**. In that mode, `WaitDataflow` computes `CK_Tensor` normally during the solver's first iteration (sweep 0), then freezes the exact tensor queues and tensor PHI waits on later sweeps. `restoreTensorState` skips that restore for any block where `hasUntaggedTensorAnchor` finds an untagged tensor anchor (`s_barrier`, DS read/write, or DS atomic). Those anchors are fences: their live tensor queues must continue through back-edges so the existing conservative fallback can emit `s_wait_tensorcnt 0` when any tensor load is still in flight. Freezing exact tensor state elsewhere prevents tagged tensor token state from propagating around loop back-edges and avoids loop-header waits such as an unnecessary first `s_wait_tensorcnt 0`.
 
-When `enableLoopCarriedTokenDeps` is **enabled**, `CK_Tensor` participates in the normal fixed-point iteration just like the other counters. This is the conservative mode and can reintroduce loop-header tensor waits when a back-edge carries tensor token state.
+When `enableLoopCarriedTokenDeps` is **enabled**, `CK_Tensor` participates in the normal fixed-point iteration just like the other counters. Functions carrying explicit `LoopWaitData` dependencies enable this mode automatically, because freezing sweep-0 tensor state would discard their loop-carried producer occurrences.
 
 Entry points for the conservative mode:
 
@@ -387,9 +411,10 @@ Each RAW contribution is gated by `rawNeedsWait[c](*inst)` — the per-counter p
 Per instruction, `required[c]` starts at `kUnused` and is tightened to the min wait across all contributing deps on counter `c`:
 
 1. **RAW from SSA** — walk `getSources()` as above; gated by `rawNeedsWait[c](*inst)`.
-2. **Anti-deps (DS)** — `scanDsAntiDeps` for LDS writers (`tensor_load_to_lds`, `ds_write`) and barriers with `MemTokenData` token overlap against per-pred DS queues; same-pipeline pairs (`ds_write` vs `ds_read`) skipped.
-3. **Tensor untagged scan** — tensor anchors with tagged tokens still scan for in-flight tensor loads lacking `MemTokenData`.
-4. **Conservative fallbacks** — force wait 0 when disjointness cannot be proved (see table below).
+2. **LoopModel relations** — resolve each `LoopWaitData` producer id to the actual post-lowering instructions and query their live counter queues. RAW records respect the counter's anchor policy; WAR/WAW records already name their legal anchor.
+3. **Anti-deps (DS)** — `scanDsAntiDeps` for LDS writers (`tensor_load_to_lds`, `ds_write`) and barriers with `MemTokenData` token overlap against per-pred DS queues; same-pipeline pairs (`ds_write` vs `ds_read`) skipped.
+4. **Tensor untagged scan** — tensor anchors with tagged tokens still scan for in-flight tensor loads lacking `MemTokenData`.
+5. **Conservative fallbacks** — force wait 0 when disjointness cannot be proved (see table below).
 
 ### Anti-dependencies (WAR-on-LDS and barrier ordering)
 

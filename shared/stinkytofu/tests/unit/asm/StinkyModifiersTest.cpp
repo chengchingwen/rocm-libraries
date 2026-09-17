@@ -279,3 +279,54 @@ TEST(CallTargetData, DeserializeParsesEscapedCalleeNames) {
     EXPECT_EQ(data->callees[1], "quote\"name");
     EXPECT_EQ(data->callees[2], "back\\slash");
 }
+
+// ---------------------------------------------------------------------------
+// LoopWaitData transport
+// ---------------------------------------------------------------------------
+
+TEST(LoopWaitData, SerializesStableSchema) {
+    LoopWaitData data(9, {1, 2, 4, -1, 3}, {7, 9, 0, 1, 1, 2, 0, 4});
+
+    std::ostringstream os;
+    EXPECT_TRUE(ModifierSerializer::serialize(data, os));
+    EXPECT_EQ(os.str(),
+              ", mod.loop_wait = { opId = 9, accesses = [1,2,4,-1,3], "
+              "dependencies = [7,9,0,1,1,2,0,4] }");
+}
+
+TEST(LoopWaitData, DeserializesStableSchema) {
+    Function func("loop_wait_test");
+    BasicBlock* bb = func.createBasicBlock("entry");
+    AsmIRBuilder builder(*bb, GfxArchID::Gfx1250);
+    StinkyInstruction* inst = builder.create(getMCIDByUOp(GFX::s_nop, GfxArchID::Gfx1250));
+
+    ParsedModifierDict modifiers;
+    modifiers["mod.loop_wait"]["opId"] = "9";
+    modifiers["mod.loop_wait"]["accesses"] = "[1,2,4,-1,3]";
+    modifiers["mod.loop_wait"]["dependencies"] = "[7,9,0,1,1,2,0,4]";
+    ModifierSerializer::deserialize(inst, modifiers);
+
+    const auto* data = inst->getModifier<LoopWaitData>();
+    ASSERT_NE(data, nullptr);
+    EXPECT_EQ(data->opId, 9);
+    EXPECT_EQ(data->accesses, (std::vector<int>{1, 2, 4, -1, 3}));
+    EXPECT_EQ(data->dependencies, (std::vector<int>{7, 9, 0, 1, 1, 2, 0, 4}));
+}
+
+TEST(LoopWaitData, InstructionCloneIsDeep) {
+    Function func("loop_wait_clone_test");
+    BasicBlock* bb = func.createBasicBlock("entry");
+    AsmIRBuilder builder(*bb, GfxArchID::Gfx1250);
+    StinkyInstruction* inst = builder.create(getMCIDByUOp(GFX::s_nop, GfxArchID::Gfx1250));
+    inst->addModifier<LoopWaitData>(
+        LoopWaitData(9, {1, 2, 4, -1, 3}, {7, 9, 0, 1, 1, 2, 0, 4}));
+
+    StinkyInstruction* cloned = inst->clone();
+    bb->appendIR(cloned);
+    auto* clonedData = cloned->getModifier<LoopWaitData>();
+    ASSERT_NE(clonedData, nullptr);
+    clonedData->accesses[0] = 42;
+
+    EXPECT_EQ(inst->getModifier<LoopWaitData>()->accesses[0], 1);
+    EXPECT_EQ(clonedData->accesses[0], 42);
+}

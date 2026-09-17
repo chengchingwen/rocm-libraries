@@ -69,7 +69,12 @@ class StinkyWaitCntInsertionPass : public StinkyInstPass {
         // its in-flight state to successors. PassContext gating only applies
         // to IR mutation below.
         WaitDataflow df(func, domInfo, rpo);
-        df.setLoopCarriedTokenDepsEnabled(options.enableLoopCarriedTokenDeps);
+        // Explicit LoopModel relations may name a producer from an earlier
+        // dynamic iteration. Freezing CK_Tensor after sweep 0 would discard
+        // exactly that state, so metadata-bearing functions opt into the live
+        // tensor fixed point automatically.
+        df.setLoopCarriedTokenDepsEnabled(options.enableLoopCarriedTokenDeps ||
+                                          df.hasLoopWaitDependencies());
 
         // Tensor counter drains only at barriers or when there is a single wave.
         const auto numWaves = passCtx.getGemmTileConfig().NumWaves;
@@ -148,7 +153,7 @@ class StinkyWaitCntInsertionPass : public StinkyInstPass {
             d.kmcnt = spec.kmCount;
             w->addModifier<SWaitCntData>(d);
         }
-        if (spec.tensorCount != WaitCountSpec::kUnused && !options.disableTensorcntInsertion) {
+        if (spec.tensorCount != WaitCountSpec::kUnused) {
             StinkyInstruction* w =
                 builder.create(getMCIDByUOp(GFX::s_wait_tensorcnt, arch), anchor);
             w->addSrcReg(StinkyRegister(spec.tensorCount));

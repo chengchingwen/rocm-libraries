@@ -91,6 +91,12 @@ class Move:
     # this region, but it is still one movement; readers key on identity, so it is stated here
     # rather than re-derived from whichever refs survived.
     unit: tuple = ()
+    # Stable transport identity plus flattened LoopWaitData records.  These are assigned only
+    # after semantic Marks have been placed, so inserting a Mark cannot renumber an already
+    # analyzed operation.
+    op_id: int = -1
+    wait_accesses: tuple = ()
+    wait_dependencies: tuple = ()
 
 
 @dataclass
@@ -106,6 +112,9 @@ class Mma:
     coord: tuple = ()            # ((axis, val), ...) over the 6 axes
     block: str = ""             # hardware wmma block group
     deps:  tuple = ()
+    op_id: int = -1
+    wait_accesses: tuple = ()
+    wait_dependencies: tuple = ()
 
 
 # ===========================================================================
@@ -125,6 +134,9 @@ class Mark:
     """
     kind: str
     at:   dict = field(default_factory=dict)
+    op_id: int = -1
+    wait_accesses: tuple = ()
+    wait_dependencies: tuple = ()
 
 
 # ===========================================================================

@@ -17,9 +17,10 @@ from .analyses import (successors, Dominators, BackEdges, BackEdge, BackEdgeSet,
                        DepDefuseAnalysis, DepDefuse,
                        RegBandAnalysis, RegBand,
                        GrIncrementRegions, FrameHazards, FrameHazardSet, Hazard,
-                       FenceRegions)
+                       FenceRegions, WaitDependency)
 from .passes import (Pass, TokensPass, CollectPendingMarksPass,
                      PlacementPass, ApplyMarksPass, ScaffoldMapPass,
+                     LegacyWaitCntPass, LoopWaitMetadataPass, WaitDependencyPass, WaitCntPass,
                      pipeline, run_pipeline)
 from .verify import (verify_gir, check_register_slots, check_rotation_waw,
                      check_block_scope_covered)
@@ -40,8 +41,10 @@ __all__ = [
     "DepDefuseAnalysis", "DepDefuse",
     "RegBandAnalysis", "RegBand",
     "GrIncrementRegions", "FrameHazards", "FrameHazardSet", "Hazard", "FenceRegions",
+    "WaitDependency",
     "Pass", "TokensPass", "CollectPendingMarksPass",
     "PlacementPass", "ApplyMarksPass", "ScaffoldMapPass",
+    "LegacyWaitCntPass", "LoopWaitMetadataPass", "WaitDependencyPass", "WaitCntPass",
     "pipeline", "run_pipeline",
     "verify_gir", "check_register_slots", "check_rotation_waw", "check_block_scope_covered",
     "check_plan", "check_region_coverage", "check_refill_splits_consumers", "check_source_coverage",

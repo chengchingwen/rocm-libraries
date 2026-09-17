@@ -44,6 +44,7 @@ from rocisa_stinkytofu_adaptor.container import (  # noqa: E402
     FLATModifiers,
     GLOBALModifiers,
     HWRegContainer,
+    LoopWaitData,
     MemTokenData,
     MUBUFModifiers,
     SDWAModifiers,
@@ -1941,6 +1942,24 @@ class TestMemTokenData(unittest.TestCase):
         # KernelWriterAssembly passes a one-element list from memTokenLdsBufferMeta.
         m = MemTokenData([42])
         self.assertEqual(str(m), "mem_token: 42")
+
+
+class TestLoopWaitData(unittest.TestCase):
+    def test_schema_copy_and_pickle(self):
+        accesses = [1, 2, 4, -1, 3]
+        dependencies = [7, 9, 0, 1, 1, 2, 0, 4]
+        data = LoopWaitData(9, accesses, dependencies)
+
+        accesses.append(99)
+        dependencies.append(99)
+        self.assertEqual(data.opId, 9)
+        self.assertEqual(data.accesses, [1, 2, 4, -1, 3])
+        self.assertEqual(data.dependencies, [7, 9, 0, 1, 1, 2, 0, 4])
+
+        clone = copy.deepcopy(data)
+        clone.accesses[0] = 42
+        self.assertEqual(data.accesses[0], 1)
+        self.assertEqual(pickle.loads(pickle.dumps(data)).__getstate__(), data.__getstate__())
 
 
 if __name__ == "__main__":

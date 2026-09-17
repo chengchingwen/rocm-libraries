@@ -484,6 +484,14 @@ bool serializeVisit(const MemTokenData& mod, std::ostream& os) {
     return true;
 }
 
+// LoopWaitData
+bool serializeVisit(const LoopWaitData& mod, std::ostream& os) {
+    os << ", mod.loop_wait = { opId = " << mod.opId
+       << ", accesses = " << vectorToString(mod.accesses)
+       << ", dependencies = " << vectorToString(mod.dependencies) << " }";
+    return true;
+}
+
 // LabelData
 bool serializeVisit(const LabelData& mod, std::ostream& os) {
     os << ", mod.label = { label = \"" << mod.label << "\""
@@ -511,8 +519,8 @@ bool ModifierSerializer::serialize(const Modifier& mod, std::ostream& os) {
                           CacheScopeModifiers, SMEMModifiers, SDWAModifiers, DPPModifiers,
                           VOP3Modifiers, VOP3PModifiers, True16Modifiers, EXEC, VCC, SWaitCntData,
                           SWaitTensorCntData, SWaitAsyncCntData, SWaitStoreCntData, SDelayAluData,
-                          SWaitAluData, MFMAModifiers, MatrixFmtModifiers, MemTokenData, LabelData,
-                          CallTargetData>(mod, os);
+                          SWaitAluData, MFMAModifiers, MatrixFmtModifiers, MemTokenData,
+                          LoopWaitData, LabelData, CallTargetData>(mod, os);
 }
 
 /*
@@ -651,6 +659,10 @@ void deserializeVisit(StinkyInstruction* inst, const std::string& attrKey,
         if (fields.contains("tokens")) {
             inst->addModifier(MemTokenData(getIntVector(fields, "tokens")));
         }
+    } else if (attrKey == "mod.loop_wait") {
+        inst->addModifier(LoopWaitData(getInt(fields, "opId", -1),
+                                       getIntVector(fields, "accesses"),
+                                       getIntVector(fields, "dependencies")));
     } else if (attrKey == "mod.label") {
         inst->addModifier(LabelData(getStr(fields, "label", ""),
                                     static_cast<uint16_t>(getInt(fields, "alignment", 1))));

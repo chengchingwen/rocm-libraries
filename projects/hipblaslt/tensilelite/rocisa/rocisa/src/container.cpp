@@ -769,6 +769,30 @@ void init_containers(nb::module_ m)
             new(&self) rocisa::MemTokenData(t);
         });
 
+    nb::class_<rocisa::LoopWaitData, rocisa::Container>(m_con, "LoopWaitData")
+        .def(nb::init<int, const std::vector<int>&, const std::vector<int>&>(),
+             nb::arg("opId")         = -1,
+             nb::arg("accesses")     = std::vector<int>{},
+             nb::arg("dependencies") = std::vector<int>{})
+        .def_rw("opId", &rocisa::LoopWaitData::opId)
+        .def_rw("accesses", &rocisa::LoopWaitData::accesses)
+        .def_rw("dependencies", &rocisa::LoopWaitData::dependencies)
+        .def("__str__", &rocisa::LoopWaitData::toString)
+        .def("__deepcopy__",
+             [](const rocisa::LoopWaitData& self, nb::dict) {
+                 return rocisa::LoopWaitData(self);
+             })
+        .def("__getstate__",
+             [](const rocisa::LoopWaitData& self) {
+                 return std::make_tuple(self.opId, self.accesses, self.dependencies);
+             })
+        .def("__setstate__",
+             [](rocisa::LoopWaitData& self,
+                std::tuple<int, std::vector<int>, std::vector<int>> t) {
+                 new(&self)
+                     rocisa::LoopWaitData(std::get<0>(t), std::get<1>(t), std::get<2>(t));
+             });
+
     nb::class_<rocisa::ContinuousRegister>(m_con, "ContinuousRegister")
         .def(
             "__init__",

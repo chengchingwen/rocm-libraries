@@ -220,6 +220,13 @@ std::vector<StinkyInstruction*> lowerRocisaSBarrier(rocisa::Instruction& inst,
     if (auto memToken = inst.getMemToken()) {
         signalInst->addModifier<MemTokenData>(MemTokenData{memToken->tokens});
     }
+    // Cross-wave LoopModel dependencies must drain before the signal publishes
+    // the LDS write. The converter attaches metadata to the returned wait half,
+    // so mirror it onto the earlier signal just like MemTokenData.
+    if (auto loopWait = inst.getLoopWait()) {
+        signalInst->addModifier<LoopWaitData>(
+            LoopWaitData{loopWait->opId, loopWait->accesses, loopWait->dependencies});
+    }
     if (inst.getNoWaitCnt()) {
         signalInst->addModifier<NoWaitCntData>(NoWaitCntData{});
     }

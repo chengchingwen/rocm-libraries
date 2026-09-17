@@ -20,7 +20,8 @@ from .frame_hazards import FrameHazards, FrameHazardSet, Hazard, SharedTouch, RA
 from .reg_hazards import RegHazards, RegHazardSet, RegTouch
 from .short_path import (ShortPathFold, FoldVerdict, Break,
                          FOLD, SPLIT, UNSOUND, NA)
-from .wait_counts import WaitCounts, WaitCountSet, WaitSite, TENSORCNT, DSCNT, FANOUT_META
+from .wait_counts import (WaitCounts, WaitCountSet, WaitSite, WaitDependency,
+                          TENSORCNT, DSCNT, FANOUT_META)
 from .loop_shape import (LoopShape, Loop as LoopShapeInfo, Linear,
                          reduction_coverage_violations, PRE, POST)
 from .barrier_uniformity import BarrierUniformity, BarrierViolation, PROC_SCOPES
@@ -36,7 +37,7 @@ __all__ = [
     "RAW", "WAR", "WAW", "FenceRegions",
     "RegHazards", "RegHazardSet", "RegTouch",
     "ShortPathFold", "FoldVerdict", "Break", "FOLD", "SPLIT", "UNSOUND", "NA",
-    "WaitCounts", "WaitCountSet", "WaitSite", "TENSORCNT", "DSCNT",
+    "WaitCounts", "WaitCountSet", "WaitSite", "WaitDependency", "TENSORCNT", "DSCNT",
     "FANOUT_META",
     "LoopShape", "LoopShapeInfo", "Linear", "reduction_coverage_violations", "PRE", "POST",
     "BarrierUniformity", "BarrierViolation", "PROC_SCOPES",

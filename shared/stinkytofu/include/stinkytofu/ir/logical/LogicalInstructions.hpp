@@ -91,6 +91,7 @@ class LogicalInstruction : public IRBase {
     std::optional<MUBUFModifiers> mubuf;       ///< MUBUF (buffer load/store) modifier
     std::optional<VOP3PModifiers> vop3;        ///< VOP3P (op_sel) modifier
     std::optional<std::vector<int>> memtoken;  ///< Memory token IDs for LDS dependency tracking
+    std::optional<LoopWaitData> loopwait;       ///< LoopModel wait-dependency metadata
     std::optional<std::array<int, 5>>
         swaitcnt;  ///< s_waitcnt values {vlcnt,vscnt,dlcnt,dscnt,kmcnt} for gfx12+ split
     bool nowaitcnt = false;  ///< Barrier orders execution but takes no conservative wait

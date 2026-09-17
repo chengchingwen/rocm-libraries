@@ -1,0 +1,19 @@
+# RUN: %stinkytofu-opt --arch gfx1250 %s --StinkyBuildImplicitDependencyPass --StinkyWaitCntInsertionPass --print-output
+#
+# GEMM IR supplies only the producer relation. StinkyTofu derives the final
+# immediate from post-scheduling issue order: op 1 is followed by two younger
+# tensor loads, so the barrier can leave those two in flight.
+#
+# CHECK-LABEL: @loopmodel_fifo_rank
+# CHECK: s_wait_tensorcnt
+# CHECK-SAME: tlcnt = 2
+# CHECK-NEXT: s_barrier_signal
+
+st.func @loopmodel_fifo_rank() {
+^entry:
+  "st.tensor_load_to_lds"(s[0:3], s[4:11]) { mod.memtoken = { tokens = [10] }, mod.loop_wait = { opId = 1, accesses = [0,0,2,0,1], dependencies = [] } }
+  "st.tensor_load_to_lds"(s[12:15], s[16:23]) { mod.memtoken = { tokens = [11] }, mod.loop_wait = { opId = 3, accesses = [1,0,2,0,1], dependencies = [] } }
+  "st.tensor_load_to_lds"(s[24:27], s[28:35]) { mod.memtoken = { tokens = [12] }, mod.loop_wait = { opId = 4, accesses = [2,0,2,0,1], dependencies = [] } }
+  "st.s_barrier_signal"(-1) { mod.memtoken = { tokens = [20] }, mod.loop_wait = { opId = 2, accesses = [], dependencies = [1,2,0,0,0,3,0,1] } }
+  "st.s_barrier_wait"(-1) { mod.memtoken = { tokens = [20] } }
+}

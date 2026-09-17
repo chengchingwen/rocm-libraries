@@ -114,3 +114,29 @@ TEST_F(IRToAsmPipelineTest, SimpleVectorALU) {
 
     // TODO: Step 4: Emit assembly string and verify output
 }
+
+TEST_F(IRToAsmPipelineTest, PreservesLoopWaitMetadata) {
+    Function func("kernel");
+    BasicBlock* entryBB = func.createBasicBlock("entry");
+
+    LogicalInstruction* vadd = VAddF32(v0, v1, v2, std::nullopt, std::nullopt, "");
+    vadd->loopwait = LoopWaitData(9, {1, 2, 4, -1, 3}, {7, 9, 0, 1, 1, 2, 0, 4});
+    entryBB->appendIR(static_cast<IRBase*>(vadd));
+
+    PassManager pm;
+    GemmTileConfig config;
+    config.arch = {12, 5, 0};
+    pm.setGemmTileConfig(config);
+    pm.addPass(createToStinkyAsmPass());
+    pm.run(func);
+
+    ASSERT_EQ(entryBB->size(), 1u);
+    IRBase& lowered = *entryBB->begin();
+    ASSERT_EQ(lowered.getType(), IRBase::IRType::StinkyTofu);
+    auto* asmInst = static_cast<StinkyInstruction*>(&lowered);
+    const auto* loopWait = asmInst->getModifier<LoopWaitData>();
+    ASSERT_NE(loopWait, nullptr);
+    EXPECT_EQ(loopWait->opId, 9);
+    EXPECT_EQ(loopWait->accesses, (std::vector<int>{1, 2, 4, -1, 3}));
+    EXPECT_EQ(loopWait->dependencies, (std::vector<int>{7, 9, 0, 1, 1, 2, 0, 4}));
+}

@@ -16,7 +16,7 @@ from .gir.analysis import AnalysisManager
 from .gir.analyses.reg_band import RegBandAnalysis
 from .leaves import LeafEmitters
 from ..LoopModel.adapter import fuse_groups
-from rocisa.container import MemTokenData
+from rocisa.container import LoopWaitData, MemTokenData
 from rocisa.instruction import SBarrier, SWaitCnt, SWaitTensorcnt
 
 
@@ -117,14 +117,16 @@ class GirToRocisa:
                              at["reg_buf"], self._tok(at.get("token"))))
                 _qd = cplan.decision(_i)
                 _tok = (getattr(_qd, "tokens", ()) or self._token_ids(at)) if _qd else self._token_ids(at)
-                out.add(w.emitLdsReadTile(self.kernel, self._tp[tc], self._ctxRd[tc],
-                                          tileIdx=at["tile"], kIdx=at["k"],
-                                          bufferIdx=at["reg_buf"],
-                                          memToken=_tok,
-                                          region=at.get("region", 0),
-                                          regTileIdx=at.get("tile_flat", at["tile"]),
-                                          kFlat=at.get("k_flat", at["k"]),
-                                          quantum=_qd))
+                code = w.emitLdsReadTile(self.kernel, self._tp[tc], self._ctxRd[tc],
+                                         tileIdx=at["tile"], kIdx=at["k"],
+                                         bufferIdx=at["reg_buf"],
+                                         memToken=_tok,
+                                         region=at.get("region", 0),
+                                         regTileIdx=at.get("tile_flat", at["tile"]),
+                                         kFlat=at.get("k_flat", at["k"]),
+                                         quantum=_qd)
+                self._stamp_loop_wait_data(code, at, "read")
+                out.add(code)
             elif kind == "swap":
                 # A read swap names an operand, a copy swap names the Phi movement -- see
                 # `gir/refs.copy_unit` and the act table in `gir/emit_plan`.
@@ -192,27 +194,78 @@ class GirToRocisa:
         """Stamp a GIR act so a finding in the `.s` names the node that emitted it."""
         out.addComment0(gir_tag("%s %s %s" % (phase, kind, detail)))
 
-    def _emit_waitcnt(self, out, phase, at):
-        """Realize GIR's own residual AS THE INSTRUCTION.
-
-        Under UseLoopModel removal is off (`DisableWaitCntRemoval`) and insertion CREDITS what it
-        finds here -- `waitcnt::observedWaitDrains` -- so it covers what GIR did not name rather
-        than duplicating what it did.  The tag rides the wait so a reader can pair the two."""
+    @staticmethod
+    def _emit_waitcnt(out, phase, at):
+        """Materialize Peter's original GIR-owned numeric residual."""
         tag = gir_tag("%s waitcnt %s hazard=%s from=%s frames=%s"
                       % (phase,
-                         ",".join("%s=%s" % (c, at[c]) for c in ("tensorcnt", "dscnt") if c in at),
+                         ",".join("%s=%s" % (counter, at[counter])
+                                  for counter in ("tensorcnt", "dscnt")
+                                  if counter in at),
                          at.get("hazard"), at.get("from"), at.get("frames")))
         if "tensorcnt" in at:
-            # `s_wait_tensorcnt` cuts no scheduling region, so name the storage it separates: the
-            # same split `_emit_fence` makes -- WAITED FOR (RAW) vs merely ORDERED (WAR).
             wait = SWaitTensorcnt(tensorcnt=int(at["tensorcnt"]), comment=tag)
             if at.get("tokens"):
-                wait.setMemToken(MemTokenData([int(t) for t in at["tokens"]]))
+                wait.setMemToken(MemTokenData([int(token) for token in at["tokens"]]))
             if at.get("order_tokens"):
-                wait.setOrderToken(MemTokenData([int(t) for t in at["order_tokens"]]))
+                wait.setOrderToken(
+                    MemTokenData([int(token) for token in at["order_tokens"]]))
             out.add(wait)
         if "dscnt" in at:
             out.add(SWaitCnt(dscnt=int(at["dscnt"]), comment=tag))
+
+    @staticmethod
+    def _stamp_loop_wait_data(code, at, action):
+        """Stamp actual memory/barrier instructions selected from a leaf Module.
+
+        Tokens identify the physical instruction(s) belonging to an action without depending on
+        rocisa instruction subclasses. A dependency must never disappear merely because a leaf
+        omitted tokens, so that case falls back to every instruction exposing the metadata setter.
+        """
+        if code is None:
+            if at.get("wait_dependencies"):
+                raise RuntimeError(
+                    f"GIR {action}: dependency-bearing action emitted no rocisa Module")
+            return
+
+        op_id = int(at.get("op_id", -1))
+        accesses = [int(value) for value in (at.get("wait_accesses") or ())]
+        dependencies = [int(value) for value in (at.get("wait_dependencies") or ())]
+        if op_id < 0 and not accesses and not dependencies:
+            return
+
+        items = list(code.flatitems()) if hasattr(code, "flatitems") else [code]
+        settable = []
+        selected = []
+        for item in items:
+            # setLoopWaitData is the target API. setLoopWait keeps this side usable while an
+            # in-tree rocisa build carrying the pre-rename spelling is being rebuilt.
+            setter = getattr(item, "setLoopWaitData", None)
+            if not callable(setter):
+                setter = getattr(item, "setLoopWait", None)
+            if not callable(setter):
+                continue
+            settable.append((item, setter))
+            has_token = False
+            for name in ("getMemToken", "getOrderToken"):
+                getter = getattr(item, name, None)
+                if callable(getter):
+                    try:
+                        has_token = has_token or getter() is not None
+                    except (AttributeError, TypeError):
+                        pass
+            if has_token or isinstance(item, SBarrier):
+                selected.append((item, setter))
+
+        targets = selected
+        if not targets and (accesses or dependencies):
+            targets = settable
+        if dependencies and not targets:
+            raise RuntimeError(
+                f"GIR {action}: cannot preserve {len(dependencies) // 8} loop-wait "
+                "dependency record(s); the emitted Module has no metadata-capable instruction")
+        for _item, setter in targets:
+            setter(LoopWaitData(op_id, accesses, dependencies))
 
     def _emit_fence(self, out, phase, at):
         """Realize a memory-ordering barrier: GIR decides where and what it orders, L3 the instruction.
@@ -235,6 +288,7 @@ class GirToRocisa:
             self.kernel, "GIR fence: order %s (%s) %s"
             % ("+".join(buffers) or "LDS", ",".join(at.get("kinds", ())), sync),
             memoryToken=tokens, noWaitCnt=no_wait, orderToken=war)
+        self._stamp_loop_wait_data(code, at, "fence")
         if code is not None and code.count():
             self._append_tag(code, "fence %s" % ("+".join(buffers) or "LDS"))
             self._register_fence(code)
@@ -377,7 +431,8 @@ class GirToRocisa:
             self._emit_desc_enable(out, unit, member, False, tpByOperand)
         self._emit_copy(out, at["unit"], at.get("gen", 0), tpByOperand,
                         memToken=self._token_ids(at),
-                        regions=at.get("regions", 1), region=at.get("region"))
+                        regions=at.get("regions", 1), region=at.get("region"),
+                        loop_wait=at)
         for member in absent:
             self._emit_desc_enable(out, unit, member, True, tpByOperand)
 
@@ -427,7 +482,8 @@ class GirToRocisa:
                                  % (self._who(unit), "back" if back else "fwd"))
                 out.add(code)
 
-    def _emit_copy(self, out, unit, gen, tpByOperand, memToken=None, regions=1, region=None):
+    def _emit_copy(self, out, unit, gen, tpByOperand, memToken=None, regions=1, region=None,
+                   loop_wait=None):
         """Realize ONE global->shared movement, for the buffer generation GIR's Move names.
 
         One call per Move -- so the prologue's M peel fills each emit, which a single pre-built
@@ -451,6 +507,7 @@ class GirToRocisa:
         code = self._leaf.emitCopyTile(self.kernel, tP, bufIdx=int(gen),
                                        memToken=memToken, regions=regions,
                                        region=int(region or 0))
+        self._stamp_loop_wait_data(code, loop_wait or {}, "copy")
         if code is not None and code.count():
             self._append_tag(code, "copy %s gen=%s" % (self._who(unit), gen))
             out.add(code)

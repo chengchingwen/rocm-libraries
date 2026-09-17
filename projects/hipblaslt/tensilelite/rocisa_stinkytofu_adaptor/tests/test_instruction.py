@@ -50,6 +50,7 @@ if _PKG_PARENT not in sys.path:
 
 from rocisa_stinkytofu_adaptor.code import Module  # noqa: E402
 from rocisa_stinkytofu_adaptor.container import (  # noqa: E402
+    LoopWaitData,
     RegisterContainer,
     SMEMModifiers,
     sgpr,
@@ -339,6 +340,12 @@ class TestInstructionBase(unittest.TestCase):
         inst.setMemToken(token)
         self.assertIs(inst.getMemToken(), token)
 
+    def test_loop_wait_roundtrip(self):
+        inst = Instruction(InstType.INST_B32)
+        data = LoopWaitData(4, [1, 2, 3, 4, 5], [4, 6, 0, 1, 1, 2, 0, 3])
+        inst.setLoopWait(data)
+        self.assertIs(inst.getLoopWait(), data)
+
     def test_default_issue_latency_and_cycles(self):
         # rocisa::Instruction defaults; subclasses override.
         inst = Instruction(InstType.INST_B32)
@@ -541,6 +548,15 @@ class TestCommonInstructionDeepcopy(unittest.TestCase):
         c = copy.deepcopy(ci)
         self.assertEqual(c.instStr, "v_mov_b32")
         self.assertEqual(c.comment, "orig")
+
+    def test_deepcopy_preserves_independent_loop_wait_data(self):
+        ci = CommonInstruction(InstType.INST_B32, dst=vgpr(0), srcs=[vgpr(1)])
+        ci.setLoopWait(LoopWaitData(8, [1, 2, 3, 4, 5], [8, 9, 0, 1, 1, 2, 0, 3]))
+
+        clone = copy.deepcopy(ci)
+        self.assertEqual(clone.getLoopWait().__getstate__(), ci.getLoopWait().__getstate__())
+        clone.getLoopWait().dependencies[0] = 99
+        self.assertEqual(ci.getLoopWait().dependencies[0], 8)
 
 
 # ===========================================================================
@@ -901,11 +917,14 @@ class TestSNopConstruction(unittest.TestCase):
 
     def test_deepcopy(self):
         m = SNop(waitState=1, comment="x")
+        m.setLoopWait(LoopWaitData(3, [1, 2, 3, 4, 5], []))
         c = copy.deepcopy(m)
         self.assertIsInstance(c, SNop)
         self.assertIsNot(c, m)
         self.assertEqual(c.wait_state, 1)
         self.assertEqual(c.comment, "x")
+        self.assertEqual(c.getLoopWait().opId, 3)
+        self.assertIsNot(c.getLoopWait(), m.getLoopWait())
 
     def test_positional_arg(self):
         """Supports SNop(3, 'comment') positional style used in Tensile."""

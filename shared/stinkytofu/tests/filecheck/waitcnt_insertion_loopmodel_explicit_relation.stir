@@ -1,0 +1,25 @@
+# RUN: %stinkytofu-opt --arch gfx1250 %s --StinkyBuildImplicitDependencyPass --StinkyWaitCntInsertionPass --print-output
+#
+# The barrier and tensor load deliberately use disjoint physical MemTokenData,
+# so the ordinary pseudo-register SSA has no producer->consumer edge. The
+# LoopModel relation identifies op 1 from the previous dynamic iteration as the
+# barrier's tensor-counter dependency.
+#
+# CHECK-LABEL: @loopmodel_explicit_relation
+# CHECK: ^loop
+# CHECK: s_wait_tensorcnt
+# CHECK-SAME: tlcnt = 0
+# CHECK-NEXT: s_barrier_signal
+
+st.func @loopmodel_explicit_relation() {
+^entry:
+  "st.s_branch"("loop")
+  Successors: ^loop
+^loop:
+  "st.s_barrier_signal"(-1) { mod.memtoken = { tokens = [20] }, mod.loop_wait = { opId = 2, accesses = [], dependencies = [1,2,0,1,1,3,0,1] } }
+  "st.s_barrier_wait"(-1) { mod.memtoken = { tokens = [20] } }
+  "st.tensor_load_to_lds"(s[0:3], s[4:11]) { mod.memtoken = { tokens = [10] }, mod.loop_wait = { opId = 1, accesses = [0,0,2,1,1], dependencies = [] } }
+  "st.s_cbranch_scc1"("loop", SCC0)
+  Successors: ^loop, ^exit
+^exit:
+}

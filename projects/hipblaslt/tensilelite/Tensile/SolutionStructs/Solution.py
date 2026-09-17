@@ -851,6 +851,12 @@ class Solution(collections.abc.Mapping):
              "LoopOrder != KMN requires UseLoopModel (loop order is a LoopModel-only knob)")
       return
 
+    waitCntMode = state.get("LoopModelWaitCntMode", "StinkyTofu")
+    if waitCntMode != "StinkyTofu" and not state.get("UseLoopModel", False):
+      reject(state, printRejectionReason,
+             "LoopModelWaitCntMode=GIR requires UseLoopModel")
+      return
+
     # A 6-LETTER LoopOrder NEEDS A LIVE SPLIT AXIS, or it IS its own 3-letter shortcut.
     #
     #
@@ -869,6 +875,14 @@ class Solution(collections.abc.Mapping):
     # (Tensile/LoopModel).  Phase-limited scope: gfx1250 + matrix-instruction + bf16 or 8-bit float.
     # It is strictly additive — UseLoopModel=False is the normal path and is never gated.
     if state.get("UseLoopModel", False):
+      # The comparison path intentionally reproduces Peter's original SIA0
+      # flow: GIR emits numeric waits and StinkyTofu does not own insertion.
+      # SIA4 introduces the O3 scheduler between those stages, so its counts
+      # would no longer be the original reference.
+      if waitCntMode == "GIR" and state["ScheduleIterAlg"] != 0:
+        reject(state, printRejectionReason,
+               "LoopModelWaitCntMode=GIR supports only ScheduleIterAlg=0")
+        return
       if state["ISA"] != (12, 5, 0):
         reject(state, printRejectionReason,
                f"UseLoopModel is only supported on gfx1250, not {state['ISA']}")

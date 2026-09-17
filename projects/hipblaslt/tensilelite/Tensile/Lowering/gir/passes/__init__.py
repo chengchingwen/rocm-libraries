@@ -19,6 +19,7 @@ from .scaffold_map import ScaffoldMapPass
 from .early_exit import EarlyExitPass
 from .split_prefetch_guard import SplitPrefetchGuardPass
 from .scaffold_shape import ScaffoldShapePass
+from .wait_counts import LegacyWaitCntPass, LoopWaitMetadataPass, WaitDependencyPass, WaitCntPass
 from .pipeline import pipeline, run_pipeline
 
 __all__ = [
@@ -26,5 +27,6 @@ __all__ = [
     "CollectPendingMarksPass",
     "PlacementPass", "ApplyMarksPass", "ScaffoldMapPass", "EarlyExitPass", "SplitPrefetchGuardPass", "ScaffoldShapePass",
     "RecordUnemittedPass",
+    "LegacyWaitCntPass", "LoopWaitMetadataPass", "WaitDependencyPass", "WaitCntPass",
     "pipeline", "run_pipeline",
 ]
