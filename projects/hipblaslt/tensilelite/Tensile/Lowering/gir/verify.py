@@ -19,6 +19,13 @@ from .analyses.reg_band import RegBandAnalysis
 from .analyses.dep_tokens import DependenceTokens
 from .analyses.lds_buffers import LdsBufferIds, shared_refs
 from .analyses.region_increment import walk_violations
+from .loop_wait import (
+    LoopWaitAccessField,
+    LoopWaitCounter,
+    LoopWaitDependencyField,
+    LoopWaitDependencyKind,
+    LoopWaitScope,
+)
 
 
 # Per-kind Mark `at` payload schema.
@@ -432,25 +439,39 @@ def _check_loop_wait_metadata(prog):
 
         accesses = tuple(getattr(inst, "wait_accesses", ()) or ())
         dependencies = tuple(getattr(inst, "wait_dependencies", ()) or ())
-        if len(accesses) % 5:
+        access_stride = int(LoopWaitAccessField.COUNT)
+        dependency_stride = int(LoopWaitDependencyField.COUNT)
+        if len(accesses) % access_stride:
             raise RuntimeError(
-                f"G-WAITREL: op {op_id} has {len(accesses)} access words; stride is 5")
-        if len(dependencies) % 8:
+                f"G-WAITREL: op {op_id} has {len(accesses)} access words; "
+                f"stride is {access_stride}")
+        if len(dependencies) % dependency_stride:
             raise RuntimeError(
-                f"G-WAITREL: op {op_id} has {len(dependencies)} dependency words; stride is 8")
+                f"G-WAITREL: op {op_id} has {len(dependencies)} dependency words; "
+                f"stride is {dependency_stride}")
 
     for anchor_id, inst in by_id.items():
         words = tuple(getattr(inst, "wait_dependencies", ()) or ())
-        for offset in range(0, len(words), 8):
-            producer, consumer, _pf, _cf, gap, counter, kind, scope = words[offset:offset + 8]
+        stride = int(LoopWaitDependencyField.COUNT)
+        for offset in range(0, len(words), stride):
+            record = words[offset:offset + stride]
+            producer = record[LoopWaitDependencyField.PRODUCER_OP_ID]
+            consumer = record[LoopWaitDependencyField.CONSUMER_OP_ID]
+            gap = record[LoopWaitDependencyField.GENERATION_GAP]
+            counter = record[LoopWaitDependencyField.COUNTER]
+            kind = record[LoopWaitDependencyField.KIND]
+            scope = record[LoopWaitDependencyField.SCOPE]
             if producer not in by_id or consumer not in by_id:
                 raise RuntimeError(
                     f"G-WAITREL: anchor {anchor_id} names missing producer/consumer "
                     f"{producer}->{consumer}")
-            if gap < 0 or counter not in (0, 3) or kind not in (0, 1, 2) or scope not in (0, 1):
+            if (gap < 0
+                    or counter not in tuple(int(value) for value in LoopWaitCounter)
+                    or kind not in tuple(int(value) for value in LoopWaitDependencyKind)
+                    or scope not in tuple(int(value) for value in LoopWaitScope)):
                 raise RuntimeError(
                     f"G-WAITREL: anchor {anchor_id} has invalid relation "
-                    f"{words[offset:offset + 8]}")
+                    f"{record}")
 
 
 def verify_gir(prog, expect_steady_loops="one"):

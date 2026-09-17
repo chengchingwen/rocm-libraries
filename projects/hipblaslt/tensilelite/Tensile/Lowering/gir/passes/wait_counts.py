@@ -12,12 +12,7 @@ from .base import Pass
 from ..nodes import Mark, Mma, Move, descriptor_unit
 from ..analyses.lds_buffers import LdsBufferIds
 from ..analyses.wait_counts import WaitCounts
-
-
-_ACCESS_WRITE = 1 << 0
-_ACCESS_ABSOLUTE = 1 << 1
-_ACCESS_STRIDE = 5
-_DEPENDENCY_STRIDE = 8
+from ..loop_wait import LoopWaitAccessField, LoopWaitAccessFlag, LoopWaitDependencyField
 
 
 def _nodes(prog):
@@ -71,16 +66,19 @@ def _accesses_for(prog, node, storage, class_ids, region_ids):
         class_key = _class_key(prog, ref)
         absolute = getattr(ref, "abs_gen", None) is not None
         relation = int(ref.abs_gen) if absolute else int(getattr(ref, "gdelta", 0))
-        flags = (_ACCESS_WRITE if is_write else 0) | (_ACCESS_ABSOLUTE if absolute else 0)
+        flags = ((LoopWaitAccessFlag.WRITE if is_write else LoopWaitAccessFlag.NONE)
+                 | (LoopWaitAccessFlag.ABSOLUTE if absolute else LoopWaitAccessFlag.NONE))
         for region in _region_coords(storage.geometry, ref, is_write):
-            records.extend((
-                class_ids[class_key],
-                region_ids[(class_key, ref.tile.operand, region)],
-                int(storage.depth_of(ref.tile.operand)),
-                relation,
-                flags,
-            ))
-    assert len(records) % _ACCESS_STRIDE == 0
+            record = [0] * int(LoopWaitAccessField.COUNT)
+            record[LoopWaitAccessField.CLASS_ID] = class_ids[class_key]
+            record[LoopWaitAccessField.REGION_ID] = region_ids[
+                (class_key, ref.tile.operand, region)]
+            record[LoopWaitAccessField.RING_SIZE] = int(
+                storage.depth_of(ref.tile.operand))
+            record[LoopWaitAccessField.GENERATION_RELATION] = relation
+            record[LoopWaitAccessField.FLAGS] = int(flags)
+            records.extend(record)
+    assert len(records) % int(LoopWaitAccessField.COUNT) == 0
     return tuple(records)
 
 
@@ -106,9 +104,10 @@ class LoopWaitMetadataPass(Pass):
 
 
 def _dependency_records(flat):
-    return {tuple(flat[i:i + _DEPENDENCY_STRIDE])
-            for i in range(0, len(flat), _DEPENDENCY_STRIDE)
-            if len(flat[i:i + _DEPENDENCY_STRIDE]) == _DEPENDENCY_STRIDE}
+    stride = int(LoopWaitDependencyField.COUNT)
+    return {tuple(flat[i:i + stride])
+            for i in range(0, len(flat), stride)
+            if len(flat[i:i + stride]) == stride}
 
 
 class WaitDependencyPass(Pass):

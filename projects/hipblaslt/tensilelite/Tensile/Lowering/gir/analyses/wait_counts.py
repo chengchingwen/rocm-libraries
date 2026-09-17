@@ -19,15 +19,20 @@ from .frame_map import FrameMap
 from .reg_hazards import RegHazards
 from ..coverage import plan_coverage
 from ..emit_plan import plan_block
+from ..loop_wait import (
+    LoopWaitCounter, LoopWaitDependencyField, LoopWaitDependencyKind, LoopWaitScope,
+)
 
 TENSORCNT = "tensorcnt"   # global -> shared
 DSCNT = "dscnt"           # shared -> register
 
 # Values in stinkytofu::waitcnt::CounterKind and the LoopWaitData transport schema.
-_COUNTER_IDS = {DSCNT: 0, TENSORCNT: 3}
-_KIND_IDS = {"RAW": 0, "WAR": 1, "WAW": 2}
-_WAVE_SCOPE = 0
-_WORKGROUP_SCOPE = 1
+_COUNTER_IDS = {DSCNT: int(LoopWaitCounter.DS), TENSORCNT: int(LoopWaitCounter.TENSOR)}
+_KIND_IDS = {
+    "RAW": int(LoopWaitDependencyKind.RAW),
+    "WAR": int(LoopWaitDependencyKind.WAR),
+    "WAW": int(LoopWaitDependencyKind.WAW),
+}
 
 #: `Program.meta` key: `{operand: read instructions one fill issues}`, from Fragment.
 FANOUT_META = "read_instructions"
@@ -94,9 +99,16 @@ class WaitDependency:
     scope:             int
 
     def flatten(self) -> tuple:
-        return (self.producer_op_id, self.consumer_op_id,
-                self.producer_frame_id, self.consumer_frame_id,
-                self.generation_gap, self.counter, self.kind, self.scope)
+        record = [0] * int(LoopWaitDependencyField.COUNT)
+        record[LoopWaitDependencyField.PRODUCER_OP_ID] = self.producer_op_id
+        record[LoopWaitDependencyField.CONSUMER_OP_ID] = self.consumer_op_id
+        record[LoopWaitDependencyField.PRODUCER_FRAME_ID] = self.producer_frame_id
+        record[LoopWaitDependencyField.CONSUMER_FRAME_ID] = self.consumer_frame_id
+        record[LoopWaitDependencyField.GENERATION_GAP] = self.generation_gap
+        record[LoopWaitDependencyField.COUNTER] = self.counter
+        record[LoopWaitDependencyField.KIND] = self.kind
+        record[LoopWaitDependencyField.SCOPE] = self.scope
+        return tuple(record)
 
 
 @dataclass(frozen=True)
@@ -379,7 +391,8 @@ class WaitCounts(Analysis):
                     generation_gap=int(hazard.gap),
                     counter=_COUNTER_IDS[counter],
                     kind=_KIND_IDS[hazard.kind],
-                    scope=(_WORKGROUP_SCOPE if hazard.cross_agent else _WAVE_SCOPE)),)
+                    scope=int(LoopWaitScope.WORKGROUP
+                              if hazard.cross_agent else LoopWaitScope.WAVE)),)
             dependencies = _merge_dependencies(
                 prior.dependencies if prior else (), explicit)
             if prior is None or n < prior.n:

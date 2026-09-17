@@ -24,6 +24,7 @@
 
 #include <array>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -1100,6 +1101,53 @@ struct MemTokenData : public TypedModifier<MemTokenData> {
 ///    generationGap, counter, kind, scope]
 struct LoopWaitData : public TypedModifier<LoopWaitData> {
     static constexpr Modifier::Type Type = Modifier::Type::LOOP_WAIT;
+
+    enum class AccessField : std::size_t {
+        ClassId = 0,
+        RegionId,
+        RingSize,
+        GenerationRelation,
+        Flags,
+        Count,
+    };
+
+    enum class AccessFlag : int {
+        None = 0,
+        Write = 1 << 0,
+        Absolute = 1 << 1,
+    };
+
+    enum class DependencyField : std::size_t {
+        ProducerOpId = 0,
+        ConsumerOpId,
+        ProducerFrameId,
+        ConsumerFrameId,
+        GenerationGap,
+        Counter,
+        Kind,
+        Scope,
+        Count,
+    };
+
+    enum class Counter : int {
+        DS = 0,
+        Tensor = 3,
+    };
+
+    enum class DependencyKind : int {
+        RAW = 0,
+        WAR,
+        WAW,
+    };
+
+    enum class Scope : int {
+        Wave = 0,
+        Workgroup,
+    };
+
+    static constexpr std::size_t AccessStride = static_cast<std::size_t>(AccessField::Count);
+    static constexpr std::size_t DependencyStride =
+        static_cast<std::size_t>(DependencyField::Count);
 
     int opId = -1;
     std::vector<int> accesses;

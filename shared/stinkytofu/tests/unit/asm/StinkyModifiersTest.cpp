@@ -285,6 +285,12 @@ TEST(CallTargetData, DeserializeParsesEscapedCalleeNames) {
 // ---------------------------------------------------------------------------
 
 TEST(LoopWaitData, SerializesStableSchema) {
+    static_assert(LoopWaitData::AccessStride == 5);
+    static_assert(LoopWaitData::DependencyStride == 8);
+    static_assert(static_cast<int>(LoopWaitData::Counter::DS) == 0);
+    static_assert(static_cast<int>(LoopWaitData::Counter::Tensor) == 3);
+    static_assert(static_cast<int>(LoopWaitData::DependencyKind::RAW) == 0);
+
     LoopWaitData data(9, {1, 2, 4, -1, 3}, {7, 9, 0, 1, 1, 2, 0, 4});
 
     std::ostringstream os;

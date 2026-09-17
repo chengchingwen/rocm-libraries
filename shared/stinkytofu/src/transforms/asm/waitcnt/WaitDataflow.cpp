@@ -780,10 +780,12 @@ void computeRequiredWaits(StinkyInstruction* inst, DataflowState& state,
     // once in a bounded loop queue, countFrom() selects the oldest occurrence,
     // which can only strengthen the wait.
     if (const auto* loopWait = inst->getModifier<LoopWaitData>()) {
-        constexpr size_t kDepStride = 8;
-        constexpr size_t kProducer = 0;
-        constexpr size_t kCounter = 5;
-        constexpr size_t kKind = 6;
+        constexpr size_t kDepStride = LoopWaitData::DependencyStride;
+        constexpr size_t kProducer =
+            static_cast<size_t>(LoopWaitData::DependencyField::ProducerOpId);
+        constexpr size_t kCounter =
+            static_cast<size_t>(LoopWaitData::DependencyField::Counter);
+        constexpr size_t kKind = static_cast<size_t>(LoopWaitData::DependencyField::Kind);
         const size_t complete = loopWait->dependencies.size() / kDepStride;
         for (size_t i = 0; i < complete; ++i) {
             const size_t base = i * kDepStride;
@@ -796,7 +798,9 @@ void computeRequiredWaits(StinkyInstruction* inst, DataflowState& state,
             // multiple waves). WAR/WAW records already name their legal
             // overwrite/fence anchor and are unconditional.
             const int kind = loopWait->dependencies[base + kKind];
-            if (kind == 0 && !rawNeedsWait[c](*inst)) continue;
+            if (kind == static_cast<int>(LoopWaitData::DependencyKind::RAW) &&
+                !rawNeedsWait[c](*inst))
+                continue;
 
             auto producers = loopWaitProducers.find(loopWait->dependencies[base + kProducer]);
             if (producers == loopWaitProducers.end() || producers->second.empty()) {

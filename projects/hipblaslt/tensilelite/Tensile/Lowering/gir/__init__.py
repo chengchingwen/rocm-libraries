@@ -12,6 +12,10 @@ from .nodes import (Tile, Gen, Ref, Move, Mma, Mark, MARK_KINDS,
                     Region, PendingMark, BLOCK_ENTRY, BLOCK_EXIT, EARLIEST, MIDPOINT,
                     copy_unit, read_operand, first_shared_ref, covered_coords)
 from .analysis import Analysis, AnalysisManager
+from .loop_wait import (
+    LoopWaitAccessField, LoopWaitAccessFlag, LoopWaitCounter,
+    LoopWaitDependencyField, LoopWaitDependencyKind, LoopWaitScope,
+)
 from .analyses import (successors, Dominators, BackEdges, BackEdge, BackEdgeSet,
                        LdsBufferIds, LdsBufferIdSet, Buffer, FrameMap, FrameMapping, Frame, SwapRegions,
                        DepDefuseAnalysis, DepDefuse,
@@ -36,6 +40,8 @@ __all__ = [
     "Pred", "Bound", "Goto", "CondGoto", "CondChain", "Return", "Block", "GenPhi", "GenXfer", "Program",
     "Region", "PendingMark", "BLOCK_ENTRY", "BLOCK_EXIT",
     "Analysis", "AnalysisManager",
+    "LoopWaitAccessField", "LoopWaitAccessFlag", "LoopWaitCounter",
+    "LoopWaitDependencyField", "LoopWaitDependencyKind", "LoopWaitScope",
     "successors", "Dominators", "BackEdges", "BackEdge", "BackEdgeSet",
     "LdsBufferIds", "LdsBufferIdSet", "Buffer", "FrameMap", "FrameMapping", "Frame", "SwapRegions",
     "DepDefuseAnalysis", "DepDefuse",
