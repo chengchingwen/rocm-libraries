@@ -12,14 +12,19 @@ from .nodes import (Tile, Gen, Ref, Move, Mma, Mark, MARK_KINDS,
                     Region, PendingMark, BLOCK_ENTRY, BLOCK_EXIT, EARLIEST, MIDPOINT,
                     copy_unit, read_operand, first_shared_ref, covered_coords)
 from .analysis import Analysis, AnalysisManager
+from .loop_wait import (
+    LoopWaitAccessField, LoopWaitAccessFlag, LoopWaitCounter,
+    LoopWaitDependencyField, LoopWaitDependencyKind, LoopWaitScope,
+)
 from .analyses import (successors, Dominators, BackEdges, BackEdge, BackEdgeSet,
                        LdsBufferIds, LdsBufferIdSet, Buffer, FrameMap, FrameMapping, Frame, SwapRegions,
                        DepDefuseAnalysis, DepDefuse,
                        RegBandAnalysis, RegBand,
                        GrIncrementRegions, FrameHazards, FrameHazardSet, Hazard,
-                       FenceRegions)
+                       FenceRegions, WaitDependency)
 from .passes import (Pass, TokensPass, CollectPendingMarksPass,
                      PlacementPass, ApplyMarksPass, ScaffoldMapPass,
+                     LegacyWaitCntPass, LoopWaitMetadataPass, WaitDependencyPass, WaitCntPass,
                      pipeline, run_pipeline)
 from .verify import (verify_gir, check_register_slots, check_rotation_waw,
                      check_block_scope_covered)
@@ -35,13 +40,17 @@ __all__ = [
     "Pred", "Bound", "Goto", "CondGoto", "CondChain", "Return", "Block", "GenPhi", "GenXfer", "Program",
     "Region", "PendingMark", "BLOCK_ENTRY", "BLOCK_EXIT",
     "Analysis", "AnalysisManager",
+    "LoopWaitAccessField", "LoopWaitAccessFlag", "LoopWaitCounter",
+    "LoopWaitDependencyField", "LoopWaitDependencyKind", "LoopWaitScope",
     "successors", "Dominators", "BackEdges", "BackEdge", "BackEdgeSet",
     "LdsBufferIds", "LdsBufferIdSet", "Buffer", "FrameMap", "FrameMapping", "Frame", "SwapRegions",
     "DepDefuseAnalysis", "DepDefuse",
     "RegBandAnalysis", "RegBand",
     "GrIncrementRegions", "FrameHazards", "FrameHazardSet", "Hazard", "FenceRegions",
+    "WaitDependency",
     "Pass", "TokensPass", "CollectPendingMarksPass",
     "PlacementPass", "ApplyMarksPass", "ScaffoldMapPass",
+    "LegacyWaitCntPass", "LoopWaitMetadataPass", "WaitDependencyPass", "WaitCntPass",
     "pipeline", "run_pipeline",
     "verify_gir", "check_register_slots", "check_rotation_waw", "check_block_scope_covered",
     "check_plan", "check_region_coverage", "check_refill_splits_consumers", "check_source_coverage",

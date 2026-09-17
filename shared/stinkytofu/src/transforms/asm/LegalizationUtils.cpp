@@ -260,6 +260,7 @@ Legalized legalizeBarrier(StinkyInstruction* inst, AsmIRBuilder& irBuilder, GfxA
     const CommentData* commentMod = inst->getModifier<CommentData>();
     std::string comment = commentMod ? commentMod->comment : "";
     const MemTokenData* memTokenMod = inst->getModifier<MemTokenData>();
+    const LoopWaitData* loopWaitMod = inst->getModifier<LoopWaitData>();
 
     // Create s_barrier_signal -1 (signal global barrier)
     const HwInstDesc* signalDesc = getMCIDByUOp(GFX::s_barrier_signal, archId);
@@ -276,6 +277,10 @@ Legalized legalizeBarrier(StinkyInstruction* inst, AsmIRBuilder& irBuilder, GfxA
     if (memTokenMod) {
         signalInst->addModifier<MemTokenData>(MemTokenData{memTokenMod->tokens});
         waitInst->addModifier<MemTokenData>(MemTokenData{memTokenMod->tokens});
+    }
+    if (loopWaitMod) {
+        signalInst->addModifier<LoopWaitData>(*loopWaitMod);
+        waitInst->addModifier<LoopWaitData>(*loopWaitMod);
     }
     if (inst->getModifier<NoWaitCntData>() != nullptr) {
         signalInst->addModifier<NoWaitCntData>(NoWaitCntData{});
@@ -342,6 +347,7 @@ Legalized legalizeDSLoadB192(StinkyInstruction* inst, AsmIRBuilder& irBuilder, G
     const CommentData* commentMod = inst->getModifier<CommentData>();
     std::string comment = commentMod ? commentMod->comment : "";
     const MemTokenData* memTokenMod = inst->getModifier<MemTokenData>();
+    const LoopWaitData* loopWaitMod = inst->getModifier<LoopWaitData>();
 
     // Create ds_load_b128 v[a:a+3], v[b] offset:X
     const HwInstDesc* desc1 = getMCIDByUOp(GFX::ds_load_b128, archId);
@@ -369,6 +375,9 @@ Legalized legalizeDSLoadB192(StinkyInstruction* inst, AsmIRBuilder& irBuilder, G
     }
     if (memTokenMod) {
         load1->addModifier<MemTokenData>(MemTokenData{memTokenMod->tokens});
+    }
+    if (loopWaitMod) {
+        load1->addModifier<LoopWaitData>(*loopWaitMod);
     }
 
     // Create ds_load_b64 v[a+4:a+5], v[b] offset:X+16
@@ -407,6 +416,9 @@ Legalized legalizeDSLoadB192(StinkyInstruction* inst, AsmIRBuilder& irBuilder, G
     if (memTokenMod) {
         load2->addModifier<MemTokenData>(MemTokenData{memTokenMod->tokens});
     }
+    if (loopWaitMod) {
+        load2->addModifier<LoopWaitData>(*loopWaitMod);
+    }
 
     // Remove the original ds_load_b192 instruction
     inst->erase();
@@ -436,6 +448,7 @@ Legalized legalizeDSStoreB192(StinkyInstruction* inst, AsmIRBuilder& irBuilder, 
     const CommentData* commentMod = inst->getModifier<CommentData>();
     std::string comment = commentMod ? commentMod->comment : "";
     const MemTokenData* memTokenMod = inst->getModifier<MemTokenData>();
+    const LoopWaitData* loopWaitMod = inst->getModifier<LoopWaitData>();
 
     // Create ds_store_b128 v[a], v[b:b+3] offset:X
     const HwInstDesc* desc1 = getMCIDByUOp(GFX::ds_store_b128, archId);
@@ -464,6 +477,9 @@ Legalized legalizeDSStoreB192(StinkyInstruction* inst, AsmIRBuilder& irBuilder, 
     }
     if (memTokenMod) {
         store1->addModifier<MemTokenData>(MemTokenData{memTokenMod->tokens});
+    }
+    if (loopWaitMod) {
+        store1->addModifier<LoopWaitData>(*loopWaitMod);
     }
 
     // Create ds_store_b64 v[a], v[b+4:b+5] offset:X+16
@@ -504,6 +520,9 @@ Legalized legalizeDSStoreB192(StinkyInstruction* inst, AsmIRBuilder& irBuilder, 
     if (memTokenMod) {
         store2->addModifier<MemTokenData>(MemTokenData{memTokenMod->tokens});
     }
+    if (loopWaitMod) {
+        store2->addModifier<LoopWaitData>(*loopWaitMod);
+    }
 
     // Remove the original ds_store_b192 instruction
     inst->erase();
@@ -533,6 +552,7 @@ Legalized legalizeDSStoreB256(StinkyInstruction* inst, AsmIRBuilder& irBuilder, 
     const CommentData* commentMod = inst->getModifier<CommentData>();
     std::string comment = commentMod ? commentMod->comment : "";
     const MemTokenData* memTokenMod = inst->getModifier<MemTokenData>();
+    const LoopWaitData* loopWaitMod = inst->getModifier<LoopWaitData>();
 
     const HwInstDesc* dsB128Desc = getMCIDByUOp(GFX::ds_store_b128, archId);
 
@@ -562,6 +582,9 @@ Legalized legalizeDSStoreB256(StinkyInstruction* inst, AsmIRBuilder& irBuilder, 
     }
     if (memTokenMod) {
         store1->addModifier<MemTokenData>(MemTokenData{memTokenMod->tokens});
+    }
+    if (loopWaitMod) {
+        store1->addModifier<LoopWaitData>(*loopWaitMod);
     }
 
     // Create ds_write_b128/ds_store_b128 v[a], v[b+4:b+7] offset:X+16
@@ -600,6 +623,9 @@ Legalized legalizeDSStoreB256(StinkyInstruction* inst, AsmIRBuilder& irBuilder, 
     }
     if (memTokenMod) {
         store2->addModifier<MemTokenData>(MemTokenData{memTokenMod->tokens});
+    }
+    if (loopWaitMod) {
+        store2->addModifier<LoopWaitData>(*loopWaitMod);
     }
 
     // Remove the original ds_store_b256 instruction

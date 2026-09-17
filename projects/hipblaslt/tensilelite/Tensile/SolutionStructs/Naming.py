@@ -213,6 +213,12 @@ def _getName(state, requiredParameters: frozenset, splitGSU: bool, ignoreInterna
   # Skip SFA tag if using default wgm algo
   if "SpaceFillingAlgo" in requiredParametersTemp and len(state["SpaceFillingAlgo"]) == 0:
     requiredParametersTemp.discard("SpaceFillingAlgo")
+  # This mode changes only the LoopModel-generated body. Omitting the default
+  # from non-LoopModel names avoids renaming every existing scaffold kernel,
+  # while retaining it for LoopModel so GIR/ST comparison kernels cannot
+  # collide or be deduplicated.
+  if not state.get("UseLoopModel", False):
+    requiredParametersTemp.discard("LoopModelWaitCntMode")
 
   for key in sorted(requiredParametersTemp):
     if key not in state or key == "CustomKernelName":

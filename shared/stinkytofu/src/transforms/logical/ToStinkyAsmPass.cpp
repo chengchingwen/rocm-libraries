@@ -365,6 +365,9 @@ StinkyInstruction* createAsmFromIR(LogicalInstruction* irInst, GfxArchID arch) {
     if (irInst->memtoken.has_value()) {
         asmInst->addModifier<MemTokenData>(MemTokenData{irInst->memtoken.value()});
     }
+    if (irInst->loopwait.has_value()) {
+        asmInst->addModifier<LoopWaitData>(irInst->loopwait.value());
+    }
     if (irInst->nowaitcnt) {
         asmInst->addModifier<NoWaitCntData>(NoWaitCntData{});
     }

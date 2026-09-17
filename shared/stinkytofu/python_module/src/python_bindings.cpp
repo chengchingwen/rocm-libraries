@@ -643,6 +643,18 @@ NB_MODULE(_stinkytofu, m) {
             nb::arg("tokens"),
             "Set memory token IDs for LDS dependency tracking (forwarded to MemTokenData)")
         .def(
+            "set_loopwait",
+            [](LogicalInstruction& inst, int opId, const std::vector<int>& accesses,
+               const std::vector<int>& dependencies) {
+                inst.loopwait = LoopWaitData(opId, accesses, dependencies);
+            },
+            nb::arg("opId") = -1, nb::arg("accesses") = std::vector<int>{},
+            nb::arg("dependencies") = std::vector<int>{},
+            "Set LoopModel wait metadata: accesses use stride 5 "
+            "[classId, regionId, ringSize, generationRelation, flags]; dependencies use "
+            "stride 8 [producerOpId, consumerOpId, producerFrameId, consumerFrameId, "
+            "generationGap, counter, kind, scope]")
+        .def(
             "set_nowaitcnt",
             [](LogicalInstruction& inst, bool v) { inst.nowaitcnt = v; }, nb::arg("v") = true,
             "Mark a barrier as ordering-only: no conservative wait (forwarded to NoWaitCntData)")

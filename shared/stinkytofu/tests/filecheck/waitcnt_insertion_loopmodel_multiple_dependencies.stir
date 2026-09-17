@@ -1,0 +1,41 @@
+# RUN: %stinkytofu-opt --arch gfx1250 %s --StinkyBuildImplicitDependencyPass --StinkyWaitCntInsertionPass --print-output
+
+st.func @loopmodel_multiple_dependencies() {
+^entry:
+  # Tensor queue: [op1, op3, op4].
+  # accesses = [classId, regionId, ringSize, generationRelation, flags];
+  # flags=1 denotes a write.
+  # op1 writes class 0, region 0, generation +0 of a 2-buffer ring.
+  "st.tensor_load_to_lds"(s[0:3], s[4:11]) { mod.memtoken = { tokens = [10] }, mod.loop_wait = { opId = 1, accesses = [0,0,2,0,1], dependencies = [] } }
+  # op3 writes class 1, region 0, generation +0 of a 2-buffer ring.
+  "st.tensor_load_to_lds"(s[12:15], s[16:23]) { mod.memtoken = { tokens = [11] }, mod.loop_wait = { opId = 3, accesses = [1,0,2,0,1], dependencies = [] } }
+  # op4 writes class 2, region 0, generation +0 of a 2-buffer ring.
+  "st.tensor_load_to_lds"(s[24:27], s[28:35]) { mod.memtoken = { tokens = [12] }, mod.loop_wait = { opId = 4, accesses = [2,0,2,0,1], dependencies = [] } }
+
+  # DS queue: [op5, op6].
+  v[0:1] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 0, gds = false }, mod.memtoken = { tokens = [20] }, mod.loop_wait = { opId = 5, accesses = [3,0,2,0,0], dependencies = [] } }
+  v[2:3] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 16, gds = false }, mod.memtoken = { tokens = [21] }, mod.loop_wait = { opId = 6, accesses = [4,0,2,0,0], dependencies = [] } }
+
+  # dependencies is three stride-8 records:
+  #   [producerOpId, consumerOpId, producerFrameId, consumerFrameId,
+  #    generationGap, counter, kind, scope].
+  #   [1,2,0,0,0,3,0,1]: tensor op1 -> barrier op2, RAW, workgroup scope.
+  #   [3,2,0,0,0,3,0,1]: tensor op3 -> barrier op2, RAW, workgroup scope.
+  #   [5,2,0,0,0,0,0,1]: DS op5     -> barrier op2, RAW, workgroup scope.
+  #
+  # Counter 3 is tensorcnt, counter 0 is dscnt, kind 0 is RAW, and scope 1
+  # is workgroup. Frame ids and generation gaps are zero in this straight-line test.
+  #
+  # WaitDataflow computes tensorcnt=2 for op1, tensorcnt=1 for op3, and
+  # dscnt=1 for op5 from their post-scheduling queue positions.
+  # The stricter tensor requirement is tlcnt=1, and the independent DS
+  # requirement is dscnt=1. Barrier token 99 is disjoint from every producer
+  # token, so ordinary memtoken SSA/overlap cannot create either wait.
+  #
+  # CHECK-LABEL: @loopmodel_multiple_dependencies
+  # CHECK: s_wait_dscnt{{.*}}dlcnt = 1
+  # CHECK-NEXT: s_wait_tensorcnt{{.*}}tlcnt = 1
+  # CHECK-NEXT: s_barrier_signal
+  "st.s_barrier_signal"(-1) { mod.memtoken = { tokens = [99] }, mod.loop_wait = { opId = 2, accesses = [], dependencies = [1,2,0,0,0,3,0,1,3,2,0,0,0,3,0,1,5,2,0,0,0,0,0,1] } }
+  "st.s_barrier_wait"(-1) { mod.memtoken = { tokens = [99] } }
+}

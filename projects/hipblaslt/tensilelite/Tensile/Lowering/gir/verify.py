@@ -19,6 +19,13 @@ from .analyses.reg_band import RegBandAnalysis
 from .analyses.dep_tokens import DependenceTokens
 from .analyses.lds_buffers import LdsBufferIds, shared_refs
 from .analyses.region_increment import walk_violations
+from .loop_wait import (
+    LoopWaitAccessField,
+    LoopWaitCounter,
+    LoopWaitDependencyField,
+    LoopWaitDependencyKind,
+    LoopWaitScope,
+)
 
 
 # Per-kind Mark `at` payload schema.
@@ -41,9 +48,7 @@ _MARK_SCHEMA = {
     "chunk_pin":      ("unit", "chunk"),
     # The buffer generation a movement's pointer must hold HERE, for the same reason.
     "buffer_pin":     ("hop", "unit", "gen"),
-    # The completion-counter residuals owed at this point.  A counter key is present only
-    # when it is CHARGED, so absence is "says nothing", NOT zero -- hence neither counter
-    # is a required field and the check below demands at least one.
+    # Legacy comparison mode carries GIR's pre-scheduling numeric residual.
     "waitcnt":        ("hazard", "from", "frames"),
 }
 
@@ -391,17 +396,15 @@ def _check_marks(prog):
             raise RuntimeError(
                 f"G-MARK: Mark('{inst.kind}') in {blk.label} missing fields {missing}")
         if inst.kind == "waitcnt":
-            named = [k for k in ("tensorcnt", "dscnt") if k in have]
+            named = [key for key in ("tensorcnt", "dscnt") if key in have]
             if not named:
                 raise RuntimeError(
-                    f"G-MARK: Mark('waitcnt') in {blk.label} names no counter -- a wait\n"
-                    f"        that charges nothing should not have been emitted")
+                    f"G-MARK: Mark('waitcnt') in {blk.label} names no counter")
             for key in named:
-                n = inst.at.get(key)
-                if not isinstance(n, int) or n < 0:
+                value = inst.at.get(key)
+                if not isinstance(value, int) or value < 0:
                     raise RuntimeError(
-                        f"G-MARK: Mark('waitcnt') in {blk.label} has {key}={n!r}; a residual\n"
-                        f"        is a non-negative instruction count (0 = full drain)")
+                        f"G-MARK: Mark('waitcnt') in {blk.label} has invalid {key}={value!r}")
         if inst.kind == "swap":
             # The pointer name is hop-dependent (see _MARK_SCHEMA).  Requiring the RIGHT one, not
             # merely "some name", is what stops a copy swap from being labelled with a bare operand
@@ -411,6 +414,64 @@ def _check_marks(prog):
                     f"G-MARK: Mark('swap', hop={inst.at.get('hop')!r}) in {blk.label} must name "
                     f"its pointer with '{key}' (a read swap names an operand, a copy swap names "
                     f"the Phi movement's member tuple); got fields {sorted(have)}")
+
+
+def _check_loop_wait_metadata(prog):
+    """G-WAITREL. Validate the versioned flat transport before rocisa sees it."""
+    nodes = [inst for _blk, inst in _all_insts(prog)
+             if isinstance(inst, (Move, Mma, Mark))]
+    # Peter's reference mode intentionally predates LoopWaitData and carries
+    # numeric waitcnt Marks instead.
+    if not any(int(getattr(inst, "op_id", -1)) >= 0
+               or getattr(inst, "wait_accesses", ())
+               or getattr(inst, "wait_dependencies", ())
+               for inst in nodes):
+        return
+    by_id = {}
+    for inst in nodes:
+        op_id = int(getattr(inst, "op_id", -1))
+        if op_id < 0:
+            raise RuntimeError(
+                f"G-WAITREL: {type(inst).__name__} has no stable operation id")
+        if op_id in by_id:
+            raise RuntimeError(f"G-WAITREL: duplicate operation id {op_id}")
+        by_id[op_id] = inst
+
+        accesses = tuple(getattr(inst, "wait_accesses", ()) or ())
+        dependencies = tuple(getattr(inst, "wait_dependencies", ()) or ())
+        access_stride = int(LoopWaitAccessField.COUNT)
+        dependency_stride = int(LoopWaitDependencyField.COUNT)
+        if len(accesses) % access_stride:
+            raise RuntimeError(
+                f"G-WAITREL: op {op_id} has {len(accesses)} access words; "
+                f"stride is {access_stride}")
+        if len(dependencies) % dependency_stride:
+            raise RuntimeError(
+                f"G-WAITREL: op {op_id} has {len(dependencies)} dependency words; "
+                f"stride is {dependency_stride}")
+
+    for anchor_id, inst in by_id.items():
+        words = tuple(getattr(inst, "wait_dependencies", ()) or ())
+        stride = int(LoopWaitDependencyField.COUNT)
+        for offset in range(0, len(words), stride):
+            record = words[offset:offset + stride]
+            producer = record[LoopWaitDependencyField.PRODUCER_OP_ID]
+            consumer = record[LoopWaitDependencyField.CONSUMER_OP_ID]
+            gap = record[LoopWaitDependencyField.GENERATION_GAP]
+            counter = record[LoopWaitDependencyField.COUNTER]
+            kind = record[LoopWaitDependencyField.KIND]
+            scope = record[LoopWaitDependencyField.SCOPE]
+            if producer not in by_id or consumer not in by_id:
+                raise RuntimeError(
+                    f"G-WAITREL: anchor {anchor_id} names missing producer/consumer "
+                    f"{producer}->{consumer}")
+            if (gap < 0
+                    or counter not in tuple(int(value) for value in LoopWaitCounter)
+                    or kind not in tuple(int(value) for value in LoopWaitDependencyKind)
+                    or scope not in tuple(int(value) for value in LoopWaitScope)):
+                raise RuntimeError(
+                    f"G-WAITREL: anchor {anchor_id} has invalid relation "
+                    f"{record}")
 
 
 def verify_gir(prog, expect_steady_loops="one"):
@@ -429,6 +490,7 @@ def verify_gir(prog, expect_steady_loops="one"):
     _check_semantic(prog)
     _check_operands(prog)
     _check_marks(prog)
+    _check_loop_wait_metadata(prog)
     check_register_slots(prog, am)
     check_rotation_waw(prog, am)
     check_block_scope_covered(prog, am)

@@ -1361,6 +1361,56 @@ class MemTokenData(Container):
 
 
 # ---------------------------------------------------------------------------
+# LoopWaitData -- LoopModel wait-dependency transport metadata.
+# ---------------------------------------------------------------------------
+class LoopWaitData(Container):
+    """LoopModel wait-dependency metadata attached to an instruction.
+
+    ``accesses`` uses stride 5:
+    ``[classId, regionId, ringSize, generationRelation, flags]``.
+
+    ``dependencies`` uses stride 8:
+    ``[producerOpId, consumerOpId, producerFrameId, consumerFrameId,
+    generationGap, counter, kind, scope]``.
+    """
+
+    __slots__ = ("opId", "accesses", "dependencies")
+
+    def __init__(
+        self,
+        opId: int = -1,
+        accesses: Optional[List[int]] = None,
+        dependencies: Optional[List[int]] = None,
+    ) -> None:
+        self.opId = int(opId)
+        self.accesses = list(accesses) if accesses is not None else []
+        self.dependencies = list(dependencies) if dependencies is not None else []
+
+    def toString(self) -> str:
+        return "loop_wait"
+
+    def __repr__(self) -> str:
+        return (
+            f"LoopWaitData(opId={self.opId!r}, accesses={self.accesses!r}, "
+            f"dependencies={self.dependencies!r})"
+        )
+
+    def __copy__(self) -> "LoopWaitData":
+        return LoopWaitData(self.opId, self.accesses, self.dependencies)
+
+    def __deepcopy__(self, memo: dict) -> "LoopWaitData":
+        return LoopWaitData(self.opId, list(self.accesses), list(self.dependencies))
+
+    def __getstate__(self) -> Tuple[int, List[int], List[int]]:
+        return (self.opId, list(self.accesses), list(self.dependencies))
+
+    def __setstate__(self, state: Tuple[int, List[int], List[int]]) -> None:
+        self.opId = int(state[0])
+        self.accesses = list(state[1])
+        self.dependencies = list(state[2])
+
+
+# ---------------------------------------------------------------------------
 # Instruction modifier descriptors (T5.2) — rocisa::Container subclasses.
 # ---------------------------------------------------------------------------
 

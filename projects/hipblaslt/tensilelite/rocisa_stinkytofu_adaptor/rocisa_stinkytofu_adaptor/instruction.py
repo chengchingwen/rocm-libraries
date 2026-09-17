@@ -81,8 +81,32 @@ class Instruction:
     __slots__ = (
         "name", "parent",
         "instType", "comment", "instStr", "outputInlineAsm",
-        "m_memToken", "m_noWaitCnt", "m_orderToken",
+        "m_memToken", "m_loopWait", "m_noWaitCnt", "m_orderToken",
     )
+
+    def __init_subclass__(cls, **kwargs):
+        """Ensure every concrete instruction deepcopy preserves LoopWaitData.
+
+        The adaptor has several specialized deepcopy implementations. Wrapping
+        each implementation at class creation keeps this transport metadata
+        consistent with the native Instruction copy constructor.
+        """
+        super().__init_subclass__(**kwargs)
+        deepcopy_impl = cls.__dict__.get("__deepcopy__")
+        if deepcopy_impl is None or getattr(deepcopy_impl, "_copies_loop_wait", False):
+            return
+
+        def deepcopy_with_loop_wait(self, memo):
+            clone = deepcopy_impl(self, memo)
+            if clone is not None:
+                loop_wait = getattr(self, "m_loopWait", None)
+                clone.m_loopWait = (
+                    _deepcopy(loop_wait, memo) if loop_wait is not None else None
+                )
+            return clone
+
+        deepcopy_with_loop_wait._copies_loop_wait = True
+        cls.__deepcopy__ = deepcopy_with_loop_wait
 
     def __init__(self, instType: Any, comment: str = ""):
         self.name: str = ""  # rocisa Item ctor uses "" (not the class name)
@@ -96,6 +120,7 @@ class Instruction:
         self.instStr: str = ""
         self.outputInlineAsm: bool = False
         self.m_memToken: Any = None
+        self.m_loopWait: Any = None
         self.m_noWaitCnt: bool = False
         self.m_orderToken: Any = None
 
@@ -105,6 +130,12 @@ class Instruction:
 
     def getMemToken(self) -> Any:
         return self.m_memToken
+
+    def setLoopWait(self, loop_wait: Any) -> None:
+        self.m_loopWait = loop_wait
+
+    def getLoopWait(self) -> Any:
+        return self.m_loopWait
 
     def setNoWaitCnt(self, v: bool = True) -> None:
         """Order execution without taking a conservative wait (NoWaitCntData)."""

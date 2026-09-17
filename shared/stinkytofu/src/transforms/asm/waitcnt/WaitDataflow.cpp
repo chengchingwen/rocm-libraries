@@ -282,7 +282,7 @@ bool DataflowState::operator==(const DataflowState& other) const {
 // WaitDataflow
 // ---------------------------------------------------------------------------
 
-WaitDataflow::WaitDataflow(Function& /*func*/, const DominanceInfo& /*domInfo*/,
+WaitDataflow::WaitDataflow(Function& func, const DominanceInfo& /*domInfo*/,
                            const std::vector<BasicBlock*>& rpo)
     : rpo(rpo) {
     const unsigned n = static_cast<unsigned>(rpo.size());
@@ -297,6 +297,23 @@ WaitDataflow::WaitDataflow(Function& /*func*/, const DominanceInfo& /*domInfo*/,
     // from the policy table; callers may override via setRawNeedsWait().
     for (int c = 0; c < CK_Count; ++c) {
         rawNeedsWait[c] = defaultCounterPolicy(static_cast<CounterKind>(c)).rawNeedsWait;
+    }
+
+    // LoopModel dependency metadata uses stable GIR operation ids while one
+    // logical operation may lower to more than one physical instruction.
+    // Index only real counter producers here; helper/address instructions may
+    // carry the metadata for debug round-tripping but do not occupy a FIFO.
+    for (BasicBlock& bb : func) {
+        for (IRBase& ir : bb) {
+            auto* inst = dyn_cast<StinkyInstruction>(&ir);
+            if (inst == nullptr) continue;
+            const auto* loopWait = inst->getModifier<LoopWaitData>();
+            if (loopWait == nullptr) continue;
+            if (!loopWait->dependencies.empty()) loopWaitDependenciesPresent = true;
+            if (loopWait->opId >= 0 && classifyMemOp(*inst) != CK_Count) {
+                loopWaitProducers[loopWait->opId].push_back(inst);
+            }
+        }
     }
 }
 
@@ -736,6 +753,8 @@ int phiCurrentQueueWait(StinkyInstruction* phi, CounterKind c, const DataflowSta
 // Compute per-counter required waits for `inst` against the live `state`.
 void computeRequiredWaits(StinkyInstruction* inst, DataflowState& state,
                           const std::array<WaitDataflow::RawWaitPredicate, CK_Count>& rawNeedsWait,
+                          const std::unordered_map<int, std::vector<StinkyInstruction*>>&
+                              loopWaitProducers,
                           int required[CK_Count]) {
     // Required wait per counter. -1 = no constraint yet.
     for (int c = 0; c < CK_Count; ++c) required[c] = WaitCountSpec::kUnused;
@@ -747,6 +766,59 @@ void computeRequiredWaits(StinkyInstruction* inst, DataflowState& state,
         if (w < 0) return;
         if (required[c] == WaitCountSpec::kUnused || w < required[c]) required[c] = w;
     };
+
+    // Explicit LoopModel relations are resolved in GIR while generation and
+    // frame semantics are still available, but their wait immediate is
+    // deliberately computed here, after instruction scheduling. The flat
+    // transport schema is documented on LoopWaitData:
+    //   producer, consumer, producer-frame, consumer-frame, gap,
+    //   counter, hazard-kind, scope.
+    //
+    // The frame/gap fields select the dynamic relation upstream. At this
+    // stage the converged per-predecessor queues contain the corresponding
+    // dynamic producer occurrence. If a static instruction appears more than
+    // once in a bounded loop queue, countFrom() selects the oldest occurrence,
+    // which can only strengthen the wait.
+    if (const auto* loopWait = inst->getModifier<LoopWaitData>()) {
+        constexpr size_t kDepStride = LoopWaitData::DependencyStride;
+        constexpr size_t kProducer =
+            static_cast<size_t>(LoopWaitData::DependencyField::ProducerOpId);
+        constexpr size_t kCounter =
+            static_cast<size_t>(LoopWaitData::DependencyField::Counter);
+        constexpr size_t kKind = static_cast<size_t>(LoopWaitData::DependencyField::Kind);
+        const size_t complete = loopWait->dependencies.size() / kDepStride;
+        for (size_t i = 0; i < complete; ++i) {
+            const size_t base = i * kDepStride;
+            const int counterValue = loopWait->dependencies[base + kCounter];
+            if (counterValue < 0 || counterValue >= CK_Count) continue;
+            CounterKind c = static_cast<CounterKind>(counterValue);
+
+            // RAW constraints respect the counter's anchor policy (tensor RAW
+            // waits at every consumer for one wave, or at barriers for
+            // multiple waves). WAR/WAW records already name their legal
+            // overwrite/fence anchor and are unconditional.
+            const int kind = loopWait->dependencies[base + kKind];
+            if (kind == static_cast<int>(LoopWaitData::DependencyKind::RAW) &&
+                !rawNeedsWait[c](*inst))
+                continue;
+
+            auto producers = loopWaitProducers.find(loopWait->dependencies[base + kProducer]);
+            if (producers == loopWaitProducers.end() || producers->second.empty()) {
+                // The relation survived but its producer did not (for example
+                // an unsupported lowering dropped its id). Fail safe: a full
+                // drain is preferable to silently losing the obligation.
+                tightenRequired(c, 0);
+                continue;
+            }
+
+            for (StinkyInstruction* producer : producers->second) {
+                for (const auto& q : state.queues[c]) {
+                    int n = q.countFrom(producer);
+                    if (n > 0) tightenRequired(c, waitToDrain(c, n));
+                }
+            }
+        }
+    }
 
     // For each src dep on counter `c` that appears in some per-pred
     // queue, contribute its (countFrom - 1) wait via tightenRequired.
@@ -951,7 +1023,7 @@ void WaitDataflow::transferBlock(BasicBlock& bb, DataflowState& state) {
         if (creditIfObservedWait(*inst, state, emit)) continue;
 
         int required[CK_Count];
-        computeRequiredWaits(inst, state, rawNeedsWait, required);
+        computeRequiredWaits(inst, state, rawNeedsWait, loopWaitProducers, required);
 
         // Decide what to emit (apply redundancy elision) and trim per-pred
         // queues accordingly.
@@ -1143,7 +1215,7 @@ void WaitDataflow::finalizePlan(WaitInsertionPlan& plan) const {
                 if (creditIfObservedWait(*inst, state, emit)) continue;
 
                 int computed[CK_Count];
-                computeRequiredWaits(inst, state, rawNeedsWait, computed);
+                computeRequiredWaits(inst, state, rawNeedsWait, loopWaitProducers, computed);
 
                 // Emit the optimizer's planned wait where present (floor),
                 // else the freshly recomputed requirement.

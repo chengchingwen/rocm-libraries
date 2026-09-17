@@ -197,6 +197,14 @@ class WaitDataflow {
         loopCarriedTokenDepsEnabled = enabled;
     }
 
+    /// True when the input carries explicit LoopModel dependency relations.
+    /// Those relations can name a producer from an earlier dynamic iteration,
+    /// so CK_Tensor must participate in the normal fixed point instead of using
+    /// the legacy sweep-0 freeze.
+    bool hasLoopWaitDependencies() const {
+        return loopWaitDependenciesPresent;
+    }
+
     /// Materialise the conservative per-consumer wait plan from the
     /// converged dataflow state. Run WaitPlanOptimizer(s) on the result,
     /// then finalizePlan() before emit.
@@ -235,6 +243,12 @@ class WaitDataflow {
     bool capHit = false;
     unsigned iterationCap = 0;
     bool loopCarriedTokenDepsEnabled = false;
+    bool loopWaitDependenciesPresent = false;
+
+    /// Stable GEMM-IR operation id -> the actual post-lowering instructions
+    /// that issue that operation's counter entries. A logical read may lower
+    /// to several DS instructions; a fused TDM copy remains one tensor op.
+    std::unordered_map<int, std::vector<StinkyInstruction*>> loopWaitProducers;
 
     /// (block, counter) pairs whose per-pred queue exceeded the bounded
     /// hardware-count window during a solver sweep. Older producers are

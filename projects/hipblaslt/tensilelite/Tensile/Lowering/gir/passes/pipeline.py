@@ -18,17 +18,17 @@ from .collect_pending import CollectPendingMarksPass
 from .placement import PlacementPass
 from .apply_marks import ApplyMarksPass
 from .record_unemitted import RecordUnemittedPass
-from .wait_counts import WaitCntPass
+from .wait_counts import LegacyWaitCntPass, LoopWaitMetadataPass, WaitDependencyPass
 
 
-def pipeline():
+def pipeline(waitcnt_mode="StinkyTofu"):
     """The backend pass order.
 
     ScaffoldShapePass runs first and is the ONLY stage allowed to change the CFG: it folds the
     `T < M` arm, adds that arm's early-exit edges into the drain chain, and labels the terminators.
     Everything after it edits block bodies or program state only.
     """
-    return [
+    passes = [
         ScaffoldShapePass(),
         HoistCopiesPass(),
         CollectPendingMarksPass(),
@@ -36,8 +36,14 @@ def pipeline():
         PlacementPass(),
         ApplyMarksPass(),
         RecordUnemittedPass(),
-        WaitCntPass(),
     ]
+    if waitcnt_mode == "GIR":
+        passes.append(LegacyWaitCntPass())
+    elif waitcnt_mode == "StinkyTofu":
+        passes.extend((LoopWaitMetadataPass(), WaitDependencyPass()))
+    else:
+        raise ValueError("unknown LoopModel wait-count mode %r" % (waitcnt_mode,))
+    return passes
 
 
 def run_pipeline(prog, passes=None, verify=True):

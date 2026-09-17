@@ -1510,6 +1510,48 @@ namespace rocisa
         }
     };
 
+    /// LoopModel wait-dependency metadata attached to an instruction.
+    ///
+    /// accesses uses stride 5:
+    ///   [classId, regionId, ringSize, generationRelation, flags]
+    /// dependencies uses stride 8:
+    ///   [producerOpId, consumerOpId, producerFrameId, consumerFrameId,
+    ///    generationGap, counter, kind, scope]
+    struct LoopWaitData : public Container
+    {
+        int              opId;
+        std::vector<int> accesses;
+        std::vector<int> dependencies;
+
+        LoopWaitData(int                     opId         = -1,
+                     const std::vector<int>& accesses     = {},
+                     const std::vector<int>& dependencies = {})
+            : Container()
+            , opId(opId)
+            , accesses(accesses)
+            , dependencies(dependencies)
+        {
+        }
+
+        LoopWaitData(const LoopWaitData& other)
+            : Container()
+            , opId(other.opId)
+            , accesses(other.accesses)
+            , dependencies(other.dependencies)
+        {
+        }
+
+        std::shared_ptr<Container> clone() const override
+        {
+            return std::make_shared<LoopWaitData>(*this);
+        }
+
+        std::string toString() const override
+        {
+            return "loop_wait";
+        }
+    };
+
     struct ContinuousRegister
     {
         uint32_t idx;

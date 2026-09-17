@@ -19,6 +19,17 @@ class EmitAction:
     at: dict
 
 
+def _append_action(actions, inst, kind, at):
+    """Attach LoopWaitData fields at the one GIR-node -> EmitAction boundary."""
+    payload = dict(at)
+    payload.update(
+        op_id=int(getattr(inst, "op_id", -1)),
+        wait_accesses=tuple(getattr(inst, "wait_accesses", ()) or ()),
+        wait_dependencies=tuple(getattr(inst, "wait_dependencies", ()) or ()),
+    )
+    actions.append(EmitAction(kind, payload))
+
+
 def _coord_val(tile, axis):
     """Concrete value of `tile.coord` along `axis`, or 0 if absent/None."""
     if axis is None:
@@ -82,14 +93,14 @@ def _plan_read(prog, inst, dst_reg, red, free, order, ext, actions):
              _project(cd, set(red), order, ext))
             for cd in ({ax: (int(v) if v is not None else 0) for ax, v in c}
                        for c in covered_coords(dst_reg)))
-        actions.append(EmitAction("read", {
+        _append_action(actions, inst, "read", {
             "tc": operand, "tile": tile, "k": k, "k_flat": k_flat, "reg_buf": reg_buf,
             # `regions` is THIS OP-CLASS's count, not its movement's: under Phi the movement is keyed
             # `('A','B')` and `_n_regions(prog, ('A',))` would answer 1 for a split fused operand.
             "region": region, "regions": nregions, "tile_flat": tile_flat, "fills": fills,
             "group": dst_reg.group, "size_regs": dst_reg.size_regs,
             "advance": int(getattr(inst, "advance", 0) or 0),
-            "token": inst.token, "token_ids": inst.token_ids}))
+            "token": inst.token, "token_ids": inst.token_ids})
         return
 
 
@@ -108,10 +119,10 @@ def _plan_move(prog, inst, actions):
         n_reg = _n_regions(prog, members)
         wref = walk_ref(prog, dst_refs)
         reg = region_of(prog, wref) if n_reg > 1 else ()
-        actions.append(EmitAction("copy", {
+        _append_action(actions, inst, "copy", {
             "unit": members, "gen": int(gen or 0), "token": inst.token,
             "token_ids": inst.token_ids, "regions": n_reg,
-            "region": _flat(reg, prog, wref.tile.operand) if reg else None}))
+            "region": _flat(reg, prog, wref.tile.operand) if reg else None})
 
 
 def _mma_scale_pairs(prog, inst, in0, in1, free):
@@ -197,41 +208,41 @@ def _plan_mma(prog, inst, actions):
                  for sc in scale_of.values() if sc}
     srcs, bufA, bufB, sizeA, sizeB, bufMXA, bufMXB = _mma_sources(
         inst, in0, in1, idx0, idx1, scale_of, scale_idx)
-    actions.append(EmitAction("wmma", {
+    _append_action(actions, inst, "wmma", {
         "idx0": idx0, "idx1": idx1, "u": u,
         "bufA": bufA, "bufB": bufB, "sizeA": sizeA, "sizeB": sizeB,
         # None on a kernel with no scales; the leaf switches on the kernel's own MXBlock, so these
         # are carried, not interpreted, here.
         "bufMXA": bufMXA, "bufMXB": bufMXB,
-        "srcs": tuple(srcs)}))
+        "srcs": tuple(srcs)})
 
 
 def _plan_mark(inst, actions):
     if inst.kind == "swap":
-        actions.append(EmitAction("swap", dict(inst.at)))
+        _append_action(actions, inst, "swap", inst.at)
     elif inst.kind == "gr_increment":
-        actions.append(EmitAction("gr_inc", dict(inst.at)))
+        _append_action(actions, inst, "gr_inc", inst.at)
     elif inst.kind == "region_increment":
         # ONE STEP of the TDM descriptor between storage regions.  Distinct from `gr_inc`.
         # that advances the movement to the next summation CHUNK, this moves within one chunk's
-        actions.append(EmitAction("region_inc", dict(inst.at)))
+        _append_action(actions, inst, "region_inc", inst.at)
     elif inst.kind == "descriptor_enable":
-        actions.append(EmitAction("desc_enable", dict(inst.at)))
+        _append_action(actions, inst, "desc_enable", inst.at)
     elif inst.kind == "fence":
         # the PROC-SCOPED SELECTOR covering a set of cross-wave LDS hazards. L3 realizes
         # it; GIR only says where it stands and what it orders.
-        actions.append(EmitAction("fence", dict(inst.at)))
+        _append_action(actions, inst, "fence", inst.at)
     elif inst.kind == "gl2_prefetch":
         # the L2 warm-up pair, at the point `Gl2PrefetchRegions` chose.  Unlike every other
         # act here it names no operand and no movement -- the position IS the entire content.
-        actions.append(EmitAction("gl2_prefetch", dict(inst.at)))
+        _append_action(actions, inst, "gl2_prefetch", inst.at)
     elif inst.kind == "waitcnt":
-        # the residual each counter owes at this point.  A TAG only: the wait itself is L3's.
-        actions.append(EmitAction("waitcnt", dict(inst.at)))
+        # Peter's original comparison flow materializes GIR's numeric residual.
+        _append_action(actions, inst, "waitcnt", inst.at)
     # phase_boundary / gsu_guard: phase_boundary is a no-op for emit (label handled by fork);
     # gsu_guard is realized by the R4 scaffold-anchor path.
     elif inst.kind == "gsu_guard":
-        actions.append(EmitAction("gsu_guard", dict(inst.at)))
+        _append_action(actions, inst, "gsu_guard", inst.at)
 
 
 def plan_block(prog, phase):

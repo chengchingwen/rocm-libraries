@@ -24,6 +24,7 @@
 
 #include <array>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -311,6 +312,7 @@ struct Modifier {
         COMMENT,
         MATRIX_FMT,
         MEM_TOKEN,
+        LOOP_WAIT,
         WMMA_POOL_INDEX,
         CALL_TARGETS,
         EXEC_GROUP,
@@ -1088,6 +1090,75 @@ struct MemTokenData : public TypedModifier<MemTokenData> {
 
     MemTokenData(const std::vector<int>& tokens = {})
         : TypedModifier<MemTokenData>(), tokens(tokens) {}
+};
+
+/// LoopModel wait-dependency metadata attached to an instruction.
+///
+/// accesses uses stride 5:
+///   [classId, regionId, ringSize, generationRelation, flags]
+/// dependencies uses stride 8:
+///   [producerOpId, consumerOpId, producerFrameId, consumerFrameId,
+///    generationGap, counter, kind, scope]
+struct LoopWaitData : public TypedModifier<LoopWaitData> {
+    static constexpr Modifier::Type Type = Modifier::Type::LOOP_WAIT;
+
+    enum class AccessField : std::size_t {
+        ClassId = 0,
+        RegionId,
+        RingSize,
+        GenerationRelation,
+        Flags,
+        Count,
+    };
+
+    enum class AccessFlag : int {
+        None = 0,
+        Write = 1 << 0,
+        Absolute = 1 << 1,
+    };
+
+    enum class DependencyField : std::size_t {
+        ProducerOpId = 0,
+        ConsumerOpId,
+        ProducerFrameId,
+        ConsumerFrameId,
+        GenerationGap,
+        Counter,
+        Kind,
+        Scope,
+        Count,
+    };
+
+    enum class Counter : int {
+        DS = 0,
+        Tensor = 3,
+    };
+
+    enum class DependencyKind : int {
+        RAW = 0,
+        WAR,
+        WAW,
+    };
+
+    enum class Scope : int {
+        Wave = 0,
+        Workgroup,
+    };
+
+    static constexpr std::size_t AccessStride = static_cast<std::size_t>(AccessField::Count);
+    static constexpr std::size_t DependencyStride =
+        static_cast<std::size_t>(DependencyField::Count);
+
+    int opId = -1;
+    std::vector<int> accesses;
+    std::vector<int> dependencies;
+
+    LoopWaitData(int opId = -1, const std::vector<int>& accesses = {},
+                 const std::vector<int>& dependencies = {})
+        : TypedModifier<LoopWaitData>(),
+          opId(opId),
+          accesses(accesses),
+          dependencies(dependencies) {}
 };
 
 /// A barrier carrying this orders execution but takes NO conservative wait: it has no

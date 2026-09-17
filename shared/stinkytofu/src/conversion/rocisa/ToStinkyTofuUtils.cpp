@@ -1175,6 +1175,10 @@ static std::shared_ptr<StinkyAsmModule> toStinkyTofuModule(
         if (auto memToken = inst->getMemToken()) {
             stinkyInst->addModifier<MemTokenData>(MemTokenData{memToken->tokens});
         }
+        if (auto loopWait = inst->getLoopWait()) {
+            stinkyInst->addModifier<LoopWaitData>(
+                LoopWaitData{loopWait->opId, loopWait->accesses, loopWait->dependencies});
+        }
         if (inst->getNoWaitCnt()) {
             stinkyInst->addModifier<NoWaitCntData>(NoWaitCntData{});
         }

@@ -1,0 +1,17 @@
+# RUN: %stinkytofu-opt --arch gfx1250 %s --StinkyBuildImplicitDependencyPass --StinkyWaitCntInsertionPass --print-output
+#
+# The physical tokens are disjoint, so the legacy token-overlap WAR scan does
+# not relate these instructions. The explicit LoopModel WAR relation requires
+# the tensor writer to wait until the prior DS reader has vacated the buffer.
+#
+# CHECK-LABEL: @loopmodel_explicit_war
+# CHECK: ds_load_b64
+# CHECK: s_wait_dscnt
+# CHECK-SAME: dlcnt = 0
+# CHECK-NEXT: tensor_load_to_lds
+
+st.func @loopmodel_explicit_war() {
+^entry:
+  v[0:1] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 0, gds = false }, mod.memtoken = { tokens = [10] }, mod.loop_wait = { opId = 1, accesses = [0,0,2,0,0], dependencies = [] } }
+  "st.tensor_load_to_lds"(s[0:3], s[4:11]) { mod.memtoken = { tokens = [20] }, mod.loop_wait = { opId = 2, accesses = [0,0,2,1,1], dependencies = [1,2,0,0,0,0,1,0] } }
+}

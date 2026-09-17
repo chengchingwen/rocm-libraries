@@ -3795,8 +3795,11 @@ class KernelWriter(metaclass=abc.ABCMeta):
     # operand; all GIR decides is WHERE the scaffold's existing issue/increment pair lands.  The
     # key is `Gl2PrefetchRegions.PARAM` so producer and consumer cannot drift.
     from .Lowering.gir.analyses import Gl2PrefetchRegions
+    from .Lowering.gir.passes import pipeline as gir_pipeline
+    waitCntMode = kernel.get("LoopModelWaitCntMode", "StinkyTofu")
     prog = build_gir(theta, mainloop=emit_mainloop(theta),
-                     params={Gl2PrefetchRegions.PARAM: kernel["PrefetchGL2"]})
+                     params={Gl2PrefetchRegions.PARAM: kernel["PrefetchGL2"]},
+                     pipeline=gir_pipeline(waitCntMode))
     # SEMANTIC GATE — "does this plan compute the right GEMM?", checked here and NOWHERE ELSE.
     #
     #
@@ -7316,16 +7319,20 @@ class KernelWriter(metaclass=abc.ABCMeta):
                                "PrintAfterPass": str(globalParameters.get("StinkyTofuPrintAfterPass") or ""),
                                "DebugPass": str(globalParameters.get("StinkyTofuDebugPass") or ""),
                                "PassOrderSnapshotJson": str(globalParameters.get("StinkyTofuPassOrderSnapshotJson") or ""),
-                               # UNDER ULM THE TENSORCNT RESIDUALS ARE GIR'S, and only those: removal
-                               # would strip them, so it stays off.  Insertion runs with its
-                               # tensorcnt arm disabled, because a `dscnt` names a FIFO DEPTH and the
-                               # DAG scheduler reorders loads WITHIN a wait-bounded region, which
-                               # changes a load's rank without moving it across any wait -- so a
-                               # depth GIR counted in its own order can land stale.
-                               "EnableWaitCntInsertion": (stinky_opt_level != 0
-                                                          or not globalParameters.get("DisableSTWaitCnt", True)),
-                               "DisableWaitCntRemoval": bool(kernel["UseLoopModel"]),
-                               "DisableTensorcntInsertion": bool(kernel["UseLoopModel"]),
+                               # LoopModel comparison mode "GIR" preserves Peter's original SIA0
+                               # numeric waits and leaves StinkyTofu insertion off. Enhanced mode
+                               # exports relations and computes the final FIFO rank here.
+                               "EnableWaitCntInsertion": (
+                                   (bool(kernel["UseLoopModel"])
+                                    and kernel.get("LoopModelWaitCntMode", "StinkyTofu")
+                                        == "StinkyTofu")
+                                   or (not kernel["UseLoopModel"]
+                                       and (stinky_opt_level != 0
+                                            or not globalParameters.get("DisableSTWaitCnt", True)))),
+                               "EnableLoopCarriedTokenDeps": (
+                                   bool(kernel["UseLoopModel"])
+                                   and kernel.get("LoopModelWaitCntMode", "StinkyTofu")
+                                       == "StinkyTofu"),
                                # True: expert scheduling mode2; False: mode 0. Independent of ScheduleIterAlg/OptLevel.
                                "EnableESM2": kernel["EnableStinkyTofuESM2"],
                                "EnableESM2TrackValuVsrc": kernel["EnableESM2TrackValuVsrc"],
