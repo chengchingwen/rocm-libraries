@@ -82,6 +82,8 @@
     X(VerifyEach, bool)                           \
     X(EnableRemarks, bool)                        \
     X(EnableWaitCntInsertion, bool)               \
+    X(DisableWaitCntRemoval, bool)                \
+    X(DisableTensorcntInsertion, bool)            \
     X(EnableLoopCarriedTokenDeps, bool)           \
     X(EnableESM2, bool)                           \
     X(EnableESM2TrackValuVsrc, bool)              \

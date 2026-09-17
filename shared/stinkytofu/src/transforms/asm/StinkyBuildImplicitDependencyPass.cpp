@@ -130,22 +130,34 @@ void setPseudoRegistersInBlock(BasicBlock& bb, PassContext& passCtx) {
         // Always attach implicit special registers (SCC/VCC/EXEC) declared by HW flags
         legalizeImplicitSpecialRegisters(inst, wavefrontSize);
 
+        // Ordered but NOT waited on: a barrier's WAR tokens pin every access naming one of them
+        // to its own side, through the same pseudo-registers the DAG already reads.
+        if (const OrderTokenData* wt = inst->getModifier<OrderTokenData>()) {
+            if (isBarrier(*inst)) {
+                for (int tokenId : wt->tokens) {
+                    addUniqueLdsDest(*inst, tokenId);
+                    addUniqueLdsSrc(*inst, tokenId);
+                }
+            }
+        }
+
         const MemTokenData* mt = inst->getModifier<MemTokenData>();
         if (!mt) continue;
         assert(!mt->tokens.empty() && "MemTokenData with empty tokens");
 
-        if (isBarrier(*inst))
+        // `s_wait_tensorcnt` is a synchronization point that cuts no scheduling region, so it is
+        // the one the DAG cannot see without these pseudo-registers.
+        if (isBarrier(*inst) || inst->is(InstFlag::IF_WaitTensorCnt))
             processBarrier(*inst, *mt, bb.getLabel());
         else if (isTensorLoad(*inst) || isDSWrite(*inst))
             processLdsWriter(*inst, *mt, bb.getLabel());
         else if (isDSRead(*inst) || isGlobalStoreAsyncFromLds(*inst))
             processLdsReader(*inst, *mt, bb.getLabel());
         else
-            // StinkyWaitCntInsertionPass tags s_wait_tensorcnt with MemTokenData,
-            // which would hit this assert — safe only because it runs strictly after
-            // this pass. If reordered, teach this branch to tolerate wait-cnt insts.
+            // StinkyWaitCntInsertionPass tags s_waitcnt with MemTokenData, which would hit this
+            // assert — safe only because it runs strictly after this pass.
             assert(false &&
-                   "instruction has MemTokenData but is not a barrier, fence, "
+                   "instruction has MemTokenData but is not a barrier, fence, wait_tensorcnt, "
                    "tensor_load, ds_write, ds_read, or global_store_async_from_lds");
     }
 }

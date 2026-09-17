@@ -27,6 +27,9 @@
 #include <iterator>
 #include <map>
 #include <ostream>
+#include <set>
+
+#include "stinkytofu/ir/asm/StinkyAsmIR.hpp"
 
 namespace stinkytofu {
 namespace dag {
@@ -51,10 +54,30 @@ RegionDAG buildRegisterDependencyDAGImpl(const std::vector<StinkyInstruction*>& 
 
     std::map<StinkyRegister, std::unordered_set<DAGNode*>> lastRead;
     std::map<StinkyRegister, DAGNode*> lastWrite;
+    // A barrier's ORDER tokens are a wall: every access naming one stays on the side it started.
+    // The register arms below cannot express this -- the conflicting access is a whole trip away.
+    std::map<int, DAGNode*> orderWall;
+    std::map<int, std::unordered_set<DAGNode*>> namedBy;
 
     for (unsigned i = 0; i < n; ++i) {
         DAGNode& dagNode = result.nodes[i];
         StinkyInstruction& inst = *dagNode.inst;
+
+        std::set<int> mine;
+        if (const MemTokenData* mem = inst.getModifier<MemTokenData>())
+            mine.insert(mem->tokens.begin(), mem->tokens.end());
+        if (const OrderTokenData* ord = inst.getModifier<OrderTokenData>()) {
+            for (int t : ord->tokens) {
+                for (DAGNode* earlier : namedBy[t]) addEdgeById(earlier, &dagNode, result.graph);
+                orderWall[t] = &dagNode;
+            }
+        }
+        for (int t : mine) {
+            auto wall = orderWall.find(t);
+            if (wall != orderWall.end() && wall->second != &dagNode)
+                addEdgeById(wall->second, &dagNode, result.graph);
+            namedBy[t].insert(&dagNode);
+        }
 
         for (const StinkyRegister& srcReg : inst.getSrcRegs()) {
             if (!srcReg.isRegister()) continue;

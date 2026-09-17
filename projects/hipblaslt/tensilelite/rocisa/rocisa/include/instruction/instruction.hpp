@@ -123,6 +123,10 @@ namespace rocisa
         std::string      instStr;
         bool             outputInlineAsm;
         std::shared_ptr<MemTokenData> m_memToken;
+        // A barrier that orders execution but must take no conservative waitcnt.
+        bool m_noWaitCnt = false;
+        // LDS tokens this barrier ORDERS without waiting on -- no access naming one may cross it.
+        std::shared_ptr<MemTokenData> m_orderToken;
 
         Instruction(InstType instType, const std::string& comment = "")
             : instType(instType)
@@ -141,6 +145,9 @@ namespace rocisa
             , m_memToken(other.m_memToken
                              ? std::make_shared<MemTokenData>(*other.m_memToken)
                              : nullptr)
+            , m_noWaitCnt(other.m_noWaitCnt)
+            , m_orderToken(other.m_orderToken ? std::make_shared<MemTokenData>(*other.m_orderToken)
+                                          : nullptr)
         {
         }
 
@@ -152,6 +159,26 @@ namespace rocisa
         std::shared_ptr<MemTokenData> getMemToken() const
         {
             return m_memToken;
+        }
+
+        void setNoWaitCnt(bool v)
+        {
+            m_noWaitCnt = v;
+        }
+
+        bool getNoWaitCnt() const
+        {
+            return m_noWaitCnt;
+        }
+
+        void setOrderToken(const std::shared_ptr<MemTokenData>& token)
+        {
+            m_orderToken = token;
+        }
+
+        std::shared_ptr<MemTokenData> getOrderToken() const
+        {
+            return m_orderToken;
         }
 
         std::shared_ptr<Item> clone() const override

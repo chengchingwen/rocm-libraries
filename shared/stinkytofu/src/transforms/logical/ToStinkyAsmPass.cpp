@@ -365,6 +365,12 @@ StinkyInstruction* createAsmFromIR(LogicalInstruction* irInst, GfxArchID arch) {
     if (irInst->memtoken.has_value()) {
         asmInst->addModifier<MemTokenData>(MemTokenData{irInst->memtoken.value()});
     }
+    if (irInst->nowaitcnt) {
+        asmInst->addModifier<NoWaitCntData>(NoWaitCntData{});
+    }
+    if (irInst->ordertoken.has_value()) {
+        asmInst->addModifier<OrderTokenData>(OrderTokenData{irInst->ordertoken.value()});
+    }
     if (irInst->swaitcnt.has_value()) {
         // Per-counter wait values {vlcnt, vscnt, dlcnt, dscnt, kmcnt} forwarded
         // from the logical SWaitCnt. The rocisa->asm path attaches the same

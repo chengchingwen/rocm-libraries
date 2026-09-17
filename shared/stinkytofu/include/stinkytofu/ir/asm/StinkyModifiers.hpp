@@ -314,6 +314,8 @@ struct Modifier {
         WMMA_POOL_INDEX,
         CALL_TARGETS,
         EXEC_GROUP,
+        NO_WAIT_CNT,
+        ORDER_TOKEN,
     };
 
     Modifier(Type type) : type(type) {}
@@ -1086,6 +1088,25 @@ struct MemTokenData : public TypedModifier<MemTokenData> {
 
     MemTokenData(const std::vector<int>& tokens = {})
         : TypedModifier<MemTokenData>(), tokens(tokens) {}
+};
+
+/// A barrier carrying this orders execution but takes NO conservative wait: it has no
+/// MemTokenData, so it still cuts a scheduling region and nothing moves across it.
+struct NoWaitCntData : public TypedModifier<NoWaitCntData> {
+    static constexpr Modifier::Type Type = Modifier::Type::NO_WAIT_CNT;
+
+    NoWaitCntData() : TypedModifier<NoWaitCntData>() {}
+};
+
+/// LDS tokens a barrier ORDERS but does not wait on: an access naming one of these may not be
+/// scheduled across the barrier.  Separate from MemTokenData so the waitcnt naming is unchanged.
+struct OrderTokenData : public TypedModifier<OrderTokenData> {
+    static constexpr Modifier::Type Type = Modifier::Type::ORDER_TOKEN;
+
+    std::vector<int> tokens;
+
+    OrderTokenData(const std::vector<int>& tokens = {})
+        : TypedModifier<OrderTokenData>(), tokens(tokens) {}
 };
 
 /// Buffer pool index for WMMA instructions in double/triple/N-buffered GEMM kernels.

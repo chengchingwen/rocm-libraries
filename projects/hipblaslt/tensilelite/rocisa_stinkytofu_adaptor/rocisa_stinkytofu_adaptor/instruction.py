@@ -81,7 +81,7 @@ class Instruction:
     __slots__ = (
         "name", "parent",
         "instType", "comment", "instStr", "outputInlineAsm",
-        "m_memToken",
+        "m_memToken", "m_noWaitCnt", "m_orderToken",
     )
 
     def __init__(self, instType: Any, comment: str = ""):
@@ -96,6 +96,8 @@ class Instruction:
         self.instStr: str = ""
         self.outputInlineAsm: bool = False
         self.m_memToken: Any = None
+        self.m_noWaitCnt: bool = False
+        self.m_orderToken: Any = None
 
     # ---------------------------------------------------- memToken / inline
     def setMemToken(self, token: Any) -> None:
@@ -103,6 +105,20 @@ class Instruction:
 
     def getMemToken(self) -> Any:
         return self.m_memToken
+
+    def setNoWaitCnt(self, v: bool = True) -> None:
+        """Order execution without taking a conservative wait (NoWaitCntData)."""
+        self.m_noWaitCnt = bool(v)
+
+    def getNoWaitCnt(self) -> bool:
+        return self.m_noWaitCnt
+
+    def setOrderToken(self, token: Any) -> None:
+        """LDS tokens this barrier ORDERS but does not wait on (OrderTokenData)."""
+        self.m_orderToken = token
+
+    def getOrderToken(self) -> Any:
+        return self.m_orderToken
 
     def setInlineAsm(self, is_true: bool) -> None:
         self.outputInlineAsm = bool(is_true)
@@ -274,6 +290,10 @@ class CommonInstruction(Instruction):
         clone.outputInlineAsm = self.outputInlineAsm
         clone.instStr = self.instStr
         clone.m_memToken = _deepcopy(self.m_memToken, memo) if self.m_memToken else None
+        clone.m_noWaitCnt = self.m_noWaitCnt
+        clone.m_orderToken = (
+            _deepcopy(self.m_orderToken, memo) if self.m_orderToken is not None else None
+        )
         clone.dst = _deepcopy(self.dst, memo) if self.dst is not None else None
         clone.dst1 = _deepcopy(self.dst1, memo) if self.dst1 is not None else None
         clone.srcs = [_deepcopy(s, memo) for s in self.srcs]
@@ -357,6 +377,10 @@ class MacroInstruction(Instruction):
         clone.outputInlineAsm = self.outputInlineAsm
         clone.instStr = self.instStr
         clone.m_memToken = _deepcopy(self.m_memToken, memo) if self.m_memToken else None
+        clone.m_noWaitCnt = self.m_noWaitCnt
+        clone.m_orderToken = (
+            _deepcopy(self.m_orderToken, memo) if self.m_orderToken is not None else None
+        )
         clone.name = self.name
         # Containers deep-clone via their own __deepcopy__; primitives
         # (int/float/str) round-trip identity-equal, matching C++ visit.
@@ -1637,6 +1661,10 @@ class SMemLoadInstruction(Instruction):
         clone.m_memToken = (
             _deepcopy(self.m_memToken, memo) if self.m_memToken is not None else None
         )
+        clone.m_noWaitCnt = self.m_noWaitCnt
+        clone.m_orderToken = (
+            _deepcopy(self.m_orderToken, memo) if self.m_orderToken is not None else None
+        )
         clone.dst = _deepcopy(self.dst, memo) if self.dst is not None else None
         clone.base = _deepcopy(self.base, memo) if self.base is not None else None
         if isinstance(self.soffset, (int, float, str, bool)):
@@ -1804,6 +1832,10 @@ class SMemStoreInstruction(Instruction):
         clone.instStr = self.instStr
         clone.m_memToken = (
             _deepcopy(self.m_memToken, memo) if self.m_memToken is not None else None
+        )
+        clone.m_noWaitCnt = self.m_noWaitCnt
+        clone.m_orderToken = (
+            _deepcopy(self.m_orderToken, memo) if self.m_orderToken is not None else None
         )
         clone.src = _deepcopy(self.src, memo) if self.src is not None else None
         clone.base = _deepcopy(self.base, memo) if self.base is not None else None

@@ -190,11 +190,19 @@ bool isTensorAnchor(const StinkyInstruction& inst) {
     return isBarrier(inst) || isDSRead(inst) || isDSWrite(inst) || isDSAtomic(inst);
 }
 
+/// A barrier that orders execution but takes no conservative wait: it is deliberately untagged,
+/// so the MemTokenData fallbacks must not read its missing token as "cannot prove disjoint".
+bool takesNoWait(const StinkyInstruction& inst) {
+    return inst.getModifier<NoWaitCntData>() != nullptr;
+}
+
 bool hasUntaggedTensorAnchor(BasicBlock& bb) {
     for (IRBase& ir : bb) {
         auto* inst = dyn_cast<StinkyInstruction>(&ir);
         if (inst == nullptr) continue;
-        if (isTensorAnchor(*inst) && inst->getModifier<MemTokenData>() == nullptr) return true;
+        if (isTensorAnchor(*inst) && !takesNoWait(*inst) &&
+            inst->getModifier<MemTokenData>() == nullptr)
+            return true;
     }
     return false;
 }
@@ -867,11 +875,11 @@ void computeRequiredWaits(StinkyInstruction* inst, DataflowState& state,
     // Conservative MemTokenData fallbacks. An untagged anchor or
     // untagged producer means we cannot prove disjointness, so we
     // force the matching counter to 0.
-    if (isTensorAnchor(*inst) && inst->getModifier<MemTokenData>() == nullptr &&
-        anyOpInFlight(CK_Tensor)) {
+    if (isTensorAnchor(*inst) && !takesNoWait(*inst) &&
+        inst->getModifier<MemTokenData>() == nullptr && anyOpInFlight(CK_Tensor)) {
         required[CK_Tensor] = 0;
     }
-    if ((isLdsWriterAnchor(*inst) || isBarrier(*inst)) &&
+    if ((isLdsWriterAnchor(*inst) || isBarrier(*inst)) && !takesNoWait(*inst) &&
         inst->getModifier<MemTokenData>() == nullptr && anyOpInFlight(CK_Async)) {
         required[CK_Async] = 0;
     }
@@ -879,7 +887,7 @@ void computeRequiredWaits(StinkyInstruction* inst, DataflowState& state,
         anyOpInFlight(CK_DS) && !isDSWrite(*inst)) {
         required[CK_DS] = 0;
     }
-    if (isBarrier(*inst) && anyOpInFlight(CK_DS)) {
+    if (isBarrier(*inst) && !takesNoWait(*inst) && anyOpInFlight(CK_DS)) {
         bool needs = inst->getModifier<MemTokenData>() == nullptr;
         if (!needs) {
             for (const auto& q : state.queues[CK_DS]) {
