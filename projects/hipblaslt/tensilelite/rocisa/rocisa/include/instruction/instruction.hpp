@@ -27,6 +27,7 @@
 #include "format.hpp"
 #include "helper.hpp"
 
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -116,13 +117,24 @@ namespace rocisa
         }
     }
 
+    struct GirActionData
+    {
+        uint64_t actionId = 0;
+    };
+
     struct Instruction : public Item
     {
-        InstType         instType;
-        std::string      comment;
-        std::string      instStr;
-        bool             outputInlineAsm;
+        InstType                      instType;
+        std::string                   comment;
+        std::string                   instStr;
+        bool                          outputInlineAsm;
         std::shared_ptr<MemTokenData> m_memToken;
+        // A barrier that orders execution but must take no conservative waitcnt.
+        bool m_noWaitCnt = false;
+        // LDS tokens this barrier ORDERS without waiting on -- no access naming one may cross it.
+        std::shared_ptr<MemTokenData> m_orderToken;
+        // Stable GIR semantic action identity. Semantic facts are transported separately.
+        std::shared_ptr<GirActionData> m_girAction;
 
         Instruction(InstType instType, const std::string& comment = "")
             : instType(instType)
@@ -138,9 +150,13 @@ namespace rocisa
             , comment(other.comment)
             , instStr(other.instStr)
             , outputInlineAsm(other.outputInlineAsm)
-            , m_memToken(other.m_memToken
-                             ? std::make_shared<MemTokenData>(*other.m_memToken)
-                             : nullptr)
+            , m_memToken(other.m_memToken ? std::make_shared<MemTokenData>(*other.m_memToken)
+                                          : nullptr)
+            , m_noWaitCnt(other.m_noWaitCnt)
+            , m_orderToken(other.m_orderToken ? std::make_shared<MemTokenData>(*other.m_orderToken)
+                                              : nullptr)
+            , m_girAction(other.m_girAction ? std::make_shared<GirActionData>(*other.m_girAction)
+                                            : nullptr)
         {
         }
 
@@ -152,6 +168,36 @@ namespace rocisa
         std::shared_ptr<MemTokenData> getMemToken() const
         {
             return m_memToken;
+        }
+
+        void setNoWaitCnt(bool v)
+        {
+            m_noWaitCnt = v;
+        }
+
+        bool getNoWaitCnt() const
+        {
+            return m_noWaitCnt;
+        }
+
+        void setOrderToken(const std::shared_ptr<MemTokenData>& token)
+        {
+            m_orderToken = token;
+        }
+
+        std::shared_ptr<MemTokenData> getOrderToken() const
+        {
+            return m_orderToken;
+        }
+
+        void setGirActionData(uint64_t actionId)
+        {
+            m_girAction = std::make_shared<GirActionData>(GirActionData{actionId});
+        }
+
+        std::shared_ptr<GirActionData> getGirActionData() const
+        {
+            return m_girAction;
         }
 
         std::shared_ptr<Item> clone() const override
@@ -244,7 +290,8 @@ namespace rocisa
                     hasVgpr = true;
                 }
             }
-            if(!hasVgpr){
+            if(!hasVgpr)
+            {
                 if(getVgprMsb() == -1)
                     // Base layer WA: -2 means no-vgpr inst
                     rocIsa::getInstance().setVgprMsb(-2);
@@ -252,14 +299,16 @@ namespace rocisa
             }
             int newVal = msbSrc[0] + (msbSrc[1] << 2) + (msbSrc[2] << 4) + (msbDst << 6);
             int oriVal = getVgprMsb();
-            if(newVal != oriVal && !outputInlineAsm){
+            if(newVal != oriVal && !outputInlineAsm)
+            {
                 // Base layer WA: need to store previous msb value in [15:8] bits.
                 //int setVal = oriVal < 0? newVal : newVal + (oriVal << 8);
-		// only set newVal until compiler support it
-                int setVal = newVal;
-                std::string msbStr = "s_set_vgpr_msb " + std::to_string(setVal);
-                std::string msbComment = std::string("src0: " + std::to_string(msbSrc[0]) + ", src1: " + std::to_string(msbSrc[1]) + \
-                    ", src2: " + std::to_string(msbSrc[2]) + ", dst: " + std::to_string(msbDst));
+                // only set newVal until compiler support it
+                int         setVal     = newVal;
+                std::string msbStr     = "s_set_vgpr_msb " + std::to_string(setVal);
+                std::string msbComment = std::string(
+                    "src0: " + std::to_string(msbSrc[0]) + ", src1: " + std::to_string(msbSrc[1])
+                    + ", src2: " + std::to_string(msbSrc[2]) + ", dst: " + std::to_string(msbDst));
                 msbStr = formatStr(false, msbStr, msbComment, false);
                 // Base layer WA: add a no-vgpr inst if oriVal is non-determined and right after label
                 if(oriVal == -1)

@@ -279,3 +279,22 @@ TEST(CallTargetData, DeserializeParsesEscapedCalleeNames) {
     EXPECT_EQ(data->callees[1], "quote\"name");
     EXPECT_EQ(data->callees[2], "back\\slash");
 }
+
+TEST(GirActionData, SerializerRoundTripsStableId) {
+    GirActionData original(17);
+    std::ostringstream os;
+    EXPECT_TRUE(ModifierSerializer::serialize(original, os));
+    EXPECT_EQ(os.str(), ", mod.gir_action = { action = 17 }");
+
+    Function function("gir_action_test");
+    BasicBlock* block = function.createBasicBlock("entry");
+    AsmIRBuilder builder(*block, GfxArchID::Gfx1250);
+    StinkyInstruction* inst = builder.createFence();
+    ParsedModifierDict modifiers;
+    modifiers["mod.gir_action"]["action"] = "17";
+    ModifierSerializer::deserialize(inst, modifiers);
+
+    const auto* parsed = inst->getModifier<GirActionData>();
+    ASSERT_NE(parsed, nullptr);
+    EXPECT_EQ(parsed->actionId, 17u);
+}

@@ -92,6 +92,18 @@ void init_inst(nb::module_ m)
         .def_rw("memToken", &rocisa::Instruction::m_memToken)
         .def("setMemToken", &rocisa::Instruction::setMemToken)
         .def("getMemToken", &rocisa::Instruction::getMemToken)
+        .def("setNoWaitCnt", &rocisa::Instruction::setNoWaitCnt)
+        .def("getNoWaitCnt", &rocisa::Instruction::getNoWaitCnt)
+        .def("setOrderToken", &rocisa::Instruction::setOrderToken)
+        .def("getOrderToken", &rocisa::Instruction::getOrderToken)
+        .def("setGirActionData", &rocisa::Instruction::setGirActionData, nb::arg("action_id"))
+        .def("getGirActionData",
+             [](const rocisa::Instruction& self) -> nb::object {
+                 auto data = self.getGirActionData();
+                 if(!data)
+                     return nb::none();
+                 return nb::int_(data->actionId);
+             })
         .def("setInlineAsm", &rocisa::Instruction::setInlineAsm)
         .def("getParams", &rocisa::Instruction::getParams)
         .def("preStr", &rocisa::Instruction::preStr)

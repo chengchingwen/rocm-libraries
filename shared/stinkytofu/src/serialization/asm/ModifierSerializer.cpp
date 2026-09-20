@@ -47,6 +47,16 @@ int getInt(const std::unordered_map<std::string, std::string>& m, const std::str
     return static_cast<int>(val);
 }
 
+uint64_t getUInt64(const std::unordered_map<std::string, std::string>& m, const std::string& key,
+                   uint64_t def) {
+    auto it = m.find(key);
+    if (it == m.end() || it->second.empty()) return def;
+    char* end = nullptr;
+    const unsigned long long value = std::strtoull(it->second.c_str(), &end, 0);
+    if (end != it->second.c_str() + it->second.size()) return def;
+    return static_cast<uint64_t>(value);
+}
+
 bool getBool(const std::unordered_map<std::string, std::string>& m, const std::string& key,
              bool def) {
     auto it = m.find(key);
@@ -484,6 +494,12 @@ bool serializeVisit(const MemTokenData& mod, std::ostream& os) {
     return true;
 }
 
+// GirActionData
+bool serializeVisit(const GirActionData& mod, std::ostream& os) {
+    os << ", mod.gir_action = { action = " << mod.actionId << " }";
+    return true;
+}
+
 // LabelData
 bool serializeVisit(const LabelData& mod, std::ostream& os) {
     os << ", mod.label = { label = \"" << mod.label << "\""
@@ -512,7 +528,7 @@ bool ModifierSerializer::serialize(const Modifier& mod, std::ostream& os) {
                           VOP3Modifiers, VOP3PModifiers, True16Modifiers, EXEC, VCC, SWaitCntData,
                           SWaitTensorCntData, SWaitAsyncCntData, SWaitStoreCntData, SDelayAluData,
                           SWaitAluData, MFMAModifiers, MatrixFmtModifiers, MemTokenData, LabelData,
-                          CallTargetData>(mod, os);
+                          CallTargetData, GirActionData>(mod, os);
 }
 
 /*
@@ -651,6 +667,8 @@ void deserializeVisit(StinkyInstruction* inst, const std::string& attrKey,
         if (fields.contains("tokens")) {
             inst->addModifier(MemTokenData(getIntVector(fields, "tokens")));
         }
+    } else if (attrKey == "mod.gir_action") {
+        inst->addModifier(GirActionData(getUInt64(fields, "action", 0)));
     } else if (attrKey == "mod.label") {
         inst->addModifier(LabelData(getStr(fields, "label", ""),
                                     static_cast<uint16_t>(getInt(fields, "alignment", 1))));

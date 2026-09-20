@@ -125,7 +125,8 @@ NB_MODULE(_stinkytofu, m) {
         .value("BeforeRegionPasses", PipelineExtensionPoint::BeforeRegionPasses)
         .value("InnerRegionBegin", PipelineExtensionPoint::InnerRegionBegin)
         .value("InnerRegionEnd", PipelineExtensionPoint::InnerRegionEnd)
-        .value("AfterRegionPasses", PipelineExtensionPoint::AfterRegionPasses);
+        .value("AfterRegionPasses", PipelineExtensionPoint::AfterRegionPasses)
+        .value("EndOfPipeline", PipelineExtensionPoint::EndOfPipeline);
 
     // ------------------------------------------------------------------------
     // Bind CloneSpec so Python can construct entries for ModuleOptions::CloneList.
@@ -641,6 +642,21 @@ NB_MODULE(_stinkytofu, m) {
             },
             nb::arg("tokens"),
             "Set memory token IDs for LDS dependency tracking (forwarded to MemTokenData)")
+        .def(
+            "set_nowaitcnt", [](LogicalInstruction& inst, bool v) { inst.nowaitcnt = v; },
+            nb::arg("v") = true,
+            "Mark a barrier as ordering-only: no conservative wait (forwarded to NoWaitCntData)")
+        .def(
+            "set_ordertoken",
+            [](LogicalInstruction& inst, const std::vector<int>& tokens) {
+                inst.ordertoken = tokens;
+            },
+            nb::arg("tokens"),
+            "Set LDS tokens a barrier ORDERS but does not wait on (forwarded to OrderTokenData)")
+        .def(
+            "set_gir_action",
+            [](LogicalInstruction& inst, uint64_t actionId) { inst.giraction = actionId; },
+            nb::arg("action_id"), "Set stable GIR semantic action id")
         .def(
             "set_swaitcnt",
             [](LogicalInstruction& inst, int vlcnt, int vscnt, int dlcnt, int dscnt, int kmcnt) {
