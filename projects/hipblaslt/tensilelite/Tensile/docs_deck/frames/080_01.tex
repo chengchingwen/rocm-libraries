@@ -1,0 +1,51 @@
+
+\begin{frame}{Two files import nothing --- and that emptiness is the feature}
+
+\begin{columns}[T]
+\begin{column}{0.46\textwidth}
+\footnotesize
+\key{\texttt{tdm\_split.py}} imports \texttt{dataclasses}. \\
+\key{\texttt{lds\_geometry.py}} imports one name from \texttt{tdm\_split}. \\
+No \texttt{Solution}, no \texttt{KernelWriter}, no \texttt{tP}, no rocisa.
+
+\medskip
+Functions needing more than three scalars take a \key{duck-typed context} --- so the
+\emph{declaration} can live at the caller and the \emph{arithmetic} lives here.
+
+\medskip
+\good{Consequence:} \texttt{region\_row\_elems(32,0,False,2)} can be called in a bare
+\texttt{pytest} and asserted \texttt{== 16}. The test it replaced had to match \emph{source
+text}, and broke the moment the wrong expression was corrected.
+
+\medskip
+\bad{Do not add an import to either file.} Both docstrings state that obligation.
+\end{column}
+
+\begin{column}{0.52\textwidth}
+\centering
+\begin{tikzpicture}[node distance=3mm,font=\scriptsize]
+\node[box,fill=white] (lra) {\texttt{Components/}\\\texttt{LraTileAssignment}};
+\node[box,fill=white,right=6mm of lra] (lr) {\texttt{Components/}\\\texttt{LocalRead}};
+\node[box,below=9mm of lra] (kwa) {\texttt{KernelWriter}\\\texttt{Assembly}};
+\node[box,right=6mm of kwa] (lv) {\texttt{Lowering/}\\\texttt{leaves.py}};
+\node[gbox,below=9mm of kwa,xshift=12mm,minimum width=44mm]
+   (geo) {\texttt{lds\_geometry.py} \; + \; \texttt{tdm\_split.py}\\[1pt]
+          \tsub{zero project imports}};
+\draw[ar] (lra) -- (geo);
+\draw[ar] (lr) -- (geo);
+\draw[ar] (kwa) -- (geo);
+\draw[ar] (lv) -- (geo);
+\node[wbox,below=6mm of geo,text width=52mm] (com)
+   {\bad{rejected:} \texttt{Tensile/Common/} --- the right home by layering,
+    but its \texttt{\_\_init\_\_} imports rocisa};
+\draw[ar,draw=warn,dashed] (geo) -- (com);
+\end{tikzpicture}
+
+\smallskip
+\footnotesize
+Four emitters, three layers, \key{one derivation}. \texttt{Components/} reaches \emph{up} into
+\texttt{Lowering/} on purpose. The one remaining option --- duplicating the formula --- is what
+caused the defect two slides on.
+\end{column}
+\end{columns}
+\end{frame}

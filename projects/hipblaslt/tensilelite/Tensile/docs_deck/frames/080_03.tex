@@ -1,0 +1,51 @@
+\begin{frame}{A packed split makes the address PIECEWISE --- and every consumer pays for it}
+
+\centering
+\begin{tikzpicture}[font=\tiny,x=3.6mm,y=3.0mm]
+% ---- outer cut ----
+\node[font=\scriptsize] at (4,4.6) {cut the \good{OUTER} axis};
+\foreach \r in {0,1}{\foreach \c in {0,...,7}{\fill[ok!45] (\c,3-\r) rectangle ++(1,1);}}
+\foreach \r in {2,3}{\foreach \c in {0,...,7}{\fill[acc!30] (\c,3-\r) rectangle ++(1,1);}}
+\draw[step=1,gray!50,thin] (0,0) grid (8,4);
+\draw[very thick,warn] (0,2) -- (8,2);
+\node[font=\tiny,rotate=90] at (-1.0,2) {outer};
+\node at (4,-0.8) {inner $\longrightarrow$};
+\node at (4,-1.9) {linear image:};
+\fill[ok!45] (0,-3.4) rectangle (4,-2.4); \fill[acc!30] (4,-3.4) rectangle (8,-2.4);
+\draw (0,-3.4) rectangle (8,-2.4);
+\node at (2,-2.9) {r0 dense}; \node at (6,-2.9) {r1 dense};
+\node[align=center,font=\scriptsize,text=ok] at (4,-4.6)
+  {\textbf{identical to unsplit}\\the reader needs to know \emph{nothing}};
+
+% ---- inner cut ----
+\begin{scope}[xshift=52mm]
+\node[font=\scriptsize] at (4,4.6) {cut the \bad{INNER} axis};
+\foreach \r in {0,...,3}{\foreach \c in {0,...,3}{\fill[ok!45] (\c,3-\r) rectangle ++(1,1);}}
+\foreach \r in {0,...,3}{\foreach \c in {4,...,7}{\fill[acc!30] (\c,3-\r) rectangle ++(1,1);}}
+\draw[step=1,gray!50,thin] (0,0) grid (8,4);
+\draw[very thick,warn] (4,0) -- (4,4);
+\node at (4,-0.8) {inner $\longrightarrow$};
+\node at (4,-1.9) {linear image:};
+\fill[ok!45] (0,-3.4) rectangle (3.4,-2.4); \fill[acc!30] (4.6,-3.4) rectangle (8,-2.4);
+\draw (0,-3.4) rectangle (3.4,-2.4); \draw (4.6,-3.4) rectangle (8,-2.4);
+\draw[<->,warn] (3.4,-2.9) -- (4.6,-2.9);
+\node at (1.7,-2.9) {r0 dense}; \node at (6.3,-2.9) {r1 dense};
+\node[align=center,font=\scriptsize,text=warn] at (4,-4.6)
+  {\textbf{repacked} \texttt{[region][outer][inner/n]}, a \emph{padded} distance apart\\
+   \emph{not} the array the reader assumed};
+\end{scope}
+\end{tikzpicture}
+
+\vspace{2mm}
+\raggedright\footnotesize
+The packed reader owes \key{three} corrections, and they must all come off the \emph{same}
+predicate: a per-region \key{block base}, a \key{shortened row} ($I/n + \text{pad}$), and an
+\key{in-region inner coordinate} ($\text{inner} \bmod I/n$).
+
+\smallskip
+\bad{A division is unavoidable.} \texttt{region\,*\,splitBoundary} is a \emph{padded byte}
+boundary, not an element stride, so the piecewise form has no linear expression. Any emitter that
+accumulates (\texttt{rIdx*step + localReadOffset}) must divide --- \texttt{fold\_inner\_offset}
+does it once so the scaffold path and the GIR path cannot disagree about where the boundary is.
+Straddling reads are excluded by a \texttt{Solution.py} rejection, \texttt{(DepthU // n) \% MatrixInstK == 0}.
+\end{frame}

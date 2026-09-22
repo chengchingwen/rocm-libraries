@@ -24,6 +24,7 @@
 
 import math
 from functools import lru_cache
+from itertools import permutations as _permutations
 from typing import Any, Union
 
 from .Architectures import SUPPORTED_ISA
@@ -1144,6 +1145,40 @@ validParameters = { # we need to make sure this matches develop
     # 0  : disable CMS even if supported
     # 1  : enable  CMS, is set to 0 if not supported
     "UseCustomMainLoopSchedule" : [-1, 0, 1],
+    # Route the inner-loop body through the LoopModel theta-schedule decoder + the GIR compiler
+    # (Tensile/LoopModel + Tensile/Lowering).
+    "UseLoopModel": [False, True],
+    # Select the owner of LoopModel wait-count insertion.  GIR is the comparison/reference
+    # implementation; StinkyTofu consumes the transported frame contract after scheduling.
+    "LoopModelWaitCntMode": ["StinkyTofu", "GIR"],
+    # LoopModel inner-loop traversal order over the {K,M,N} axes (only meaningful with
+    # UseLoopModel=True).  Ignored when UseLoopModel=False.
+    #
+    # THE WHOLE SPACE IS 90 TRAVERSALS, and they are DERIVED here rather than listed so this and
+    # `translate._loop_order_word` (which accepts any word with each of K,M,N exactly twice) cannot
+    # drift apart.  Each axis contributes a SPLIT mode and an INNER mode — first occurrence of a
+    # letter is `X_split`, second is `X_inner` — so a word is a permutation of `KKMMNN`:
+    #
+    #   6 CONTIGUOUS   each axis's (split, inner) pair adjacent.  Spelled in the 3-letter shortcut
+    #                  form, because `_loop_order_word` expands `KMN` to `KKMMNN` — listing both
+    #                  spellings would be ONE traversal under TWO kernel names, i.e. exactly the
+    #                  silent duplicate the 6-letter gate in `Solution.py` exists to prevent.
+    #  84 INTERLEAVED  the pairs woven together.  These are the only way to reach the
+    #                  MULTI-BODY PEEL — with the pairs contiguous the traversal is `clean` and the
+    #                  steady region is a single body.
+    #
+    # A 6-letter word needs a LIVE SPLIT AXIS or it collapses to the 3-letter order its INNER modes
+    # spell; `Solution.py` rejects that rather than emit a duplicate.  How many of the 90 are
+    # DISTINCT at a given config depends on which split modes survive: 30 at `TDMSplitA/B = 1`.
+    # Which ones a benchmark actually forks is a yaml decision — `loopmodel_bf16_gfx1250.yaml`
+    # block 11 picks 3 of the 84 to bound the run.
+    # ACCEPTS EVERY SPELLING the decoder parses — the 6 shortcuts and all 90 permutations, 96
+    # strings.  `Solution.py` canonicalizes a DOUBLED word to its 3-letter form before the kernel
+    # name is built (`adapter.canonical_loop_order`), so the 96 spellings collapse to 90 distinct
+    # traversals and no schedule gets two names.  Listing only 90 here would have made `KKMMNN` an
+    # invalid parameter for a word the decoder happily accepts.
+    "LoopOrder": ["KMN", "KNM", "MKN", "MNK", "NKM", "NMK"] + sorted(
+        {"".join(p) for p in _permutations("KKMMNN")}),
     # 0  : Generate original Store blocks: NonEdgeN, ThenN, and Then1 for StoreVectorWidth N
     # 1  : Generate adaptive Store blocks: NonEdgeN, ThenN, ThenN/2, ..., Then1 and select by runtime problem size
     "AdaptiveGemm": [0, 1],
@@ -1191,6 +1226,17 @@ validParameters = { # we need to make sure this matches develop
     # LDS footprint holds the compressed (K/2) data, which the split boundary accounts for;
     # the metadata tensor itself is never split.
     "TDMSplit": [False, True],
+    # Per operand, because A and B are separate descriptors and nothing requires the same cut:
+    #   0 = no split   1 = split MT (the operand's OWN free axis)   2 = split DU (the shared
+    #   reduction axis).  Two extra SGPRs per split operand hold the per-iteration increments.
+    #
+    # THE AXIS IS NAMED RATHER THAN INFERRED: the boolean `TDMSplit` above divides the
+    # descriptor's dim1, which is the free axis only when the operand is unrolled-major -- under
+    # `tlu` it is the reduction axis, so `TDMSplit: True` performs a DU split on NT while its
+    # name says MT.  At MT32/DU64/bpe2 both readings emit the same numbers, which is why it went
+    # unnoticed.  See `Components/TDMSplit.TdmSplitGeometry`.
+    "TDMSplitA": [0, 1, 2],
+    "TDMSplitB": [0, 1, 2],
     # Insert a barrier between an urgent and a deferrable tensor_load_to_lds group
     # (different TDM wait groups) so every wave finishes the urgent group before any
     # wave issues the deferrable one. Handled by the StinkyTofu TDMLoadWaveSyncPass;

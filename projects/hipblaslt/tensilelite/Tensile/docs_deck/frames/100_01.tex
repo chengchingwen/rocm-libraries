@@ -1,0 +1,33 @@
+
+\begin{frame}{Five known gaps, ranked --- and the first one is half a model}
+\vspace{-2pt}
+{\scriptsize
+\begin{tabular}{@{}p{0.20\textwidth}p{0.30\textwidth}p{0.44\textwidth}@{}}
+\toprule
+\textbf{gap} & \textbf{what it blocks} & \textbf{what closing it takes} \\
+\midrule
+\key{1. the write / store side} &
+the epilogue; the single-LDS-buffer configuration (the reuse is invisible to the hazard analysis); the ring-1 copy carries no WAR at all &
+a movement whose destination is global space, a register-lifetime-vs-store hazard kind, an output operand with its own presence, a phase after the last drain --- plus reverse-pair counters and a reflected peel, which today \bad{refuses} rather than computes. \bad{Comparable in size to the read side.} \\
+\addlinespace
+\key{2. tail loop and edges} &
+$K$ not a multiple of the chunk, free extents not a multiple of the tile: the old scaffold still serves them, so their reads and pointer state are outside the model &
+a per-level peel for a \emph{runtime}-extent chunk. The hard half: drain and tail overlap under a reduction-axis storage split, and do not under a free-axis one \\
+\addlinespace
+\key{3. register partitioning} &
+nothing --- and that is the problem: more than one group per operand is a \bad{silent no-op at emission} &
+the per-\,(operand, group) widths are \good{already computed} and nothing reads them. Carry a per-group slot list in the emit plan, return the map instead of a scalar, teach the matrix leaf to select \\
+\addlinespace
+\key{4. half-wave scale selector} &
+a fallback leaf re-derives a model-level fact: half the read acts stop issuing and the register index is compacted &
+make the merge map \emph{derivable} rather than supplied. Four attempts to infer the pairing inside the model were each \bad{an address assumption in disguise} \\
+\addlinespace
+\key{5. persistent / grid-stride level} &
+an outer time level above the reduction chunk &
+one extra mode with extent 0 in $\theta$ --- no new level kind. What blocks it is the emitter refusing a coarser peel, and the frame arithmetic across an outer trip \\
+\bottomrule
+\end{tabular}}
+
+\vspace{4pt}
+{\footnotesize The tail's block phase exists, and the verifier already \emph{accepts} a tail as a second loop region. Nothing produces one. \bad{Expressible is not emitted} --- and each of these five is recorded in the source at the line that refuses.}
+\end{frame}

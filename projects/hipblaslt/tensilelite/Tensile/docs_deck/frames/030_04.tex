@@ -1,0 +1,29 @@
+\begin{frame}{The peel is a vector over levels --- and one offset relocates instead of peeling}
+
+The retime matrix is indexed by \key{(op-class, level)}, so \emph{any} level can carry an offset: an
+outer tile level, the reduction chunk, the substep. \texttt{PeelDepths} therefore reports
+$M_\ell$ per level, the per-op-class offsets, the substep request, the derived reach, and every
+negative offset separately as a deferral.
+
+\begin{itemize}
+  \item \texttt{PeelDepths.M} is deliberately \key{narrow} --- the chunk level, the only one whose prologue/drain the emitter can build --- and sits beside \texttt{peeled\_levels()}, which reports \emph{all} of them. That pairing turns a silent drop into a loud refusal.
+  \item It used to return an \texttt{int} keyed on the chunk. The tree stayed well formed, the ledger came back empty, and the certificate \bad{certified a schedule nobody requested}.
+\end{itemize}
+
+\textbf{The cross-level boundary term.} An offset at outer level $\ell$ whose op-class lives strictly
+\emph{inside} $\ell$ does not peel $\ell$ --- it relocates the leading $\delta$ instances into the
+previous $\ell$-trip's drain. Three conditions decide it, and the third separates these two:
+
+\begin{center}\scriptsize
+\begin{tabular}{lll}
+\toprule
+offset & home level & verdict \\
+\midrule
+\texttt{off(copy, gtile)} & \texttt{iter} --- an outer, looped level & \good{relocation}: whole iterations move \\
+\texttt{off(copy, iter)}  & \texttt{M\_split} --- an inner unrolled axis & \bad{ordinary prefetch}: the fan stays put \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\tsub{Without condition 3 the two are conflated --- the first implementation reported a boundary term for every shipping region-split kernel, and the emitter refuses on a non-empty hoist list, so it refused them all.}
+\end{frame}

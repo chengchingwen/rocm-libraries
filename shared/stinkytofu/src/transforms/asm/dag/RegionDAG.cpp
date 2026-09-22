@@ -27,6 +27,10 @@
 #include <iterator>
 #include <map>
 #include <ostream>
+#include <set>
+
+#include "stinkytofu/ir/asm/StinkyAsmIR.hpp"
+#include "stinkytofu/support/ErrorHandling.hpp"
 
 namespace stinkytofu {
 namespace dag {
@@ -35,7 +39,8 @@ namespace {
 
 using namespace stinkytofu;
 
-RegionDAG buildRegisterDependencyDAGImpl(const std::vector<StinkyInstruction*>& instructions) {
+RegionDAG buildRegisterDependencyDAGImpl(const std::vector<StinkyInstruction*>& instructions,
+                                         bool useMemoryTokenOrdering) {
     RegionDAG result;
     const unsigned n = static_cast<unsigned>(instructions.size());
     if (n == 0) return result;
@@ -51,10 +56,33 @@ RegionDAG buildRegisterDependencyDAGImpl(const std::vector<StinkyInstruction*>& 
 
     std::map<StinkyRegister, std::unordered_set<DAGNode*>> lastRead;
     std::map<StinkyRegister, DAGNode*> lastWrite;
+    // A barrier's ORDER tokens are a wall: every access naming one stays on the side it started.
+    // The register arms below cannot express this -- the conflicting access is a whole trip away.
+    std::map<int, DAGNode*> orderWall;
+    std::map<int, std::unordered_set<DAGNode*>> namedBy;
 
     for (unsigned i = 0; i < n; ++i) {
         DAGNode& dagNode = result.nodes[i];
         StinkyInstruction& inst = *dagNode.inst;
+
+        if (useMemoryTokenOrdering) {
+            std::set<int> mine;
+            if (const MemTokenData* mem = inst.getModifier<MemTokenData>())
+                mine.insert(mem->tokens.begin(), mem->tokens.end());
+            if (const OrderTokenData* ord = inst.getModifier<OrderTokenData>()) {
+                for (int t : ord->tokens) {
+                    for (DAGNode* earlier : namedBy[t])
+                        addEdgeById(earlier, &dagNode, result.graph);
+                    orderWall[t] = &dagNode;
+                }
+            }
+            for (int t : mine) {
+                auto wall = orderWall.find(t);
+                if (wall != orderWall.end() && wall->second != &dagNode)
+                    addEdgeById(wall->second, &dagNode, result.graph);
+                namedBy[t].insert(&dagNode);
+            }
+        }
 
         for (const StinkyRegister& srcReg : inst.getSrcRegs()) {
             if (!srcReg.isRegister()) continue;
@@ -90,16 +118,33 @@ RegionDAG buildRegisterDependencyDAGImpl(const std::vector<StinkyInstruction*>& 
 
 }  // namespace
 
-RegionDAG buildRegisterDependencyDAG(const std::vector<StinkyInstruction*>& instructions) {
-    return buildRegisterDependencyDAGImpl(instructions);
+RegionDAG buildRegisterDependencyDAG(const std::vector<StinkyInstruction*>& instructions,
+                                     bool useMemoryTokenOrdering) {
+    return buildRegisterDependencyDAGImpl(instructions, useMemoryTokenOrdering);
 }
 
-RegionDAG buildRegisterDependencyDAG(IRList::iterator regionStart, IRList::iterator regionEnd) {
+RegionDAG buildRegisterDependencyDAG(IRList::iterator regionStart, IRList::iterator regionEnd,
+                                     bool useMemoryTokenOrdering) {
     std::vector<StinkyInstruction*> instructions;
     instructions.reserve(static_cast<size_t>(std::distance(regionStart, regionEnd)));
     for (IRList::iterator it = regionStart; it != regionEnd; ++it)
         instructions.push_back(&getStinkyInst(it));
-    return buildRegisterDependencyDAGImpl(instructions);
+    return buildRegisterDependencyDAGImpl(instructions, useMemoryTokenOrdering);
+}
+
+void addGirFrameHazardEdges(RegionDAG& dag, const GirFrameHazardAnalysis::Result& hazards) {
+    for (const GirFrameHazard& hazard : hazards.hazards) {
+        if (hazard.gap != 0 || hazard.producer == hazard.consumer) continue;
+        auto producer = dag.instToId.find(hazard.producer);
+        auto consumer = dag.instToId.find(hazard.consumer);
+        if (producer == dag.instToId.end() || consumer == dag.instToId.end()) continue;
+        const unsigned from = producer->second;
+        const unsigned to = consumer->second;
+        if (dag.graph[from].contains(to)) continue;
+        if (hasPath(dag.graph, to, from))
+            STINKY_UNREACHABLE("GIR frame hazard introduces a scheduling DAG cycle");
+        addEdgeById(&dag.nodes[from], &dag.nodes[to], dag.graph);
+    }
 }
 
 void dumpDAGGraph(const RegionDAG& dag, std::ostream& os,

@@ -1,0 +1,41 @@
+\begin{frame}{The pointer is one register and the program is one execution --- so it is ONE timeline, not three regions}
+\begin{columns}[T]
+\begin{column}{0.44\textwidth}
+\footnotesize
+\bad{Three seam defects, all shipped, all silent:}
+\begin{enumerate}\itemsep1pt
+\item \textbf{Double swap.} A per-block \texttt{(need\_in, need\_out)} summary \emph{plus} a hand-written
+  per-edge-type table. Position and value computed by different code; nothing forced them to agree.
+\item \textbf{Wrong drain frame.} Drain requirements are offsets from $T$, steady ones from the current
+  trip. Compared as raw integers, so a change of coordinate system was ``reconciled'' with a swap the
+  hardware does not need.
+\item \textbf{No increment at all.} ``One Mark per copy in a loop header carrying a back edge'': with a
+  multi-block steady body the two filters are mutually exclusive $\Rightarrow$ \emph{zero} increments,
+  every trip re-fetching the same tiles.
+\end{enumerate}
+\end{column}
+\begin{column}{0.54\textwidth}
+\centering
+\begin{tikzpicture}[node distance=4.5mm,font=\scriptsize]
+\node[box] (p) {prologue};
+\node[box,below=of p] (s) {steady$_0$ \dots\ steady$_{n-1}$};
+\node[box,below=of s] (d) {drain$_0$ \dots\ drain$_{M-1}$};
+\node[wbox,right=9mm of s] (sh) {short arm};
+\draw[ar] (p) -- (s); \draw[ar] (s) -- (d);
+\draw[ar] (p.east) to[bend left=25] (sh.north);
+\draw[ar] (sh.south) to[bend left=25] (d.east);
+\draw[ar] (s.west) to[bend left=60] node[left,font=\tiny]{back edge} (s.north west);
+\node[right=1mm of p,font=\tiny,text=ok] {AVAIL $\downarrow$};
+\node[left=1mm of d,font=\tiny,text=warn] {ANTIC $\uparrow$};
+\end{tikzpicture}
+\end{column}
+\end{columns}
+\vspace{1mm}
+\footnotesize
+\key{Formulation:} a requirement is a value demanded at a point; a swap / increment is a \emph{definition} of
+that value; ``where do defs go'' is classical code motion --- forward \textbf{AVAIL} $\times$ backward
+\textbf{ANTIC}, a def wherever supply meets a different demand. Crossing $p\!\to\!b$ re-expresses the value via
+\texttt{edge\_delta(p,b)}, so a drain value and a steady value are never compared as raw integers.
+\good{Three pointers (LDS read, TDM descriptor, global-read address) share one 250-line solver; both
+\texttt{on\_conflict} callbacks \emph{raise} --- report, never resolve.}
+\end{frame}

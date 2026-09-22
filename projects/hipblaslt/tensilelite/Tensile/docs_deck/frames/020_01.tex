@@ -1,0 +1,39 @@
+
+\begin{frame}{A schedule is seven fields --- and deliberately none of them is an address}
+\begin{columns}[T]
+\begin{column}{0.5\textwidth}
+\vspace{2pt}
+\begin{center}
+\begin{tikzpicture}[font=\tiny,node distance=3pt]
+\node[box,text width=1.7cm] (t) {\key{tile}\\\tsub{axes \& splits}};
+\node[box,right=of t,text width=1.7cm] (p) {\key{path}\\\tsub{hops per tensor}};
+\node[box,right=of p,text width=1.7cm] (o) {\key{ord}\\\tsub{outer$\to$inner}};
+\node[box,below=of t,text width=1.7cm] (f) {\key{off}\\\tsub{retime matrix}};
+\node[box,below=of p,text width=1.7cm] (s) {\key{S}\\\tsub{depth map}};
+\node[box,below=of o,text width=1.7cm] (ph) {\key{$\Phi$}\\\tsub{fusion groups}};
+\node[box,below=of s,text width=5.5cm] (r)
+  {\key{$\rho$}\\\tsub{agent assignment: (mode, agent-level, extent)}};
+\end{tikzpicture}
+\end{center}
+\end{column}
+\begin{column}{0.48\textwidth}
+\vspace{-2pt}
+\begin{itemize}\itemsep2pt
+\item \key{S} is \emph{derived}, not authored.
+\item \key{off} is keyed by \emph{op-class} $\times$ \emph{level} --- not by operand.
+\item \key{$\Phi$} merges op-classes into one cooperative instruction; members pair \emph{by region index},
+      and the two operands may be cut on different axes.
+\item \key{$\rho$ is a \emph{map}} --- which mode each \emph{agent level} traverses instead of the
+      coordinate, over how many agents --- and the \key{single} agent authority. $\Phi$ over
+      $\rho$ is what turns a wide load into a \key{broadcast}.
+\end{itemize}
+\vspace{4pt}
+\begin{tikzpicture}
+\node[gbox,text width=0.92\textwidth]{\good{Address-opacity is an invariant.}
+Addresses, swizzles and per-lane fragment layouts provably change no scheduling decision,
+so the core treats an address as opaque. \texttt{ir.py}'s docstring carries the recipe for
+re-adding them as an \emph{additive} layer.};
+\end{tikzpicture}
+\end{column}
+\end{columns}
+\end{frame}

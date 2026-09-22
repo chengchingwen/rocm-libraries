@@ -28,6 +28,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 
 #include "stinkytofu/Export.hpp"
 #include "stinkytofu/core/BasicBlock.hpp"
@@ -50,6 +51,7 @@ class STINKYTOFU_EXPORT Function {
     BasicBlockList basicBlocks;  // List parent is this so BasicBlock::getParent() works
     GemmTileConfig gemmConfig;
     std::unordered_map<std::string, uint64_t> metadata_;
+    std::unordered_map<std::string, std::string> stringMetadata_;
     bool isCallable = false;
 
    public:
@@ -162,6 +164,17 @@ class STINKYTOFU_EXPORT Function {
     }
     bool hasMetaData(const std::string& key) const {
         return metadata_.find(key) != metadata_.end();
+    }
+    void setStringMetaData(const std::string& key, std::string value) {
+        stringMetadata_[key] = std::move(value);
+    }
+    std::optional<std::string> getStringMetaData(const std::string& key) const {
+        auto it = stringMetadata_.find(key);
+        if (it == stringMetadata_.end()) return std::nullopt;
+        return it->second;
+    }
+    bool hasStringMetaData(const std::string& key) const {
+        return stringMetadata_.find(key) != stringMetadata_.end();
     }
 
     // Iteration over basic blocks

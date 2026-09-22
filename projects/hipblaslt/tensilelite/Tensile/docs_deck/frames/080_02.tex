@@ -1,0 +1,63 @@
+\begin{frame}[fragile]{A partition packs blocks iff it cuts the image's \emph{inner} axis --- so the rule is a diagonal}
+
+\begin{columns}[T]
+\begin{column}{0.50\textwidth}
+\footnotesize
+LDS is linear, so the tile is serialised in one of two orders, chosen per operand by the
+\key{memory layout} of the global tensor:
+
+\smallskip
+\begin{tabular}{@{}ll@{}}
+\toprule
+unroll-major & image \texttt{[free][unroll]} \\
+tile-major   & image \texttt{[unroll][free]} \\
+\bottomrule
+\end{tabular}
+
+\smallskip
+The hardware writes each region \key{densely}. Cut the \emph{outer} axis and the regions are runs
+of whole rows, adjacent --- the unsplit image is reproduced exactly. Cut the \emph{inner} axis and
+a dense write cannot interleave stripes, so what lands is a different image.
+
+\medskip
+Stated once, in \texttt{tdm\_split.split\_packs\_lds}:
+
+\begin{lstlisting}[style=py]
+return (axis == AXIS_MT) == (not unrollMajor)
+\end{lstlisting}
+\tsub{an XNOR of "the cut is on the free axis" with "the free axis is inner"}
+\end{column}
+
+\begin{column}{0.48\textwidth}
+\centering
+\begin{tabular}{@{}lcc@{}}
+\toprule
+cut axis & unroll-major & tile-major \\
+         & \tsub{[free][unroll]} & \tsub{[unroll][free]} \\
+\midrule
+\texttt{AXIS\_MT} \tsub{free}   & \good{contiguous} & \bad{PACKED} \\
+\texttt{AXIS\_DU} \tsub{unroll} & \bad{PACKED}      & \good{contiguous} \\
+\bottomrule
+\end{tabular}
+
+\medskip
+\footnotesize
+\key{Both cells of the MT row are measured --- one in the negative.}
+
+\smallskip
+\begin{tabular}{@{}p{0.94\textwidth}@{}}
+\toprule
+\bad{MT, tile-major $\rightarrow$ PACKED} (2026-08-17, NT MT32x32x64): without the packed
+treatment every NT split kernel read region~0's bytes for half its tiles. \\
+\midrule
+\good{MT, unroll-major $\rightarrow$ CONTIGUOUS} (2026-08-16): \emph{adding} a region term here
+regressed 82 passing kernels, 110 failures $\rightarrow$ 192. \\
+\bottomrule
+\end{tabular}
+
+\smallskip
+Same axis, two layouts, opposite treatment. \bad{Generalising either measurement to the other
+layout is the defect.}
+\end{column}
+\end{columns}
+\end{frame}

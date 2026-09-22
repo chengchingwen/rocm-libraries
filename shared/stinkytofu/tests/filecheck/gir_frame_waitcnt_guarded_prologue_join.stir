@@ -1,0 +1,43 @@
+# RUN: %stinkytofu-opt --arch gfx1250 %s --GirWaitCntInsertionPass --print-output
+#
+# The prefetch guard: a short trip SKIPS the last peeled copy, so the two arms reach ^join with the
+# generation at DIFFERENT phases.  That is a phi, and the two `incoming` records are how the
+# contract states it -- one per arm, each naming the phase its predecessor delivers.
+#
+# The read in ^join consumes generation 0 either way, so the arm that filled it must be waited on
+# and the arm that did not must not invent a wait it cannot discharge.
+#
+# CHECK-LABEL: @gir_frame_waitcnt_guarded_prologue_join
+# CHECK: ^peel:
+# CHECK: tensor_load_to_lds
+# CHECK: ^skip:
+# CHECK-NOT: tensor_load_to_lds
+# CHECK: ^join:
+# CHECK-NEXT: "st.s_wait_tensorcnt"(0)
+# CHECK-SAME: tlcnt = 0
+# CHECK-NEXT: ds_load_b64
+
+st.metadata "gir.frame_contract" {
+gir-frame-contract
+
+gen 0  ring=2 entry=0 advance=0
+
+incoming  dst=2 src=0 gen=0 value=0
+incoming  dst=2 src=1 gen=0 value=0
+}
+
+st.func @gir_frame_waitcnt_guarded_prologue_join() {
+^entry:
+  "st.s_cbranch_scc1"("skip", SCC0)
+  Successors: ^peel, ^skip
+^peel:
+  "st.tensor_load_to_lds"(s[0:3], s[10:17]) { mod.gir_action = { action = 0, anchor = 0, kind = copy, access0_write = 1, access0_operand = A, access0_ring = 2, access0_gen = 0 } }
+  "st.s_branch"("join")
+  Successors: ^join
+^skip:
+  "st.s_nop"(0) { mod.gir_action = { action = 1, anchor = 1, kind = other } }
+  "st.s_branch"("join")
+  Successors: ^join
+^join:
+  v[0:1] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 0, gds = false }, mod.gir_action = { action = 2, anchor = 2, kind = read, access0_write = 0, access0_operand = A, access0_ring = 2, access0_gen = 0 } }
+}

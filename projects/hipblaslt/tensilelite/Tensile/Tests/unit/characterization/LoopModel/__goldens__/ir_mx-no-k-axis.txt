@@ -1,0 +1,304 @@
+=== LoopIR ===
+
+# rolled theta-nest IR (the stored IR; render_stream(unroll=True) for the interleaved view)
+  if T > 1:  # peel-validity: enter the software-pipelined body; the predicate beside this note is the authority -- emit.py emits a STRICT `T > M`, so the arm runs at T >= M+1)
+    # --- PROLOGUE (peel 1 of iter) ---
+    iter = -1:  # peel-step chunk binding
+      await   A+B:shared:copy  on copy@wave  <crossing-RAW>   # A resident
+      tdm     A[M_inner0..1]+B[N_inner0..1] -> shared[buf0]     8192B   # copy
+      await   MXSA+MXSB:shared:copy  on copy@wave  <crossing-RAW>   # MXSA resident
+      tdm     MXSA[M_inner0..1]+MXSB[N_inner0..1] -> shared[buf0]      512B   # copy
+    await   A+B@global:iter  on copy@block  <RAW-residency>   # A resident
+    ds_read A[M_inner0]        -> register[buf0]<-lds[buf0] 16reg   # read
+    await   MXSA+MXSB@global:iter  on copy@block  <RAW-residency>   # MXSA resident
+    ds_read MXSA[M_inner0]     -> register[buf0]<-lds[buf0] 1reg   # read
+    ds_read A[M_inner1]        -> register[buf1]<-lds[buf0] 16reg   # read
+    ds_read MXSA[M_inner1]     -> register[buf1]<-lds[buf0] 1reg   # read
+    for iter while (iter < T-1):
+      await   A:shared:lastread  on read@wave  <rotation-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+      await   A+B:shared:copy  on copy@wave  <crossing-RAW>   # A resident
+      await   B:shared:lastread  on read@wave  <rotation-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+      tdm     A[M_inner0..1]+B[N_inner0..1] -> shared[buf(iter+1)%2]     8192B   # copy
+      await   MXSA:shared:lastread  on read@wave  <rotation-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+      await   MXSA+MXSB:shared:copy  on copy@wave  <crossing-RAW>   # MXSA resident
+      await   MXSB:shared:lastread  on read@wave  <rotation-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+      tdm     MXSA[M_inner0..1]+MXSB[N_inner0..1] -> shared[buf(iter+1)%2]      512B   # copy
+      M_inner = 0:  # sub-body
+        for N_inner in range(2):
+          await   B:g0:lastread  on read@block  <inplace-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+          await   A+B@global:iter  on copy@block  <RAW-residency>   # B resident
+          ds_read B[N_inner]         -> register[buf0]<-lds[buf(iter+(N_inner)//2)%2] 16reg   # read
+          await   MXSB:g0:lastread  on read@block  <inplace-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+          await   MXSA+MXSB@global:iter  on copy@block  <RAW-residency>   # MXSB resident
+          ds_read MXSB[N_inner]      -> register[buf0]<-lds[buf(iter+(N_inner)//2)%2] 1reg   # read
+          await   A@shared  on read@block  <RAW-residency>   # A resident
+          await   MXSA@shared  on read@block  <RAW-residency>   # MXSA resident
+          await   B@shared  on read@block  <RAW-residency>   # B resident
+          await   MXSB@shared  on read@block  <RAW-residency>   # MXSB resident
+          wmma    C[m,n][M_inner,N_inner] += A[m,k]*B[n,k]  [*MXSA[m,k],MXSB[n,k]]  <- A=reg[buf(0+(M_inner)//1%2)%2], MXSA=reg[buf(0+(M_inner)//1%2)%2], B=reg[buf0], MXSB=reg[buf0]   # A(k)*B(k)
+        await   A:g0:lastread  on read@block  <inplace-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+        await   A+B@global:iter  on copy@block  <RAW-residency>   # A resident
+        ds_read A[M_inner=((0+(M_inner+2)//1)%2)] -> register[buf(0+(M_inner+2)//1%2)%2]<-lds[buf(iter+(M_inner+2)//2)%2] 16reg   # read  advance=2
+        await   MXSA:g0:lastread  on read@block  <inplace-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+        await   MXSA+MXSB@global:iter  on copy@block  <RAW-residency>   # MXSA resident
+        ds_read MXSA[M_inner=((0+(M_inner+2)//1)%2)] -> register[buf(0+(M_inner+2)//1%2)%2]<-lds[buf(iter+(M_inner+2)//2)%2] 1reg   # read  advance=2
+      M_inner = 1:  # sub-body
+        for N_inner in range(2):
+          await   A@shared  on read@block  <RAW-residency>   # A resident
+          await   MXSA@shared  on read@block  <RAW-residency>   # MXSA resident
+          await   B@shared  on read@block  <RAW-residency>   # B resident
+          await   MXSB@shared  on read@block  <RAW-residency>   # MXSB resident
+          wmma    C[m,n][M_inner,N_inner] += A[m,k]*B[n,k]  [*MXSA[m,k],MXSB[n,k]]  <- A=reg[buf(0+(M_inner)//1%2)%2], MXSA=reg[buf(0+(M_inner)//1%2)%2], B=reg[buf0], MXSB=reg[buf0]   # A(k)*B(k)
+        await   A:g0:lastread  on read@block  <inplace-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+        await   A+B@global:iter  on copy@block  <RAW-residency>   # A resident
+        ds_read A[M_inner=((0+(M_inner+2)//1)%2)] -> register[buf(0+(M_inner+2)//1%2)%2]<-lds[buf(iter+(M_inner+2)//2)%2] 16reg   # read  advance=2
+        await   MXSA:g0:lastread  on read@block  <inplace-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+        await   MXSA+MXSB@global:iter  on copy@block  <RAW-residency>   # MXSA resident
+        ds_read MXSA[M_inner=((0+(M_inner+2)//1)%2)] -> register[buf(0+(M_inner+2)//1%2)%2]<-lds[buf(iter+(M_inner+2)//2)%2] 1reg   # read  advance=2
+    # --- DRAIN (peel 1 of iter) ---
+    iter = T-1:  # peel-step chunk binding
+      M_inner = 0:  # sub-body
+        for N_inner in range(2):
+          await   B:g0:lastread  on read@block  <inplace-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+          await   A+B@global:iter  on copy@block  <RAW-residency>   # B resident
+          ds_read B[N_inner]         -> register[buf0]<-lds[buf(iter+(N_inner)//2)%2] 16reg   # read
+          await   MXSB:g0:lastread  on read@block  <inplace-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+          await   MXSA+MXSB@global:iter  on copy@block  <RAW-residency>   # MXSB resident
+          ds_read MXSB[N_inner]      -> register[buf0]<-lds[buf(iter+(N_inner)//2)%2] 1reg   # read
+          await   A@shared  on read@block  <RAW-residency>   # A resident
+          await   MXSA@shared  on read@block  <RAW-residency>   # MXSA resident
+          await   B@shared  on read@block  <RAW-residency>   # B resident
+          await   MXSB@shared  on read@block  <RAW-residency>   # MXSB resident
+          wmma    C[m,n][M_inner,N_inner] += A[m,k]*B[n,k]  [*MXSA[m,k],MXSB[n,k]]  <- A=reg[buf(0+(M_inner)//1%2)%2], MXSA=reg[buf(0+(M_inner)//1%2)%2], B=reg[buf0], MXSB=reg[buf0]   # A(k)*B(k)
+        if M_inner+2 < 2:  # read-ahead suppress: drop the substep that would read the out-of-bounds next chunk
+          await   A:g0:lastread  on read@block  <inplace-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+          await   A+B@global:iter  on copy@block  <RAW-residency>   # A resident
+          ds_read A[M_inner=((0+(M_inner+2)//1)%2)] -> register[buf(0+(M_inner+2)//1%2)%2]<-lds[buf(iter+(M_inner+2)//2)%2] 16reg   # read  advance=2
+        if M_inner+2 < 2:  # read-ahead suppress: drop the substep that would read the out-of-bounds next chunk
+          await   MXSA:g0:lastread  on read@block  <inplace-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+          await   MXSA+MXSB@global:iter  on copy@block  <RAW-residency>   # MXSA resident
+          ds_read MXSA[M_inner=((0+(M_inner+2)//1)%2)] -> register[buf(0+(M_inner+2)//1%2)%2]<-lds[buf(iter+(M_inner+2)//2)%2] 1reg   # read  advance=2
+      M_inner = 1:  # sub-body
+        for N_inner in range(2):
+          await   A@shared  on read@block  <RAW-residency>   # A resident
+          await   MXSA@shared  on read@block  <RAW-residency>   # MXSA resident
+          await   B@shared  on read@block  <RAW-residency>   # B resident
+          await   MXSB@shared  on read@block  <RAW-residency>   # MXSB resident
+          wmma    C[m,n][M_inner,N_inner] += A[m,k]*B[n,k]  [*MXSA[m,k],MXSB[n,k]]  <- A=reg[buf(0+(M_inner)//1%2)%2], MXSA=reg[buf(0+(M_inner)//1%2)%2], B=reg[buf0], MXSB=reg[buf0]   # A(k)*B(k)
+        if M_inner+2 < 2:  # read-ahead suppress: drop the substep that would read the out-of-bounds next chunk
+          await   A:g0:lastread  on read@block  <inplace-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+          await   A+B@global:iter  on copy@block  <RAW-residency>   # A resident
+          ds_read A[M_inner=((0+(M_inner+2)//1)%2)] -> register[buf(0+(M_inner+2)//1%2)%2]<-lds[buf(iter+(M_inner+2)//2)%2] 16reg   # read  advance=2
+        if M_inner+2 < 2:  # read-ahead suppress: drop the substep that would read the out-of-bounds next chunk
+          await   MXSA:g0:lastread  on read@block  <inplace-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+          await   MXSA+MXSB@global:iter  on copy@block  <RAW-residency>   # MXSA resident
+          ds_read MXSA[M_inner=((0+(M_inner+2)//1)%2)] -> register[buf(0+(M_inner+2)//1%2)%2]<-lds[buf(iter+(M_inner+2)//2)%2] 1reg   # read  advance=2
+  else:  # short-loop: T is below the peel depth, so the prologue meets the drain
+    iter = 0:  # peel-step chunk binding
+      await   A+B:shared:copy  on copy@wave  <crossing-RAW>   # A resident
+      tdm     A[M_inner0..1]+B[N_inner0..1] -> shared[buf0]     8192B   # copy
+      await   MXSA+MXSB:shared:copy  on copy@wave  <crossing-RAW>   # MXSA resident
+      tdm     MXSA[M_inner0..1]+MXSB[N_inner0..1] -> shared[buf0]      512B   # copy
+      M_inner = 0:  # sub-body
+        await   A:g0:lastread  on read@block  <inplace-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+        await   A+B@global:iter  on copy@block  <RAW-residency>   # A resident
+        ds_read A[M_inner]         -> register[buf(0+(M_inner)//1%2)%2]<-lds[buf(iter+(M_inner)//2)%2] 16reg   # read
+        await   MXSA:g0:lastread  on read@block  <inplace-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+        await   MXSA+MXSB@global:iter  on copy@block  <RAW-residency>   # MXSA resident
+        ds_read MXSA[M_inner]      -> register[buf(0+(M_inner)//1%2)%2]<-lds[buf(iter+(M_inner)//2)%2] 1reg   # read
+        for N_inner in range(2):
+          await   B:g0:lastread  on read@block  <inplace-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+          await   A+B@global:iter  on copy@block  <RAW-residency>   # B resident
+          ds_read B[N_inner]         -> register[buf0]<-lds[buf(iter+(N_inner)//2)%2] 16reg   # read
+          await   MXSB:g0:lastread  on read@block  <inplace-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+          await   MXSA+MXSB@global:iter  on copy@block  <RAW-residency>   # MXSB resident
+          ds_read MXSB[N_inner]      -> register[buf0]<-lds[buf(iter+(N_inner)//2)%2] 1reg   # read
+          await   A@shared  on read@block  <RAW-residency>   # A resident
+          await   MXSA@shared  on read@block  <RAW-residency>   # MXSA resident
+          await   B@shared  on read@block  <RAW-residency>   # B resident
+          await   MXSB@shared  on read@block  <RAW-residency>   # MXSB resident
+          wmma    C[m,n][M_inner,N_inner] += A[m,k]*B[n,k]  [*MXSA[m,k],MXSB[n,k]]  <- A=reg[buf(0+(M_inner)//1%2)%2], MXSA=reg[buf(0+(M_inner)//1%2)%2], B=reg[buf0], MXSB=reg[buf0]   # A(k)*B(k)
+      M_inner = 1:  # sub-body
+        await   A:g0:lastread  on read@block  <inplace-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+        await   A+B@global:iter  on copy@block  <RAW-residency>   # A resident
+        ds_read A[M_inner]         -> register[buf(0+(M_inner)//1%2)%2]<-lds[buf(iter+(M_inner)//2)%2] 16reg   # read
+        await   MXSA:g0:lastread  on read@block  <inplace-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+        await   MXSA+MXSB@global:iter  on copy@block  <RAW-residency>   # MXSA resident
+        ds_read MXSA[M_inner]      -> register[buf(0+(M_inner)//1%2)%2]<-lds[buf(iter+(M_inner)//2)%2] 1reg   # read
+        for N_inner in range(2):
+          await   A@shared  on read@block  <RAW-residency>   # A resident
+          await   MXSA@shared  on read@block  <RAW-residency>   # MXSA resident
+          await   B@shared  on read@block  <RAW-residency>   # B resident
+          await   MXSB@shared  on read@block  <RAW-residency>   # MXSB resident
+          wmma    C[m,n][M_inner,N_inner] += A[m,k]*B[n,k]  [*MXSA[m,k],MXSB[n,k]]  <- A=reg[buf(0+(M_inner)//1%2)%2], MXSA=reg[buf(0+(M_inner)//1%2)%2], B=reg[buf0], MXSB=reg[buf0]   # A(k)*B(k)
+
+=== GIR ===
+
+Program(entry=prologue, peel_depth=1, buffer_depths=A=[g0:2] | B=[g0:1] | MXSA=[g0:2] | MXSB=[g0:1], order=['M_inner', 'N_inner'])
+# fused copies: A+B, MXSA+MXSB
+# wave-distributed operands: A, B, MXSA, MXSB   (their cross-wave obligations are block-scoped)
+# axis extents: M_inner=2, N_inner=2   summation=   mma inputs=A,B
+# short-loop (T <= M) arm: 1 chunk steps, guards [unguarded]
+#   FOLDED into the drain chain: every def-use pairing survives the reordering (12 corresponded instructions, 6 extra on the folded path)
+#   OBLIGATION ON THE SCAFFOLD: the folded drain chain must be enterable at step M-T, not only at step 0 -- the short arm's `T > t` guards have no counterpart on a single-entry chain (G3/; TensileLite's NoGlobalLoadLoop_k selection supplies this today)
+#   The prologue block sits OUTSIDE the peel-validity guard; the guard's false edge targets drain0.
+# frame token rule: relative token=(frame+gdelta)%ring; absolute generations ignore frame
+# frame topology: divergent entrances in drain0
+
+Block prologue  chunk_base=0  path_chunk_base={}  succs=('steady', 'drain0'):
+  copy  A.global+B.global -> A.shared[gen@0]+B.shared[gen@0]  dep=0,2 tok=('lds', ('A', 'B'), (0,))  deps[crossing-RAW:A+B:shared:copy@C_copy]
+  Mark  gr_increment {'unit': ('A', 'B'), 'chunks': 1, 'to_chunk': 1}
+  Mark  swap {'hop': 'copy', 'gen_from': 0, 'gen_to': 1, 'unit': ('A', 'B'), 'steps': 1}
+  copy  MXSA.global+MXSB.global -> MXSA.shared[gen@0]+MXSB.shared[gen@0]  dep=4,6 tok=('lds', ('MXSA', 'MXSB'), (0,))  deps[crossing-RAW:MXSA+MXSB:shared:copy@C_copy]
+  Mark  gr_increment {'unit': ('MXSA', 'MXSB'), 'chunks': 1, 'to_chunk': 1}
+  Mark  swap {'hop': 'copy', 'gen_from': 0, 'gen_to': 1, 'unit': ('MXSA', 'MXSB'), 'steps': 1}
+  Mark  phase_boundary {'phase': 'prologue'}
+  Mark  waitcnt {'tensorcnt': 1, 'hazard': 'RAW', 'from': 'A', 'frames': 2, 'frame_relations': 2, 'frame_ranks': (1,)}
+    frame: RAW tensorcnt rank=1 gap=0 scope=block  prologue[0]:A.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 abs=0/R2=>tok0 regions=() advance=0 -> prologue[11]:A.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 abs=0/R2=>tok0 regions=() advance=0 x2
+  Mark  fence {'buffers': ('A',), 'scope': 'block', 'kinds': ('RAW',), 'edges': 2, 'no_waitcnt': True, 'frame_relations': 2, 'frame_ranks': ()}
+    frame: RAW fence rank=- gap=0 scope=block  prologue[0]:A.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 abs=0/R2=>tok0 regions=() advance=0 -> prologue[3]:A.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 abs=0/R2=>tok0 regions=() advance=0 x2
+  read  A.shared{M_inner0}[gen@0] -> A.register{M_inner0}[reg(g0,s0,u0/W2)]  dep=0 tok=('lds', ('A', 'B'), (0,))  deps[RAW-residency:A+B@global:iter@C_copy/block]
+  Mark  waitcnt {'tensorcnt': 0, 'hazard': 'RAW', 'from': 'MXSA', 'frames': 2, 'frame_relations': 2, 'frame_ranks': (0,)}
+    frame: RAW tensorcnt rank=0 gap=0 scope=block  prologue[3]:MXSA.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 abs=0/R2=>tok0 regions=() advance=0 -> prologue[10]:MXSA.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 abs=0/R2=>tok0 regions=() advance=0 x2
+  Mark  fence {'buffers': ('MXSA',), 'scope': 'block', 'kinds': ('RAW',), 'edges': 2, 'no_waitcnt': True, 'frame_relations': 2, 'frame_ranks': ()}
+    frame: RAW fence rank=- gap=0 scope=block  prologue[1]:MXSA.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 abs=0/R2=>tok0 regions=() advance=0 -> prologue[4]:MXSA.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 abs=0/R2=>tok0 regions=() advance=0 x2
+  read  MXSA.shared{M_inner0}[gen@0] -> MXSA.register{M_inner0}[reg(g0,s0,u0/W2)]  dep=4 tok=('lds', ('MXSA', 'MXSB'), (0,))  deps[RAW-residency:MXSA+MXSB@global:iter@C_copy/block]
+  read  A.shared{M_inner1}[gen@0] -> A.register{M_inner1}[reg(g0,s1,u0/W2)]  dep=0 tok=('lds', ('A', 'B'), (0,))
+  Mark  swap {'hop': 'read', 'gen_from': 0, 'gen_to': 1, 'operand': 'A', 'steps': 1}
+  read  MXSA.shared{M_inner1}[gen@0] -> MXSA.register{M_inner1}[reg(g0,s1,u0/W2)]  dep=4 tok=('lds', ('MXSA', 'MXSB'), (0,))
+  Mark  swap {'hop': 'read', 'gen_from': 0, 'gen_to': 1, 'operand': 'MXSA', 'steps': 1}
+  term: CondGoto('T > 1' [toPGR1] -> steady, else drain0)
+
+Block steady  loop=True  gen_rel=0  chunk_base=0  path_chunk_base={}  preds=('prologue', 'steady')  succs=('steady', 'drain0'):
+  phi:  gen0:A/r0 = phi(prologue:0, steady:forward) ring=2
+  phi:  gen1:B/r0 = phi(prologue:0, steady:forward) ring=2
+  phi:  gen2:MXSA/r0 = phi(prologue:0, steady:forward) ring=2
+  phi:  gen3:MXSB/r0 = phi(prologue:0, steady:forward) ring=2
+  Mark  fence {'buffers': ('A',), 'scope': 'block', 'kinds': ('WAR',), 'edges': 2, 'no_waitcnt': True, 'frame_relations': 2, 'frame_ranks': ()}
+    frame: WAR fence rank=- gap=2 scope=block  prologue[3]:A.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 abs=0/R2=>tok0 regions=() advance=0 -> steady[0]:A.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=0 x2
+  copy  A.global+B.global -> A.shared[gen#0[v+1]]+B.shared[gen#1[v+1]]  dep=1,3 tok=('lds', ('A', 'B'), (1,))  deps[rotation-WAR:A:shared:lastread@C_read, crossing-RAW:A+B:shared:copy@C_copy, rotation-WAR:B:shared:lastread@C_read]
+  Mark  fence {'buffers': ('MXSA',), 'scope': 'block', 'kinds': ('WAR',), 'edges': 2, 'no_waitcnt': True, 'frame_relations': 2, 'frame_ranks': ()}
+    frame: WAR fence rank=- gap=2 scope=block  prologue[4]:MXSA.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 abs=0/R2=>tok0 regions=() advance=0 -> steady[1]:MXSA.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=0 x2
+  Mark  gr_increment {'unit': ('A', 'B'), 'chunks': 1, 'to_chunk': 2}
+  Mark  swap {'hop': 'copy', 'gen_from': 1, 'gen_to': 0, 'unit': ('A', 'B'), 'steps': 1}
+  copy  MXSA.global+MXSB.global -> MXSA.shared[gen#2[v+1]]+MXSB.shared[gen#3[v+1]]  dep=5,7 tok=('lds', ('MXSA', 'MXSB'), (1,))  deps[rotation-WAR:MXSA:shared:lastread@C_read, crossing-RAW:MXSA+MXSB:shared:copy@C_copy, rotation-WAR:MXSB:shared:lastread@C_read]
+  Mark  gr_increment {'unit': ('MXSA', 'MXSB'), 'chunks': 1, 'to_chunk': 2}
+  Mark  swap {'hop': 'copy', 'gen_from': 1, 'gen_to': 0, 'unit': ('MXSA', 'MXSB'), 'steps': 1}
+  Mark  phase_boundary {'phase': 'steady'}
+  Mark  fence {'buffers': ('B',), 'scope': 'block', 'kinds': ('RAW',), 'edges': 2, 'no_waitcnt': True, 'frame_relations': 2, 'frame_ranks': ()}
+    frame: RAW fence rank=- gap=1 scope=block  prologue[0]:B.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 abs=0/R2=>tok0 regions=() advance=0 -> steady[3]:B.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=0/R2=>tok0 regions=() advance=0 x2
+  read  B.shared{N_inner0}[gen#1[v]] -> B.register{N_inner0}[reg(g0,s0,u0/W1)]  dep=2 tok=('lds', ('A', 'B'), (0,))  deps[inplace-WAR:B:g0:lastread@C_read/block, RAW-residency:A+B@global:iter@C_copy/block]
+  Mark  fence {'buffers': ('MXSB',), 'scope': 'block', 'kinds': ('RAW',), 'edges': 2, 'no_waitcnt': True, 'frame_relations': 2, 'frame_ranks': ()}
+    frame: RAW fence rank=- gap=1 scope=block  prologue[1]:MXSB.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 abs=0/R2=>tok0 regions=() advance=0 -> steady[4]:MXSB.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=0/R2=>tok0 regions=() advance=0 x2
+  read  MXSB.shared{N_inner0}[gen#3[v]] -> MXSB.register{N_inner0}[reg(g0,s0,u0/W1)]  dep=6 tok=('lds', ('MXSA', 'MXSB'), (0,))  deps[inplace-WAR:MXSB:g0:lastread@C_read/block, RAW-residency:MXSA+MXSB@global:iter@C_copy/block]
+  Mark  waitcnt {'dscnt': 0, 'hazard': 'RAW', 'from': 'MXSB', 'frames': 16, 'frame_relations': 4, 'frame_ranks': (0, 1, 10, 11)}
+    frame: RAW dscnt rank=10 gap=1 scope=wave  prologue[10]:MXSA.register frame=- gdelta=0/R2=>tok0 regions=() advance=0 -> steady[13]:MXSA.register frame=- gdelta=0/R2=>tok0 regions=() advance=0
+    frame: RAW dscnt rank=11 gap=1 scope=wave  prologue[8]:A.register frame=- gdelta=0/R2=>tok0 regions=() advance=0 -> steady[13]:A.register frame=- gdelta=0/R2=>tok0 regions=() advance=0
+    frame: RAW dscnt rank=1 gap=0 scope=wave  steady[10]:B.register frame=- gdelta=0/R1=>tok0 regions=() advance=0 -> steady[13]:B.register frame=- gdelta=0/R1=>tok0 regions=() advance=0
+    frame: RAW dscnt rank=0 gap=0 scope=wave  steady[12]:MXSB.register frame=- gdelta=0/R1=>tok0 regions=() advance=0 -> steady[13]:MXSB.register frame=- gdelta=0/R1=>tok0 regions=() advance=0
+  mma   acc.register{M_inner0,N_inner0} += A.register{M_inner0}[reg(g0,s0,u0/W2)],B.register{N_inner0}[reg(g0,s0,u0/W1)],MXSA.register{M_inner0}[reg(g0,s0,u0/W2)],MXSB.register{N_inner0}[reg(g0,s0,u0/W1)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read/block, RAW-residency:MXSA@shared@C_read/block, RAW-residency:B@shared@C_read/block, RAW-residency:MXSB@shared@C_read/block]
+  read  B.shared{N_inner1}[gen#1[v]] -> B.register{N_inner1}[reg(g0,s0,u1/W1)]  dep=2 tok=('lds', ('A', 'B'), (0,))  deps[inplace-WAR:B:g0:lastread@C_read/block, RAW-residency:A+B@global:iter@C_copy/block]
+  read  MXSB.shared{N_inner1}[gen#3[v]] -> MXSB.register{N_inner1}[reg(g0,s0,u1/W1)]  dep=6 tok=('lds', ('MXSA', 'MXSB'), (0,))  deps[inplace-WAR:MXSB:g0:lastread@C_read/block, RAW-residency:MXSA+MXSB@global:iter@C_copy/block]
+  Mark  waitcnt {'dscnt': 0, 'hazard': 'RAW', 'from': 'MXSB', 'frames': 12, 'frame_relations': 2, 'frame_ranks': (0, 1)}
+    frame: RAW dscnt rank=1 gap=0 scope=wave  steady[14]:B.register frame=- gdelta=0/R1=>tok0 regions=() advance=0 -> steady[16]:B.register frame=- gdelta=0/R1=>tok0 regions=() advance=0
+    frame: RAW dscnt rank=0 gap=0 scope=wave  steady[15]:MXSB.register frame=- gdelta=0/R1=>tok0 regions=() advance=0 -> steady[16]:MXSB.register frame=- gdelta=0/R1=>tok0 regions=() advance=0
+  mma   acc.register{M_inner0,N_inner1} += A.register{M_inner0}[reg(g0,s0,u0/W2)],B.register{N_inner1}[reg(g0,s0,u1/W1)],MXSA.register{M_inner0}[reg(g0,s0,u0/W2)],MXSB.register{N_inner1}[reg(g0,s0,u1/W1)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read/block, RAW-residency:MXSA@shared@C_read/block, RAW-residency:B@shared@C_read/block, RAW-residency:MXSB@shared@C_read/block]
+  Mark  waitcnt {'tensorcnt': 1, 'hazard': 'RAW', 'from': 'A', 'frames': 6, 'frame_relations': 4, 'frame_ranks': (1,)}
+    frame: RAW tensorcnt rank=1 gap=0 scope=block  steady[1]:A.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=0 -> steady[18]:A.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=2 x2
+    frame: RAW tensorcnt rank=1 gap=0 scope=block  steady[1]:A.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=0 -> steady[18]:A.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=2 x2
+  Mark  fence {'buffers': ('A',), 'scope': 'block', 'kinds': ('RAW',), 'edges': 2, 'no_waitcnt': True, 'frame_relations': 4, 'frame_ranks': ()}
+    frame: RAW fence rank=- gap=0 scope=block  steady[0]:A.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=0 -> steady[9]:A.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=2 x2
+    frame: RAW fence rank=- gap=0 scope=block  steady[0]:A.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=0 -> steady[9]:A.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=2 x2
+  read  A.shared{M_inner0}[gen#0[v+1]] -> A.register{M_inner0}[reg(g0,s0,u0/W2)]  dep=1 tok=('lds', ('A', 'B'), (1,))  deps[inplace-WAR:A:g0:lastread@C_read/block, RAW-residency:A+B@global:iter@C_copy/block]
+  Mark  waitcnt {'tensorcnt': 0, 'hazard': 'RAW', 'from': 'MXSA', 'frames': 6, 'frame_relations': 4, 'frame_ranks': (0,)}
+    frame: RAW tensorcnt rank=0 gap=0 scope=block  steady[5]:MXSA.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=0 -> steady[20]:MXSA.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=2 x2
+    frame: RAW tensorcnt rank=0 gap=0 scope=block  steady[5]:MXSA.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=0 -> steady[20]:MXSA.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=2 x2
+  Mark  fence {'buffers': ('MXSA',), 'scope': 'block', 'kinds': ('RAW',), 'edges': 2, 'no_waitcnt': True, 'frame_relations': 4, 'frame_ranks': ()}
+    frame: RAW fence rank=- gap=0 scope=block  steady[1]:MXSA.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=0 -> steady[10]:MXSA.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=2 x2
+    frame: RAW fence rank=- gap=0 scope=block  steady[1]:MXSA.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=0 -> steady[10]:MXSA.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=2 x2
+  read  MXSA.shared{M_inner0}[gen#2[v+1]] -> MXSA.register{M_inner0}[reg(g0,s0,u0/W2)]  dep=5 tok=('lds', ('MXSA', 'MXSB'), (1,))  deps[inplace-WAR:MXSA:g0:lastread@C_read/block, RAW-residency:MXSA+MXSB@global:iter@C_copy/block]
+  Mark  swap {'hop': 'read', 'gen_from': 0, 'gen_to': 1, 'operand': 'MXSB', 'steps': 1}
+  Mark  swap {'hop': 'read', 'gen_from': 0, 'gen_to': 1, 'operand': 'B', 'steps': 1}
+  mma   acc.register{M_inner1,N_inner0} += A.register{M_inner1}[reg(g0,s1,u0/W2)],B.register{N_inner0}[reg(g0,s0,u0/W1)],MXSA.register{M_inner1}[reg(g0,s1,u0/W2)],MXSB.register{N_inner0}[reg(g0,s0,u0/W1)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read/block, RAW-residency:MXSA@shared@C_read/block, RAW-residency:B@shared@C_read/block, RAW-residency:MXSB@shared@C_read/block]
+  mma   acc.register{M_inner1,N_inner1} += A.register{M_inner1}[reg(g0,s1,u0/W2)],B.register{N_inner1}[reg(g0,s0,u1/W1)],MXSA.register{M_inner1}[reg(g0,s1,u0/W2)],MXSB.register{N_inner1}[reg(g0,s0,u1/W1)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read/block, RAW-residency:MXSA@shared@C_read/block, RAW-residency:B@shared@C_read/block, RAW-residency:MXSB@shared@C_read/block]
+  read  A.shared{M_inner1}[gen#0[v+1]] -> A.register{M_inner1}[reg(g0,s1,u0/W2)]  dep=1 tok=('lds', ('A', 'B'), (1,))  deps[inplace-WAR:A:g0:lastread@C_read/block, RAW-residency:A+B@global:iter@C_copy/block]
+  Mark  swap {'hop': 'read', 'gen_from': 1, 'gen_to': 0, 'operand': 'A', 'steps': 1}
+  read  MXSA.shared{M_inner1}[gen#2[v+1]] -> MXSA.register{M_inner1}[reg(g0,s1,u0/W2)]  dep=5 tok=('lds', ('MXSA', 'MXSB'), (1,))  deps[inplace-WAR:MXSA:g0:lastread@C_read/block, RAW-residency:MXSA+MXSB@global:iter@C_copy/block]
+  Mark  waitcnt {'dscnt': 0, 'hazard': 'WAR', 'from': 'MXSA', 'frames': 6, 'frame_relations': 4, 'frame_ranks': (0, 5)}
+    frame: WAR dscnt rank=5 gap=2 scope=block  steady[20]:MXSA.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=2 -> steady[5]:MXSA.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=0
+    frame: WAR dscnt rank=5 gap=2 scope=block  steady[20]:MXSA.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=2 -> steady[5]:MXSA.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=0
+    frame: WAR dscnt rank=0 gap=2 scope=block  steady[27]:MXSA.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=2 -> steady[5]:MXSA.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=0
+    frame: WAR dscnt rank=0 gap=2 scope=block  steady[27]:MXSA.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=2 -> steady[5]:MXSA.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=0
+  Mark  fence {'buffers': ('MXSA', 'MXSB'), 'scope': 'block', 'kinds': ('RAW', 'WAR'), 'edges': 6, 'no_waitcnt': True, 'frame_relations': 12, 'frame_ranks': ()}
+    frame: WAR fence rank=- gap=2 scope=block  steady[10]:MXSA.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=2 -> steady[1]:MXSA.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=0 x2
+    frame: WAR fence rank=- gap=1 scope=block  steady[4]:MXSB.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=0/R2=>tok1 regions=() advance=0 -> steady[1]:MXSB.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=0 x2
+    frame: RAW fence rank=- gap=1 scope=block  steady[1]:MXSB.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=0 -> steady[4]:MXSB.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=0/R2=>tok0 regions=() advance=0 x2
+    frame: WAR fence rank=- gap=2 scope=block  steady[10]:MXSA.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=2 -> steady[1]:MXSA.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=0 x2
+    frame: WAR fence rank=- gap=1 scope=block  steady[4]:MXSB.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=0/R2=>tok0 regions=() advance=0 -> steady[1]:MXSB.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=0 x2
+    frame: RAW fence rank=- gap=1 scope=block  steady[1]:MXSB.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=0 -> steady[4]:MXSB.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=0/R2=>tok1 regions=() advance=0 x2
+  Mark  fence {'buffers': ('A', 'B'), 'scope': 'block', 'kinds': ('RAW', 'WAR'), 'edges': 6, 'no_waitcnt': True, 'frame_relations': 12, 'frame_ranks': ()}
+    frame: WAR fence rank=- gap=2 scope=block  steady[9]:A.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=2 -> steady[0]:A.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=0 x2
+    frame: WAR fence rank=- gap=1 scope=block  steady[3]:B.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=0/R2=>tok1 regions=() advance=0 -> steady[0]:B.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=0 x2
+    frame: RAW fence rank=- gap=1 scope=block  steady[0]:B.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=0 -> steady[3]:B.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=0/R2=>tok0 regions=() advance=0 x2
+    frame: WAR fence rank=- gap=2 scope=block  steady[9]:A.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=2 -> steady[0]:A.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=0 x2
+    frame: WAR fence rank=- gap=1 scope=block  steady[3]:B.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=0/R2=>tok0 regions=() advance=0 -> steady[0]:B.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=0 x2
+    frame: RAW fence rank=- gap=1 scope=block  steady[0]:B.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=0 -> steady[3]:B.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=0/R2=>tok1 regions=() advance=0 x2
+  Mark  swap {'hop': 'read', 'gen_from': 1, 'gen_to': 0, 'operand': 'MXSA', 'steps': 1}
+  xfer: gen0:A/r0' = (v + 1) % 2
+  xfer: gen1:B/r0' = (v + 1) % 2
+  xfer: gen2:MXSA/r0' = (v + 1) % 2
+  xfer: gen3:MXSB/r0' = (v + 1) % 2
+  term: LoopBack(trips=T - 1 -> steady, exit drain0) [LoopEndL]
+
+Block drain0  gen_rel=-1  chunk_base=1  path_chunk_base={'prologue': 0}  preds=('prologue', 'steady')  succs=('end',):
+  phi:  gen1:B/r0 = phi(prologue:1, steady:forward) ring=2
+  phi:  gen3:MXSB/r0 = phi(prologue:1, steady:forward) ring=2
+  Mark  phase_boundary {'phase': 'drain0'}
+  Mark  fence {'buffers': ('B',), 'scope': 'block', 'kinds': ('RAW',), 'edges': 4, 'no_waitcnt': True, 'frame_relations': 6, 'frame_ranks': ()}
+    frame: RAW fence rank=- gap=1 scope=block  steady[0]:B.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=0 -> drain0[1]:B.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=-1/R2=>tok1 regions=() advance=0 x2
+    frame: RAW fence rank=- gap=1 scope=block  prologue[0]:B.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 abs=0/R2=>tok0 regions=() advance=0 -> drain0[1]:B.shared frame=A/r0=0 B/r0=1 MXSA/r0=0 MXSB/r0=1 gdelta=-1/R2=>tok0 regions=() advance=0 x2
+    frame: RAW fence rank=- gap=1 scope=block  steady[0]:B.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=0 -> drain0[1]:B.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=-1/R2=>tok0 regions=() advance=0 x2
+  read  B.shared{N_inner0}[gen#1[v+-1]] -> B.register{N_inner0}[reg(g0,s0,u0/W1)]  dep=3 tok=('lds', ('A', 'B'), (1,))  deps[inplace-WAR:B:g0:lastread@C_read/block, RAW-residency:A+B@global:iter@C_copy/block]
+  Mark  fence {'buffers': ('MXSB',), 'scope': 'block', 'kinds': ('RAW',), 'edges': 4, 'no_waitcnt': True, 'frame_relations': 6, 'frame_ranks': ()}
+    frame: RAW fence rank=- gap=1 scope=block  steady[1]:MXSB.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=1/R2=>tok1 regions=() advance=0 -> drain0[2]:MXSB.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 gdelta=-1/R2=>tok1 regions=() advance=0 x2
+    frame: RAW fence rank=- gap=1 scope=block  prologue[1]:MXSB.shared frame=A/r0=0 B/r0=0 MXSA/r0=0 MXSB/r0=0 abs=0/R2=>tok0 regions=() advance=0 -> drain0[2]:MXSB.shared frame=A/r0=0 B/r0=1 MXSA/r0=0 MXSB/r0=1 gdelta=-1/R2=>tok0 regions=() advance=0 x2
+    frame: RAW fence rank=- gap=1 scope=block  steady[1]:MXSB.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=1/R2=>tok0 regions=() advance=0 -> drain0[2]:MXSB.shared frame=A/r0=1 B/r0=1 MXSA/r0=1 MXSB/r0=1 gdelta=-1/R2=>tok0 regions=() advance=0 x2
+  read  MXSB.shared{N_inner0}[gen#3[v+-1]] -> MXSB.register{N_inner0}[reg(g0,s0,u0/W1)]  dep=7 tok=('lds', ('MXSA', 'MXSB'), (1,))  deps[inplace-WAR:MXSB:g0:lastread@C_read/block, RAW-residency:MXSA+MXSB@global:iter@C_copy/block]
+  Mark  waitcnt {'dscnt': 0, 'hazard': 'RAW', 'from': 'MXSB', 'frames': 12, 'frame_relations': 4, 'frame_ranks': (0, 1, 10, 11)}
+    frame: RAW dscnt rank=1 gap=0 scope=wave  drain0[2]:B.register frame=- gdelta=0/R1=>tok0 regions=() advance=0 -> drain0[5]:B.register frame=- gdelta=0/R1=>tok0 regions=() advance=0
+    frame: RAW dscnt rank=0 gap=0 scope=wave  drain0[4]:MXSB.register frame=- gdelta=0/R1=>tok0 regions=() advance=0 -> drain0[5]:MXSB.register frame=- gdelta=0/R1=>tok0 regions=() advance=0
+    frame: RAW dscnt rank=10 gap=1 scope=wave  prologue[10]:MXSA.register frame=- gdelta=0/R2=>tok0 regions=() advance=0 -> drain0[5]:MXSA.register frame=- gdelta=0/R2=>tok0 regions=() advance=0
+    frame: RAW dscnt rank=11 gap=1 scope=wave  prologue[8]:A.register frame=- gdelta=0/R2=>tok0 regions=() advance=0 -> drain0[5]:A.register frame=- gdelta=0/R2=>tok0 regions=() advance=0
+  mma   acc.register{M_inner0,N_inner0} += A.register{M_inner0}[reg(g0,s0,u0/W2)],B.register{N_inner0}[reg(g0,s0,u0/W1)],MXSA.register{M_inner0}[reg(g0,s0,u0/W2)],MXSB.register{N_inner0}[reg(g0,s0,u0/W1)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read/block, RAW-residency:MXSA@shared@C_read/block, RAW-residency:B@shared@C_read/block, RAW-residency:MXSB@shared@C_read/block]
+  read  B.shared{N_inner1}[gen#1[v+-1]] -> B.register{N_inner1}[reg(g0,s0,u1/W1)]  dep=3 tok=('lds', ('A', 'B'), (1,))  deps[inplace-WAR:B:g0:lastread@C_read/block, RAW-residency:A+B@global:iter@C_copy/block]
+  read  MXSB.shared{N_inner1}[gen#3[v+-1]] -> MXSB.register{N_inner1}[reg(g0,s0,u1/W1)]  dep=7 tok=('lds', ('MXSA', 'MXSB'), (1,))  deps[inplace-WAR:MXSB:g0:lastread@C_read/block, RAW-residency:MXSA+MXSB@global:iter@C_copy/block]
+  Mark  waitcnt {'dscnt': 0, 'hazard': 'RAW', 'from': 'MXSB', 'frames': 6, 'frame_relations': 2, 'frame_ranks': (0, 1)}
+    frame: RAW dscnt rank=1 gap=0 scope=wave  drain0[6]:B.register frame=- gdelta=0/R1=>tok0 regions=() advance=0 -> drain0[8]:B.register frame=- gdelta=0/R1=>tok0 regions=() advance=0
+    frame: RAW dscnt rank=0 gap=0 scope=wave  drain0[7]:MXSB.register frame=- gdelta=0/R1=>tok0 regions=() advance=0 -> drain0[8]:MXSB.register frame=- gdelta=0/R1=>tok0 regions=() advance=0
+  mma   acc.register{M_inner0,N_inner1} += A.register{M_inner0}[reg(g0,s0,u0/W2)],B.register{N_inner1}[reg(g0,s0,u1/W1)],MXSA.register{M_inner0}[reg(g0,s0,u0/W2)],MXSB.register{N_inner1}[reg(g0,s0,u1/W1)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read/block, RAW-residency:MXSA@shared@C_read/block, RAW-residency:B@shared@C_read/block, RAW-residency:MXSB@shared@C_read/block]
+  mma   acc.register{M_inner1,N_inner0} += A.register{M_inner1}[reg(g0,s1,u0/W2)],B.register{N_inner0}[reg(g0,s0,u0/W1)],MXSA.register{M_inner1}[reg(g0,s1,u0/W2)],MXSB.register{N_inner0}[reg(g0,s0,u0/W1)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read/block, RAW-residency:MXSA@shared@C_read/block, RAW-residency:B@shared@C_read/block, RAW-residency:MXSB@shared@C_read/block]
+  mma   acc.register{M_inner1,N_inner1} += A.register{M_inner1}[reg(g0,s1,u0/W2)],B.register{N_inner1}[reg(g0,s0,u1/W1)],MXSA.register{M_inner1}[reg(g0,s1,u0/W2)],MXSB.register{N_inner1}[reg(g0,s0,u1/W1)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read/block, RAW-residency:MXSA@shared@C_read/block, RAW-residency:B@shared@C_read/block, RAW-residency:MXSB@shared@C_read/block]
+  term: Goto(end)
+
+=== ledger ===
+
+Obligation(producer=Endpoint(op='A', at='g0', role='lastread', coord=(), gen=()), consumer=Endpoint(op='A', at='g0', role='refill', coord=(), gen=()), kind='inplace-WAR', counter='C_read')
+Obligation(producer=Endpoint(op='A', at='prologue', role='', coord=(('M_inner', 0),), gen=()), consumer=Endpoint(op='A', at='wmma', role='', coord=(('M_inner', 0),), gen=()), kind='readahead-residency', counter='C_read')
+Obligation(producer=Endpoint(op='A', at='prologue', role='', coord=(('M_inner', 1),), gen=()), consumer=Endpoint(op='A', at='wmma', role='', coord=(('M_inner', 1),), gen=()), kind='readahead-residency', counter='C_read')
+Obligation(producer=Endpoint(op='A', at='shared', role='', coord=(), gen=()), consumer=Endpoint(op='A', at='register', role='', coord=(), gen=()), kind='RAW-residency', counter='C_read')
+Obligation(producer=Endpoint(op='A', at='shared', role='lastread', coord=(), gen=()), consumer=Endpoint(op='A', at='shared', role='refill', coord=(), gen=()), kind='rotation-WAR', counter='C_read')
+Obligation(producer=Endpoint(op='B', at='g0', role='lastread', coord=(), gen=()), consumer=Endpoint(op='B', at='g0', role='refill', coord=(), gen=()), kind='inplace-WAR', counter='C_read')
+Obligation(producer=Endpoint(op='B', at='shared', role='', coord=(), gen=()), consumer=Endpoint(op='B', at='register', role='', coord=(), gen=()), kind='RAW-residency', counter='C_read')
+Obligation(producer=Endpoint(op='B', at='shared', role='lastread', coord=(), gen=()), consumer=Endpoint(op='B', at='shared', role='refill', coord=(), gen=()), kind='rotation-WAR', counter='C_read')
+Obligation(producer=Endpoint(op='MXSA', at='g0', role='lastread', coord=(), gen=()), consumer=Endpoint(op='MXSA', at='g0', role='refill', coord=(), gen=()), kind='inplace-WAR', counter='C_read')
+Obligation(producer=Endpoint(op='MXSA', at='prologue', role='', coord=(('M_inner', 0),), gen=()), consumer=Endpoint(op='MXSA', at='wmma', role='', coord=(('M_inner', 0),), gen=()), kind='readahead-residency', counter='C_read')
+Obligation(producer=Endpoint(op='MXSA', at='prologue', role='', coord=(('M_inner', 1),), gen=()), consumer=Endpoint(op='MXSA', at='wmma', role='', coord=(('M_inner', 1),), gen=()), kind='readahead-residency', counter='C_read')
+Obligation(producer=Endpoint(op='MXSA', at='shared', role='', coord=(), gen=()), consumer=Endpoint(op='MXSA', at='register', role='', coord=(), gen=()), kind='RAW-residency', counter='C_read')
+Obligation(producer=Endpoint(op='MXSA', at='shared', role='lastread', coord=(), gen=()), consumer=Endpoint(op='MXSA', at='shared', role='refill', coord=(), gen=()), kind='rotation-WAR', counter='C_read')
+Obligation(producer=Endpoint(op='MXSB', at='g0', role='lastread', coord=(), gen=()), consumer=Endpoint(op='MXSB', at='g0', role='refill', coord=(), gen=()), kind='inplace-WAR', counter='C_read')
+Obligation(producer=Endpoint(op='MXSB', at='shared', role='', coord=(), gen=()), consumer=Endpoint(op='MXSB', at='register', role='', coord=(), gen=()), kind='RAW-residency', counter='C_read')
+Obligation(producer=Endpoint(op='MXSB', at='shared', role='lastread', coord=(), gen=()), consumer=Endpoint(op='MXSB', at='shared', role='refill', coord=(), gen=()), kind='rotation-WAR', counter='C_read')
+Obligation(producer=Endpoint(op=('A', 'B'), at='global', role='', coord=(), gen=()), consumer=Endpoint(op=('A', 'B'), at='shared', role='', coord=(), gen=()), kind='RAW-residency', counter='C_copy')
+Obligation(producer=Endpoint(op=('A', 'B'), at='shared', role='copy', coord=(), gen=()), consumer=Endpoint(op=('A', 'B'), at='shared', role='crossing-read', coord=(), gen=()), kind='crossing-RAW', counter='C_copy')
+Obligation(producer=Endpoint(op=('MXSA', 'MXSB'), at='global', role='', coord=(), gen=()), consumer=Endpoint(op=('MXSA', 'MXSB'), at='shared', role='', coord=(), gen=()), kind='RAW-residency', counter='C_copy')
+Obligation(producer=Endpoint(op=('MXSA', 'MXSB'), at='shared', role='copy', coord=(), gen=()), consumer=Endpoint(op=('MXSA', 'MXSB'), at='shared', role='crossing-read', coord=(), gen=()), kind='crossing-RAW', counter='C_copy')

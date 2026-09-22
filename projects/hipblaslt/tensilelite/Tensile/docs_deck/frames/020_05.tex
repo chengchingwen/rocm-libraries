@@ -1,0 +1,35 @@
+\begin{frame}{Extent alone tells outer from inner --- one field, so a new loop level is not a new decoder branch}
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize]
+\node[wbox,minimum width=2.2cm,minimum height=0.95cm] (o1) {\tsub{(future)} grid tile\\\texttt{extent = 0}};
+\node[box,right=4pt of o1,minimum width=2.4cm,minimum height=0.95cm,draw=warn] (o2) {\bad{reduction chunk}\\\texttt{extent = 0}};
+\node[gbox,right=4pt of o2,minimum width=1.7cm,minimum height=0.95cm] (i1) {$m$\\\texttt{extent = 4}};
+\node[gbox,right=4pt of i1,minimum width=1.7cm,minimum height=0.95cm] (i2) {$n$\\\texttt{extent = 2}};
+\node[gbox,right=4pt of i2,minimum width=1.9cm,minimum height=0.95cm] (i3) {substep $k$\\\texttt{extent = 2}};
+\draw[decorate,decoration={brace,amplitude=4pt},draw=warn,thick]
+  (o1.south west) -- (o2.south east) node[midway,below=5pt,text=warn,font=\scriptsize\bfseries]{outer: runtime trip, real back edge, needs a peel};
+\draw[decorate,decoration={brace,amplitude=4pt},draw=ok,thick]
+  (i1.south west) -- (i3.south east) node[midway,below=5pt,text=ok,font=\scriptsize\bfseries]{inner: compile-time trip, fully unrolled};
+\node[above=2pt of i1,font=\scriptsize\itshape,text=gray] {\texttt{ord}: the full outer-to-inner permutation};
+\end{tikzpicture}
+\end{center}
+\vspace{6pt}
+\begin{columns}[T]
+\begin{column}{0.5\textwidth}
+\begin{itemize}\itemsep2pt
+\item Shared ring rotates \emph{across} the outer levels; register ring rotates \emph{inside} the inner ones.
+\item \texttt{ord} is a permutation $\Rightarrow$ any subset traverses as a \key{monotone mixed-radix counter};
+      a mode's stride is the product of the extents inner to it.
+\end{itemize}
+\end{column}
+\begin{column}{0.48\textwidth}
+\begin{tikzpicture}
+\node[wbox,text width=0.95\textwidth]{\bad{The reduction chunk is the \emph{innermost} outer level}, and five things
+key on it: shared ring depth, the read's shared-source rotation, the steady \texttt{Loop},
+the \texttt{Bind} the peel pins, and the peel depth at that level.\\[2pt]
+Before it was centralised, three call sites used \texttt{outer\_modes()[0]} and two used \texttt{[-1]}
+--- identical with one outer level, silently divergent the moment there are two.};
+\end{tikzpicture}
+\end{column}
+\end{columns}
+\end{frame}

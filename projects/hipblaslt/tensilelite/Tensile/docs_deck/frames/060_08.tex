@@ -1,0 +1,46 @@
+\begin{frame}{One read \emph{act} is N instructions spaced by the LANE INTERLEAVE --- not by the per-thread input count}
+\footnotesize
+A read \texttt{Move} names one \texttt{(tile, reduction substep)} act. Layer 3 realizes it as N \texttt{ds\_read}s,
+and both N and the \emph{spacing} are geometry GIR never sees. The natural guess --- ``this lane's elements are one
+contiguous run'' --- is wrong in the spacing: consecutive chunks are \key{LANE\_INTERLEAVE} chunk-widths apart,
+because the other lanes covering that K range each take a chunk in between.
+\[ \mathrm{unrollElems}(i,v) = (v + i\cdot n_{\mathrm{in}}\cdot \mathrm{LANE\_INTERLEAVE})\cdot \mathrm{vwTrLoad}
+\qquad \mathrm{LANE\_INTERLEAVE} = 2 = \tfrac{\mathrm{WavefrontSize}}{\mathrm{matrixInstTO}} \]
+\vspace{-3mm}
+\begin{columns}[T]
+\begin{column}{0.54\textwidth}
+\begin{center}\scriptsize
+\begin{tabular}{@{}lrrrrrrr@{}}
+\toprule
+shape & bw & bpe & lrvw & ipt & miK & $n_{\mathrm{in}}$ & $n_{\mathrm{out}}$\\
+\midrule
+bf16 LDS-tr & 4 & 2 & 8 & 16 & 32 & 1 & 2\\
+bf16 general & 4 & 2 & 8 & 16 & 32 & 1 & 2\\
+fp8 LDS-tr & 2 & 1 & 16 & 32 & 64 & 2 & 2\\
+\bad{fp8 general} & 4 & 1 & 16 & 64 & 128 & 1 & 4\\
+\bottomrule
+\end{tabular}
+\end{center}
+\tsub{Outer spacing $= n_{\mathrm{in}}\cdot\mathrm{LANE\_INTERLEAVE}\cdot\mathrm{vwTrLoad}$; the guess is
+\texttt{inputPerThUnroll}. They agree only when the chunk count equals the interleave --- \emph{every} bf16 shape
+and \emph{no} fp8 one.}
+\end{column}
+\begin{column}{0.46\textwidth}
+\textbf{bf16:} $1\cdot2\cdot8 = 16$ vs \texttt{ipt} $=16$ --- identical. The wrong rule passed every test for as long
+as bf16 was the only data type.\\[3pt]
+\textbf{fp8 general:}
+\begin{center}\ttfamily\scriptsize
+\good{correct} ((0,0),(32,4),(64,8),(96,12))\\
+\bad{guess\ \ } ((0,0),(64,4),(128,8),(192,12))
+\end{center}
+Three of four reads at the wrong K position. \bad{The registers still tile perfectly}, so a check that only
+verified ``no gap, no overlap in registers'' waves the wrong table through. Hence two independent checks, and a
+refusal rather than a plausible answer: \key{REGISTERS} \emph{and} \key{K EXTENT}
+($n_{\mathrm{out}} n_{\mathrm{in}} \mathrm{vwTrLoad}\cdot\mathrm{LI} = \mathrm{MatrixInstK}$).
+\end{column}
+\end{columns}
+\vspace{1mm}
+\tsub{Consequence for hazards: \texttt{Access.pos} is a position among \emph{acts}, not instructions. A fence
+between two acts is between all N fragments of each --- true for free, but only because a fence is never placed
+\emph{inside} an act.}
+\end{frame}

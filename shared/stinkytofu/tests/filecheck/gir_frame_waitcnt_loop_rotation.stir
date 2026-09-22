@@ -1,0 +1,43 @@
+# RUN: %stinkytofu-opt --arch gfx1250 %s --GirWaitCntInsertionPass --print-output
+#
+# GirWaitCntInsertionPass over a real pipelined loop: a ring-2 generation that ADVANCES once per
+# trip.  The loop's read is one generation behind its copy (`gdelta=1`), so it consumes the buffer
+# the PREVIOUS trip landed -- the wait it needs is on a copy that crossed the back edge, which is
+# the case a straight-line body cannot express.
+#
+# The `transfer` record is what rotates the phase across the back edge; the `incoming` record pins
+# the phase the prologue arm delivers.  Without them the two predecessors of ^loop disagree and no
+# single placement is correct.
+#
+# CHECK-LABEL: @gir_frame_waitcnt_loop_rotation
+# CHECK: ^loop:
+# CHECK-NEXT: "st.s_wait_dscnt"(0)
+# CHECK-SAME: dlcnt = 0
+# CHECK-NEXT: tensor_load_to_lds
+# CHECK-NEXT: "st.s_wait_tensorcnt"(0)
+# CHECK-SAME: tlcnt = 0
+# CHECK-NEXT: ds_load_b64
+# CHECK-NEXT: s_cbranch_scc1
+
+st.metadata "gir.frame_contract" {
+gir-frame-contract
+
+# one LDS double-buffer, entering at phase 0 and rotating one buffer per trip
+gen 0  ring=2 entry=0 advance=1
+
+incoming  dst=1 src=0 gen=0 value=0
+transfer  dst=1 src=1 gen=0 delta=1
+}
+
+st.func @gir_frame_waitcnt_loop_rotation() {
+^entry:
+  "st.tensor_load_to_lds"(s[0:3], s[10:17]) { mod.gir_action = { action = 0, anchor = 0, kind = copy, access0_write = 1, access0_operand = A, access0_ring = 2, access0_abs = 0 } }
+  "st.s_branch"("loop")
+  Successors: ^loop
+^loop:
+  "st.tensor_load_to_lds"(s[4:7], s[10:17]) { mod.gir_action = { action = 1, anchor = 1, kind = copy, access0_write = 1, access0_operand = A, access0_ring = 2, access0_gen = 0 } }
+  v[0:1] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 0, gds = false }, mod.gir_action = { action = 2, anchor = 1, kind = read, access0_write = 0, access0_operand = A, access0_ring = 2, access0_gen = 0, access0_gdelta = 1 } }
+  "st.s_cbranch_scc1"("loop", SCC0)
+  Successors: ^loop, ^exit
+^exit:
+}

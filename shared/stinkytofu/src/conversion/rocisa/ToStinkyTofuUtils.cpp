@@ -1018,6 +1018,17 @@ void traverseModule(const rocisa::Module& module,
 }  // anonymous namespace
 
 namespace stinkytofu {
+
+//: rocisa's per-instruction GIR facts, in StinkyTofu's shape.
+GirActionData girActionOf(const rocisa::GirActionData& src) {
+    std::vector<GirAccessData> accesses;
+    accesses.reserve(src.accesses.size());
+    for (const rocisa::GirAccess& a : src.accesses)
+        accesses.push_back(GirAccessData{a.isWrite, a.operand, a.ring, a.genId, a.gdelta,
+                                         a.absolute, a.crossAgent, a.region});
+    return GirActionData{src.actionId, src.anchorAction,
+                         static_cast<GirActionKind>(src.kind), std::move(accesses)};
+}
 static std::shared_ptr<StinkyAsmModule> toStinkyTofuModule(
     const rocisa::Module& module, std::array<int, 3> arch, const std::string& moduleName,
     const StinkyAsmModule::ModuleOptions& moduleOptions) {
@@ -1189,6 +1200,19 @@ static std::shared_ptr<StinkyAsmModule> toStinkyTofuModule(
         if (auto memToken = inst->getMemToken()) {
             stinkyInst->addModifier<MemTokenData>(MemTokenData{memToken->tokens});
         }
+        if (inst->getNoWaitCnt()) {
+            stinkyInst->addModifier<NoWaitCntData>(NoWaitCntData{});
+        }
+        if (auto orderToken = inst->getOrderToken()) {
+            stinkyInst->addModifier<OrderTokenData>(OrderTokenData{orderToken->tokens});
+        }
+        auto girAction = inst->getGirActionData();
+        if (girAction) {
+            stinkyAsmModule.setPluginDataI64(
+                "gir.action_tag_count",
+                stinkyAsmModule.getPluginDataI64("gir.action_tag_count", 0) + 1);
+            stinkyInst->addModifier<GirActionData>(girActionOf(*girAction));
+        }
 
         Legalized legalizedInsts =
             legalizeInstruction(stinkyInst, inst, irBuilder, archId, asmCaps, archCaps, hasVgprMsb);
@@ -1196,6 +1220,13 @@ static std::shared_ptr<StinkyAsmModule> toStinkyTofuModule(
         if (legalizedInsts.first != nullptr) {
             StinkyInstruction* currentStinkyInst = legalizedInsts.first;
             while (currentStinkyInst != legalizedInsts.last->getNext()) {
+                if (girAction) {
+                    if (auto* existing = currentStinkyInst->getModifier<GirActionData>()) {
+                        *existing = girActionOf(*girAction);
+                    } else {
+                        currentStinkyInst->addModifier<GirActionData>(girActionOf(*girAction));
+                    }
+                }
                 stinkyAsmModule.updateInstructionGroups(moduleNames, instsCountBefore);
                 currentStinkyInst = static_cast<StinkyInstruction*>(currentStinkyInst->getNext());
             }
@@ -1397,7 +1428,8 @@ void init_stinkytofu(nb::module_ m) {  // NOLINT(misc-use-internal-linkage)
         .value("BeforeRegionPasses", PipelineExtensionPoint::BeforeRegionPasses)
         .value("InnerRegionBegin", PipelineExtensionPoint::InnerRegionBegin)
         .value("InnerRegionEnd", PipelineExtensionPoint::InnerRegionEnd)
-        .value("AfterRegionPasses", PipelineExtensionPoint::AfterRegionPasses);
+        .value("AfterRegionPasses", PipelineExtensionPoint::AfterRegionPasses)
+        .value("EndOfPipeline", PipelineExtensionPoint::EndOfPipeline);
 
     m.def("loadPlugin", &PassBuilder::loadPlugin, nb::arg("path"),
           "Load a plugin shared library (.so/.dll) that exports registerPlugin()");

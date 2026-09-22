@@ -237,6 +237,11 @@ def _getName(state, requiredParameters: frozenset, splitGSU: bool, ignoreInterna
   else:
     requiredParametersTemp.discard("TDMFuse")
 
+  # Wait-count ownership changes only LoopModel-generated bodies. Keep comparison modes distinct
+  # for LoopModel kernels, but do not rename every existing scaffold kernel with the default mode.
+  if not state.get("UseLoopModel", False):
+    requiredParametersTemp.discard("LoopModelWaitCntMode")
+
   for key in sorted(requiredParametersTemp):
     if key not in state or key == "CustomKernel":
       continue

@@ -1,0 +1,57 @@
+% Copyright Advanced Micro Devices, Inc., or its affiliates.
+% SPDX-License-Identifier: MIT
+\begin{frame}{Nine words this deck needs --- none of them mean what they mean elsewhere}
+
+{\scriptsize Every noun below is defined by this work. The rest of the deck is these nine, one
+concept per frame, in the order a schedule is actually built. \tsub{Return here whenever a term
+stops carrying its weight.}}
+
+\vspace{1.5mm}
+\begin{columns}[T,onlytextwidth]
+\begin{column}{0.49\textwidth}
+{\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}p{0.30\linewidth}p{0.66\linewidth}@{}}
+\toprule
+\multicolumn{2}{@{}l}{\textbf{\color{acc}WHEN --- the schedule model}}\\
+\midrule
+\key{$\theta$} & one schedule, as seven fields. A \emph{point} in a space, not a program \\[2pt]
+\key{op-class} & one operand $\times$ one hop. The unit everything is keyed on \\[2pt]
+\key{presence} & the inner axes an op-class varies over. \emph{Derived}, never declared \\[2pt]
+\key{retime (off)} & how many steps ahead of its consumer an op-class runs \\[2pt]
+\key{ring ($S$, $W$)} & the rotating buffers a hop lands in; \texttt{slot = coordinate mod $S$} \\
+\bottomrule
+\end{tabular}}
+\end{column}
+\begin{column}{0.49\textwidth}
+{\scriptsize\setlength{\tabcolsep}{3pt}
+\begin{tabular}{@{}p{0.30\linewidth}p{0.66\linewidth}@{}}
+\toprule
+\multicolumn{2}{@{}l}{\textbf{\color{acc}WHEN --- the proof}}\\
+\midrule
+\key{obligation} & a named hazard: ``X must finish before Y''. Listed \emph{before} any code exists \\[4pt]
+\multicolumn{2}{@{}l}{\textbf{\color{acc}WHERE --- the dataflow IR}}\\
+\midrule
+\key{generation} & which rotation of a ring an access touches --- an \emph{SSA value} \\[2pt]
+\key{Mark} & a semantic fact placed at a program point, with a legal \emph{range} \\[2pt]
+\key{memory token} & an LDS pseudo-register. Same token = may alias, order them \\
+\bottomrule
+\end{tabular}}
+\end{column}
+\end{columns}
+
+\vspace{2mm}
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize,node distance=3mm]
+\node[box,text width=2.4cm] (a) {$\theta$: op-class, presence, retime, ring};
+\node[box,right=of a,text width=2.0cm] (b) {obligation ledger};
+\node[box,right=of b,text width=2.2cm] (c) {generation, Mark, token};
+\node[gbox,right=of c,text width=1.8cm] (d) {instructions};
+\draw[ar](a)--(b); \draw[ar](b)--(c); \draw[ar](c)--(d);
+\node[below=1mm of a,font=\tiny,text=gray]{what exists, and when};
+\node[below=1mm of b,font=\tiny,text=gray]{what it owes};
+\node[below=1mm of c,font=\tiny,text=gray]{where each fact lands};
+\node[below=1mm of d,font=\tiny,text=gray]{how};
+\end{tikzpicture}
+\end{center}
+
+\end{frame}

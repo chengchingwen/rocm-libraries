@@ -1,0 +1,30 @@
+\begin{frame}{What shipped: the read trajectory, across the whole feature matrix --- and a named list of what is still absent}
+
+{\scriptsize
+\begin{tabular}{@{}llp{58mm}@{}}
+\toprule
+\textbf{Axis} & \textbf{Status} & \textbf{The measured number} \\
+\midrule
+bf16                  & \good{shipped}  & 5{,}744-kernel validation matrix \\
+8-bit float           & \good{shipped}  & 152 kernels; 152/152 byte-identical emit-diff \\
+MX-scaled fp8         & \good{shipped}  & 404--444 kernels; 404/404 byte-identical emit-diff, and 786 pass / 6 fail on the 792-cell hardware matrix \\
+fp6 / fp4             & \bad{rejected}  & each has its own local-read packing; the read leaf's fragment table is checked against neither \\
+Loop orders           & \good{shipped}  & six 3-letter words; 6-letter interleaved words require a split \\
+Prefetch / look-ahead & \good{shipped}  & PGR sets the peel depth $M$; hard gate $S \ge$ PGR; PLR read-ahead is per register group \\
+Tile split \tsub{(A/B)} & \good{shipped} & free-axis half; shared-K half only with no tail loop; mixed axes since 2026-08-18 \\
+Multi-wave            & \good{shipped}  & $\Phi$ fuse: several movements, one cooperative instruction, \emph{one} completion \\
+\bottomrule
+\end{tabular}}
+
+\vspace{2mm}
+{\scriptsize \bad{Not covered, and each one is real work:} the epilogue and the whole write side
+$\cdot$ the tail loop and the edge forks $\cdot$ wave specialization, whose two safety rules are
+today \emph{structurally inert} $\cdot$ a persistent outer loop $\cdot$ register partitions $\cdot$
+a second global-prefetch stage.}
+
+\vspace{1mm}
+{\scriptsize \key{The methodological lesson the numbers paid for:} the use-before-def gate was
+written, correct, and called only from the unit tests. A later sweep flagged \key{216 of 216}
+single-substep configurations. \emph{An oracle not on the build path is a test, not a gate.}}
+
+\end{frame}

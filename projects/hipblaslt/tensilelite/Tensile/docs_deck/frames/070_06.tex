@@ -1,0 +1,34 @@
+\begin{frame}{The leaf boundary decides HOW --- never WHAT, WHERE or WHY}
+\centering
+\begin{tikzpicture}[node distance=0.26cm, every node/.style={font=\scriptsize}]
+\node[box,inner sep=3pt,text width=10.4cm] (a)
+  {\textbf{GIR} \quad decides \key{WHICH} acts exist, in \key{WHAT} order, with which generation, slot and token};
+\node[box,inner sep=3pt,text width=10.4cm,below=of a] (b)
+  {\textbf{gir\_to\_rocisa} \quad maps one act to one leaf call or one scaffold primitive; owns every \bad{refusal}};
+\node[gbox,inner sep=3pt,text width=10.4cm,below=of b] (c)
+  {\textbf{leaves} \quad a pure per-coordinate function: opcode, register name, byte offset, vector width};
+\draw[ar](a)--(b); \draw[ar](b)--(c);
+\end{tikzpicture}
+
+\vspace{4pt}
+\scriptsize
+\begin{itemize}\itemsep2pt
+  \item \key{The claim that licenses it:} for a dense WMMA GEMM the machine code for one tile does
+        not depend on the loop order at all. The schedule decides only which coordinates exist and
+        in what sequence.
+  \item \key{Nothing is re-derived.} Every fact arrives on the act or from a call into the active
+        \texttt{KernelWriterAssembly}. Register names come from
+        \texttt{generateSrcStrForMFMA}, accumulators from \texttt{accVgprReadWriteIndex} --- because
+        re-spelling them here is a second derivation that agrees on the common case.
+  \item \key{Refusals live in the adapter}, not in the leaves: six
+        \texttt{NotImplementedError}s meaning \emph{GIR can express this, the scaffold cannot
+        realize it}. A shape whose formula was never compared against the scaffold's own output is
+        rejected by name, not generalized.
+  \item \bad{The boundary is sharp and it has been crossed.} \texttt{Decision.reg\_slot} is the
+        \emph{carrier} (the instruction ordinal), not the \emph{slot} (the position inside it).
+        Feeding \texttt{slot} to the leaf renamed every scale register and failed all 16
+        microscaling cells; the test that certified it had asserted the wrong one of the two.
+  \item \tsub{Honest residue: \texttt{Decision.narrowed} is a socket nothing wires --- narrowing
+        needs an instruction-selection choice the caller owns. Either wire it or delete it.}
+\end{itemize}
+\end{frame}

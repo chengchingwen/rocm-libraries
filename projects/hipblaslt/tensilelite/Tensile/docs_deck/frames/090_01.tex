@@ -1,0 +1,26 @@
+
+\begin{frame}{MX-scaled fp8 reached parity in five staged steps, so every failure had one owner}
+\begin{center}
+\begin{tikzpicture}[node distance=3mm,font=\scriptsize]
+\node[box,text width=1.8cm] (m0) {\key{M0}\\plain fp8\\{\color{gray}no scales}};
+\node[box,text width=1.9cm,right=of m0] (m1) {\key{M1}\\scale emission\\{\color{gray}slots, read leaf, MX matmul}};
+\node[box,text width=1.9cm,right=of m1] (m2) {\key{M2}\\one green point\\{\color{gray}cut-down single wave}};
+\node[box,text width=1.9cm,right=of m2] (m3) {\key{M3}\\acceptance shape\\{\color{gray}4 waves, block 32 and 16}};
+\node[gbox,text width=1.9cm,right=of m3] (m4) {\key{M4}\\parity matrix\\{\color{gray}vs.\ the bf16 blocks}};
+\draw[ar] (m0)--(m1); \draw[ar] (m1)--(m2); \draw[ar] (m2)--(m3); \draw[ar] (m3)--(m4);
+\end{tikzpicture}
+\end{center}
+
+\begin{itemize}
+\item Each step adds \key{exactly one} new fact, so a miscompare after step $k$ has one candidate cause.
+      M2 is deliberately a \emph{cut-down} configuration: one green point before any growth.
+\item End state: \good{404 of 404} MX-scaled fp8 kernels and \good{152 of 152} plain fp8 kernels
+      emit byte-identically against the reference path; the acceptance matrix is now 444 kernels.
+\item MX is where the \key{movement quantum} became load-bearing --- one hardware load may carry
+      several logical tiles. A \texttt{ds\_load\_b64} folding two scale tiles named only one of its
+      two memory tokens (9 and 8, only 9 named) and \bad{miscompared}.
+\item Making ``no merge supplied'' a \emph{permissive} default failed the \bad{entire} microscaled
+      matrix, including the ten cells that already passed: a permissive default is not safe when the
+      fallback \emph{is} the real behaviour.
+\end{itemize}
+\end{frame}
