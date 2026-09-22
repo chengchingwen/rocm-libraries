@@ -355,18 +355,24 @@ class _Emitter:
         self.pos, self.leaf_axis = shape.position, shape.leaf_axis
         self.read_level, self.scale, self._units = shape.read_level, shape.scale, shape.units
         self._operand_order = {operand.name: i for i, operand in enumerate(theta.operands)}
-        self.reads = sorted(shape.reads, key=self._read_issue_priority)
         copy_ops = list(shape.copy_ops)
         copy_by_name = {operand.name: operand for operand in copy_ops}
 
         def copy_priority(operand):
             """Where the unit's first reader needs it, then the smaller movement first."""
-            unit = next((key for key in self._units if operand.name in key), (operand.name,))
-            members = [copy_by_name[name] for name in unit if name in copy_by_name] or [operand]
-            level = min(self._read_issue_priority(member)[0] for member in members)
+            members = [copy_by_name[name] for name in self._movement_unit(operand)
+                       if name in copy_by_name] or [operand]
+            level = min(self._read_site(member) for member in members)
             return level, self._copy_unit_bytes(members), self._operand_order[operand.name]
 
         self.copy_ops = sorted(copy_ops, key=copy_priority)
+        # A read cannot issue before the copy that fills it lands, so the COPY order leads the read
+        # order: every read of an earlier movement precedes every read of a later one.
+        self._copy_rank = {}
+        for rank, operand in enumerate(self.copy_ops):
+            for name in self._movement_unit(operand):
+                self._copy_rank.setdefault(name, rank)
+        self.reads = sorted(shape.reads, key=self._read_issue_priority)
 
         for group in theta.fused_copy_groups:
             members = [name for name in group if name in self.off]
@@ -381,9 +387,33 @@ class _Emitter:
         return sum(geometry.operand_tile_bytes(self.theta, member) // max(1, member.split)
                    for member in members)
 
+    def _movement_unit(self, operand) -> tuple:
+        """The fused movement this operand is carried by -- itself when it moves alone."""
+        return next((key for key in self._units if operand.name in key), (operand.name,))
+
+    def _read_site(self, operand) -> int:
+        """Loop level this operand's read sits at -- which level it is emitted AT, not its order."""
+        return self.pos.get(self.read_level[operand.name], -1)
+
+    def _read_coord(self, operand, groups, depth) -> tuple:
+        """Where in loop order this read's value lands, over every inner axis.
+
+        The read's AXIS is not the loop order: `A` and `MXSB` hang off different axes, yet their
+        first reads both deliver tile 0 and only the coordinate separates them.  The body's coord
+        is symbolic, so it is read at the nest base, where every enclosing index is 0.
+        """
+        advance, strides, span, extents = _readahead_shift(
+            self.theta, operand, depth, self.depths, groups, self.plans)
+        coverage = read_coverage(self.theta, operand)
+        varying = set(varying_axes(self.theta, operand))
+        base = {name: 0 for name, _extent in self.all_inner}
+        return tuple(
+            int(_shifted_coord(name, advance, strides, span, extents, coverage).eval(base))
+            if name in varying else 0
+            for name, _extent in self.all_inner)
+
     def _read_issue_priority(self, operand, groups=None, ceiling=None):
-        """Loop site, fill size, prefetch depth, register width, declaration order."""
-        level = self.pos.get(self.read_level[operand.name], -1)
+        """Loop coordinate, producing copy, fill size, prefetch depth, width, declaration."""
         selected = tuple(groups or operand.fragment.groups())
         want = self.plans.want(operand)
         depth = (self._read_depth(operand, selected, ceiling)
@@ -391,7 +421,9 @@ class _Emitter:
                  min(self.plans.steps(operand, group, want) for group in selected))
         width = min(max(1, self.depths.get(operand.name, group)) for group in selected)
         size = geometry.frag_regs(self.theta, operand)
-        return level, size, depth, width, self._operand_order[operand.name]
+        return (self._read_coord(operand, groups, depth),
+                self._copy_rank.get(operand.name, len(self._copy_rank)),
+                size, depth, width, self._operand_order[operand.name])
 
     # --- the four phases ---------------------------------------------------
 
@@ -645,14 +677,18 @@ class _Emitter:
         return want
 
     def fill_reads(self):
-        """Register-pipeline fills in loop/use order."""
+        """Register-pipeline fills in loop/use order.
+
+        The prologue primes the UNSHIFTED tiles, so the tie-break is taken at `ceiling=0`: reading
+        it at the body's lead would rank these reads by a coordinate none of them delivers.
+        """
         axes = tuple(name for name, _extent in self.all_inner)
         events = []
         for operand in self.reads:
             for ordinal, coord in enumerate(preloaded_tiles(
                     self.theta, operand, self.plans.want(operand), self.depths, self.plans)):
                 use = tuple(int(coord.get(axis, 0)) for axis in axes)
-                events.append((use, self._read_issue_priority(operand), ordinal,
+                events.append((use, self._read_issue_priority(operand, ceiling=0), ordinal,
                                operand, coord))
         events.sort(key=lambda event: event[:3])
         return [self._fill_read_inst(operand, coord)
