@@ -365,7 +365,8 @@ static void scheduleRegionWithMovableSideEffects(
     IRList::iterator regionStart, IRList::iterator regionEnd, IRList::iterator blockBegin,
     std::vector<IRBase*>& scheduled, ReadyQueue& readyQueue,
     const std::unordered_map<StinkyInstruction*, unsigned>& wmmaIndex,
-    const GirFrameHazardAnalysis::Result& girHazards, int& fillerCount) {
+    const GirFrameHazardAnalysis::Result& girHazards, const GirFrameAnalysis::Result& girFrames,
+    int& fillerCount) {
     if (regionStart == regionEnd) {
         return;  // Empty region, nothing to schedule.
     }
@@ -381,7 +382,7 @@ static void scheduleRegionWithMovableSideEffects(
     dag::RegionDAG regionDag = dag::buildRegisterDependencyDAG(
         regionStart, regionEnd,
         readyQueue.getPassContext().getPassFeatureConfig().dagFeatures.useMemoryTokenOrdering);
-    dag::addGirFrameHazardEdges(regionDag, girHazards);
+    dag::addGirFrameHazardEdges(regionDag, girHazards, girFrames);
     dag::DAGNodeList& dagNodes = regionDag.nodes;
     std::vector<std::unordered_set<unsigned>>& dagGraph = regionDag.graph;
     std::unordered_map<StinkyInstruction*, unsigned>& instToId = regionDag.instToId;
@@ -744,7 +745,8 @@ static void scheduleRegionWithMovableSideEffects(
 // to reflect the scheduling order.
 static void scheduleInDAG(BasicBlock& bb, ReadyQueue& readyQueue,
                           const std::unordered_map<StinkyInstruction*, unsigned>& wmmaIndex,
-                          const GirFrameHazardAnalysis::Result& girHazards) {
+                          const GirFrameHazardAnalysis::Result& girHazards,
+                          const GirFrameAnalysis::Result& girFrames) {
     PASS_DEBUG(std::cerr << "*** Scheduling Instructions in DAG: ***\n");
 
     if (bb.empty()) return;
@@ -771,7 +773,8 @@ static void scheduleInDAG(BasicBlock& bb, ReadyQueue& readyQueue,
             // Non-instruction IR (e.g. AsmDirective): treat as non-movable
             // side-effect boundary so its position is strictly preserved.
             scheduleRegionWithMovableSideEffects(regionStart, it, beginIt, scheduled, readyQueue,
-                                                 wmmaIndex, girHazards, fillerCount);
+                                                 wmmaIndex, girHazards, girFrames,
+                                                 fillerCount);
             scheduled.push_back(irNode);
             regionStart = std::next(it);
             continue;
@@ -780,7 +783,8 @@ static void scheduleInDAG(BasicBlock& bb, ReadyQueue& readyQueue,
         StinkyInstruction& inst = *instPtr;
         if (hasSideEffect(inst)) {
             scheduleRegionWithMovableSideEffects(regionStart, it, beginIt, scheduled, readyQueue,
-                                                 wmmaIndex, girHazards, fillerCount);
+                                                 wmmaIndex, girHazards, girFrames,
+                                                 fillerCount);
 
             scheduled.push_back(&inst);
 
@@ -793,7 +797,7 @@ static void scheduleInDAG(BasicBlock& bb, ReadyQueue& readyQueue,
     }
     // Flush the last region if it has not been flushed yet.
     scheduleRegionWithMovableSideEffects(regionStart, endIt, beginIt, scheduled, readyQueue,
-                                         wmmaIndex, girHazards, fillerCount);
+                                         wmmaIndex, girHazards, girFrames, fillerCount);
 
     assert(scheduled.size() == bb.size() + static_cast<size_t>(fillerCount) &&
            "Scheduled instructions size must match original plus filler insts");
@@ -867,31 +871,34 @@ std::unique_ptr<ReadyQueue> chooseReadyQueue(const PassContext& passCtx) {
     return std::make_unique<ReadyQueueByDAGid>(passCtx);
 }
 
-void validateGirFrameHazardOrder(const GirFrameHazardAnalysis::Result& before) {
-    std::unordered_map<const StinkyInstruction*, size_t> finalIndex;
-    std::unordered_map<const StinkyInstruction*, const BasicBlock*> finalBlock;
+// Checked on both sides of scheduling: the INCOMING order is the topological witness that keeps
+// the same-trip frame hazard edges acyclic, the SCHEDULED order is what the scheduler owes.
+void validateGirFrameHazardOrder(const GirFrameHazardAnalysis::Result& hazards, const char* when) {
+    std::unordered_map<const StinkyInstruction*, size_t> orderIndex;
+    std::unordered_map<const StinkyInstruction*, const BasicBlock*> orderBlock;
     std::unordered_set<const BasicBlock*> visited;
-    for (const GirFrameHazard& hazard : before.hazards) {
+    for (const GirFrameHazard& hazard : hazards.hazards) {
         for (BasicBlock* block : {hazard.producerBlock, hazard.consumerBlock}) {
             if (!block || !visited.insert(block).second) continue;
             size_t index = 0;
             for (IRBase& node : *block) {
                 auto* inst = dyn_cast<StinkyInstruction>(&node);
                 if (!inst) continue;
-                finalIndex[inst] = index++;
-                finalBlock[inst] = block;
+                orderIndex[inst] = index++;
+                orderBlock[inst] = block;
             }
         }
     }
-    for (const GirFrameHazard& hazard : before.hazards) {
+    for (const GirFrameHazard& hazard : hazards.hazards) {
         if (hazard.gap != 0 || hazard.producer == hazard.consumer) continue;
-        auto producer = finalIndex.find(hazard.producer);
-        auto consumer = finalIndex.find(hazard.consumer);
-        if (producer == finalIndex.end() || consumer == finalIndex.end()) continue;
-        if (finalBlock[hazard.producer] == finalBlock[hazard.consumer] &&
+        auto producer = orderIndex.find(hazard.producer);
+        auto consumer = orderIndex.find(hazard.consumer);
+        if (producer == orderIndex.end() || consumer == orderIndex.end()) continue;
+        if (orderBlock[hazard.producer] == orderBlock[hazard.consumer] &&
             producer->second >= consumer->second)
-            report_fatal_error(
-                "StinkyDAGSchedulerPass violated a required same-trip GIR frame hazard");
+            report_fatal_error(std::string("GIR frame hazard: the ") + when +
+                               " order inverts a required same-trip edge in " +
+                               orderBlock[hazard.producer]->getLabel());
     }
 }
 
@@ -932,8 +939,10 @@ class StinkyDAGSchedulerPass : public StinkyInstPass {
         }
 
         const auto& loops = AM.getResult<LoopAnalysis>(func);
+        const GirFrameAnalysis::Result girFrames = AM.getResult<GirFrameAnalysis>(func);
         const GirFrameHazardAnalysis::Result girHazards =
             AM.getResult<GirFrameHazardAnalysis>(func);
+        validateGirFrameHazardOrder(girHazards, "incoming");
 
         PASS_DEBUG(for (const Loop& loop
                         : loops) {
@@ -969,7 +978,7 @@ class StinkyDAGSchedulerPass : public StinkyInstPass {
         auto scheduleBlock = [&](BasicBlock* bb, ReadyQueue& rq) {
             AsmIRBuilder builder(*bb, archId);
             collapseExecMaskedRegions(*bb, builder, wavefrontSize);
-            scheduleInDAG(*bb, rq, wmmaIndex, girHazards);
+            scheduleInDAG(*bb, rq, wmmaIndex, girHazards, girFrames);
             expandExecMaskedGroups(*bb);
             auto candidates = rq.takeLayer2BarrierOverlapCandidates();
             layer2BarrierOverlapCandidates.insert(layer2BarrierOverlapCandidates.end(),
@@ -996,7 +1005,7 @@ class StinkyDAGSchedulerPass : public StinkyInstPass {
                 scheduleBlock(bb, *rq);
             }
         }
-        validateGirFrameHazardOrder(girHazards);
+        validateGirFrameHazardOrder(girHazards, "scheduled");
         if (!girHazards.empty()) {
             AM.invalidate(func, preserveCFGAnalyses());
             (void)AM.getResult<GirFrameHazardAnalysis>(func);

@@ -77,7 +77,10 @@ class GirWaitCntInsertionPass final : public StinkyInstPass {
         const auto& hazards = AM.getResult<GirFrameHazardAnalysis>(function);
         if (frames.empty() || hazards.empty()) return PreservedAnalyses::all();
 
-        WaitInsertionPlan plan = buildGirFrameWaitPlan(function, frames, hazards);
+        WaitInsertionPlan plan =
+            buildGirFrameWaitPlan(function, frames, hazards, [&passCtx](const BasicBlock& block) {
+                return passCtx.shouldProcessBasicBlock(const_cast<BasicBlock&>(block));
+            });
         if (plan.anchorWaits.empty() && plan.tailDrains.empty()) return PreservedAnalyses::all();
 
         const GfxArchID arch =

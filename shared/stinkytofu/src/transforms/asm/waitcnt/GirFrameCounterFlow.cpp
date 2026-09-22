@@ -11,6 +11,7 @@
 #include <deque>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -75,14 +76,16 @@ struct CounterQueue {
         if (found != ops.end()) return static_cast<int>(std::distance(found, ops.end()));
 
         // ST's reconstructed CFG can merge scaffold paths at a different frame cut than GIR while
-        // still carrying the same physical producer instruction. The frame hazard is authoritative:
-        // if that producer is in flight under another reachable frame, use its oldest occurrence
-        // (the strictest rank) rather than silently dropping the wait for lack of an exact label.
-        int strictest = 0;
+        // still carrying the same physical producer instruction.  `ops` is oldest-first and
+        // `waitToDrain` is `countFrom - 1`, so the NEWEST occurrence yields the smallest immediate
+        // -- the only rank that also proves the older copies retired.
+        int strictest = -1;
         for (auto it = ops.begin(); it != ops.end(); ++it)
-            if (it->inst == issue.inst)
-                strictest = std::max(strictest, static_cast<int>(std::distance(it, ops.end())));
-        return strictest;
+            if (it->inst == issue.inst) {
+                const int rank = static_cast<int>(std::distance(it, ops.end()));
+                strictest = strictest < 0 ? rank : std::min(strictest, rank);
+            }
+        return strictest < 0 ? 0 : strictest;
     }
 
     void applyWait(int keep) {
@@ -182,99 +185,24 @@ CounterKind counterFor(const GirFrameHazard& hazard) {
     return CK_Tensor;
 }
 
-size_t instructionIndex(const StinkyInstruction* target) {
-    size_t index = 0;
-    for (const IRBase& node : *target->getParent()) {
-        auto* inst = dyn_cast<StinkyInstruction>(&node);
-        if (!inst) continue;
-        if (inst == target) return index;
-        ++index;
-    }
-    report_fatal_error("GIR frame fence is detached from its ST basic block");
-}
 
-bool positiveNodeReach(const GirFrameAnalysis::Result& frames, const GirFrameNode& from,
-                       const GirFrameNode& to) {
-    std::deque<GirFrameNode> work;
-    std::unordered_set<GirFrameNode, GirFrameNodeHash> seen;
-    auto start = frames.edges.find(from);
-    if (start == frames.edges.end()) return false;
-    work.insert(work.end(), start->second.begin(), start->second.end());
-    while (!work.empty()) {
-        GirFrameNode node = std::move(work.front());
-        work.pop_front();
-        if (node == to) return true;
-        if (!seen.insert(node).second) continue;
-        auto next = frames.edges.find(node);
-        if (next != frames.edges.end())
-            work.insert(work.end(), next->second.begin(), next->second.end());
-    }
-    return false;
-}
-
-bool occurrencePrecedes(const GirFrameAnalysis::Result& frames, BasicBlock* fromBlock,
-                        const GirFrame& fromFrame, size_t fromIndex, BasicBlock* toBlock,
-                        const GirFrame& toFrame, size_t toIndex) {
-    GirFrameNode from{fromBlock, fromFrame};
-    GirFrameNode to{toBlock, toFrame};
-    if (from == to && fromIndex < toIndex) return true;
-    return positiveNodeReach(frames, from, to);
-}
-
-StinkyInstruction* fenceForAction(const GirFrameAnalysis::Result& frames, uint64_t action,
-                                  const GirFrameHazard& hazard) {
-    auto found = frames.actionInstructions.find(action);
-    if (found == frames.actionInstructions.end()) return nullptr;
-    for (StinkyInstruction* candidate : found->second) {
-        if (!isFence(*candidate) && !isBarrier(*candidate)) continue;
-        BasicBlock* fenceBlock = candidate->getParent();
-        const size_t fenceIndex = instructionIndex(candidate);
-        for (const GirFrame& fenceFrame : frames.frames(fenceBlock))
-            if (occurrencePrecedes(frames, hazard.producerBlock, hazard.producerFrame,
-                                   hazard.producerIndex, fenceBlock, fenceFrame, fenceIndex) &&
-                occurrencePrecedes(frames, fenceBlock, fenceFrame, fenceIndex, hazard.consumerBlock,
-                                   hazard.consumerFrame, hazard.consumerIndex))
-                return candidate;
-    }
-    return nullptr;
-}
-
-StinkyInstruction* reconstructedFence(const GirFrameHazard& hazard,
-                                      const GirFrameAnalysis::Result& frames) {
-    for (const auto& [actionId, action] : frames.contract.actions) {
-        if (action.kind != GirActionKind::Fence) continue;
-        if (StinkyInstruction* candidate = fenceForAction(frames, actionId, hazard))
-            return candidate;
-    }
-    return nullptr;
-}
-
-StinkyInstruction* relationFence(const GirFrameHazard& hazard,
-                                 const GirFrameAnalysis::Result& frames) {
-    StinkyInstruction* result = nullptr;
-    for (const GirFenceRelationSpec& relation : frames.contract.relations) {
-        if (relation.kind != hazard.kind || relation.producerAction != hazard.producerAction ||
-            relation.consumerAction != hazard.consumerAction ||
-            (relation.gap == 0) != (hazard.gap == 0))
-            continue;
-        StinkyInstruction* candidate = fenceForAction(frames, relation.fenceAction, hazard);
-        if (!candidate) continue;
-        if (result && result != candidate)
-            report_fatal_error("GIR frame hazard has several relation-owning ST fences");
-        result = candidate;
-    }
-    if (!result) result = reconstructedFence(hazard, frames);
-    if (!result) {
-        std::ostringstream message;
-        message << "Cross-agent ST frame hazard has no exact GIR relation-owning fence"
-                << " kind=" << static_cast<int>(hazard.kind)
-                << " producerAction=" << hazard.producerAction
-                << " consumerAction=" << hazard.consumerAction << " gap=" << hazard.gap
-                << " producerBlock=" << hazard.producerBlock->getLabel()
-                << " consumerBlock=" << hazard.consumerBlock->getLabel();
-        report_fatal_error(message.str());
-    }
-    return result;
+/// The barrier a cross-agent hazard's wait anchors on: the LAST one standing between the two
+/// occurrences on the frame graph.  Resolved by position, not by any fence-to-hazard table handed
+/// down, so a barrier StinkyTofu placed itself anchors exactly like one it inherited.
+/// The barrier this hazard's wait anchors on, via the one shared definition.
+std::pair<StinkyInstruction*, GirFrame> enclosingFence(Function& function,
+                                                      const GirFrameHazard& hazard,
+                                                      const GirFrameAnalysis::Result& frames) {
+    (void)function;
+    auto found = lastBarrierBefore(frames, hazard.consumerBlock, hazard.consumerFrame,
+                                   hazard.consumerIndex);
+    if (found.first) return found;
+    std::ostringstream message;
+    message << "Cross-agent ST frame hazard is discharged by no barrier"
+            << " kind=" << static_cast<int>(hazard.kind) << " gap=" << hazard.gap
+            << " producerBlock=" << hazard.producerBlock->getLabel()
+            << " consumerBlock=" << hazard.consumerBlock->getLabel();
+    report_fatal_error(message.str());
 }
 
 FeasibleDomainMap computeFeasibleDomains(Function& function,
@@ -283,29 +211,29 @@ bool hazardFeasible(Function& function, const GirFrameAnalysis::Result& frames,
                     const FeasibleDomainMap& feasible, const GirFrameHazard& hazard);
 
 PotentialMap buildPotentials(Function& function, const GirFrameAnalysis::Result& frames,
-                             const GirFrameHazardAnalysis::Result& hazards) {
+                             const GirFrameHazardAnalysis::Result& hazards,
+                             const std::function<bool(const BasicBlock&)>& covers) {
     PotentialMap result;
     const FeasibleDomainMap feasible = computeFeasibleDomains(function, frames);
     std::set<std::tuple<StinkyInstruction*, GirFrame, CounterKind, StinkyInstruction*, GirFrame>>
         seen;
+    std::set<const BasicBlock*> modeled;
+    for (BasicBlock& block : function) modeled.insert(&block);
     for (const GirFrameHazard& hazard : hazards.hazards) {
+        // GIR models exactly the scheduling region, so an endpoint outside this function is not a
+        // hazard of it -- it is a tag riding on a fork that the region never modeled.
+        if (!modeled.count(hazard.producerBlock) || !modeled.count(hazard.consumerBlock)) continue;
+        if (!covers(*hazard.consumerBlock)) continue;
         if (!hazardFeasible(function, frames, feasible, hazard)) continue;
         CounterKind counter = counterFor(hazard);
         if (counter != CK_DS && counter != CK_Tensor) continue;
-        StinkyInstruction* anchor =
-            hazard.crossAgent ? relationFence(hazard, frames) : hazard.consumer;
-        // Which SIDE the fence sits on, not which block: a loop-carried hazard has one block at
-        // both ends, and `simulate` drops a potential filed under the wrong frame rather than
-        // mis-valuing it.
-        const bool atProducer = hazard.crossAgent &&
-                                anchor->getParent() == hazard.producerBlock &&
-                                instructionIndex(anchor) > hazard.producerIndex;
-        const GirFrame anchorFrame = atProducer ? hazard.producerFrame : hazard.consumerFrame;
-        const auto& availableFrames = frames.frames(anchor->getParent());
-        if (std::find(availableFrames.begin(), availableFrames.end(), anchorFrame) ==
-            availableFrames.end())
-            report_fatal_error(
-                "GIR relation fence frame is absent from the reconstructed ST block");
+        // The frame comes from the match, not from guessing which side the fence sits on: a
+        // barrier discharges the hazard wherever on the path it stands, including a block between
+        // the two ends.
+        StinkyInstruction* anchor = hazard.consumer;
+        GirFrame anchorFrame = hazard.consumerFrame;
+        if (hazard.crossAgent)
+            std::tie(anchor, anchorFrame) = enclosingFence(function, hazard, frames);
         auto key =
             std::make_tuple(anchor, anchorFrame, counter, hazard.producer, hazard.producerFrame);
         if (!seen.insert(key).second) continue;
@@ -314,13 +242,13 @@ PotentialMap buildPotentials(Function& function, const GirFrameAnalysis::Result&
     return result;
 }
 
+/// Decode from the opcode and the literal, never from SWaitCntData alone: on gfx1250 `dlcnt` is
+/// never set, so reading it credited nothing and a second wait was emitted in front of every
+/// anchor.  `observedWaitDrains` is the one implementation of this rule.
 int observedWait(const StinkyInstruction& inst, CounterKind counter) {
-    if (counter == CK_DS) {
-        if (const auto* wait = inst.getModifier<SWaitCntData>()) return wait->dlcnt;
-    } else if (counter == CK_Tensor) {
-        if (const auto* wait = inst.getModifier<SWaitTensorCntData>()) return wait->tlcnt;
-    }
-    return WaitCountSpec::kUnused;
+    int counts[CK_Count];
+    if (!observedWaitDrains(inst, counts)) return WaitCountSpec::kUnused;
+    return counts[counter];
 }
 
 bool isTripCompare(const StinkyInstruction& inst) {
@@ -726,8 +654,9 @@ WaitInsertionPlan materializePlan(const DecisionMap& decisions,
 }  // namespace
 
 WaitInsertionPlan buildGirFrameWaitPlan(Function& function, const GirFrameAnalysis::Result& frames,
-                                        const GirFrameHazardAnalysis::Result& hazards) {
-    const PotentialMap potentials = buildPotentials(function, frames, hazards);
+                                        const GirFrameHazardAnalysis::Result& hazards,
+                                        const std::function<bool(const BasicBlock&)>& covers) {
+    const PotentialMap potentials = buildPotentials(function, frames, hazards, covers);
     if (potentials.empty()) return {};
 
     DecisionMap decisions;

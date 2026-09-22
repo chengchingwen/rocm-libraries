@@ -45,6 +45,7 @@
 #include "stinkytofu/transforms/asm/FlattenCalleesPass.hpp"
 #include "stinkytofu/transforms/asm/Gfx1250HazardPass.hpp"
 #include "stinkytofu/transforms/asm/GirFrameContractImportPass.hpp"
+#include "stinkytofu/transforms/asm/GirFencePlacementPass.hpp"
 #include "stinkytofu/transforms/asm/GirWaitCntInsertionPass.hpp"
 #include "stinkytofu/transforms/asm/InsertClusterBarrierPass.hpp"
 #include "stinkytofu/transforms/asm/InsertCoexecHazardPass.hpp"
@@ -224,8 +225,14 @@ bool buildGfx1250Pipeline(ModulePassManager& mpm, StinkyAsmModule& module, const
             PB.applyExtensionPoint(PipelineExtensionPoint::InnerRegionEnd, innerPM, module);
             if (moduleOptions.EnableWaitCntInsertion) {
                 if (moduleOptions.EnableGirFramePipeline &&
-                    moduleOptions.EnableGirFrameWaitCntInsertion)
+                    moduleOptions.EnableGirFrameWaitCntInsertion) {
+                    // Placement first: the wait this fence carries is a residual measured at
+                    // wherever it ends up standing.  Not gated on the scheduler -- it is the only
+                    // source of barriers now, and the wait pass below anchors on them at every
+                    // opt level.
+                    innerPM.addPass(createGirFencePlacementPass());
                     innerPM.addPass(createGirWaitCntInsertionPass());
+                }
                 WaitCntInsertionOptions waitCntOptions;
                 waitCntOptions.enableLoopCarriedTokenDeps =
                     moduleOptions.EnableLoopCarriedTokenDeps;

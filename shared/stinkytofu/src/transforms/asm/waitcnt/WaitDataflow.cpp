@@ -494,6 +494,8 @@ int modifierWaitValue(const StinkyInstruction& inst, CounterKind c) {
 // split group and none to the others. The modifier is consulted only as a
 // fallback, and only for the opcode's own counter. Anything undecodable credits
 // nothing, which can cost a redundant wait but can never drop a required one.
+}  // namespace
+
 bool observedWaitDrains(const StinkyInstruction& inst, int counts[CK_Count]) {
     for (int c = 0; c < CK_Count; ++c) counts[c] = WaitCountSpec::kUnused;
     if (!isWaitCnt(inst) && !inst.is(InstFlag::IF_WaitTensorCnt)) return false;
@@ -557,6 +559,8 @@ void creditObservedWait(DataflowState& state, CounterEmitState emit[CK_Count], C
     trimQueues(state.queues[c], w);
     emit[c].recordEmittedWait(w);
 }
+
+namespace {
 
 // Credit every counter an existing wait drains. Returns true when `inst` IS a
 // wait, meaning the caller must skip it as both consumer and producer. Shared by
