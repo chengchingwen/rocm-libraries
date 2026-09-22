@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <charconv>
 #include <deque>
+#include <limits>
 #include <functional>
 #include <map>
 #include <set>
@@ -131,9 +132,12 @@ GirFrame advanceFrame(const GirFrame& input, BasicBlock* from, BasicBlock* to,
     GirFrame result = input;
     for (const auto& [genId, loop] : genLoops) {
         const GirGenerationSpec& gen = contract.generations.at(genId);
-        if (from == loop->latchBB)
+        // Any edge into the header from INSIDE the loop is a back edge: keying on the latch alone
+        // made a second back edge take the entry arm and RESET the phase instead of advancing it.
+        const bool backEdge = to == loop->headerBB ? loop->contains(from) : from == loop->latchBB;
+        if (backEdge)
             result.setPhase(genId, (result.phaseOf(genId) + gen.advance) % gen.ring);
-        if (to == loop->headerBB && !(from == loop->latchBB && to == loop->headerBB))
+        else if (to == loop->headerBB)
             result.setPhase(genId, gen.entry % gen.ring);
     }
     return result;
@@ -559,10 +563,15 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
                 tied = true;
             }
         }
-        if (chosen && !tied)
+        if (chosen && !tied) {
             genLoops[genId] = chosen;
-        else if (!votes.empty())
+        } else if (!votes.empty()) {
             report_fatal_error("GirFrameAnalysis: generation maps ambiguously to ST loops");
+        } else if (result.contract.generations.at(genId).ring > 1) {
+            // Dropping it silently leaves its phase at 0 for the whole function, so every access
+            // collapses onto `gdelta % ring` and distinct buffers alias onto one storage id.
+            report_fatal_error("GirFrameAnalysis: rotating generation maps to no ST loop");
+        }
     }
 
     for (const Loop& loop : loops) result.backEdges.insert(edgeKey(loop.latchBB, loop.headerBB));
@@ -660,6 +669,46 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
     }
 
     return result;
+}
+
+std::pair<StinkyInstruction*, GirFrame> lastBarrierBefore(const GirFrameAnalysis::Result& frames,
+                                                          BasicBlock* block, const GirFrame& frame,
+                                                          size_t limit) {
+    const auto inBlock = [](BasicBlock* bb, size_t upTo) -> StinkyInstruction* {
+        StinkyInstruction* found = nullptr;
+        size_t index = 0;
+        for (IRBase& node : *bb) {
+            auto* inst = dyn_cast<StinkyInstruction>(&node);
+            if (!inst) continue;
+            if (index++ >= upTo) break;
+            if (isFence(*inst) || isBarrier(*inst)) found = inst;
+        }
+        return found;
+    };
+    if (StinkyInstruction* here = inBlock(block, limit)) return {here, frame};
+
+    using Key = std::pair<BasicBlock*, GirFrame>;
+    std::map<Key, std::vector<Key>> preds;
+    for (const auto& [from, tos] : frames.edges)
+        for (const GirFrameNode& to : tos)
+            preds[{to.block, to.frame}].push_back({from.block, from.frame});
+
+    std::set<Key> seen{{block, frame}};
+    std::deque<Key> work{{block, frame}};
+    while (!work.empty()) {
+        const Key node = work.front();
+        work.pop_front();
+        auto incoming = preds.find(node);
+        if (incoming == preds.end()) continue;
+        for (const Key& pred : incoming->second) {
+            if (!seen.insert(pred).second) continue;
+            if (StinkyInstruction* there =
+                    inBlock(pred.first, std::numeric_limits<size_t>::max()))
+                return {there, pred.second};
+            work.push_back(pred);
+        }
+    }
+    return {nullptr, frame};
 }
 
 GirFrameHazardAnalysis::Result GirFrameHazardAnalysis::run(Function& function,

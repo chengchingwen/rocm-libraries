@@ -146,12 +146,16 @@ bool isHardBoundary(const StinkyInstruction& inst,
 std::vector<StinkyInstruction*> repairSegment(const std::vector<StinkyInstruction*>& instructions,
                                               const WaitAnchorMap& anchors,
                                               const GirFrameHazardAnalysis::Result& girHazards,
+                                              const GirFrameAnalysis::Result& girFrames,
                                               const PassContext& passCtx,
                                               unsigned slotsToMovePastAnchor, bool pinPrefetches) {
     if (instructions.empty()) return {};
 
-    RegionDAG dag = buildRegisterDependencyDAG(instructions);
-    addGirFrameHazardEdges(dag, girHazards);
+    // Same policy as StinkyDAGSchedulerPass: defaulting this to true made the repair pass
+    // enforce order-token walls the scheduler ignores.
+    RegionDAG dag = buildRegisterDependencyDAG(
+        instructions, passCtx.getPassFeatureConfig().dagFeatures.useMemoryTokenOrdering);
+    addGirFrameHazardEdges(dag, girHazards, girFrames);
     addCounterOrderEdges(dag, instructions, anchors);
     // Prefetches placed by the DAG's prefetch lead stay where it put them.
     if (pinPrefetches) addPrefetchPinEdges(dag, instructions);
@@ -173,6 +177,7 @@ void emitInstWithWaits(std::vector<IRBase*>& output, StinkyInstruction* inst,
 }
 
 void repairBlock(BasicBlock& bb, const GirFrameHazardAnalysis::Result& girHazards,
+                 const GirFrameAnalysis::Result& girFrames,
                  const PassContext& passCtx, unsigned slotsToMovePastAnchor) {
     const WaitAnchorMap anchors = discoverWaitAnchors(bb);
     // Without a wait-anchored WMMA there is nothing for this pass to repair.
@@ -198,7 +203,7 @@ void repairBlock(BasicBlock& bb, const GirFrameHazardAnalysis::Result& girHazard
     auto flushSegment = [&]() {
         if (segment.empty()) return;
         const std::vector<StinkyInstruction*> repaired =
-            repairSegment(segment, anchors, girHazards, passCtx, slotsToMovePastAnchor,
+            repairSegment(segment, anchors, girHazards, girFrames, passCtx, slotsToMovePastAnchor,
                           pinPrefetches);
         for (StinkyInstruction* inst : repaired) emitInstWithWaits(output, inst, anchors);
         segment.clear();
@@ -274,6 +279,7 @@ class WaitAwareScheduleRepairPass : public StinkyInstPass {
 
     PreservedAnalyses run(Function& func, PassContext& passCtx, AnalysisManager& AM) override {
         if (kSlotsToMovePastAnchor_ <= 0) return PreservedAnalyses::all();
+        const GirFrameAnalysis::Result girFrames = AM.getResult<GirFrameAnalysis>(func);
         const GirFrameHazardAnalysis::Result girHazards =
             AM.getResult<GirFrameHazardAnalysis>(func);
 
@@ -287,7 +293,8 @@ class WaitAwareScheduleRepairPass : public StinkyInstPass {
 
             AsmIRBuilder builder(bb, archId);
             collapseExecMaskedRegions(bb, builder, wavefrontSize);
-            repairBlock(bb, girHazards, passCtx, static_cast<unsigned>(kSlotsToMovePastAnchor_));
+            repairBlock(bb, girHazards, girFrames, passCtx,
+                        static_cast<unsigned>(kSlotsToMovePastAnchor_));
             expandExecMaskedGroups(bb);
         }
         validateFrameOrderAfterRepair(girHazards);

@@ -154,11 +154,20 @@ struct GirFrameHazard {
     size_t consumerIndex = 0;
     GirFrame producerFrame;
     GirFrame consumerFrame;
+    // Frame-graph NODES traversed between the two occurrences, not generations: 0 means one
+    // execution of the pair in one node, >=1 means another node was entered -- which is a later
+    // trip only when both ends sit in the same block.
     int gap = 0;
     bool crossAgent = false;
     uint64_t producerAction = 0;
     uint64_t consumerAction = 0;
 };
+
+/// The barrier whose publish covers `(block, frame)` just before `limit`: the last one earlier in
+/// that block, else the last one in a frame-graph predecessor.  THE one definition of "a barrier
+/// stands here", shared by the pass that places them and the pass that anchors waits on them.
+STINKYTOFU_EXPORT std::pair<StinkyInstruction*, GirFrame> lastBarrierBefore(
+    const GirFrameAnalysis::Result& frames, BasicBlock* block, const GirFrame& frame, size_t limit);
 
 struct STINKYTOFU_EXPORT GirFrameHazardAnalysis {
     STINKYTOFU_ANALYSIS_KEY("GirFrameHazardAnalysis")
