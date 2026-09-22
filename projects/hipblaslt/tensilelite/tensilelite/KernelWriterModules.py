@@ -135,7 +135,8 @@ def wait(states, kernel, tPA, tPB, skipGlobalRead, skipLocalWrite, \
 ##############################################################################
 # SyncThreads
 ##############################################################################
-def syncThreads(kernel, archCaps, asmCaps, comment="", skipForceWaitcnt0=False, memoryToken=None):
+def syncThreads(kernel, archCaps, asmCaps, comment="", skipForceWaitcnt0=False, memoryToken=None,
+                noWaitCnt=False, orderToken=None):
     imod = Module("syncThreads")
     if kernel["NumThreads"] > kernel["WavefrontSize"]:
         if asmCaps["SeparateVscnt"]:
@@ -150,6 +151,12 @@ def syncThreads(kernel, archCaps, asmCaps, comment="", skipForceWaitcnt0=False, 
         _barrier = SBarrier(comment=comment)
         if memoryToken is not None:
             _barrier.setMemToken(MemTokenData(memoryToken))
+        # Orders execution and cuts a scheduling region, but takes no conservative waitcnt.
+        if noWaitCnt:
+            _barrier.setNoWaitCnt(True)
+        # Ordered, never waited on: no access naming one of these may be moved across.
+        if orderToken:
+            _barrier.setOrderToken(MemTokenData(orderToken))
         imod.add(_barrier)
     else:
         imod.addComment("Skip barrier: NumThreads=%s"%(kernel["NumThreads"]) + \

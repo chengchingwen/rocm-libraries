@@ -1,0 +1,47 @@
+\begin{frame}[fragile]{Adding a pass: the slot in the order is a claim you must justify}
+\begin{columns}[T]
+\begin{column}{0.50\textwidth}
+\scriptsize
+\textbf{1. Kind.} Are the block set, terminators and every
+\texttt{preds}/\texttt{succs} identical on the way out? Yes $\to$ \texttt{Pass};
+no $\to$ \texttt{StructuralPass}.
+
+\textbf{2. Slot.}
+\begin{itemize}\itemsep1pt
+  \item touches the CFG $\to$ \key{inside ScaffoldShapePass}, never later
+  \item produces \texttt{PendingMark}s $\to$ not a pass at all: an \key{Analysis} in
+        \texttt{CollectPendingMarks}' list
+  \item records a fact about the finished program $\to$ after \texttt{ApplyMarks}
+\end{itemize}
+
+\textbf{3. CFG changed $\to$ extend the verifier} (next slide).
+
+\textbf{4. Test three ways:} standalone, through the pipeline, and a
+\good{negative control} that builds the illegal shape.
+
+\textbf{5.} Return what you invalidated --- and know that nobody reads it.
+\bad{Rely on \texttt{prog.bump()}.}
+\end{column}
+\begin{column}{0.50\textwidth}
+\begin{lstlisting}[style=py]
+class MyPass(Pass):          # or StructuralPass
+    """What it changes; WHY this slot."""
+    def run(self, prog, am):
+        f = am.get(SomeAnalysis(), prog)
+        ...
+        if changed:
+            prog.bump()      # MANDATORY
+        return ("invalidated",) if changed else ()
+\end{lstlisting}
+\scriptsize
+Rules a reviewer looks for:
+\begin{itemize}\itemsep1pt
+  \item key on \texttt{Block.phase} or CFG shape, \bad{never a label}
+  \item never re-derive a $\theta$ fact --- look it up in \texttt{prog.meta}
+  \item rebuild \texttt{succs} with the terminator; recompute \texttt{preds} wholesale
+  \item guard idempotence: tests run passes standalone
+  \item \key{report, never resolve} --- raise naming every instance and the config
+\end{itemize}
+\end{column}
+\end{columns}
+\end{frame}

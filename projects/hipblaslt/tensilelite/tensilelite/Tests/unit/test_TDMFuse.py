@@ -369,13 +369,20 @@ def test_four_waves_is_accepted_and_shares_a_mx_entry():
 
 
 @pytest.mark.parametrize("overrides", [
-    {"TDMInst": 1}, {"TDMSplit": True}, {"UseSubtileImpl": True},
+    {"TDMInst": 1}, {"UseSubtileImpl": True},
     {"ProblemType": {"MXBlockA": 32, "MXBlockB": 0}},
     {"ProblemType": {"MXBlockA": 0, "MXBlockB": 32}},
 ])
 def test_b_mx_inherits_every_a_mx_precondition(overrides):
     assert TF.tdmGroupingAccepted(ks(**overrides)) is False
     assert TF.tdmGroupingAccepted(ks(fuse=2, **overrides)) is False
+
+
+def test_a_split_is_not_a_grouping_precondition():
+    """`TDMSplitA`/`TDMSplitB` are PER OPERAND, so a split cannot decline a row on its own.
+    Whether a group's members agree on a region count is Solution.py's rule, asked per group."""
+    assert TF.tdmGroupingAccepted(ks(TDMSplit=True)) is True
+    assert TF.tdmGroupingAccepted(ks(fuse=2, TDMSplit=True)) is True
 
 
 @pytest.mark.parametrize("name, expected", [

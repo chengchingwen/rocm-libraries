@@ -1,0 +1,41 @@
+\begin{frame}{Copies-last is \emph{scoped}, because at one setting the crossing read needs this trip's copy}
+
+\begin{columns}[T]
+\begin{column}{0.50\textwidth}
+\vspace{-3pt}
+One steady trip at chunk $c$ \key{reads} $c \ldots c{+}r$ and \key{writes} $c{+}\delta$, where $r$ is the read-ahead's chunk reach.
+
+\vspace{3pt}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+relation & hazard & order \\
+\midrule
+$\delta = r$ ($r\ge1$) & \texttt{crossing-RAW} & copy \key{first} \\
+$\delta \neq r$ & \texttt{*-WAR} or none & copy \key{last} \\
+\bottomrule
+\end{tabular}
+\normalsize
+
+\vspace{5pt}
+Both shipping prefetch points sit at $S_{\text{shared}}{=}2,\ r{=}1$ and land on \emph{opposite} sides:
+\begin{center}\ttfamily\scriptsize
+depth 1: $\delta$=1, slot $(c{+}1)\bmod 2$ $\to$ hits the CROSSING read\\
+depth 2: $\delta$=2, slot $c \bmod 2$\phantom{{+}1} $\to$ hits the CURRENT read
+\end{center}
+
+\vspace{3pt}
+{\scriptsize \bad{An earlier predicate was $S_{\text{shared}} > r$} --- true for \emph{both}, so it emitted the depth-2 point copy-first and overwrote the buffer the trip was consuming.}
+\end{column}
+\begin{column}{0.47\textwidth}
+\vspace{-3pt}
+\textbf{The requirement} is scoped to $S_{\text{shared}} \le \delta$ --- there the refill is \key{in place} and the order is mandatory. Otherwise it is a rotation and the order is free. Both order checkers key on \texttt{inplace-WAR} \emph{alone}: \good{a \texttt{rotation-WAR} copy emitted first is not a violation.}
+
+\vspace{5pt}
+\textbf{The emitted policy is broader}: $\sigma_c$ defers \emph{both} WAR kinds unless vetoed --- ``last unless it must lead''.
+
+\vspace{5pt}
+\bad{The veto is only checkable because the RAW was modelled too.} With only the WAR present, nothing forced a copy to precede its own consumers --- correct at one chunk, wrong from two up.
+\end{column}
+\end{columns}
+\end{frame}

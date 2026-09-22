@@ -1,0 +1,35 @@
+\begin{frame}{The through-line, and the map: the schedule model decides WHEN, the dataflow IR resolves WHERE}
+
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize,node distance=6mm]
+\node[box,text width=2.9cm] (w) {\key{WHEN}\\\tsub{level, retime, peel, ring depth, read-ahead}};
+\node[box,text width=2.9cm,right=22mm of w] (e) {\key{WHERE}\\\tsub{which generation, which pointer flip, which fence}};
+\node[box,text width=2.6cm,right=22mm of e] (h) {\key{HOW}\\\tsub{opcode, register, byte offset}};
+\draw[ar] (w) -- node[above,font=\tiny,text=acc]{a rolled tree} (e);
+\draw[ar] (e) -- node[above,font=\tiny,text=acc]{resolved integers} (h);
+\node[below=1.5mm of w,font=\tiny,text=gray] {$\theta$ --- one data point};
+\node[below=1.5mm of e,font=\tiny,text=gray] {SSA + CFG --- four fixpoints};
+\node[below=1.5mm of h,font=\tiny,text=gray] {leaves / rocisa};
+\end{tikzpicture}
+\end{center}
+
+\vspace{2mm}
+{\footnotesize The split is not tidiness. Each layer prevents a failure the other cannot see:
+a \key{schedule} question asked of a dataflow pass has no point to reach and no value to
+propagate; a \key{placement} question asked of the schedule model is answered by position in a
+function, which is where every defect in this deck came from.}
+
+\vspace{3mm}
+{\scriptsize
+\begin{tabular}{@{}llp{0.52\textwidth}@{}}
+\toprule
+\textbf{chapters} & \textbf{layer} & \textbf{the question each answers} \\
+\midrule
+2--4 \tsub{schedule model; placement; hazards} & WHEN & what exists, how far ahead it runs, and what it owes \\
+5--7 \tsub{why a second IR; analyses; passes} & WHERE & which buffer, which flip, which fence --- and how each is proved \\
+8 \tsub{address geometry} & HOW & the one thing the model is forbidden to know \\
+9--10 \tsub{what shipped; what is next} & --- & the measured trajectory, and the named gaps \\
+\bottomrule
+\end{tabular}}
+
+\end{frame}

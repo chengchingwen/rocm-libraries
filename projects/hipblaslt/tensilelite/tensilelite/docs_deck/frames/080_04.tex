@@ -1,0 +1,58 @@
+\begin{frame}[fragile]{Every split failure traced to \emph{one} missing term in the tile stride --- not tokens, not waits}
+
+\begin{columns}[T]
+\begin{column}{0.53\textwidth}
+\footnotesize
+Turning splits on under GIR failed on hundreds of kernels, on both layouts, at several loop
+orders. It had every characteristic of a \bad{synchronisation} bug: depth-dependent, changed with
+prefetch, different at one wave vs four.
+
+\smallskip
+Memory tokens, derived waits, barrier placement, hop order --- \good{all of them were correct.}
+
+\begin{lstlisting}[style=pseudo]
+tile_row(t):
+  was:  tileStrideElems * t
+  is :  (t // VW) * MIWaveGroupShape + (t % VW)
+\end{lstlisting}
+\tsub{a wave takes VW adjacent rows, then jumps a whole group --- that jump is what hands the
+intervening rows to the other waves}
+
+\smallskip
+Measured (MT32x32 KMN PGR2/PLR0, \emph{unsplit}), operand A \texttt{ds\_load} offsets:
+\begin{lstlisting}[style=pseudo]
+scaffold: 0,32,64,96, 2176,2208,2240,2272
+ours    : 0,32,64,96,  128, 160, 192, 224
+\end{lstlisting}
+Wrong rows $\rightarrow$ sometimes the wrong \emph{region} $\rightarrow$ the \emph{correct} token
+machinery then ordered a read against a producer that was not its producer. \key{The symptom
+presented one layer above the defect.}
+\end{column}
+
+\begin{column}{0.45\textwidth}
+\footnotesize
+\textbf{Three reasons it stayed invisible}
+\begin{enumerate}\itemsep1pt\parskip0pt
+\item \bad{The wrong form is a special case of the right one.} At \texttt{MIWaveTile == VW} the
+group term is zero --- and every fixture pinned \texttt{MIWaveTile == VW == 2}.
+\item \bad{The failure was numeric, not structural.} \texttt{ds\_read offset:128} is as
+well-formed as \texttt{offset:2176}.
+\item \bad{The address is a sum of independently-chosen terms.} One wrong term still yields a
+\emph{plausible} address --- right magnitude, alignment, region count.
+\end{enumerate}
+
+\smallskip
+\centering
+\begin{tikzpicture}[node distance=2.2mm,font=\scriptsize]
+\node[gbox,text width=48mm] (a) {1. \key{ADDRESS ARITHMETIC} --- is every term in the same frame?};
+\node[box,below=of a,text width=48mm] (b) {2. \key{REGION / TOKEN LABELS} --- does the label match the address?};
+\node[box,below=of b,text width=48mm] (c) {3. \key{ORDERING} --- waits, barriers, hop order};
+\draw[ar] (a) -- (b); \draw[ar] (b) -- (c);
+\end{tikzpicture}
+
+\smallskip
+\raggedright
+Ordering is generic and covered on every build. \key{The prior is on the arithmetic.}
+\end{column}
+\end{columns}
+\end{frame}

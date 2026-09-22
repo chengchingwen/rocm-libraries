@@ -1,0 +1,40 @@
+\begin{frame}{Two structural vetoes cut the distance to zero --- at any width, for any $d$}
+
+\textbf{Veto 1 --- the broadcast fan.} $\mathrm{fan}(p)$ = product of extents of the modes \emph{not} in
+$\mathrm{pres}(p)$ that are outer, in \texttt{ord}, to \key{every} mode of $\mathrm{pres}(p)$. If the
+whole name space is re-walked before any value dies, a hoisted write lands on a name a later consumer
+still needs --- at \emph{any} distance. A race, not an anti-dependency.
+
+\begin{columns}[T]
+\begin{column}{0.56\textwidth}
+\begin{tikzpicture}[font=\scriptsize]
+  \node[box] (m) {M};  \node[box,right=3mm of m] (n) {N};  \node[box,right=3mm of n] (k) {K};
+  \node[font=\tiny,text=gray,above=1mm of n] {\texttt{ord}: outer $\rightarrow$ inner};
+  \node[gbox,below=4mm of m.south west,anchor=north west,text width=52mm]
+    {$\mathrm{pres}(A)=\{M,K\}$: N sits \emph{between} them, so it is not outer to $M$. $\mathrm{fan}(A)=1$ --- \good{keeps read-ahead}};
+  \node[wbox,below=17mm of m.south west,anchor=north west,text width=52mm]
+    {$\mathrm{pres}(B)=\{N,K\}$: M is outer to \emph{both}. $\mathrm{fan}(B)=\mathrm{ext}(M)$ --- \bad{$dr_g=0$}};
+\end{tikzpicture}
+\end{column}
+\begin{column}{0.4\textwidth}
+\begin{center}\scriptsize
+\begin{tabular}{lcc}
+\toprule
+\texttt{ord} & $dr_g(A)$ & $dr_g(B)$ \\
+\midrule
+KMN, KNM & 1 & 1 \\
+MNK, MKN & 1 & \bad{0} \\
+NMK, NKM & \bad{0} & 1 \\
+\bottomrule
+\end{tabular}
+\end{center}
+\end{column}
+\end{columns}
+
+\vspace{1mm}
+\textbf{Veto 2 --- a free sibling outer to the reduction.} The sibling is a storage-disjoint group, so
+the shift cannot carry through it, \emph{and} the prologue's outer factor primes only region 0. Neither
+half of the pipeline exists; in-place is the only consistent answer.
+
+\tsub{Both vetoes live in the per-group derivation, not in the min that produces the steady advance --- a veto in the min alone zeroes the advance while the prologue keeps priming.}
+\end{frame}

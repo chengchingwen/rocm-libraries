@@ -1,0 +1,58 @@
+\begin{frame}{A model is verified only when a \emph{second, independently derived} implementation agrees}
+
+\begin{columns}[T]
+\begin{column}{0.50\textwidth}
+\footnotesize
+The LDS address is not computed by \texttt{LraTileAssignment} --- it is \emph{emitted} by it. Two
+ways to check it:
+
+\smallskip
+\begin{tikzpicture}[font=\scriptsize,node distance=3mm]
+\node[wbox,text width=44mm] (a) {\bad{(a) re-derive the rules in Python}\\[1pt]
+  \tsub{a transcription: agrees when both are right \emph{and} when both are wrong the same way}};
+\node[gbox,below=of a,text width=44mm] (b) {\good{(b) interpret the emitted instructions}\\[1pt]
+  \tsub{can only be wrong about \emph{ISA semantics} --- a surface where both authors had to agree
+  with a third party}};
+\end{tikzpicture}
+
+\smallskip
+\key{\texttt{asm\_lane\_eval.LaneEval}} executes a straight-line slice of gfx1250 asm once per
+lane (32 lanes, Wave32) and reports per-lane register values. \texttt{lds\_region\_check} then
+divides each address by the writer's \emph{own} split boundary and asks: does one
+\texttt{ds\_load} touch two regions?
+
+\smallskip
+Two distinct faults: \bad{within-wave} straddle --- \emph{unrepresentable}, no coordinate fixes
+it; \bad{across-wave} --- representable, but a race if the model was not told.
+\end{column}
+
+\begin{column}{0.48\textwidth}
+\footnotesize
+\textbf{Refusal is the design}
+
+Any opcode or operand it cannot model raises \texttt{UnsupportedInstruction}. A silently-skipped
+instruction leaves a stale register, and the address then \emph{looks like an address}.
+
+\smallskip
+\begin{tabular}{@{}p{0.95\textwidth}@{}}
+\toprule
+The first version returned \texttt{0} for an unwritten VGPR, reasoning that a backward slice is
+closed under its own producers. \bad{It is not} --- it bottoms out at kernel \emph{inputs}. Every
+address register then evaluated to exactly its \texttt{offset:} immediate, all lanes looked like
+region~0, and the checker reported \bad{zero violations for four kernels}: a clean bill of health
+produced entirely by reading uninitialised state. \\
+\bottomrule
+\end{tabular}
+
+\medskip
+\key{And the corollary: a differential oracle must first be shown \emph{capable of disagreeing} at
+the input in question.} \texttt{region\_derivation\_check} recomputes the region from tile
+\emph{position} vs tile \emph{index} --- it pinned the wave-span defect --- but it shares
+\texttt{tiles\_per\_region}'s \texttt{max(1,\,.\,.\,)} floor, so at \texttt{MIWaveTile 1} both
+derivations collapse to zero and it reports agreement it is \bad{incapable of withholding}.
+
+\smallskip
+\good{Add an oracle here, and add with it a test that makes the oracle fail.}
+\end{column}
+\end{columns}
+\end{frame}

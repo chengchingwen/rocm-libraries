@@ -1,0 +1,101 @@
+################################################################################
+# Copyright Advanced Micro Devices, Inc., or its affiliates.
+# SPDX-License-Identifier: MIT
+################################################################################
+# Designed UseLoopModel TDMSplit x LDSSegmentInterleave=1 config for gfx1250
+# codegen characterization. Sibling of loopmodel_mixedsplit.yaml, which pins the
+# same split family at LDSSegmentInterleave=0.
+#
+# LDSSI interleaves COMPONENTS, not TDMSplit regions, and reads both of its split
+# questions per operand: the component wave jump belongs to an UNSPLIT tile (a
+# split one gets it from its region walk), and a tensor's two ports are its two
+# split halves. Asked kernel-wide, an asymmetric split takes both answers from
+# the other operand -- an unsplit B is denied the wave jump because A is split,
+# and an unsplit A is labelled portSplit because B is split.
+#
+# The `[2,2]` segment map is written throughout for a split A and has no
+# portSplitB layout, so `0/1` is rejected. Which shapes survive derivation is
+# itself pinned, by the golden's key set.
+#
+# gfx1250 MX-FP8 TN, DepthU 256, PGR=2, SIA=4 (StinkyTofu), WavefrontSize 32.
+GlobalParameters:
+  SyncsPerBenchmark: 0
+  MinimumRequiredVersion: 5.0.0
+  NumElementsToValidate: 128
+  DataInitTypeBeta: 0
+  DataInitTypeAlpha: 1
+  Device: 0
+
+BenchmarkProblems:
+  ########################################
+  # MX-FP8 (F8 in, float32 out) TN, Batched, UseLoopModel, LDSSegmentInterleave=1
+  ########################################
+  -
+    - # ProblemType: MX-F8 TN
+      OperationType: GEMM
+      DataType: F8
+      DestDataType: s
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: True
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+      MXBlockA: 32
+      MXBlockB: 32
+      DataTypeMXSA: e8
+      DataTypeMXSB: e8
+    - # BenchmarkProblemSizeGroup
+      InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 128, 1, 1, 2, 8, 2, 2]
+        - UseSgprForGRO: [0]
+        - ForceDisableShadowInit: [True]
+        - HalfPLR: [0]
+        - DepthU: [256]
+        - TDMInst: [3]
+        - TDMIterateMode: [-1]
+        - TransposeLDS: [-1]
+        - LdsPadA: [-1]
+        - LdsPadB: [-1]
+        - LdsBlockSizePerPadA: [-1]
+        - LdsBlockSizePerPadB: [-1]
+        - LdsPadMetadata: [0]
+        - LDSTrInst: [False]
+        - StaggerU: [0]
+        - ScheduleIterAlg: [4]
+        - PrefetchLocalRead: [1]
+        - PrefetchGlobalRead: [2]
+        - PrefetchGL2: [0]
+        - ClusterDim: [[1, 1]]
+        - StoreRemapVectorWidth: [0]
+        - GlobalSplitU: [1]
+        - GlobalSplitUAlgorithm: [MultipleBuffer]
+        - GlobalReadVectorWidthA: [-1]
+        - GlobalReadVectorWidthB: [-1]
+        - VectorWidthA: [1]
+        - VectorWidthB: [1]
+        - LocalReadVectorWidth: [-1]
+        - LDSSegmentInterleave: [1]
+        - 1LDSBuffer: [0]
+        - SourceSwap: [False]
+        - WorkGroupMapping: [1]
+        - StoreVectorWidth: [-1]
+        - DirectToVgprA: [False]
+        - DirectToVgprB: [False]
+        - WavefrontSize: [32]
+        - ExpandPointerSwap: [False]
+        - UseSubtileImpl: [False]
+        - AssertSummationElementMultiple: [32]
+        - UseLoopModel: [True]
+        - TDMFuse: [0]
+        - TDMSplitA: [0, 1]
+        - TDMSplitB: [0, 1]
+        - LoopOrder: [KMN]
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 256]
