@@ -260,37 +260,20 @@ class GirToRocisa:
             out.add(SWaitCnt(dscnt=int(at["dscnt"]), comment=tag))
 
     def _emit_fence(self, out, phase, at):
-        """Realize a memory-ordering barrier: GIR decides where and what it orders, L3 the instruction.
+        """Record WHERE GIR wanted a fence; StinkyTofu decides how many and emits them.
 
-        `_syncThreads` issues waitcnt + barrier, so it has the strength the anti-dependence demands."""
+        A hazard is not a barrier: one barrier discharges every hazard whose window contains it,
+        and only the post-schedule order says which slots those are.  Emitting one barrier per
+        fence Mark here both multiplies the count and pins each one behind its own producer,
+        where its residual is zero."""
         buffers = at.get("buffers", ())
-        no_wait = bool(at.get("no_waitcnt"))
-        tokens = None if no_wait else self._fence_tokens(at)
-        # The token set is printed: it is what the waitcnt derives from, so a barrier that does not
-        # name it cannot be checked against the accesses it stands between.
         war = sorted(int(t) for t in (at.get("order_tokens") or ())) or None
-        sync = ("sync ORDER ONLY" if no_wait else
-                sync_comment(tokens) if tokens else "sync LDS ALL")
+        sync = "sync ST-OWNED"
         if war:
             sync += " order %s" % (war,)
         self._tag(out, phase, "fence", "%s scope=%s covers %s edge(s) %s %s"
                   % ("+".join(buffers) or "?", at.get("scope"), at.get("edges"),
                      ",".join(at.get("kinds", ())), sync))
-        # A one-wave workgroup sync emits no hardware barrier. Keep the semantic point as an
-        # assembly-invisible scheduling fence in every mode so no frame-sensitive instruction can
-        # be promoted across it merely because the hardware barrier folded away.
-        if self.kernel.get("LoopModelWaitCntMode", "StinkyTofu") == "StinkyTofu":
-            scheduling_fence = SSchedulingFence("GIR frame fence")
-            scheduling_fence.setNoWaitCnt(True)
-            out.add(scheduling_fence)
-        code = self.writer._syncThreads(
-            self.kernel, "GIR fence: order %s (%s) %s"
-            % ("+".join(buffers) or "LDS", ",".join(at.get("kinds", ())), sync),
-            memoryToken=tokens, noWaitCnt=no_wait, orderToken=war)
-        if code is not None and code.count():
-            self._append_tag(code, "fence %s" % ("+".join(buffers) or "LDS"))
-            self._register_fence(code)
-            out.add(code)
 
     def _register_fence(self, code):
         """Record the `SBarrier` objects in `code` as GIR-owned."""
