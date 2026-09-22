@@ -1,0 +1,28 @@
+\begin{frame}{A fused copy is one completion, and its members pair by index --- nothing else names the pairing}
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize,node distance=5mm]
+\node[box] (d) {one aliased\\descriptor};
+\node[box,right=14mm of d,text width=2.7cm] (m0) {movement $AB_0$\\{\color{gray}A region 0 + B region 0}};
+\node[box,below=4mm of m0,text width=2.7cm] (m1) {movement $AB_1$\\{\color{gray}A region 1 + B region 1}};
+\node[gbox,right=10mm of m0,text width=2.4cm] (c0) {ONE completion};
+\node[gbox,right=10mm of m1,text width=2.4cm] (c1) {ONE completion};
+\draw[ar] (d.east) -- (m0.west);
+\draw[ar] (d.east) -- (m1.west);
+\draw[ar] (m0) -- (c0);
+\draw[ar] (m1) -- (c1);
+\end{tikzpicture}
+\end{center}
+\begin{itemize}
+\item A is cut on its \emph{free} axis, B on the \emph{reduction} axis. There is no shared mode to
+      name the pairing --- \key{the index is the pairing}.
+\item Awaiting one member awaits an event the hardware \bad{never signals separately}, so the
+      obligation ledger discharges the \key{movement}, not the operand.
+\item The defect: the schedule instance carries \emph{one} coordinate, necessarily the
+      representative member's axis. Every other member's region axis was left unpinned, and widened.
+\item Measured on a multi-wave transposed-N split, the fused copy's tokens came out
+      \texttt{(1,5,7)} and \texttt{(3,5,7)}: A's regions correctly distinct, \bad{B carrying both of
+      its buffers on both region copies}. B's halves became indistinguishable to the hazard analysis.
+\item Where a member is split on \emph{several} axes the pass \good{refuses} rather than guessing:
+      an index alone does not say which axis it pairs on.
+\end{itemize}
+\end{frame}

@@ -1,0 +1,30 @@
+
+\begin{frame}{The pass order is not a preference: every adjacent pair is fixed by a dependency}
+\centering
+\begin{tikzpicture}[node distance=0.28cm, every node/.style={font=\scriptsize}]
+\node[box,inner sep=2.5pt,text width=3.6cm] (p1) {\textbf{1} ScaffoldShapePass};
+\node[box,inner sep=2.5pt,text width=3.6cm,below=of p1] (p2) {\textbf{2} RegGenPass};
+\node[box,inner sep=2.5pt,text width=3.6cm,below=of p2] (p3) {\textbf{3} TokensPass};
+\node[box,inner sep=2.5pt,text width=3.6cm,below=of p3] (p4) {\textbf{4} CollectPendingMarksPass};
+\node[box,inner sep=2.5pt,text width=3.6cm,below=of p4] (p5) {\textbf{5} PlacementPass};
+\node[gbox,inner sep=2.5pt,text width=3.6cm,below=of p5] (p6) {\textbf{6} ApplyMarksPass \emph{(the only body mutator)}};
+\node[box,inner sep=2.5pt,text width=3.6cm,below=of p6] (p7) {\textbf{7} RecordUnemittedPass};
+
+\draw[ar] (p1)--(p2) node[midway,anchor=west,xshift=2.0cm,text width=8.0cm,align=left]
+  {the CFG is made \key{FINAL} here --- every later stage is an analysis \emph{over} that CFG};
+\draw[ar] (p2)--(p3) node[midway,anchor=west,xshift=2.0cm,text width=8.0cm,align=left]
+  {a gate belongs early: raise before three analyses run over a known-bad program};
+\draw[ar] (p3)--(p4) node[midway,anchor=west,xshift=2.0cm,text width=8.0cm,align=left]
+  {the fence quotes the ids the \texttt{Move}s carry --- both derivations at one version};
+\draw[ar] (p4)--(p5) node[midway,anchor=west,xshift=2.0cm,text width=8.0cm,align=left]
+  {an insertion has a legal \key{range}, not a correct point};
+\draw[ar] (p5)--(p6) node[midway,anchor=west,xshift=2.0cm,text width=8.0cm,align=left]
+  {anchors stay opaque node refs, so four analyses' marks cannot invalidate each other's};
+\draw[ar] (p6)--(p7) node[midway,anchor=west,xshift=2.0cm,text width=8.0cm,align=left]
+  {\bad{measured:} counting drops at fold time reported 0 --- G-EMIT found 6 real marks};
+\end{tikzpicture}
+
+\vspace{3pt}
+{\scriptsize Then two gates: \texttt{verify\_gir} (twelve G-* checks) and
+\texttt{\_check\_rotation\_waw}, the one invariant only true of a \emph{finished} program.}
+\end{frame}

@@ -43,3 +43,4 @@ costly, and the constraints (e.g. add-only).>
 <What this costs and enables, and what a future change must do to revisit
 it — e.g. "if the defect is fixed, flip the golden and supersede this ADR".>
 ```
+- `0004-readahead-derivations.md` — the read-ahead derivations' reasoning, extracted from LoopModel/placement.py when its comments were cut to the contract.

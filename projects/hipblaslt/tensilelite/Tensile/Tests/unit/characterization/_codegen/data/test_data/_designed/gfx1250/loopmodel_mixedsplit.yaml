@@ -1,0 +1,110 @@
+################################################################################
+# Copyright Advanced Micro Devices, Inc., or its affiliates.
+# SPDX-License-Identifier: MIT
+################################################################################
+# Designed UseLoopModel + mixed-region TDMSplit config for gfx1250 codegen
+# characterization.
+#
+# Goal: pin the ASYMMETRIC-split family -- exactly one of TDMSplitA/TDMSplitB
+# set, so a Phi fuse group holds members with DIFFERENT region counts. Every
+# defect this arm exposed was a kernel-wide question standing in for a
+# per-operand one, and four of the five live BELOW GIR (KernelWriterAssembly,
+# SolutionStructs/segment_interleave), where the LoopModel digest goldens
+# cannot see them:
+#
+#   * the region walk and the LDS buffer swap keyed on the copy MOVEMENT rather
+#     than on the DESCRIPTOR, which draws two swaps for one descriptor -- and
+#     both lower to the same s_xor, so the pair cancels and the double buffer
+#     never alternates;
+#   * the A-even/B-odd wave-parity select, which is the default TDMFuse=0 grouping
+#     and hands half the waves the other tensor's step under TDMFuse 1/2/3;
+#   * an UNSPLIT tile taking a nonzero region step from the LDSSegmentInterleave
+#     override.
+#
+# TDMFuse 0/1/2/3 x TDMSplitA/B in {0,1} covers both the like-with-like grouping
+# and the three crossing groups that fuse a scale (always one region) with a
+# split data operand.
+#
+# gfx1250 MX-FP8 TN, DepthU 256, PGR=2, SIA=4 (StinkyTofu), WavefrontSize 32.
+GlobalParameters:
+  SyncsPerBenchmark: 0
+  MinimumRequiredVersion: 5.0.0
+  NumElementsToValidate: 128
+  DataInitTypeBeta: 0
+  DataInitTypeAlpha: 1
+  Device: 0
+
+BenchmarkProblems:
+  ########################################
+  # MX-FP8 (F8 in, float32 out) TN, Batched, UseLoopModel, mixed-region splits
+  ########################################
+  -
+    - # ProblemType: MX-F8 TN
+      OperationType: GEMM
+      DataType: F8
+      DestDataType: s
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: True
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+      MXBlockA: 32
+      MXBlockB: 32
+      DataTypeMXSA: e8
+      DataTypeMXSB: e8
+    - # BenchmarkProblemSizeGroup
+      InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 128, 1, 1, 2, 2, 2, 2]
+        - UseSgprForGRO: [0]
+        - ForceDisableShadowInit: [True]
+        - HalfPLR: [0]
+        - DepthU: [256]
+        - TDMInst: [3]
+        - TDMIterateMode: [-1]
+        - TransposeLDS: [-1]
+        - LdsPadA: [-1]
+        - LdsPadB: [-1]
+        - LdsBlockSizePerPadA: [-1]
+        - LdsBlockSizePerPadB: [-1]
+        - LdsPadMetadata: [0]
+        - LDSTrInst: [False]
+        - StaggerU: [0]
+        - ScheduleIterAlg: [4]
+        - PrefetchLocalRead: [1]
+        - PrefetchGlobalRead: [2]
+        - PrefetchGL2: [0]
+        - ClusterDim: [[1, 1]]
+        - StoreRemapVectorWidth: [0]
+        - GlobalSplitU: [1]
+        - GlobalSplitUAlgorithm: [MultipleBuffer]
+        - GlobalReadVectorWidthA: [-1]
+        - GlobalReadVectorWidthB: [-1]
+        - VectorWidthA: [1]
+        - VectorWidthB: [1]
+        - LocalReadVectorWidth: [-1]
+        - LDSSegmentInterleave: [0]
+        - 1LDSBuffer: [0]
+        - SourceSwap: [False]
+        - WorkGroupMapping: [1]
+        - StoreVectorWidth: [-1]
+        - DirectToVgprA: [False]
+        - DirectToVgprB: [False]
+        - WavefrontSize: [32]
+        - ExpandPointerSwap: [False]
+        - UseSubtileImpl: [False]
+        - AssertSummationElementMultiple: [32]
+        - UseLoopModel: [True]
+        - TDMFuse: [0, 1, 2, 3]
+        - TDMSplitA: [0, 1]
+        - TDMSplitB: [0, 1]
+        - LoopOrder: [KMN]
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 256]
+

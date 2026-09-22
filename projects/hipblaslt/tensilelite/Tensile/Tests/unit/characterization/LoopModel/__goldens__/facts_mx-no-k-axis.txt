@@ -1,0 +1,23 @@
+mxf8 MNK w4 0/0 plr0 pgr1 du128
+operand  varying axes                        reload axes                  prefetch  whole  tiles f/r/res  regions  regs f/buf  lds
+-------  ----------------------------------  ---------------------------  --------  -----  ------------  -------  ----------  ---
+A        M_inner                             M_inner                      M_inner   False   2/ 1/ 1            1    16/32       2
+B        N_inner                             N_inner                      M_inner   True    2/ 1/ 2            1    16/32       2
+MXSA     M_inner                             M_inner                      M_inner   False   2/ 1/ 1            1     1/2        2
+MXSB     N_inner                             N_inner                      M_inner   True    2/ 1/ 2            1     1/2        2
+
+mxf8 MNK w4 0/0 plr1 pgr1 du128
+operand  varying axes                        reload axes                  prefetch  whole  tiles f/r/res  regions  regs f/buf  lds
+-------  ----------------------------------  ---------------------------  --------  -----  ------------  -------  ----------  ---
+A        M_inner                             M_inner                      M_inner   False   2/ 1/ 2            1    16/32       2
+B        N_inner                             N_inner                      M_inner   True    2/ 1/ 2            1    16/32       2
+MXSA     M_inner                             M_inner                      M_inner   False   2/ 1/ 2            1     1/2        2
+MXSB     N_inner                             N_inner                      M_inner   True    2/ 1/ 2            1     1/2        2
+
+mxf8 MNK w4 0/0 plr2 pgr1 du128
+operand  varying axes                        reload axes                  prefetch  whole  tiles f/r/res  regions  regs f/buf  lds
+-------  ----------------------------------  ---------------------------  --------  -----  ------------  -------  ----------  ---
+A        M_inner                             M_inner                      M_inner   False   2/ 1/ 2            1    16/32       2
+B        N_inner                             N_inner                      M_inner   True    2/ 1/ 2            1    16/32       2
+MXSA     M_inner                             M_inner                      M_inner   False   2/ 1/ 2            1     1/2        2
+MXSB     N_inner                             N_inner                      M_inner   True    2/ 1/ 2            1     1/2        2

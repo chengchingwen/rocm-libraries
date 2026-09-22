@@ -1,0 +1,26 @@
+\begin{frame}{The node set is semantic: a swap is a fact, never an \texttt{s\_xor}}
+\centering\scriptsize
+\begin{tabular}{@{}llp{5.2cm}@{}}
+\toprule
+group & nodes & answers \\
+\midrule
+nouns   & \texttt{Tile}, \texttt{Gen}, \texttt{Ref} & what data / which buffer generation / one use of it \\
+verbs   & \texttt{Move}, \texttt{Mma} & one movement hop / one multiply--accumulate \\
+point   & \texttt{Mark} & a semantic fact at a program point \\
+control & \texttt{Goto}, \texttt{CondGoto}, \texttt{LoopBack}, \texttt{Return}, \texttt{CondChain} & the CFG terminators \\
+graph   & \texttt{Block}, \texttt{GenPhi}, \texttt{GenXfer}, \texttt{Program} & the CFG itself \\
+\bottomrule
+\end{tabular}
+
+\vspace{5pt}
+\begin{itemize}\scriptsize
+  \item \key{No physical fields} (checked by \texttt{G-SEMANTIC}): no address, no VGPR colour,
+        no byte offset. The same fact realizes as a descriptor \texttt{s\_xor}, an address
+        \texttt{v\_xor}, or nothing at all --- a node naming one cannot be reused by the others.
+  \item \key{One SSA value class}: \texttt{Gen}, the loop-carried buffer generation. Registers are
+        \emph{not} SSA --- their rotation width is a schedule decision this layer only validates.
+  \item \key{Six \texttt{Mark} kinds}, closed set --- and \bad{no \texttt{barrier} kind}: GIR carries the
+        ordering obligation, layer 3 picks \texttt{s\_barrier} / a wait count / nothing.
+        \tsub{(The comment explaining this is one rename stale --- it still says \texttt{await}.)}
+\end{itemize}
+\end{frame}

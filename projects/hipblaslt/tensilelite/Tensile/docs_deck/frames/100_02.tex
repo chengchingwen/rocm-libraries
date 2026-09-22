@@ -1,0 +1,38 @@
+\begin{frame}{Two packages, three optimisations worth doing --- and one bet}
+\vspace{-2pt}
+{\scriptsize
+\begin{tabular}{@{}p{0.30\textwidth}p{0.64\textwidth}@{}}
+\toprule
+\texttt{Tensile/LoopModel/} & \key{the schedule model}: what happens \emph{when}. $\theta$, the peel, the ledger, the certificate. Every gate is either totality or honesty \\
+\texttt{Tensile/Lowering/} & \key{the dataflow lowering}: \emph{where} each value lives. GIR, the analyses, the passes, the emitter. Each package carries its own gap list and cost map in-tree \\
+\bottomrule
+\end{tabular}}
+
+\vspace{5pt}
+{\footnotesize \key{Compile time}, measured not estimated: \good{8\,ms} of lowering on the common shape, \bad{165\,ms} on the worst measured one (4 waves, DepthU 512, a 1936-instruction body). Kernels build one per worker, so per-kernel wall time is what a sweep pays.}
+
+\vspace{3pt}
+{\scriptsize
+\begin{tabular}{@{}p{0.52\textwidth}p{0.14\textwidth}p{0.12\textwidth}@{}}
+\toprule
+\textbf{ranked by win / risk} & \textbf{win} & \textbf{risk} \\
+\midrule
+fence slots as intervals + a difference array, not integer sets & $\sim$45\,ms & low \\
+let the verifier accept the caller's analysis manager & $\sim$14\,ms & very low \\
+hand the precomputed plan to the semantic gate & $\sim$12\,ms & none \\
+\bottomrule
+\end{tabular}}
+
+\vspace{3pt}
+{\footnotesize Everything below those is single-digit milliseconds. The CFG walks, the fixpoints and the token machinery are \emph{deliberately} not on the list --- they are free and they are the clearest code in the tree.}
+
+\vspace{6pt}
+\begin{center}
+\begin{tikzpicture}
+\node[box,draw=acc,line width=1pt,text width=0.90\textwidth,font=\small]{
+\textbf{The bet:} a main loop's schedule is \key{data} --- one $\theta$ point --- and every physical
+consequence of it (which buffer, which pointer flip, which wait, which barrier) is \key{derived by
+dataflow and certified}, never hand-placed per configuration.};
+\end{tikzpicture}
+\end{center}
+\end{frame}

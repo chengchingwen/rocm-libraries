@@ -1,0 +1,43 @@
+\begin{frame}{A pass that changes the CFG obliges the verifier to CHECK the new shape, not assume it}
+\begin{columns}[T]
+\begin{column}{0.40\textwidth}
+\centering
+\begin{tikzpicture}[node distance=0.42cm, every node/.style={font=\scriptsize}]
+\node[box,inner sep=2.5pt] (pro) {prologue};
+\node[box,inner sep=2.5pt,below=of pro] (d0) {drain0 \tsub{holds the fence}};
+\node[box,inner sep=2.5pt,below=of d0] (d1) {drain1 \tsub{\texttt{ds\_read}}};
+\draw[ar] (pro)--(d0);
+\draw[ar] (d0)--(d1);
+\draw[-{Stealth[length=4pt]},thick,draw=warn,dashed]
+  (pro.east) to[bend left=55] node[right,font=\tiny,text=warn,align=left]
+  {$T=1$\\ \bad{edge absent}} (d1.east);
+\end{tikzpicture}
+
+\vspace{2pt}
+\tsub{With the edge missing, \texttt{drain0} \emph{dominated} \texttt{drain1}, so the fence cover
+elided \texttt{drain1}'s fence. True of the CFG it was given; false of the kernel.}
+\end{column}
+\begin{column}{0.58\textwidth}
+\scriptsize
+\bad{Measured:} 32 cross-agent hazard edges left unfenced; the microscaled-fp8 kernels returned
+\texttt{-nan} on every $T \le M$ cell. The repair was structural --- all three CFG rewrites moved
+into one stage that runs \key{first}, so ``the CFG is final before anything reasons over it'' is a
+property of the pipeline's shape, not a convention.
+
+\vspace{4pt}
+The verifier side of the same rule:
+\begin{itemize}\itemsep2pt
+  \item \key{G-CFG} the fold may leave \good{0} short blocks (folded) or \good{exactly $M$} (kept)
+        --- \bad{any other count} means a pass truncated the arm. Before the cross-check, silent
+        truncation was indistinguishable from a correct fold.
+  \item \key{G-EMIT} a block nobody emits must \emph{say so}, and its discarded marks must be counted.
+  \item \key{G-TRIP} a pass that rotates the loop cannot quietly change the total work.
+\end{itemize}
+
+\vspace{3pt}
+\tsub{Worked example --- a critical-edge splitter: \texttt{StructuralPass}, after the early exits,
+before labelling. Its new block phased \texttt{"drain0.split"} would be \emph{counted as a drain} and
+fail \texttt{n\_drain != M}. \texttt{phase} is a string doing type-system work.}
+\end{column}
+\end{columns}
+\end{frame}

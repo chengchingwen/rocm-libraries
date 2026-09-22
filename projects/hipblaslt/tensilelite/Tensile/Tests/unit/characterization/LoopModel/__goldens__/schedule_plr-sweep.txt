@@ -1,0 +1,17 @@
+bf16 KMN w1 0/0 plr0 pgr1 du64
+operand  grp  bufs  axis          ahead  dist  reload_after      lds  refused
+-------  ---  ----  ------------  -----  ----  ---------------   ---  -------
+A        g0      1  K_inner           0     0  -                   2  -
+B        g0      1  K_inner           0     0  -                   2  -
+
+bf16 KMN w1 0/0 plr1 pgr1 du64
+operand  grp  bufs  axis          ahead  dist  reload_after      lds  refused
+-------  ---  ----  ------------  -----  ----  ---------------   ---  -------
+A        g0      2  K_inner           1     2  -                   2  -
+B        g0      2  K_inner           1     2  -                   2  -
+
+bf16 KMN w1 0/0 plr2 pgr1 du64
+operand  grp  bufs  axis          ahead  dist  reload_after      lds  refused
+-------  ---  ----  ------------  -----  ----  ---------------   ---  -------
+A        g0      2  K_inner           2     4  -                   2  -
+B        g0      2  K_inner           2     4  -                   2  -

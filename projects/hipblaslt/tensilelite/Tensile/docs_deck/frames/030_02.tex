@@ -1,0 +1,35 @@
+\begin{frame}[fragile]{A read hoisted $d$ steps buys latency hiding and owes three things back}
+
+Issued naively, every read is followed by a wait for its own completion: the machine stalls the full
+local-memory latency at each step. Hoisting the read $d$ steps creates three obligations --- and each
+is a \key{closed form}, never a simulation.
+
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize]
+  \node[gbox] (cap) {\textbf{1. Capacity}\\$W \ge d+1$ live generations};
+  \node[gbox,right=5mm of cap] (pro) {\textbf{2. Prologue}\\prime steps $0\dots d{-}1$};
+  \node[gbox,right=5mm of pro] (drn) {\textbf{3. Drain}\\suppress trailing reads};
+\end{tikzpicture}
+\end{center}
+
+\begin{lstlisting}[style=pseudo]
+dr   = off(read, substep)                 # the REQUEST, per op-class
+dr_g = 0  if fan(op) > 1                                        [veto 1]
+       0  if a free sibling is outer to the group's reduction   [veto 2]
+       max(0, min(dr, W_g - 1))                    # the capacity clamp
+\end{lstlisting}
+
+\begin{center}\scriptsize
+\begin{tabular}{lll}
+\toprule
+ & \good{Shape A} ($dr_g \ge 1$) & \bad{Shape B} ($dr_g = 0$) \\
+\midrule
+read placement & hoisted ahead of its consumer & in place, with a wait \\
+prologue       & non-empty & \textbf{empty} \\
+steady advance & non-zero  & \textbf{0} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\tsub{Mixing them is what the \texttt{dr\_g} refactor exists to prevent --- and was the decoder's real state: a Shape-A prologue with a Shape-B steady primes the pipe once and never re-primes it.}
+\end{frame}
