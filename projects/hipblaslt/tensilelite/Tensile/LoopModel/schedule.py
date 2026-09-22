@@ -244,10 +244,9 @@ def prefetch_steps_for(theta, operand, group, requested, depths) -> int:
     """Realized lead for one group; the request governs it, not the refill policy.
 
     `inplace` says WHEN the refill happens, not whether there is a lead, so it does not zero one.
+    Neither does `regions_time_share`: regions landing on one slot is WHERE the refill goes, and a
+    refill placed after the region's last use overwrites nothing that is still live.
     """
-    if geometry.regions_time_share(theta, operand, group,
-                                   geometry.group_ring_depth(theta, operand, group, depths)):
-        return 0
     if max(1, depths.get(operand.name, group)) < group_reuse_floor(theta, operand, group):
         return 0
     return min(max(0, int(requested)), requested_read_ahead(theta, operand, depths))
