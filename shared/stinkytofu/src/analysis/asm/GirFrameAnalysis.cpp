@@ -598,6 +598,25 @@ std::pair<StinkyInstruction*, GirFrame> lastBarrierBefore(const GirFrameAnalysis
     for (const auto& [from, tos] : frames.edges)
         for (const GirFrameNode& to : tos)
             preds[{to.block, to.frame}].push_back({from.block, from.frame});
+    // `frames.edges` is hashed on the block ADDRESS, so the push_back order above follows the
+    // heap -- and this walk returns the FIRST predecessor holding a barrier.  Where two both hold
+    // one, the same kernel anchored its wait on a different fence from run to run.  Program order
+    // fixes that AND answers the question being asked: LAST barrier before, so the nearest
+    // predecessor must be examined first.
+    std::unordered_map<const BasicBlock*, size_t> position;
+    if (const Function* owner = block->getParent())
+        for (const BasicBlock& each : *const_cast<Function*>(owner))
+            position[&each] = position.size();
+    const auto positionOf = [&position](const BasicBlock* bb) {
+        auto found = position.find(bb);
+        return found == position.end() ? size_t{0} : found->second;
+    };
+    for (auto& [_node, list] : preds)
+        std::sort(list.begin(), list.end(), [&](const Key& lhs, const Key& rhs) {
+            const size_t left = positionOf(lhs.first), right = positionOf(rhs.first);
+            if (left != right) return left > right;
+            return lhs.second < rhs.second;
+        });
     std::set<Key> seen{{block, frame}};
     std::deque<Key> work{{block, frame}};
     while (!work.empty()) {
@@ -674,11 +693,22 @@ GirFrameHazardAnalysis::Result GirFrameHazardAnalysis::run(Function& function,
                                   actionOf(producer.inst), actionOf(consumer.inst)});
     };
 
-    for (const auto& [node, state] : incoming) {
-        auto touches = occurrences.find(node);
+    // `incoming` is hashed on the block address, and the hazard vector's order decides which of
+    // two occurrences of one pair a later dedup keeps.  Emit in the program's own order instead.
+    std::vector<const GirFrameNode*> order;
+    order.reserve(incoming.size());
+    for (const auto& [node, _state] : incoming) order.push_back(&node);
+    std::sort(order.begin(), order.end(), [](const GirFrameNode* lhs, const GirFrameNode* rhs) {
+        if (lhs->block->getLabel() != rhs->block->getLabel())
+            return lhs->block->getLabel() < rhs->block->getLabel();
+        if (!(lhs->frame == rhs->frame)) return lhs->frame < rhs->frame;
+        return lhs->incomingAction < rhs->incomingAction;
+    });
+    for (const GirFrameNode* node : order) {
+        auto touches = occurrences.find(*node);
         static const std::vector<const GirAccessOccurrence*> empty;
-        (void)walkHazards(node, touches == occurrences.end() ? empty : touches->second, state,
-                          frames.contract, registry, &emit);
+        (void)walkHazards(*node, touches == occurrences.end() ? empty : touches->second,
+                          incoming.at(*node), frames.contract, registry, &emit);
     }
 
     return result;
