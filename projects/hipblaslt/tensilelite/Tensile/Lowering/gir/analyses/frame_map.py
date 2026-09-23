@@ -64,32 +64,48 @@ def _rings(prog):
     return out
 
 
-def _advance(frame, src, dst, is_back):
-    """`frame` along `src -> dst`.
+def _edge_values(prog, back):
+    """Per edge, `{gen id: (value, relative)}` -- the table `GirFrameAnalysis` applies: an edge
+    either ASSIGNS a phase or ADVANCES one.
 
-    A generation rotates when its loop takes another TRIP, so a block's transfers apply on the
-    back edge that closes the trip -- the edge `BackEdgeSet.leaving` already keys them to.  An
-    edge out of the latch that leaves the loop is not another trip: applying them there handed the
-    drain a phase one trip ahead, and with ring 2 its two reads aliased onto one buffer."""
-    phases = frame.as_dict()
-    if is_back:
-        for xf in src.xfers:
-            phases[xf.gen.id] = (phases.get(xf.gen.id, 0) + xf.adv) % max(1, xf.ring)
-    if not is_back:
-        for phi in dst.phis:
-            incoming = dict(phi.incomings)
-            if incoming:
-                if src.label not in incoming:
-                    raise RuntimeError(
-                        "FrameMap: phi for Gen %d in %s has no input from %s"
-                        % (phi.gen.id, dst.label, src.label)
-                    )
-                value = incoming[src.label]
+    Transfers are stated on the back edge that closes the trip.  An edge leaving the loop is not
+    another trip: advancing there aliased a ring-2 drain's two reads onto one buffer."""
+    out = {}
+    for lab, blk in prog.blocks.items():
+        for succ_lab in (blk.succs or ()):
+            dst = prog.blocks.get(succ_lab)
+            if dst is None:
+                continue
+            table = {}
+            if back.is_back_edge(lab, succ_lab):
+                for xf in blk.xfers:
+                    table[xf.gen.id] = (int(xf.adv) % max(1, int(xf.ring)), True)
+                out[(lab, succ_lab)] = table
+                continue                  # a trip closes by TRANSFER; no phi assigns on it
+            for phi in dst.phis:
+                incoming = dict(phi.incomings)
+                if incoming:
+                    if lab not in incoming:
+                        raise RuntimeError(
+                            "FrameMap: phi for Gen %d in %s has no input from %s"
+                            % (phi.gen.id, dst.label, lab)
+                        )
+                    value = incoming[lab]
+                else:
+                    value = phi.entry_val
                 if value is None:
-                    continue
-            else:
-                value = phi.entry_val
-            phases[phi.gen.id] = int(value) % max(1, phi.gen.ring)
+                    continue          # forwarded: this edge's own transfer already states it
+                table[phi.gen.id] = (int(value) % max(1, int(phi.gen.ring)), False)
+            out[(lab, succ_lab)] = table
+    return out
+
+
+def _advance(frame, table, rings):
+    """`frame` across one edge, by the table above: assign, or advance within the ring."""
+    phases = frame.as_dict()
+    for gen_id, (value, relative) in table.items():
+        ring = max(1, int(rings.get(gen_id, 1)))
+        phases[gen_id] = ((phases.get(gen_id, 0) + value) % ring) if relative else (value % ring)
     return Frame(phases)
 
 
@@ -221,7 +237,7 @@ def _carries_generations(blk):
     return False
 
 
-def _cut(prog, succ, back, base, order):
+def _cut(prog, succ, back, base, order, values, rings):
     """One naming frame per block: the entry's, advanced along each forward edge.
 
     Where several forward predecessors reach a block, the one that CARRIES GENERATIONS wins: a
@@ -238,7 +254,7 @@ def _cut(prog, succ, back, base, order):
             better = _carries_generations(src)
             if s in cut and (s in claimed or not better):
                 continue
-            cut[s] = _advance(cut[lab], src, prog.blocks[s], False)
+            cut[s] = _advance(cut[lab], values.get((lab, s), {}), rings)
             if better:
                 claimed.add(s)
     return cut
@@ -282,6 +298,7 @@ class FrameMap(Analysis):
         # A partial vector would make the entry frame and the all-zero loop frame distinct objects
         # for one phase, splitting the node set and inventing cross-frame edges between them.
         rings = _rings(prog)
+        values = _edge_values(prog, back)
         base = Frame({g: 0 for g in rings})
 
         order = [blk.label for blk in prog.walk_rpo()]
@@ -296,9 +313,10 @@ class FrameMap(Analysis):
             src = prog.blocks[lab]
             for s in succ.get(lab, ()):
                 is_back = back.is_back_edge(lab, s)
-                new = {_advance(f, src, prog.blocks[s], is_back) for f in frames[lab]}
+                table = values.get((lab, s), {})
+                new = {_advance(f, table, rings) for f in frames[lab]}
                 if not is_back:
-                    entrances[s] |= {_advance(f, src, prog.blocks[s], False)
+                    entrances[s] |= {_advance(f, table, rings)
                                      for f in entrances[lab]} or new
                 fresh = new - frames[s]
                 if not fresh:
@@ -311,9 +329,8 @@ class FrameMap(Analysis):
         edges = {}
         for lab, blk in prog.blocks.items():
             for f in frames[lab]:
-                edges[(lab, f)] = tuple(
-                    (s, _advance(f, blk, prog.blocks[s], back.is_back_edge(lab, s)))
-                    for s in succ.get(lab, ()))
+                edges[(lab, f)] = tuple((s, _advance(f, values.get((lab, s), {}), rings))
+                                        for s in succ.get(lab, ()))
 
         ref_block, unresolved, names = {}, [], {}
         generation_regions = (prog.meta or {}).get("generation_regions", {}) or {}
@@ -335,5 +352,5 @@ class FrameMap(Analysis):
                          for gen_id, fact in generation_regions.items()}
         out = FrameMapping(frames, entrances, edges, ref_block, storage, unresolved, names,
                            gen_by_region)
-        out._cut = _cut(prog, succ, back, base, order)
+        out._cut = _cut(prog, succ, back, base, order, values, rings)
         return out
