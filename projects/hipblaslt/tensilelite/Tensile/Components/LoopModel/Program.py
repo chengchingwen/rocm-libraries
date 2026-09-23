@@ -11,7 +11,7 @@ from ...LoopModel.render import render_theta
 from ...Lowering import build_gir, gir_text
 from ...Lowering.gir import check_plan
 from ...Lowering.gir.analyses import Gl2PrefetchRegions
-from ...Lowering.gir.frame_contract import CONTRACT_KEY, encode_frame_contract
+from ...Lowering.gir.frame_contract import install_frame_contract
 from ...Lowering.gir.passes import pipeline as gir_pipeline
 
 from .Theta import loopModelTheta
@@ -83,5 +83,4 @@ def loopModelGirTextCached(writer):
 
 def attachFrameContract(writer, stModule, kernel):
   """Attach this kernel's frame contract to the StinkyTofu module, out of band."""
-  stModule.setPluginDataStr(
-      CONTRACT_KEY, encode_frame_contract(loopModelGirProgram(writer, kernel)))
+  install_frame_contract(loopModelGirProgram(writer, kernel), stModule)
