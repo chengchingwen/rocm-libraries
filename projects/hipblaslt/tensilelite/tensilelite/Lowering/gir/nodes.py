@@ -87,8 +87,6 @@ class Move:
     srcs: tuple
     dsts: tuple
     deps: tuple = ()
-    token: object = None
-    token_ids: tuple = ()
     advance: int = 0
     issue: tuple = ()            # invariant-axis pass that owns this residency event
     # The movement's CANONICAL members.  A copy may carry refs for only the members present on

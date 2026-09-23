@@ -10,7 +10,6 @@ is data in pipeline.py (the "backend" file).
 from .base import Pass, StructuralPass
 from .fold_short_path import FoldShortPathPass, folded
 from .hoist_copies import HoistCopiesPass
-from .tokens import TokensPass
 from .collect_pending import CollectPendingMarksPass
 from .placement import PlacementPass
 from .apply_marks import ApplyMarksPass
@@ -23,7 +22,7 @@ from .entrance_frames import EntranceFramePhisPass
 from .pipeline import pipeline, run_pipeline
 
 __all__ = [
-    "Pass", "StructuralPass", "FoldShortPathPass", "folded", "HoistCopiesPass", "TokensPass",
+    "Pass", "StructuralPass", "FoldShortPathPass", "folded", "HoistCopiesPass",
     "CollectPendingMarksPass",
     "PlacementPass", "ApplyMarksPass", "ScaffoldMapPass", "EarlyExitPass",
     "SplitPrefetchGuardPass", "ScaffoldShapePass", "EntranceFramePhisPass",

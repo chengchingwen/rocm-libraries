@@ -20,7 +20,6 @@ class Decision:
     emit: bool = True
     narrowed: bool = False
     reg_slot: int = None
-    tokens: tuple = ()
 
 
 #: NO DECISION.  An act whose operand theta gave no merge gets `None`, never a permissive
@@ -30,10 +29,7 @@ WHOLE = None
 
 def _act_generation(at) -> tuple:
     """The GENERATION a read act belongs to -- what every coordinate of one coverage must agree on."""
-    tok = at.get("token_ids")
-    if isinstance(tok, (set, frozenset, list, tuple)):
-        tok = tuple(sorted(tok))
-    return (tok, at.get("reg_buf"), at.get("group"))
+    return (at.get("reg_buf"), at.get("group"))
 
 
 class CoveragePlan:
@@ -76,15 +72,13 @@ def _check_carrier_groups(acts, groups, decisions, violations, coverage_of, exte
         q = coverage_of(tc)
         n = (extent_of(tc) if extent_of else
              1 + max(acts[i].at.get("tile_flat", acts[i].at["tile"]) for i in idxs))
-        group_tokens = tuple(sorted({t for i in idxs
-                                     for t in (acts[i].at.get("token_ids") or ())}))
         grp = q.group(carrier_tile_of(q, carrier, n), n)
         want = len(grp)
         lead = min(grp) if grp else None
         for i in idxs:
             tile = acts[i].at.get("tile_flat", acts[i].at["tile"])
             decisions[i] = Decision(emit=(tile == lead), narrowed=False,
-                                    reg_slot=q.carrier_of(tile), tokens=group_tokens)
+                                    reg_slot=q.carrier_of(tile))
         present = {acts[i].at.get("tile_flat", acts[i].at["tile"]) for i in idxs}
         # ONE ACT PER CARRIER GROUP, AT THE LEADER -- the invariant since theta models the coverage itself.
         #
@@ -103,15 +97,15 @@ def _check_carrier_groups(acts, groups, decisions, violations, coverage_of, exte
                 "an EMISSION fact (which acts landed), NOT a generation straddle -- see the "
                 "REGISTER-generation check for that."
                 % (tc, carrier, want, len(idxs), sorted(grp), lead, sorted(present)))
-        gens = {_act_generation(acts[i].at)[1:] for i in idxs}          # register side only
+        gens = {_act_generation(acts[i].at) for i in idxs}
         if len(gens) > 1:
             violations.append(
                 "operand %s: GENERATION STRADDLE -- the instruction "
                 "at tile %d spans %d REGISTER generations %s; one instruction cannot write two "
                 "`Valu*_X*` bases, so this merge has no encoding.  THIS is the hardware hazard, and "
                 "an incomplete carrier group above is a different, "
-                "weaker fault.  (The LDS half of a straddle is not reported here: it is carried as "
-                "the union of the group's memory tokens, see `Decision.tokens`.)"
+                "weaker fault.  The LDS half of a straddle is StinkyTofu's, resolved from the "
+                "frame contract rather than named here."
                 % (tc, carrier, len(gens), sorted(gens, key=repr)))
 
 

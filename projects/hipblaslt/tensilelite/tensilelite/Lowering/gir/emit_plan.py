@@ -101,8 +101,7 @@ def _plan_read(prog, inst, dst_reg, red, free, order, ext, actions):
             "group": dst_reg.group, "size_regs": dst_reg.size_regs,
             "unit_index": dst_reg.unit_index, "unit_indexes": unit_indexes,
             "issue": tuple(getattr(inst, "issue", ())),
-            "advance": int(getattr(inst, "advance", 0) or 0),
-            "token": inst.token, "token_ids": inst.token_ids}))
+            "advance": int(getattr(inst, "advance", 0) or 0)}))
         return
 
 
@@ -122,8 +121,7 @@ def _plan_move(prog, inst, actions):
         wref = walk_ref(prog, dst_refs)
         reg = region_of(prog, wref) if n_reg > 1 else ()
         actions.append(EmitAction("copy", {
-            "unit": members, "gen": int(gen or 0), "token": inst.token,
-            "token_ids": inst.token_ids, "regions": n_reg,
+            "unit": members, "gen": int(gen or 0), "regions": n_reg,
             "region": _flat(reg, prog, wref.tile.operand) if reg else None}))
 
 

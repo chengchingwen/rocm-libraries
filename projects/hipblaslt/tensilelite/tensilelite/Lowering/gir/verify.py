@@ -13,10 +13,8 @@ from .analyses import BackEdges
 from .analyses.loop_shape import LoopShape, reduction_coverage_violations
 from .analyses.barrier_uniformity import BarrierUniformity
 from .analyses.frame_hazards import FrameHazards, RAW, _disjoint_storage
-from .analyses.fence_regions import _admissible_slots, fences_of, separated
 from .analyses.frame_map import FrameMap
 from .analyses.reg_band import RegBandAnalysis
-from .analyses.dep_tokens import DependenceTokens
 from .analyses.lds_buffers import LdsBufferIds, shared_refs
 from .analyses.region_increment import walk_violations
 
@@ -190,45 +188,19 @@ def _check_walk(prog):
         raise RuntimeError("; ".join(bad))
 
 
-def _check_token_stamps(prog, am, tokens):
-    """Every shared access carries the token its ref resolves to, and a use is fenced or dominated."""
-    stamped = any(getattr(i, "token_ids", ()) for b in prog.blocks.values() for i in b.body
-                  if isinstance(i, Move))
-    per_inst = {}
-    for _blk, inst, ref, _w in shared_refs(prog):
-        want = tokens.tokens_for(ref)
-        if not want:
-            raise RuntimeError(
-                f"G-TOKEN: shared access to {ref.tile.operand!r} carries no token id")
-        per_inst.setdefault(id(inst), [inst, set()])[1].update(want)
-    if stamped:
-        for inst, want in per_inst.values():
-            if tuple(inst.token_ids) != tuple(sorted(want)):
-                raise RuntimeError(
-                    f"G-TOKEN: a shared access is stamped {tuple(inst.token_ids)} but the "
-                    f"assignment says {tuple(sorted(want))} -- the emitter reads the STAMP, so a "
-                    f"stale or truncated one is a mis-named LDS access")
-
-
 def _check_tokens(prog, am):
-    """G-TOKEN: the memory-token numbering is a correct naming of LDS storage.
- A token IS an LDS pseudo-register -- StinkyTofu gives a producer the token as a def, a consumer
- as a use, and a barrier as both -- so the numbering is not decoration: it is the alias relation
- the scheduler will believe. Three properties, none assumed.
- 
-    """
+    """G-TOKEN: the LDS buffer numbering is a correct naming of shared storage.
 
+    The id is the alias relation StinkyTofu's frame pipeline resolves each access against, so it
+    is not decoration: every access must resolve, and provably disjoint storage must not collide.
+    """
     tokens = am.get(LdsBufferIds(), prog)
     if tokens.unresolved:                                            # V2
         raise RuntimeError(
             f"G-TOKEN: {len(tokens.unresolved)} shared access(es) could not be named "
             f"{tokens.unresolved[:3]} -- an unnamed LDS access breaks StinkyTofu's all-or-none "
             f"token rule for its whole basic block, so this is not a partial result")
-    # the STAMP is the obligation token (the def-use chain); `tokens` above is the storage id,
-    # which V1 below still checks.  Two namings, two checks.
-    _check_token_stamps(prog, am, am.get(DependenceTokens(), prog))
-    hz = am.get(FrameHazards(), prog)
-    for e in hz:                                                     # V1
+    for e in am.get(FrameHazards(), prog):                           # V1
         if not _disjoint_storage(e.producer, e.consumer):
             continue
         shared = (set(tokens.ids_for(e.producer.ref))
@@ -238,65 +210,6 @@ def _check_tokens(prog, am):
                 f"G-TOKEN: {e.producer.storage} and {e.consumer.storage} are provably disjoint "
                 f"storage but share token id(s) {sorted(shared)} -- a shared id orders them for no "
                 f"reason (precision), and means the key no longer distinguishes what it claims")
-
-    _check_token_reuse(prog, tokens, am.get(DependenceTokens(), prog), hz)
-    _check_frame_coverage(prog, am.get(DependenceTokens(), prog), hz, am)
-
-
-def _check_frame_coverage(prog, dep, hz, am):
-    """G-TOKEN-FRAME: every hazard, in EVERY frame it is live in, is ordered by something.
-
-    Same-agent frame hazards are direct scheduler constraints and do not need a legacy memory-token
-    alias. Cross-agent hazards still need a separating fence; a fence naming nothing is a full
-    drain and counts.
-
-    Only ONE execution of the pair is at stake: two different instances are separated by the back
-    edge, and the scheduler that could reorder them works inside a basic block."""
-    fences = fences_of(prog)
-    n_of = {lab: len(b.body) + 1 for lab, b in prog.blocks.items()}
-    fm = am.get(FrameMap(), prog)
-    for fp, fc, h in hz.instances():
-        if h.gap or not h.cross_agent:
-            continue
-        pins = set(dep.tokens_for(h.producer.ref)) & set(dep.tokens_for(h.consumer.ref))
-        if pins or separated(h, fences, n_of.get, pins):
-            continue
-        raise RuntimeError(
-            f"G-TOKEN-FRAME: the {h.kind} edge {h.producer.block}[{h.producer.pos}] -> "
-            f"{h.consumer.block}[{h.consumer.pos}] is live in frames {fm.render(fp)} / "
-            f"{fm.render(fc)}, its ends share no token and no fence stands between them")
-
-
-def _check_token_reuse(prog, tokens, dep, hz):
-    """G-FRAME-FENCE: every cross-wave frame instance is named by a separating relation."""
-    fm = AnalysisManager().get(FrameMap(), prog)
-    for fp, fc, h in hz.instances():
-        if not h.cross_agent:
-            continue
-        covered = False
-        for label in (h.producer.block, h.consumer.block):
-            body = prog.block(label).body
-            legal = _admissible_slots(h, len(body) + 1, label)
-            for pos, node in enumerate(body):
-                if pos not in legal or not isinstance(node, Mark) or node.kind != "fence":
-                    continue
-                for relation in node.at.get("relations", ()):
-                    if (relation["kind"] == h.kind
-                            and relation["producer"].get("identity") == id(h.producer.inst)
-                            and relation["consumer"].get("identity") == id(h.consumer.inst)
-                            and relation["producer"]["frame"] == fm.render(fp)
-                            and relation["consumer"]["frame"] == fm.render(fc)):
-                        covered = True
-                        break
-                if covered:
-                    break
-            if covered:
-                break
-        if not covered:
-            raise RuntimeError(
-                f"G-FRAME-FENCE: {h.kind} {h.producer.block}[{h.producer.pos}] -> "
-                f"{h.consumer.block}[{h.consumer.pos}] in {fm.render(fp)} / {fm.render(fc)} "
-                "has no separating per-frame fence relation")
 
 
 def _check_emit(prog):
@@ -524,8 +437,8 @@ def check_block_scope_covered(prog, am):
         raise RuntimeError(
             f"G-SCOPE: theta declares a BLOCK-scoped shared residency for operand(s) "
             f"{sorted(missing)}, but `FrameHazards` finds no cross-wave shared edge for them, so "
-            f"`FenceRegions` never had an edge to cover and nothing guarantees a barrier between "
-            f"their cooperative fill and the reads of it.  {det}")
+            f"StinkyTofu's fence placement never had an edge to cover and nothing guarantees a "
+            f"barrier between their cooperative fill and the reads of it.  {det}")
 
 
 def check_rotation_waw(prog, am):

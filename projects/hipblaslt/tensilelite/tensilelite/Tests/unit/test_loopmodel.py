@@ -2429,34 +2429,6 @@ def _quantum_violations(order, split):
     return out
 
 
-def test_a_merged_load_carries_the_UNION_of_the_generations_it_covers():
-    """the movement-quantum condition: a merged movement names a SET of generations, not the leader's."""
-    from Tensile.Lowering.gir.emit_plan import EmitAction
-    from Tensile.Lowering.gir.coverage import plan_coverage
-
-    def _acts(token_ids):
-        """Two MXSA reads the coverage merges into ONE instruction (`carrier(t) = t // 2`), sharing a
-        register generation so the REGISTER half is clean and only the LDS half is under test."""
-        return [EmitAction(kind="read",
-                           at={"tc": "MXSA", "tile": t, "tile_flat": t, "k": 0, "k_flat": 0,
-                               "reg_buf": 0, "token_ids": token_ids[t],
-                               "region": 0, "regions": 1})
-                for t in range(2)]
-
-    q = lambda op: _two_tile_fold() if op == "MXSA" else None
-
-    for label, toks, want in (("one generation",  [(1,), (1,)], (1,)),
-                              ("two generations", [(1,), (3,)], (1, 3))):
-        acts = _acts(toks)
-        plan = plan_coverage(acts, q)
-        issued = [plan.decision(i) for i in range(len(acts))
-                  if plan.decision(i) and plan.decision(i).emit]
-        assert len(issued) == 1, \
-            f"{label}: the fold must issue exactly one instruction, got {len(issued)}"
-        assert tuple(issued[0].tokens) == want, \
-            f"{label}: the merged load must carry every generation it covers: {issued[0].tokens} != {want}"
-
-
 def test_the_quantum_check_still_reports_a_REGISTER_straddle():
     """The half of a straddle that is NOT repairable by a union, and so must still be a violation.
     the union answers the LDS half -- one instruction, several source buffers, name them all.

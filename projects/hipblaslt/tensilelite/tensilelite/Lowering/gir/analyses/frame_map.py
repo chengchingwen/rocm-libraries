@@ -96,7 +96,8 @@ def _advance(frame, src, dst, is_back):
 class FrameMapping:
     """Query API: the frames a block runs under, and the storage an access touches in each."""
 
-    def __init__(self, frames, entrances, edges, ref_block, storage, unresolved, ring_names=()):
+    def __init__(self, frames, entrances, edges, ref_block, storage, unresolved, ring_names=(),
+                 gen_by_region=()):
         self._frames = {b: tuple(sorted(fs)) for b, fs in frames.items()}
         self._entrances = {b: _classes(fs) for b, fs in entrances.items() if fs}
         self._cut = {}
@@ -105,6 +106,7 @@ class FrameMapping:
         self._storage = storage
         self._unresolved = tuple(unresolved)
         self._names = dict(ring_names)       # gen id -> the operand that rotates through it
+        self._gen_by_region = dict(gen_by_region)   # (operand, region) -> gen id
         self._reach = _closure(self._edges)
         self._touch_cache = {}
         self._frame_touch_cache = {}
@@ -151,12 +153,20 @@ class FrameMapping:
         """The `(block, frame)` nodes one edge on from `node`."""
         return self._edges.get(node, ())
 
-    def generation(self, ref, frame):
-        """The concrete rotation phase `ref` names in `frame`, or None if it carries none."""
+    def generation(self, ref, frame, coords=None):
+        """The concrete rotation phase `ref` names in `frame`, or None if it carries none.
+
+        `coords` names ONE region, and that region's own `Gen` sets the phase.  A Ref carries a
+        single `gen` while `_loop_carried_gens` makes one per `(operand, region)`, so reading the
+        Ref's alone pins every region to the leader's rotation -- a region whose reader and writer
+        then sit on different generations has no rotation between them at all."""
         ring = max(1, self._storage.depth_of(ref.tile.operand))
         gen = getattr(ref, "gen", None)
         if gen is not None:
-            return (frame.of(gen.id) + int(ref.gdelta)) % ring
+            gen_id = gen.id
+            if coords is not None and len(coords) == 1:
+                gen_id = self._gen_by_region.get((ref.tile.operand, int(coords[0])), gen_id)
+            return (frame.of(gen_id) + int(ref.gdelta)) % ring
         abs_gen = getattr(ref, "abs_gen", None)
         return None if abs_gen is None else int(abs_gen) % ring
 
@@ -175,8 +185,8 @@ class FrameMapping:
         key = (id(ref), frame, bool(is_write))
         hit = self._frame_touch_cache.get(key)
         if hit is None:
-            phase = self.generation(ref, frame)
-            hit = self._storage.frame_at(ref, phase, is_write)
+            hit = self._storage.frame_at(
+                ref, lambda coords: self.generation(ref, frame, coords), is_write)
             self._frame_touch_cache[key] = hit
         return hit
 
@@ -185,8 +195,8 @@ class FrameMapping:
         key = (id(ref), frame, bool(is_write))
         hit = self._workgroup_touch_cache.get(key)
         if hit is None:
-            phase = self.generation(ref, frame)
-            hit = self._storage.workgroup_frame_at(ref, phase, is_write)
+            hit = self._storage.workgroup_frame_at(
+                ref, lambda coords: self.generation(ref, frame, coords), is_write)
             self._workgroup_touch_cache[key] = hit
         return hit
 
@@ -321,6 +331,9 @@ class FrameMap(Analysis):
                         names.setdefault(gen.id, f"{operand}/r{region}")
                     elif ref.tile.space == "shared" and getattr(ref, "abs_gen", None) is None:
                         unresolved.append((ref.tile.operand, blk.label))
-        out = FrameMapping(frames, entrances, edges, ref_block, storage, unresolved, names)
+        gen_by_region = {(str(fact.get("operand")), int(fact.get("region", 0))): int(gen_id)
+                         for gen_id, fact in generation_regions.items()}
+        out = FrameMapping(frames, entrances, edges, ref_block, storage, unresolved, names,
+                           gen_by_region)
         out._cut = _cut(prog, succ, back, base, order)
         return out
