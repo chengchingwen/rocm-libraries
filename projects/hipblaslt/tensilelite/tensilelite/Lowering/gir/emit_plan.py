@@ -9,7 +9,7 @@ from dataclasses import dataclass, replace
 
 from .nodes import Move, Mma, Mark
 from .analyses.region_increment import region_of, walk_ref, _flat, _n_regions
-from .nodes import copy_unit, covered_coords
+from .nodes import copy_unit, covered_coords, first_shared_ref
 
 
 @dataclass(frozen=True)
@@ -101,8 +101,27 @@ def _plan_read(prog, inst, dst_reg, red, free, order, ext, actions):
             "group": dst_reg.group, "size_regs": dst_reg.size_regs,
             "unit_index": dst_reg.unit_index, "unit_indexes": unit_indexes,
             "issue": tuple(getattr(inst, "issue", ())),
+            # The LDS generation this read SOURCES; a DTV read has none and carries None.
+            "gen": _ref_generation(prog, first_shared_ref(inst.srcs)),
             "advance": int(getattr(inst, "advance", 0) or 0)}))
         return
+
+
+def _ref_generation(prog, ref):
+    """The buffer a shared Ref names, for read and copy alike: a peel ref pins one, a loop-carried
+    ref advances its phi by its own step.  `abs_gen` is None for every steady access."""
+    if ref is None:
+        return None
+    gen = getattr(ref, "gen", None)
+    if gen is None:
+        return int(ref.abs_gen or 0)
+    entry = 0
+    for block in prog.blocks.values():
+        for phi in block.phis:
+            if phi.gen.id == gen.id and phi.entry_val is not None:
+                entry = int(phi.entry_val)
+                break
+    return (entry + int(ref.gdelta)) % max(1, int(gen.ring))
 
 
 def _plan_move(prog, inst, actions):
@@ -114,14 +133,12 @@ def _plan_move(prog, inst, actions):
     _plan_read(prog, inst, dst_reg, red, free, order, ext, actions)
     members, dst_refs = copy_unit(inst)
     if members is not None:
-        # frame-correct: `gdelta` is relative to the block's own `gen_rel` (see Block), so the
-        # raw delta is not a generation on its own.  `blk_rel` is subtracted by the caller-supplied
-        gen = dst_refs[0].abs_gen
+        gen = _ref_generation(prog, dst_refs[0])
         n_reg = _n_regions(prog, members)
         wref = walk_ref(prog, dst_refs)
         reg = region_of(prog, wref) if n_reg > 1 else ()
         actions.append(EmitAction("copy", {
-            "unit": members, "gen": int(gen or 0), "regions": n_reg,
+            "unit": members, "gen": gen, "regions": n_reg,
             "region": _flat(reg, prog, wref.tile.operand) if reg else None}))
 
 
