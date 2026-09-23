@@ -24,6 +24,7 @@
 
 import math
 from functools import lru_cache
+from itertools import permutations as _permutations
 from typing import Any, Union
 
 from .Architectures import SUPPORTED_ISA
@@ -1160,6 +1161,37 @@ validParameters = { # we need to make sure this matches develop
     # 0  : disable CMS even if supported
     # 1  : enable  CMS, is set to 0 if not supported
     "UseCustomMainLoopSchedule" : [-1, 0, 1],
+    # Route the inner-loop body through the LoopModel theta-schedule decoder + the GIR compiler
+    # (Tensile/LoopModel + Tensile/Lowering).
+    "UseLoopModel": [False, True],
+    # LoopModel inner-loop traversal order over the {K,M,N} axes (only meaningful with
+    # UseLoopModel=True).  Ignored when UseLoopModel=False.
+    #
+    # THE WHOLE SPACE IS 90 TRAVERSALS, and they are DERIVED here rather than listed so this and
+    # `translate._loop_order_word` (which accepts any word with each of K,M,N exactly twice) cannot
+    # drift apart.  Each axis contributes a SPLIT mode and an INNER mode — first occurrence of a
+    # letter is `X_split`, second is `X_inner` — so a word is a permutation of `KKMMNN`:
+    #
+    #   6 CONTIGUOUS   each axis's (split, inner) pair adjacent.  Spelled in the 3-letter shortcut
+    #                  form, because `_loop_order_word` expands `KMN` to `KKMMNN` — listing both
+    #                  spellings would be ONE traversal under TWO kernel names, i.e. exactly the
+    #                  silent duplicate the 6-letter gate in `Solution.py` exists to prevent.
+    #  84 INTERLEAVED  the pairs woven together.  These are the only way to reach the
+    #                  MULTI-BODY PEEL — with the pairs contiguous the traversal is `clean` and the
+    #                  steady region is a single body.
+    #
+    # A 6-letter word needs a LIVE SPLIT AXIS or it collapses to the 3-letter order its INNER modes
+    # spell; `Solution.py` rejects that rather than emit a duplicate.  How many of the 90 are
+    # DISTINCT at a given config depends on which split modes survive: 30 at `TDMSplitA/B = 1`.
+    # Which ones a benchmark actually forks is a yaml decision — `loopmodel_bf16_gfx1250.yaml`
+    # block 11 picks 3 of the 84 to bound the run.
+    # ACCEPTS EVERY SPELLING the decoder parses — the 6 shortcuts and all 90 permutations, 96
+    # strings.  `Solution.py` canonicalizes a DOUBLED word to its 3-letter form before the kernel
+    # name is built (`adapter.canonical_loop_order`), so the 96 spellings collapse to 90 distinct
+    # traversals and no schedule gets two names.  Listing only 90 here would have made `KKMMNN` an
+    # invalid parameter for a word the decoder happily accepts.
+    "LoopOrder": ["KMN", "KNM", "MKN", "MNK", "NKM", "NMK"] + sorted(
+        {"".join(p) for p in _permutations("KKMMNN")}),
     # 0  : Generate original Store blocks: NonEdgeN, ThenN, and Then1 for StoreVectorWidth N
     # 1  : Generate adaptive Store blocks: NonEdgeN, ThenN, ThenN/2, ..., Then1 and select by runtime problem size
     "AdaptiveGemm": [0, 1],
@@ -1199,15 +1231,42 @@ validParameters = { # we need to make sure this matches develop
     # 2: Use TDM for B
     # 3: Use TDM for both A and B
     "TDMInst": [0, 1, 2, 3],
-    # Split each TDM data tensor (A or B) load across two tensor_load_to_lds instructions,
-    # each covering half the macro-tile in the M/N dimension. MX scale tensors (MXSA/MXSB)
-    # are not split regardless of this flag. When True, two extra SGPRs are allocated to
-    # hold the per-iteration LDS and global address increments for the split loads.
-    "TDMSplit": [False, True],
-    # Insert a barrier between an urgent and a deferrable tensor_load_to_lds group
-    # (different TDM wait groups) so every wave finishes the urgent group before any
-    # wave issues the deferrable one. Handled by the StinkyTofu TDMLoadWaveSyncPass;
-    # gfx1250 / ScheduleIterAlg=4 path only, off by default.
+    # Split ONE TDM data tensor's load across two tensor_load_to_lds instructions, each covering
+    # half the tile along the NAMED axis.  Per operand, because A and B are separate descriptors
+    # and nothing requires them to be cut the same way:
+    #   0 = no split
+    #   1 = split MT  — the operand's OWN free axis (A on M, B on N)
+    #   2 = split DU  — the SHARED reduction axis
+    # Two extra SGPRs per split operand hold the per-iteration LDS and global address increments.
+    # MX scale tensors (MXSA/MXSB) and sparse are never split regardless.
+    #
+    # THE AXIS IS NAMED RATHER THAN INFERRED, and that is the whole reason this replaced the old
+    # boolean `TDMSplit`.  That flag divided the descriptor's dim1, and dim1 is the free axis only
+    # when the operand is unrolled-major — under `tlu` it is the reduction axis, so `TDMSplit: True`
+    # silently performed a DU split on NT while its name said MT.  It went unnoticed for a long
+    # time because at MT32/DU64/bpe2 the two readings emit the same numbers (`mt*bpe/2 == du/2`).
+    # See `TdmSplitGeometry`, which turns (axis, factor) into the descriptor dim, the tile extent,
+    # the global/LDS steps, and whether the regions are separately PACKED in LDS.
+    # TDMFuse -- which tensors share one TDM descriptor set per tensor_load_to_lds.
+    # Fused means one rocisa::TensorLoadToLds descriptor programmed per wave,
+    # not two heterogeneous regions in one instruction.
+    #
+    #   0  default. Leave grouping to defineTdmSgprs (usually {A,B}+{MXSA,MXSB}
+    #      when NumWaves>1). Hidden from the kernel name.
+    #   1  {A,MXSA} + {MXSB,B}, each scale on a data tensor's set. NumWaves>1.
+    #      Parity crosses the scales: waves 0,2 carry A+MXSB, 1,3 B+MXSA.
+    #   2  {A,MXSA,MXSB} + {B}, 2/1/1 wave split: A on waves 0-1, MXSA on
+    #      wave 2, MXSB on wave 3, B on every wave. NumWaves==4.
+    #   3  {B,MXSA,MXSB} + {A}, the mirror of 2: B on waves 0-1, MXSA on
+    #      wave 2, MXSB on wave 3, A on every wave. NumWaves==4.
+    #
+    # This list and Components/TDMFuse.TDM_FUSE_GROUPING must name the same integers.
+    "TDMFuse": [0, 1, 2, 3],
+    "TDMSplitA": [0, 1, 2],
+    "TDMSplitB": [0, 1, 2],
+    # Insert a barrier between an urgent and a deferrable tensor_load_to_lds group (different TDM
+    # wait groups) so every wave finishes the urgent group before any wave issues the deferrable
+    # one.
     "TDMLoadWaveSync": [False, True],
     # TDMFuse -- which tensors share one TDM descriptor set per tensor_load_to_lds.
     # Fused means one rocisa::TensorLoadToLds descriptor programmed per wave,

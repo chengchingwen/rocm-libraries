@@ -834,18 +834,45 @@ inline bool hasLdsPseudoRegs(const StinkyInstruction& inst) {
     return false;
 }
 
+/// Returns true if the GIR frame model names this ds_read/ds_write's storage, so
+/// GirFrameHazardAnalysis supplies its ordering as DAG edges.  tensor_load is excluded: its
+/// tensorcnt rank is a FIFO position that only the region cut keeps when the chain is off.
+inline bool hasGirFrameOrdering(const StinkyInstruction& inst) {
+    if (!isDSRead(inst) && !isDSWrite(inst)) return false;
+    const GirActionData* action = inst.getModifier<GirActionData>();
+    return action != nullptr && !action->accesses.empty();
+}
+
+/// Returns true for a GIR-owned memory fence -- the order-only FENCE and both halves of the
+/// barrier it precedes.  addGirFrameHazardEdges pins each one between the ends of every
+/// cross-agent hazard it owns, which is the job the region cut used to do less precisely.
+/// Returns true if the GIR frame model names this instruction's storage, so the frame counter
+/// flow states its waits.  The proof of disjointness that `MemTokenData` used to carry lives in
+/// `GirActionData` here, so a fallback keyed on the token's absence must ask this too.
+inline bool girNamesStorage(const StinkyInstruction& inst) {
+    const GirActionData* action = inst.getModifier<GirActionData>();
+    return action != nullptr && !action->accesses.empty();
+}
+
+inline bool isGirOwnedFence(const StinkyInstruction& inst) {
+    if (!isBarrier(inst) && !isFence(inst)) return false;
+    const GirActionData* action = inst.getModifier<GirActionData>();
+    return action != nullptr && action->kind == GirActionKind::Fence;
+}
+
 /// Returns true if the instruction forces the DAG scheduler to cut a new
 /// region.  This covers true side effects (stores, branches, waits) and
 /// memory ops that lack MemTokenData (LDS pseudo-registers), where the
 /// scheduler has no dependency edges to prove reordering is safe.
 inline bool hasSideEffect(const StinkyInstruction& inst) {
     if (!inst.getHwInstDesc()) return false;
+    if (isGirOwnedFence(inst)) return false;
     if ((isGlobalMemStore(inst) && !isGlobalStoreAsyncFromLds(inst)) || isBranch(inst) ||
         isCall(inst) || isWaitCnt(inst) || isHasSideEffect(inst))
         return true;
     if ((isBarrier(inst) || isTensorLoad(inst) || isDSRead(inst) || isDSWrite(inst) ||
          isGlobalStoreAsyncFromLds(inst)) &&
-        !hasLdsPseudoRegs(inst))
+        !hasLdsPseudoRegs(inst) && !hasGirFrameOrdering(inst))
         return true;
     if (isExecMaskGroup(inst)) {
         if (const auto* groupData = inst.getModifier<ExecGroupData>()) {

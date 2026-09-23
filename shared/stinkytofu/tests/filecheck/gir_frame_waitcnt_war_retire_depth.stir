@@ -1,0 +1,27 @@
+# RUN: %stinkytofu-opt --arch gfx1250 %s --GirWaitCntInsertionPass --print-output
+#
+# The WAR counterpart of the in-flight depth: three reads are outstanding and the copy overwrites
+# the buffer only the FIRST of them consumed, so the two issued after it may stay in flight and
+# the wait is `s_wait_dscnt 2`.  The shipping mxf8 shapes wait at dscnt 4, 12, 18, 24 and 28 for
+# the same reason -- the number IS the pipeline depth the model keeps.
+#
+# CHECK-LABEL: @gir_frame_waitcnt_war_retire_depth
+# CHECK: ds_load_b64
+# CHECK-NEXT: ds_load_b64
+# CHECK-NEXT: ds_load_b64
+# CHECK-NEXT: "st.s_wait_dscnt"(2)
+# CHECK-SAME: dlcnt = 2
+# CHECK-NEXT: tensor_load_to_lds
+
+st.metadata "gir.frame_contract" {
+gir-frame-contract
+gen 0  ring=4 entry=0 advance=1
+}
+
+st.func @gir_frame_waitcnt_war_retire_depth() {
+^entry:
+  v[0:1] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 0, gds = false }, mod.gir_action = { action = 0, anchor = 0, kind = read, access0_write = 0, access0_operand = A, access0_ring = 4, access0_abs = 0 } }
+  v[2:3] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 16, gds = false }, mod.gir_action = { action = 1, anchor = 0, kind = read, access0_write = 0, access0_operand = A, access0_ring = 4, access0_abs = 1 } }
+  v[4:5] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 32, gds = false }, mod.gir_action = { action = 2, anchor = 0, kind = read, access0_write = 0, access0_operand = A, access0_ring = 4, access0_abs = 2 } }
+  "st.tensor_load_to_lds"(s[0:3], s[10:17]) { mod.gir_action = { action = 3, anchor = 0, kind = copy, access0_write = 1, access0_operand = A, access0_ring = 4, access0_abs = 0 } }
+}

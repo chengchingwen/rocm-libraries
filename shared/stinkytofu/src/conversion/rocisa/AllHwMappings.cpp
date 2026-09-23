@@ -220,6 +220,12 @@ std::vector<StinkyInstruction*> lowerRocisaSBarrier(rocisa::Instruction& inst,
     if (auto memToken = inst.getMemToken()) {
         signalInst->addModifier<MemTokenData>(MemTokenData{memToken->tokens});
     }
+    if (inst.getNoWaitCnt()) {
+        signalInst->addModifier<NoWaitCntData>(NoWaitCntData{});
+    }
+    if (auto orderToken = inst.getOrderToken()) {
+        signalInst->addModifier<OrderTokenData>(OrderTokenData{orderToken->tokens});
+    }
     return {waitInst, signalInst};
 }
 

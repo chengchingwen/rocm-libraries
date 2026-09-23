@@ -64,6 +64,7 @@
 #include "stinkytofu/transforms/asm/StinkyBuildImplicitDependencyPass.hpp"
 #include "stinkytofu/transforms/asm/StinkyDAGSchedulerPass.hpp"
 #include "stinkytofu/transforms/asm/StinkyMergeBarrierPass.hpp"
+#include "stinkytofu/transforms/asm/GirWaitCntInsertionPass.hpp"
 #include "stinkytofu/transforms/asm/StinkyRemoveNopPass.hpp"
 #include "stinkytofu/transforms/asm/StinkyRemoveWaitCntPass.hpp"
 #include "stinkytofu/transforms/asm/StinkyUnreachableBlockElimPass.hpp"
@@ -225,6 +226,7 @@ const std::vector<PassInfo> availablePasses = {
          return createStinkyRemoveWaitCntPass(options);
      }},
     {"StinkyRemoveNopPass", [](const auto&) { return createStinkyRemoveNopPass(); }},
+    {"GirWaitCntInsertionPass", [](const auto&) { return createGirWaitCntInsertionPass(); }},
     {"RemoveDscntPass", [](const auto&) { return createRemoveDscntPass(); }},
     {"StinkyWaitCntInsertionPass",
      [](const std::vector<std::string>& args) {

@@ -1,0 +1,33 @@
+# RUN: %stinkytofu-opt --arch gfx1250 %s --GirWaitCntInsertionPass --print-output
+#
+# The shape mab.yaml's steady loop actually has: ONE tensor_load_to_lds moves B, MXSA and MXSB
+# together (a fused copy group), so a single instruction carries three accesses on three rings.
+# A reader of any member must wait on that one copy, and a reader of an operand the group does
+# NOT carry must not.
+#
+# Taken from the real kernel, whose loop reads:
+#     s_wait_tensorcnt 2
+#     s_barrier_wait -1        // GIR fence: order B+MXSA+MXSB (RAW,WAR)
+#     tensor_load_to_lds ...   // GIR: copy B+MXSA+MXSB gen=0
+#
+# CHECK-LABEL: @gir_frame_waitcnt_fused_copy_group
+# CHECK: tensor_load_to_lds
+# CHECK-NEXT: tensor_load_to_lds
+# CHECK-NEXT: "st.s_wait_tensorcnt"(1)
+# CHECK-SAME: tlcnt = 1
+# CHECK-NEXT: ds_load_b64
+# CHECK-NOT: s_wait_tensorcnt
+
+st.metadata "gir.frame_contract" {
+gir-frame-contract
+gen 0  ring=2 entry=0 advance=1
+gen 1  ring=2 entry=0 advance=1
+gen 2  ring=2 entry=0 advance=1
+}
+
+st.func @gir_frame_waitcnt_fused_copy_group() {
+^entry:
+  "st.tensor_load_to_lds"(s[0:3], s[10:17]) { mod.gir_action = { action = 0, anchor = 0, kind = copy, access0_write = 1, access0_operand = B, access0_ring = 2, access0_abs = 0, access1_write = 1, access1_operand = MXSA, access1_ring = 2, access1_abs = 0, access2_write = 1, access2_operand = MXSB, access2_ring = 2, access2_abs = 0 } }
+  "st.tensor_load_to_lds"(s[4:7], s[10:17]) { mod.gir_action = { action = 1, anchor = 0, kind = copy, access0_write = 1, access0_operand = A, access0_ring = 2, access0_abs = 0 } }
+  v[0:1] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 0, gds = false }, mod.gir_action = { action = 2, anchor = 0, kind = read, access0_write = 0, access0_operand = MXSB, access0_ring = 2, access0_abs = 0 } }
+}
