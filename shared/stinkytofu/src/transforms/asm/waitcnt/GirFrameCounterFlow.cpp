@@ -24,11 +24,16 @@
 #include <vector>
 
 #include "stinkytofu/core/Function.hpp"
+#include "stinkytofu/core/PassManager.hpp"
 #include "stinkytofu/ir/asm/StinkyAsmIR.hpp"
 #include "stinkytofu/ir/asm/StinkyModifiers.hpp"
 #include "stinkytofu/support/Casting.hpp"
 #include "stinkytofu/support/ErrorHandling.hpp"
 #include "stinkytofu/transforms/asm/waitcnt/WaitDataflow.hpp"
+
+// `StinkyTofuDebugPass: "GirWaitCntInsertionPass"` traces every hazard the counter flow accepted
+// and the wait each anchor ended on.
+#define DEBUG_TYPE "GirWaitCntInsertionPass"
 
 namespace stinkytofu::waitcnt {
 
@@ -140,6 +145,7 @@ std::pair<StinkyInstruction*, GirFrame> enclosingFence(Function& function,
     report_fatal_error(message.str());
 }
 
+size_t indexInBlock(StinkyInstruction& inst);
 FeasibleDomainMap computeFeasibleDomains(Function& function,
                                          const GirFrameAnalysis::Result& frames);
 bool hazardFeasible(Function& function, const GirFrameAnalysis::Result& frames,
@@ -175,6 +181,16 @@ PotentialMap buildPotentials(Function& function, const GirFrameAnalysis::Result&
         auto key = std::make_tuple(anchor, anchorFrame, counter, hazard.producer,
                                    hazard.producerFrame, hazard.producerIndex, hazard.gap);
         if (!seen.insert(key).second) continue;
+        PASS_DEBUG(std::cerr << "[gir-haz] fn=" << function.getName()
+                             << " counter=" << (counter == CK_DS ? "ds" : "tensor")
+                             << " kind=" << static_cast<int>(hazard.kind)
+                             << " crossAgent=" << hazard.crossAgent << " gap=" << hazard.gap
+                             << " prod=" << hazard.producerBlock->getLabel() << "#"
+                             << hazard.producerIndex << "/act" << hazard.producerAction
+                             << " cons=" << hazard.consumerBlock->getLabel() << "#"
+                             << hazard.consumerIndex << "/act" << hazard.consumerAction
+                             << " anchor=" << anchor->getParent()->getLabel() << "#"
+                             << indexInBlock(*anchor) << "\n");
         result[{anchor, anchorFrame, counter}].push_back(
             {{hazard.producer, hazard.producerFrame}, hazard.producerIndex, hazard.gap});
     }
@@ -836,6 +852,20 @@ WaitInsertionPlan buildGirFrameWaitPlan(Function& function, const GirFrameAnalys
             decision->second > summary.strictest)
             report_fatal_error("GIR finite-frame counter flow produced an unsafe wait decision");
     }
+    for (const auto& [site, wait] : decisions)
+        PASS_DEBUG({
+            std::cerr << "[gir-wait] fn=" << function.getName()
+                      << " anchor=" << site.anchor->getParent()->getLabel() << "#"
+                      << indexInBlock(*site.anchor)
+                      << " counter=" << (site.counter == CK_DS ? "ds" : "tensor")
+                      << " wait=" << wait;
+            auto summary = requirements.find(site);
+            if (summary != requirements.end())
+                for (const IssueKey& producer : summary->second.producers)
+                    std::cerr << " <- " << producer.inst->getParent()->getLabel() << "#"
+                              << indexInBlock(*producer.inst);
+            std::cerr << "\n";
+        });
     if (girUnaccountedSpans && std::getenv("ST_GIR_SPAN_STATS"))
         std::cerr << "[gir-span] " << function.getName() << ": " << girUnaccountedSpans
                   << " unaccounted span walk(s)\n";
