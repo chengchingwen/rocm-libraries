@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <deque>
 #include <functional>
+#include <iostream>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -30,6 +31,12 @@
 #include "stinkytofu/transforms/asm/waitcnt/WaitDataflow.hpp"
 
 namespace stinkytofu::waitcnt {
+
+/// Span walks that ended with a path neither reaching the anchor nor retiring -- a hazard the
+/// counter flow did not model and then treated as discharged.  Should be 0; `ST_GIR_SPAN_STATS=1`
+/// reports it per function.
+unsigned girUnaccountedSpans = 0;
+
 namespace {
 
 struct IssueKey {
@@ -383,6 +390,14 @@ size_t indexInBlock(StinkyInstruction& inst) {
     return index;
 }
 
+/// What a span walk concluded.  `count` is the issue count; `unaccounted` records that at least
+/// one path ended without either reaching the anchor or retiring, so the walk did not cover the
+/// whole frame graph and `count` may be missing a constraint.
+struct SpanResult {
+    int count = -1;
+    bool unaccounted = false;
+};
+
 /// How many same-counter issues stand at or after `potential`'s producer when control reaches the
 /// anchor: 1 is the producer alone, so `waitToDrain` retires it at `n - 1`.
 ///
@@ -392,8 +407,11 @@ size_t indexInBlock(StinkyInstruction& inst) {
 /// the lookup answers 1 for a producer that a full loop of issues has since buried.  The walk
 /// crosses those trips and counts them.
 ///
-/// Returns -1 when no path reaches the anchor with the producer still outstanding: an intervening
-/// wait already retired it, which is no constraint at all.
+/// `count` is -1 when no path reaches the anchor with the producer still outstanding.  That is a
+/// discharge proof ONLY when every path got there by retiring; a path that instead ran out of span
+/// or off the end of the frame graph was never modelled at all, and `unaccounted` says so.  The
+/// two must not share a return value: treating "I could not model this" as "no constraint" is how
+/// a missing wait becomes silent.
 ///
 /// `perPred` collects the MINIMUM over the paths arriving via each predecessor, which is the
 /// quantity a per-edge requirement is about.  Reporting instead the predecessor of the single
@@ -401,11 +419,11 @@ size_t indexInBlock(StinkyInstruction& inst) {
 /// reach first -- and that order follows heap addresses, so the same kernel compiled twice got
 /// different waits.
 template <class RetireAt, class RetireAtEnd>
-int walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
-             const GirFrameNode& producerNode, size_t producerIndex, int gap,
-             const StinkyInstruction* anchor, const GirFrameNode& anchorNode, size_t anchorIndex,
-             RetireAt retireAt, RetireAtEnd retireAtEnd,
-             std::map<BasicBlock*, int, std::less<BasicBlock*>>* perPred) {
+SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
+                    const GirFrameNode& producerNode, size_t producerIndex, int gap,
+                    const StinkyInstruction* anchor, const GirFrameNode& anchorNode,
+                    size_t anchorIndex, RetireAt retireAt, RetireAtEnd retireAtEnd,
+                    std::map<BasicBlock*, int, std::less<BasicBlock*>>* perPred) {
     struct Step {
         GirFrameNode node;
         size_t index = 0;
@@ -416,6 +434,7 @@ int walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
 
     const int span = std::max(0, gap);
     int best = -1;
+    bool unaccounted = false;
     std::deque<Step> work{{producerNode, producerIndex + 1, 0, 1, nullptr}};
     // The frame graph is a graph, so the same state is reachable many ways and an unmemoised walk
     // re-expands it exponentially.  Truncating that with a budget is what made the answer depend
@@ -465,23 +484,26 @@ int walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
         if (retired) continue;
 
         if (retireAtEnd(step.node.block, step.count)) continue;
-        if (step.steps >= span) continue;
+        // Ran out of span, or off the end of the frame graph, without ever reaching the anchor:
+        // this path was not modelled, so it proves nothing about the producer being retired.
+        if (step.steps >= span) { unaccounted = true; continue; }
 
         auto successors = frames.edges.find(step.node);
-        if (successors == frames.edges.end()) continue;
+        if (successors == frames.edges.end()) { unaccounted = true; continue; }
         for (const GirFrameNode& successor : successors->second) {
             Step next{successor, 0, step.steps + 1, step.count, step.node.block};
             if (visited.insert(stateKey(next)).second) work.push_back(std::move(next));
         }
     }
-    return best;
+    return {best, unaccounted};
 }
 
-int countAcrossSpan(const GirFrameAnalysis::Result& frames, const DecisionMap& decisions,
-                    const TailDecisionMap& tailDecisions, CounterKind counter,
-                    const GirFrameNode& producerNode, const Potential& potential,
-                    StinkyInstruction* anchor, const GirFrameNode& anchorNode, size_t anchorIndex,
-                    std::map<BasicBlock*, int, std::less<BasicBlock*>>* perPred) {
+SpanResult countAcrossSpan(const GirFrameAnalysis::Result& frames, const DecisionMap& decisions,
+                           const TailDecisionMap& tailDecisions, CounterKind counter,
+                           const GirFrameNode& producerNode, const Potential& potential,
+                           StinkyInstruction* anchor, const GirFrameNode& anchorNode,
+                           size_t anchorIndex,
+                           std::map<BasicBlock*, int, std::less<BasicBlock*>>* perPred) {
     return walkSpan(
         frames, counter, producerNode, potential.producerIndex, potential.gap, anchor, anchorNode,
         anchorIndex,
@@ -529,10 +551,14 @@ RequirementMap simulate(Function& function, const GirFrameAnalysis::Result& fram
                 if (producers == nodesByKey.end()) continue;
                 for (const GirFrameNode& producerNode : producers->second) {
                     std::map<BasicBlock*, int, std::less<BasicBlock*>> perPred;
-                    const int count =
+                    const SpanResult span =
                         countAcrossSpan(frames, decisions, tailDecisions, site.counter, producerNode,
                                         potential, site.anchor, anchorNode, anchorIndex, &perPred);
-                    if (count <= 0) continue;
+                    // Only a walk that reached the anchor on NO path and ended some path by
+                    // exhaustion is a modelling failure.  In a branching graph most paths simply
+                    // lead elsewhere, so counting every one of those measures the graph, not a bug.
+                    if (span.count < 0 && span.unaccounted) ++girUnaccountedSpans;
+                    if (span.count <= 0) continue;
                     for (const auto& [pred, arrived] : perPred)
                         requirements[{site.anchor, site.counter}].record(
                             pred, waitToDrain(site.counter, arrived), potential.producer);
@@ -727,13 +753,15 @@ int girFrameIssuesAcrossSpan(const GirFrameAnalysis::Result& frames, CounterKind
     if (!anchor) return -1;
     // No planned decisions yet -- a fence is placed before any wait is filled in, so the only
     // thing that can retire the producer early is a wait already standing in the IR.
-    return walkSpan(
+    const SpanResult result = walkSpan(
         frames, counter, producerNode, producerIndex, span, anchor, anchorNode, anchorIndex,
         [&](const StinkyInstruction& inst, int count) {
             const int keep = observedWait(inst, counter);
             return keep >= 0 && count > keep;
         },
         [](BasicBlock*, int) { return false; }, nullptr);
+    if (result.count < 0 && result.unaccounted) ++girUnaccountedSpans;
+    return result.count;
 }
 
 int girFrameDistance(const GirFrameAnalysis::Result& frames, const GirFrameNode& from,
@@ -808,6 +836,9 @@ WaitInsertionPlan buildGirFrameWaitPlan(Function& function, const GirFrameAnalys
             decision->second > summary.strictest)
             report_fatal_error("GIR finite-frame counter flow produced an unsafe wait decision");
     }
+    if (girUnaccountedSpans && std::getenv("ST_GIR_SPAN_STATS"))
+        std::cerr << "[gir-span] " << function.getName() << ": " << girUnaccountedSpans
+                  << " unaccounted span walk(s)\n";
     return materializePlan(decisions, tailDecisions, tailProducers, requirements);
 }
 
