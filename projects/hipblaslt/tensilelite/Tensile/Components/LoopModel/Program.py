@@ -31,10 +31,9 @@ def loopModelGirProgram(writer, kernel):
   # stages nothing and has no completion class, so GIR only decides where its existing
   # issue/increment pair lands.  The key is shared so producer and consumer cannot drift.
   mainloop = emit_mainloop(theta)
-  waitCntMode = kernel.get("LoopModelWaitCntMode", "StinkyTofu")
   prog = build_gir(theta, mainloop=mainloop,
                    params={Gl2PrefetchRegions.PARAM: kernel["PrefetchGL2"]},
-                   pipeline=gir_pipeline(waitCntMode))
+                   pipeline=gir_pipeline())
   # The semantic gate -- "does this plan compute the right GEMM?" -- runs here and nowhere else.
   viol = check_plan(prog)
   if viol:

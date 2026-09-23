@@ -189,25 +189,24 @@ class LdsBufferIdSet:
         """The ids `ref` touches when its rotation stands at `ring` -- one per region."""
         return frozenset(self._ids[b] for b in self._per_ref.get(id(ref), ()) if b.ring == ring)
 
-    def frame_at(self, ref, ring, is_write):
-        """Exact storage ids selected by this access in one frame."""
-        if ring is None:
-            return frozenset()
+    def frame_at(self, ref, phase_of, is_write):
+        """Exact storage ids selected by this access in one frame.
+
+        `phase_of(coords)` is asked PER REGION: each region rotates on its own `Gen`, so filtering
+        every region by ONE ring pins them all to the leader's phase."""
         op = ref.tile.operand
         regions = self.geometry.frame_regions_of(ref, is_write)
         return frozenset(
             self._ids[b] for b in _expand(op, regions, self.depth_of(op))
-            if b.ring == ring and b in self._ids)
+            if b in self._ids and b.ring == phase_of(b.region))
 
-    def workgroup_frame_at(self, ref, ring, is_write):
+    def workgroup_frame_at(self, ref, phase_of, is_write):
         """Storage touched by every physical agent represented by this static access."""
-        if ring is None:
-            return frozenset()
         op = ref.tile.operand
         regions = self.geometry.workgroup_regions_of(ref, is_write)
         return frozenset(
             self._ids[b] for b in _expand(op, regions, self.depth_of(op))
-            if b.ring == ring and b in self._ids)
+            if b in self._ids and b.ring == phase_of(b.region))
 
     def liveness(self, prog):
         """Buffer live ranges over this program."""

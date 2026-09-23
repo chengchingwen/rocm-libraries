@@ -637,7 +637,6 @@ defaultBenchmarkCommonParameters = [
     {"ReuseAcrossPersistent": [0]},
     {"UseCustomMainLoopSchedule": [-1]},
     {"UseLoopModel": [False]},
-    {"LoopModelWaitCntMode": ["StinkyTofu"]},
     {"LoopOrder": ["KMN"]},
     {"SpaceFillingAlgo": [[]]},
     {"SFCWGM": [[[1,1],[1,1]]]},

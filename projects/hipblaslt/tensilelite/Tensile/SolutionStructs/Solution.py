@@ -931,12 +931,6 @@ class Solution(collections.abc.Mapping):
              "LoopOrder != KMN requires UseLoopModel (loop order is a LoopModel-only knob)")
       return
 
-    waitCntMode = state.get("LoopModelWaitCntMode", "StinkyTofu")
-    if waitCntMode != "StinkyTofu" and not state.get("UseLoopModel", False):
-      reject(state, printRejectionReason,
-             "LoopModelWaitCntMode=GIR requires UseLoopModel")
-      return
-
     # A 6-LETTER LoopOrder NEEDS A LIVE SPLIT AXIS, or it IS its own 3-letter shortcut.
     #
     #

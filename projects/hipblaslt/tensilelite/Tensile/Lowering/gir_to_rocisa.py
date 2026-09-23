@@ -124,16 +124,14 @@ class GirToRocisa:
                 tc = at["tc"]
                 # `tile` is the WITHIN-REGION index and `tile_flat` the register index; they differ
                 # only for a region-split operand, and passing one for both is the defect.
-                self._tag(out, phase, "read", "%s[tile=%s,k=%s%s] shared->reg X%s%s"
+                self._tag(out, phase, "read", "%s[tile=%s,k=%s%s] shared->reg X%s"
                           % (tc, at.get("tile_flat", at["tile"]), at["k"],
                              "" if at.get("regions", 1) <= 1 else ",r%s" % at.get("region", 0),
-                             at["reg_buf"], self._tok(at.get("token"))))
+                             at["reg_buf"]))
                 _qd = cplan.decision(_i)
-                _tok = (getattr(_qd, "tokens", ()) or self._token_ids(at)) if _qd else self._token_ids(at)
                 out.add(w.emitLdsReadTile(self.kernel, self._tp[tc], self._ctxRd[tc],
                                           tileIdx=at["tile"], kIdx=at["k"],
                                           bufferIdx=at["reg_buf"],
-                                          memToken=_tok,
                                           region=at.get("address_region", at.get("region", 0)),
                                           regTileIdx=at.get("tile_flat", at["tile"]),
                                           regUnitIdx=at.get("unit_index"),
@@ -162,10 +160,9 @@ class GirToRocisa:
                 self._emit_gr_inc(out, at["unit"], tpByOperand, at.get("chunks", 1),
                                   at.get("to_chunk"), phase=phase)
             elif kind == "copy":
-                self._tag(out, phase, "copy", "%s global->shared chunk gen=%s%s%s"
+                self._tag(out, phase, "copy", "%s global->shared chunk gen=%s%s"
                           % (self._who(at["unit"]), at.get("gen", 0),
-                             "" if at.get("region") is None else " region=%s" % at["region"],
-                             self._tok(at.get("token"))))
+                             "" if at.get("region") is None else " region=%s" % at["region"]))
                 self._emit_copy_masked(out, at, tpByOperand)
             elif kind == "desc_enable":
                 self._emit_desc_enable(out, tuple(at["unit"]), at["member"],
@@ -203,11 +200,6 @@ class GirToRocisa:
             if not callable(setter):
                 continue
             setter(int(act.action_id), int(anchor), kind, accesses)
-
-    @staticmethod
-    def _tok(token):
-        """`  tok=(kind,operand,gen)` for a completion token, or '' when the act carries none."""
-        return "" if token is None else "  tok=%s" % (tuple(token),)
 
     def _reg_base(self, operand, group, slot):
         if operand not in self._regLayout or group is None or slot is None:
@@ -408,7 +400,6 @@ class GirToRocisa:
         for member in absent:
             self._emit_desc_enable(out, unit, member, False, tpByOperand)
         self._emit_copy(out, at["unit"], at.get("gen", 0), tpByOperand,
-                        memToken=self._token_ids(at),
                         regions=at.get("regions", 1), region=at.get("region"))
         for member in absent:
             self._emit_desc_enable(out, unit, member, True, tpByOperand)
@@ -459,7 +450,7 @@ class GirToRocisa:
                                  % (self._who(unit), "back" if back else "fwd"))
                 out.add(code)
 
-    def _emit_copy(self, out, unit, gen, tpByOperand, memToken=None, regions=1, region=None):
+    def _emit_copy(self, out, unit, gen, tpByOperand, regions=1, region=None):
         """Realize ONE global->shared movement, for the buffer generation GIR's Move names.
 
         One call per Move -- so the prologue's M peel fills each emit, which a single pre-built
@@ -480,16 +471,9 @@ class GirToRocisa:
                 f"region count and the coordinate enumeration disagree; check that the axis "
                 f"survived `translate._keep` and `aRegions`/`bRegions` (both gate on extent > 1) "
                 f"while `Operand.split` still reports {regions}.")
-        code = self._leaf.emitCopyTile(self.kernel, tP, bufIdx=int(gen),
-                                       memToken=memToken, regions=regions,
+        code = self._leaf.emitCopyTile(self.kernel, tP, bufIdx=int(gen), regions=regions,
                                        region=int(region or 0))
         if code is not None and code.count():
             self._append_tag(code, "copy %s gen=%s" % (self._who(unit), gen))
             out.add(code)
-
-    @staticmethod
-    def _token_ids(at):
-        """The memory-token id(s) this act touches -- GIR's own numbering."""
-        ids = at.get("token_ids") or ()
-        return [int(t) for t in ids] if ids else None
 
