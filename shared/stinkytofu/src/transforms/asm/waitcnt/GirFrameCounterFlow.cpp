@@ -32,18 +32,6 @@
 namespace stinkytofu::waitcnt {
 namespace {
 
-constexpr size_t kTrackedCounterCount = 2;
-
-size_t trackedIndex(CounterKind counter) {
-    if (counter == CK_DS) return 0;
-    if (counter == CK_Tensor) return 1;
-    report_fatal_error("GIR frame counter flow received an untracked counter");
-}
-
-CounterKind counterAt(size_t index) {
-    return index == 0 ? CK_DS : CK_Tensor;
-}
-
 struct IssueKey {
     StinkyInstruction* inst = nullptr;
     GirFrame frame;
@@ -52,68 +40,6 @@ struct IssueKey {
     bool operator<(const IssueKey& other) const {
         if (inst != other.inst) return std::less<StinkyInstruction*>{}(inst, other.inst);
         return frame < other.frame;
-    }
-};
-
-struct CounterQueue {
-    std::vector<IssueKey> ops;
-
-    bool operator==(const CounterQueue&) const = default;
-    bool operator<(const CounterQueue& other) const {
-        return std::lexicographical_compare(ops.begin(), ops.end(), other.ops.begin(),
-                                            other.ops.end());
-    }
-
-    void append(IssueKey issue) {
-        // `(instruction, frame)` is a complete identity in the finite ring quotient. A repeated
-        // occurrence replaces its prior queue copy instead of manufacturing an unbounded trip id.
-        ops.erase(std::remove(ops.begin(), ops.end(), issue), ops.end());
-        ops.push_back(std::move(issue));
-    }
-
-    int countFrom(const IssueKey& issue) const {
-        auto found = std::find(ops.begin(), ops.end(), issue);
-        if (found != ops.end()) return static_cast<int>(std::distance(found, ops.end()));
-
-        // ST's reconstructed CFG can merge scaffold paths at a different frame cut than GIR while
-        // still carrying the same physical producer instruction.  `ops` is oldest-first and
-        // `waitToDrain` is `countFrom - 1`, so the NEWEST occurrence yields the smallest immediate
-        // -- the only rank that also proves the older copies retired.
-        int strictest = -1;
-        for (auto it = ops.begin(); it != ops.end(); ++it)
-            if (it->inst == issue.inst) {
-                const int rank = static_cast<int>(std::distance(it, ops.end()));
-                strictest = strictest < 0 ? rank : std::min(strictest, rank);
-            }
-        return strictest < 0 ? 0 : strictest;
-    }
-
-    void applyWait(int keep) {
-        if (keep <= 0) {
-            ops.clear();
-        } else if (static_cast<int>(ops.size()) > keep) {
-            ops.erase(ops.begin(), ops.end() - keep);
-        }
-    }
-};
-
-struct FlowState {
-    GirFrameNode node;
-    BasicBlock* incomingPred = nullptr;
-    std::set<int> trips;
-    std::array<CounterQueue, kTrackedCounterCount> queues;
-
-    bool operator<(const FlowState& other) const {
-        if (node.block != other.node.block)
-            return std::less<BasicBlock*>{}(node.block, other.node.block);
-        if (!(node.frame == other.node.frame)) return node.frame < other.node.frame;
-        if (incomingPred != other.incomingPred)
-            return std::less<BasicBlock*>{}(incomingPred, other.incomingPred);
-        if (trips != other.trips)
-            return std::lexicographical_compare(trips.begin(), trips.end(), other.trips.begin(),
-                                                other.trips.end());
-        return std::lexicographical_compare(queues.begin(), queues.end(), other.queues.begin(),
-                                            other.queues.end());
     }
 };
 
@@ -153,6 +79,8 @@ struct DynamicSite {
 
 struct Potential {
     IssueKey producer;
+    size_t producerIndex = 0;
+    int gap = 0;
 };
 
 struct RequirementSummary {
@@ -215,7 +143,8 @@ PotentialMap buildPotentials(Function& function, const GirFrameAnalysis::Result&
                              const std::function<bool(const BasicBlock&)>& covers) {
     PotentialMap result;
     const FeasibleDomainMap feasible = computeFeasibleDomains(function, frames);
-    std::set<std::tuple<StinkyInstruction*, GirFrame, CounterKind, StinkyInstruction*, GirFrame>>
+    std::set<std::tuple<StinkyInstruction*, GirFrame, CounterKind, StinkyInstruction*, GirFrame,
+                        size_t, int>>
         seen;
     std::set<const BasicBlock*> modeled;
     for (BasicBlock& block : function) modeled.insert(&block);
@@ -234,10 +163,13 @@ PotentialMap buildPotentials(Function& function, const GirFrameAnalysis::Result&
         GirFrame anchorFrame = hazard.consumerFrame;
         if (hazard.crossAgent)
             std::tie(anchor, anchorFrame) = enclosingFence(function, hazard, frames);
-        auto key =
-            std::make_tuple(anchor, anchorFrame, counter, hazard.producer, hazard.producerFrame);
+        // The span is part of the identity: the hazard analysis deliberately keeps one pair at two
+        // distances, and folding them together kept whichever the vector happened to hold first.
+        auto key = std::make_tuple(anchor, anchorFrame, counter, hazard.producer,
+                                   hazard.producerFrame, hazard.producerIndex, hazard.gap);
         if (!seen.insert(key).second) continue;
-        result[{anchor, anchorFrame, counter}].push_back({{hazard.producer, hazard.producerFrame}});
+        result[{anchor, anchorFrame, counter}].push_back(
+            {{hazard.producer, hazard.producerFrame}, hazard.producerIndex, hazard.gap});
     }
     return result;
 }
@@ -434,76 +366,178 @@ bool hazardFeasible(Function& function, const GirFrameAnalysis::Result& frames,
     return false;
 }
 
-void applyDecision(const DecisionMap& decisions, StinkyInstruction* anchor,
-                   std::array<CounterQueue, kTrackedCounterCount>& queues) {
-    for (size_t i = 0; i < kTrackedCounterCount; ++i) {
-        auto found = decisions.find({anchor, counterAt(i)});
-        if (found != decisions.end()) queues[i].applyWait(found->second);
+int decisionFor(const DecisionMap& decisions, StinkyInstruction* anchor, CounterKind counter) {
+    auto found = decisions.find({anchor, counter});
+    if (found == decisions.end() || found->second == WaitCountSpec::kUnused) return -1;
+    return found->second;
+}
+
+size_t indexInBlock(StinkyInstruction& inst) {
+    size_t index = 0;
+    for (IRBase& node : *inst.getParent()) {
+        auto* candidate = dyn_cast<StinkyInstruction>(&node);
+        if (!candidate) continue;
+        if (candidate == &inst) break;
+        ++index;
     }
+    return index;
+}
+
+/// How many same-counter issues stand at or after `potential`'s producer when control reaches the
+/// anchor: 1 is the producer alone, so `waitToDrain` retires it at `n - 1`.
+///
+/// Walked over the hazard's OWN span rather than read out of a per-node state.  A state keyed by
+/// `(instruction, frame)` cannot hold an occurrence a full ring period back -- with ring 2 the read
+/// two trips ago and this trip's read are the same key, and the newer one overwrites the older, so
+/// the lookup answers 1 for a producer that a full loop of issues has since buried.  The walk
+/// crosses those trips and counts them.
+///
+/// Returns -1 when no path reaches the anchor with the producer still outstanding: an intervening
+/// wait already retired it, which is no constraint at all.
+///
+/// `perPred` collects the MINIMUM over the paths arriving via each predecessor, which is the
+/// quantity a per-edge requirement is about.  Reporting instead the predecessor of the single
+/// cheapest path makes the answer depend on which of several equal paths the walk happened to
+/// reach first -- and that order follows heap addresses, so the same kernel compiled twice got
+/// different waits.
+template <class RetireAt, class RetireAtEnd>
+int walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
+             const GirFrameNode& producerNode, size_t producerIndex, int gap,
+             const StinkyInstruction* anchor, const GirFrameNode& anchorNode, size_t anchorIndex,
+             RetireAt retireAt, RetireAtEnd retireAtEnd,
+             std::map<BasicBlock*, int, std::less<BasicBlock*>>* perPred) {
+    struct Step {
+        GirFrameNode node;
+        size_t index = 0;
+        int steps = 0;
+        int count = 0;
+        BasicBlock* pred = nullptr;
+    };
+
+    const int span = std::max(0, gap);
+    int best = -1;
+    std::deque<Step> work{{producerNode, producerIndex + 1, 0, 1, nullptr}};
+    // The frame graph is a graph, so the same state is reachable many ways and an unmemoised walk
+    // re-expands it exponentially.  Truncating that with a budget is what made the answer depend
+    // on exploration order; deduplicating the state makes the walk finite AND complete, because a
+    // state already enqueued can contribute nothing a second time.
+    std::unordered_set<size_t> visited;
+    const auto stateKey = [](const Step& step) {
+        size_t key = GirFrameNodeHash{}(step.node);
+        for (const size_t part : {step.index, static_cast<size_t>(step.steps),
+                                  static_cast<size_t>(step.count),
+                                  std::hash<BasicBlock*>{}(step.pred)})
+            key = key * 1099511628211ULL ^ part;
+        return key;
+    };
+    visited.insert(stateKey(work.front()));
+
+    while (!work.empty()) {
+        Step step = std::move(work.front());
+        work.pop_front();
+
+        bool retired = false;
+        size_t position = 0;
+        for (IRBase& node : *step.node.block) {
+            auto* inst = dyn_cast<StinkyInstruction>(&node);
+            if (!inst) continue;
+            const size_t here = position++;
+            if (here < step.index) continue;
+
+            if (inst == anchor && step.steps == span && here == anchorIndex &&
+                step.node == anchorNode) {
+                if (best < 0 || step.count < best) best = step.count;
+                if (perPred) {
+                    auto [entry, inserted] = perPred->emplace(step.pred, step.count);
+                    if (!inserted) entry->second = std::min(entry->second, step.count);
+                }
+                retired = true;  // this path is answered; do not walk past its own anchor
+                break;
+            }
+
+            if (retireAt(*inst, step.count)) {
+                retired = true;
+                break;
+            }
+
+            if (classifyMemOp(*inst) == counter) ++step.count;
+        }
+        if (retired) continue;
+
+        if (retireAtEnd(step.node.block, step.count)) continue;
+        if (step.steps >= span) continue;
+
+        auto successors = frames.edges.find(step.node);
+        if (successors == frames.edges.end()) continue;
+        for (const GirFrameNode& successor : successors->second) {
+            Step next{successor, 0, step.steps + 1, step.count, step.node.block};
+            if (visited.insert(stateKey(next)).second) work.push_back(std::move(next));
+        }
+    }
+    return best;
+}
+
+int countAcrossSpan(const GirFrameAnalysis::Result& frames, const DecisionMap& decisions,
+                    const TailDecisionMap& tailDecisions, CounterKind counter,
+                    const GirFrameNode& producerNode, const Potential& potential,
+                    StinkyInstruction* anchor, const GirFrameNode& anchorNode, size_t anchorIndex,
+                    std::map<BasicBlock*, int, std::less<BasicBlock*>>* perPred) {
+    return walkSpan(
+        frames, counter, producerNode, potential.producerIndex, potential.gap, anchor, anchorNode,
+        anchorIndex,
+        [&](const StinkyInstruction& inst, int count) {
+            for (const int keep :
+                 {decisionFor(decisions, const_cast<StinkyInstruction*>(&inst), counter),
+                  observedWait(inst, counter)})
+                if (keep >= 0 && count > keep) return true;
+            return false;
+        },
+        [&](BasicBlock* block, int count) {
+            auto tail = tailDecisions.find({block, counter});
+            return tail != tailDecisions.end() && count > tail->second;
+        },
+        perPred);
 }
 
 RequirementMap simulate(Function& function, const GirFrameAnalysis::Result& frames,
                         const PotentialMap& potentials, const DecisionMap& decisions,
                         const TailDecisionMap& tailDecisions) {
+    (void)function;
     RequirementMap requirements;
-    std::deque<FlowState> work;
-    std::set<FlowState> visited;
 
-    BasicBlock* entry = function.getEntryBlock();
-    if (!entry) return requirements;
-    const std::set<int> initialDomain = initialTripDomain(function);
-    for (const GirFrame& frame : frames.frames(entry))
-        work.push_back({{entry, frame}, nullptr, initialDomain, {}});
+    // A `(block, frame)` pair can name several nodes, which differ only by the action that entered
+    // them; a producer occurrence names the pair, so every node carrying it is a starting point.
+    std::map<std::pair<BasicBlock*, GirFrame>, std::vector<GirFrameNode>> nodesByKey;
+    auto remember = [&](const GirFrameNode& node) {
+        auto& list = nodesByKey[{node.block, node.frame}];
+        for (const GirFrameNode& seen : list)
+            if (seen == node) return;
+        list.push_back(node);
+    };
+    for (const auto& [node, successors] : frames.edges) {
+        remember(node);
+        for (const GirFrameNode& successor : successors) remember(successor);
+    }
 
-    while (!work.empty()) {
-        FlowState state = std::move(work.front());
-        work.pop_front();
-        if (!visited.insert(state).second) continue;
-
-        for (IRBase& node : *state.node.block) {
-            auto* inst = dyn_cast<StinkyInstruction>(&node);
-            if (!inst) continue;
-
-            for (size_t i = 0; i < kTrackedCounterCount; ++i) {
-                CounterKind counter = counterAt(i);
-                DynamicSite dynamic{inst, state.node.frame, counter};
-                auto found = potentials.find(dynamic);
-                if (found == potentials.end()) continue;
-                StaticSite site{inst, counter};
-                for (const Potential& potential : found->second) {
-                    const int count = state.queues[i].countFrom(potential.producer);
-                    if (count > 0)
-                        requirements[site].record(state.incomingPred, waitToDrain(counter, count),
-                                                  potential.producer);
+    for (const auto& [site, list] : potentials) {
+        const size_t anchorIndex = indexInBlock(*site.anchor);
+        for (const GirFrameNode& anchorNode :
+             nodesByKey[{site.anchor->getParent(), site.frame}]) {
+            for (const Potential& potential : list) {
+                auto producers =
+                    nodesByKey.find({potential.producer.inst->getParent(), potential.producer.frame});
+                if (producers == nodesByKey.end()) continue;
+                for (const GirFrameNode& producerNode : producers->second) {
+                    std::map<BasicBlock*, int, std::less<BasicBlock*>> perPred;
+                    const int count =
+                        countAcrossSpan(frames, decisions, tailDecisions, site.counter, producerNode,
+                                        potential, site.anchor, anchorNode, anchorIndex, &perPred);
+                    if (count <= 0) continue;
+                    for (const auto& [pred, arrived] : perPred)
+                        requirements[{site.anchor, site.counter}].record(
+                            pred, waitToDrain(site.counter, arrived), potential.producer);
                 }
             }
-
-            applyDecision(decisions, inst, state.queues);
-            for (size_t i = 0; i < kTrackedCounterCount; ++i) {
-                const int wait = observedWait(*inst, counterAt(i));
-                if (wait >= 0) state.queues[i].applyWait(wait);
-            }
-
-            CounterKind issued = classifyMemOp(*inst);
-            if (issued == CK_DS || issued == CK_Tensor)
-                state.queues[trackedIndex(issued)].append({inst, state.node.frame});
-        }
-
-        for (size_t i = 0; i < kTrackedCounterCount; ++i) {
-            auto tail = tailDecisions.find({state.node.block, counterAt(i)});
-            if (tail != tailDecisions.end()) state.queues[i].applyWait(tail->second);
-        }
-
-        auto successors = frames.edges.find(state.node);
-        if (successors == frames.edges.end()) continue;
-        for (const GirFrameNode& successor : successors->second) {
-            std::set<int> domain = edgeTripDomain(state.node.block, successor.block, state.trips);
-            if (domain.empty()) continue;
-            FlowState next = state;
-            next.node = successor;
-            next.incomingPred = state.node.block;
-            next.trips = std::move(domain);
-            work.push_back(std::move(next));
         }
     }
     return requirements;
@@ -610,16 +644,38 @@ PromotionPlan derivePromotions(const RequirementMap& requirements, const Decisio
     return result;
 }
 
+/// Closes the decisions by STRENGTHENING only, from "no wait" downwards.
+///
+/// Both directions reach a fixpoint, but only this one reaches the weakest safe assignment.
+/// Seeding every anchor at 0 drains the queue at each anchor before the queue is ever read, so a
+/// loop-carried producer is never in the FIFO, its rank is never observed, and 0 re-derives itself
+/// -- self-consistent and maximally strong.  Seeding at kUnused leaves the pipeline at its real
+/// depth, so each hazard reads the rank its own frame actually holds.
 RequirementMap closeDecisions(Function& function, const GirFrameAnalysis::Result& frames,
                               const PotentialMap& potentials, DecisionMap& decisions,
                               const TailDecisionMap& tailDecisions) {
-    const size_t rounds = frames.edges.size() + 1;
+    // Every round that does not close strictly lowers one site, and a site falls at most from its
+    // first finite rank to 0, so the depth of the tracked queue bounds the descent.
+    size_t depth = 0;
+    for (BasicBlock& block : function)
+        for (IRBase& node : block) {
+            auto* inst = dyn_cast<StinkyInstruction>(&node);
+            if (inst && (classifyMemOp(*inst) == CK_DS || classifyMemOp(*inst) == CK_Tensor))
+                ++depth;
+        }
+    const size_t rounds = decisions.size() * (depth + 2) + 1;
+
     for (size_t round = 0; round < rounds; ++round) {
         RequirementMap requirements =
             simulate(function, frames, potentials, decisions, tailDecisions);
-        DecisionMap next;
-        for (const auto& [site, summary] : requirements)
-            if (summary.strictest != WaitCountSpec::kUnused) next[site] = summary.strictest;
+        DecisionMap next = decisions;
+        for (auto& [site, wait] : next) {
+            auto found = requirements.find(site);
+            if (found == requirements.end()) continue;
+            const int need = found->second.strictest;
+            if (need == WaitCountSpec::kUnused) continue;
+            if (wait == WaitCountSpec::kUnused || need < wait) wait = need;
+        }
         if (next == decisions) return requirements;
         decisions = std::move(next);
     }
@@ -632,6 +688,7 @@ WaitInsertionPlan materializePlan(const DecisionMap& decisions,
                                   const RequirementMap& requirements) {
     WaitInsertionPlan plan;
     for (const auto& [site, wait] : decisions) {
+        if (wait == WaitCountSpec::kUnused) continue;
         WaitCountSpec& spec = plan.anchorWaits[site.anchor];
         tightenField(spec, site.counter, wait);
         auto summary = requirements.find(site);
@@ -651,7 +708,52 @@ WaitInsertionPlan materializePlan(const DecisionMap& decisions,
     return plan;
 }
 
+StinkyInstruction* instructionAt(BasicBlock* block, size_t index) {
+    size_t position = 0;
+    for (IRBase& node : *block) {
+        auto* inst = dyn_cast<StinkyInstruction>(&node);
+        if (!inst) continue;
+        if (position++ == index) return inst;
+    }
+    return nullptr;
+}
+
 }  // namespace
+
+int girFrameIssuesAcrossSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
+                             const GirFrameNode& producerNode, size_t producerIndex, int span,
+                             const GirFrameNode& anchorNode, size_t anchorIndex) {
+    StinkyInstruction* anchor = instructionAt(anchorNode.block, anchorIndex);
+    if (!anchor) return -1;
+    // No planned decisions yet -- a fence is placed before any wait is filled in, so the only
+    // thing that can retire the producer early is a wait already standing in the IR.
+    return walkSpan(
+        frames, counter, producerNode, producerIndex, span, anchor, anchorNode, anchorIndex,
+        [&](const StinkyInstruction& inst, int count) {
+            const int keep = observedWait(inst, counter);
+            return keep >= 0 && count > keep;
+        },
+        [](BasicBlock*, int) { return false; }, nullptr);
+}
+
+int girFrameDistance(const GirFrameAnalysis::Result& frames, const GirFrameNode& from,
+                     const GirFrameNode& to) {
+    if (from == to) return 0;
+    std::unordered_set<GirFrameNode, GirFrameNodeHash> seen{from};
+    std::deque<std::pair<GirFrameNode, int>> work{{from, 0}};
+    while (!work.empty()) {
+        auto [node, steps] = std::move(work.front());
+        work.pop_front();
+        auto successors = frames.edges.find(node);
+        if (successors == frames.edges.end()) continue;
+        for (const GirFrameNode& successor : successors->second) {
+            if (successor == to) return steps + 1;
+            if (!seen.insert(successor).second) continue;
+            work.push_back({successor, steps + 1});
+        }
+    }
+    return -1;
+}
 
 WaitInsertionPlan buildGirFrameWaitPlan(Function& function, const GirFrameAnalysis::Result& frames,
                                         const GirFrameHazardAnalysis::Result& hazards,
@@ -660,7 +762,8 @@ WaitInsertionPlan buildGirFrameWaitPlan(Function& function, const GirFrameAnalys
     if (potentials.empty()) return {};
 
     DecisionMap decisions;
-    for (const auto& [dynamic, _] : potentials) decisions[{dynamic.anchor, dynamic.counter}] = 0;
+    for (const auto& [dynamic, _] : potentials)
+        decisions[{dynamic.anchor, dynamic.counter}] = WaitCountSpec::kUnused;
 
     TailDecisionMap tailDecisions;
     TailProducerMap tailProducers;
@@ -695,10 +798,14 @@ WaitInsertionPlan buildGirFrameWaitPlan(Function& function, const GirFrameAnalys
         requirements = closeDecisions(function, frames, potentials, decisions, tailDecisions);
     }
 
+    // kUnused is "emit nothing", which is weaker than any count -- never a pass for a site the
+    // final state still constrains.
     requirements = simulate(function, frames, potentials, decisions, tailDecisions);
     for (const auto& [site, summary] : requirements) {
+        if (summary.strictest == WaitCountSpec::kUnused) continue;
         auto decision = decisions.find(site);
-        if (decision == decisions.end() || decision->second > summary.strictest)
+        if (decision == decisions.end() || decision->second == WaitCountSpec::kUnused ||
+            decision->second > summary.strictest)
             report_fatal_error("GIR finite-frame counter flow produced an unsafe wait decision");
     }
     return materializePlan(decisions, tailDecisions, tailProducers, requirements);

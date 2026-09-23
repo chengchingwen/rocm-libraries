@@ -64,26 +64,17 @@ def _rings(prog):
     return out
 
 
-def _carried(dst, xf):
-    """Does `dst` already state `xf`'s rotation in its own refs?
-
-    Only `gen_rel` MODULO THE RING is stated: an offset congruent to zero carries nothing, so
-    suppressing the advance for it drops a step nothing puts back."""
-    rel = getattr(dst, "gen_rel", None)
-    ring = max(1, xf.ring)
-    return rel is not None and int(rel) % ring == xf.adv % ring
-
-
 def _advance(frame, src, dst, is_back):
     """`frame` along `src -> dst`.
 
-    The source's transfers rotate the ring, so the edge advances unless the destination already
-    carries that same rotation in its refs -- advancing then would count it twice."""
+    A generation rotates when its loop takes another TRIP, so a block's transfers apply on the
+    back edge that closes the trip -- the edge `BackEdgeSet.leaving` already keys them to.  An
+    edge out of the latch that leaves the loop is not another trip: applying them there handed the
+    drain a phase one trip ahead, and with ring 2 its two reads aliased onto one buffer."""
     phases = frame.as_dict()
-    for xf in src.xfers:
-        if not is_back and _carried(dst, xf):
-            continue
-        phases[xf.gen.id] = (phases.get(xf.gen.id, 0) + xf.adv) % max(1, xf.ring)
+    if is_back:
+        for xf in src.xfers:
+            phases[xf.gen.id] = (phases.get(xf.gen.id, 0) + xf.adv) % max(1, xf.ring)
     if not is_back:
         for phi in dst.phis:
             incoming = dict(phi.incomings)

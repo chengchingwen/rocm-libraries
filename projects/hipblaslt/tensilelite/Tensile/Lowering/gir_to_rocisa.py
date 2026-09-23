@@ -238,26 +238,15 @@ class GirToRocisa:
         out.addComment0(gir_tag("%s %s %s" % (phase, kind, detail)))
 
     def _emit_waitcnt(self, out, phase, at):
-        """Realize GIR's own residual AS THE INSTRUCTION.
+        """Record GIR's residual as a tag; StinkyTofu states the instruction.
 
-        Under UseLoopModel removal is off (`DisableWaitCntRemoval`) and insertion CREDITS what it
-        finds here -- `waitcnt::observedWaitDrains` -- so it covers what GIR did not name rather
-        than duplicating what it did.  The tag rides the wait so a reader can pair the two."""
-        tag = gir_tag("%s waitcnt %s hazard=%s from=%s frames=%s"
-                      % (phase,
-                         ",".join("%s=%s" % (c, at[c]) for c in ("tensorcnt", "dscnt") if c in at),
-                         at.get("hazard"), at.get("from"), at.get("frames")))
-        if "tensorcnt" in at:
-            # `s_wait_tensorcnt` cuts no scheduling region, so name the storage it separates: the
-            # same split `_emit_fence` makes -- WAITED FOR (RAW) vs merely ORDERED (WAR).
-            wait = SWaitTensorcnt(tensorcnt=int(at["tensorcnt"]), comment=tag)
-            if at.get("tokens"):
-                wait.setMemToken(MemTokenData([int(t) for t in at["tokens"]]))
-            if at.get("order_tokens"):
-                wait.setOrderToken(MemTokenData([int(t) for t in at["order_tokens"]]))
-            out.add(wait)
-        if "dscnt" in at:
-            out.add(SWaitCnt(dscnt=int(at["dscnt"]), comment=tag))
+        The frame counter flow derives every wait from the frame map, so emitting one here only
+        pins ST to whatever GIR guessed -- insertion CREDITS what it finds, so a `dscnt 0` left
+        here survives however finely the frame model graded it."""
+        out.addComment0(gir_tag(
+            "%s waitcnt %s hazard=%s from=%s frames=%s"
+            % (phase, ",".join("%s=%s" % (c, at[c]) for c in ("tensorcnt", "dscnt") if c in at),
+               at.get("hazard"), at.get("from"), at.get("frames"))))
 
     def _emit_fence(self, out, phase, at):
         """Record WHERE GIR wanted a fence; StinkyTofu decides how many and emits them.

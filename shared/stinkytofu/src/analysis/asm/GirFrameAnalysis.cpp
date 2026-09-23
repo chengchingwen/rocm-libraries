@@ -30,85 +30,12 @@ uint64_t edgeKey(const BasicBlock* from, const BasicBlock* to) {
     return a ^ (b + 0x9e3779b97f4a7c15ULL + (a << 6U) + (a >> 2U));
 }
 
-int parseInt(const std::string& text, const char* what) {
-    int value = 0;
-    auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
-    if (ec != std::errc{} || ptr != text.data() + text.size())
-        report_fatal_error(std::string("GIR frame contract: invalid ") + what + " '" + text + "'");
-    return value;
-}
 
-uint64_t parseU64(const std::string& text, const char* what) {
-    uint64_t value = 0;
-    auto [ptr, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
-    if (ec != std::errc{} || ptr != text.data() + text.size())
-        report_fatal_error(std::string("GIR frame contract: invalid ") + what + " '" + text + "'");
-    return value;
-}
 
 
 //: One record's `key=value` words. A bare word is a flag, stored with an empty value.
-using ContractFields = std::map<std::string, std::string>;
-
-ContractFields parseFields(const std::vector<std::string>& words, size_t first,
-                           const std::string& line) {
-    ContractFields out;
-    for (size_t i = first; i < words.size(); ++i) {
-        const size_t split = words[i].find('=');
-        const std::string key =
-            split == std::string::npos ? words[i] : words[i].substr(0, split);
-        const std::string value = split == std::string::npos ? "" : words[i].substr(split + 1);
-        if (!out.emplace(key, value).second)
-            report_fatal_error("GIR frame contract: duplicate field '" + key + "' in '" + line +
-                               "'");
-    }
-    return out;
-}
 
 
-int fieldInt(const ContractFields& fields, const char* key, const std::string& line) {
-    auto it = fields.find(key);
-    if (it == fields.end())
-        report_fatal_error(std::string("GIR frame contract: '") + line + "' needs a " + key + "=");
-    return parseInt(it->second, key);
-}
-
-int fieldInt(const ContractFields& fields, const char* key, const std::string&, int fallback) {
-    auto it = fields.find(key);
-    return it == fields.end() ? fallback : parseInt(it->second, key);
-}
-
-uint64_t fieldU64(const ContractFields& fields, const char* key, const std::string& line) {
-    auto it = fields.find(key);
-    if (it == fields.end())
-        report_fatal_error(std::string("GIR frame contract: '") + line + "' needs a " + key + "=");
-    return parseU64(it->second, key);
-}
-
-
-//: Strip a `#` comment and surrounding blanks; an empty result is a line with nothing on it.
-std::string contractLine(const std::string& raw) {
-    std::string text = raw.substr(0, raw.find('#'));
-    const size_t first = text.find_first_not_of(" \t\r");
-    if (first == std::string::npos) return {};
-    return text.substr(first, text.find_last_not_of(" \t\r") - first + 1);
-}
-
-std::vector<std::string> words(const std::string& line) {
-    std::vector<std::string> out;
-    std::istringstream in(line);
-    std::string word;
-    while (in >> word) out.push_back(word);
-    return out;
-}
-
-
-GirHazardKind parseHazardKind(const std::string& kind) {
-    if (kind == "RAW") return GirHazardKind::RAW;
-    if (kind == "WAR") return GirHazardKind::WAR;
-    if (kind == "WAW") return GirHazardKind::WAW;
-    report_fatal_error("GIR frame contract: unknown hazard kind '" + kind + "'");
-}
 
 const Loop* containingLoop(const std::vector<Loop>& loops, const BasicBlock* block) {
     const Loop* best = nullptr;
@@ -132,9 +59,10 @@ GirFrame advanceFrame(const GirFrame& input, BasicBlock* from, BasicBlock* to,
     GirFrame result = input;
     for (const auto& [genId, loop] : genLoops) {
         const GirGenerationSpec& gen = contract.generations.at(genId);
-        // Any edge into the header from INSIDE the loop is a back edge: keying on the latch alone
-        // made a second back edge take the entry arm and RESET the phase instead of advancing it.
-        const bool backEdge = to == loop->headerBB ? loop->contains(from) : from == loop->latchBB;
+        // A back edge runs from inside the loop INTO the header.  Treating every edge out of the
+        // latch as one rotated the loop's EXIT too, so a single-block loop handed its drain a
+        // phase one trip ahead and a buffer aliased onto the wrong generation.
+        const bool backEdge = to == loop->headerBB && loop->contains(from);
         if (backEdge)
             result.setPhase(genId, (result.phaseOf(genId) + gen.advance) % gen.ring);
         else if (to == loop->headerBB)
@@ -338,57 +266,6 @@ uint64_t actionOf(const StinkyInstruction* inst) {
 
 }  // namespace
 
-GirFrameContract GirFrameContract::parse(const std::string& text) {
-    GirFrameContract result;
-    if (text.empty()) return result;
-
-    std::istringstream input(text);
-    std::string raw;
-    bool sawMarker = false;
-    while (std::getline(input, raw)) {
-        const std::string line = contractLine(raw);
-        if (line.empty()) continue;
-        if (!sawMarker) {
-            if (line != kGirFrameContractMarker)
-                report_fatal_error("GIR frame contract: expected '" +
-                                   std::string(kGirFrameContractMarker) + "', got '" + line + "'");
-            sawMarker = true;
-            result.loaded = true;
-            continue;
-        }
-        const std::vector<std::string> field = words(line);
-        const std::string& tag = field.front();
-        if (tag == "gen") {
-            const ContractFields fields = parseFields(field, 2, line);
-            GirGenerationSpec gen{parseInt(field.at(1), "gen id"), fieldInt(fields, "ring", line),
-                                  fieldInt(fields, "entry", line, 0),
-                                  fieldInt(fields, "advance", line, 0)};
-            if (gen.ring < 1) report_fatal_error("GIR frame contract: ring must be positive");
-            result.generations[gen.id] = gen;
-        } else if (tag == "incoming" || tag == "transfer") {
-            const bool relative = tag == "transfer";
-            const ContractFields fields = parseFields(field, 1, line);
-            result.incomings.push_back({fieldU64(fields, "dst", line),
-                                        fieldU64(fields, "src", line),
-                                        fieldInt(fields, "gen", line),
-                                        fieldInt(fields, relative ? "delta" : "value", line),
-                                        relative});
-        } else if (tag == "rel") {
-            const ContractFields fields = parseFields(field, 3, line);
-            result.relations.push_back({parseU64(field.at(1), "fence action"),
-                                        parseHazardKind(field.at(2)),
-                                        fieldU64(fields, "producer", line),
-                                        fieldU64(fields, "consumer", line),
-                                        fieldInt(fields, "gap", line, 0)});
-        } else {
-            report_fatal_error("GIR frame contract: unknown record '" + tag + "'");
-        }
-    }
-    if (!sawMarker)
-        report_fatal_error("GIR frame contract: missing '" +
-                           std::string(kGirFrameContractMarker) + "' marker");
-    return result;
-}
 
 int GirFrame::phaseOf(int genId) const {
     auto it = std::lower_bound(phases.begin(), phases.end(), genId,
@@ -432,9 +309,9 @@ const std::vector<GirFrame>& GirFrameAnalysis::Result::frames(const BasicBlock* 
 
 GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManager& AM) {
     Result result;
-    const auto encoded = function.getStringMetaData(kGirFrameContractKey);
-    if (!encoded || encoded->empty()) return result;
-    result.contract = GirFrameContract::parse(*encoded);
+    const auto* encoded = function.getStructMetaData<GirFrameContract>(kGirFrameContractKey);
+    if (!encoded || !encoded->loaded) return result;
+    result.contract = *encoded;
 
     std::unordered_map<StinkyInstruction*, size_t> instructionIndex;
     std::unordered_map<StinkyInstruction*, BasicBlock*> instructionBlock;
@@ -495,6 +372,9 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
     };
     using IncomingValues = std::map<int, IncomingValue>;
     std::unordered_map<BasicBlock*, std::map<uint64_t, IncomingValues>> incomingValues;
+    // `{destination block: {source action: {guard gen: values that may take this edge}}}` -- the
+    // mirror of incomingValues: that one assigns a phase on an edge, this refuses one.
+    std::unordered_map<BasicBlock*, std::map<uint64_t, std::map<int, std::set<int>>>> requiredValues;
     std::unordered_map<uint64_t, std::vector<BasicBlock*>> anchorEntries;
     for (const auto& [anchor, blocks] : anchorBlocks) {
         std::vector<BasicBlock*>& entries = anchorEntries[anchor];
@@ -516,6 +396,14 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         namedActions.insert(actionId);
         namedActions.insert(action.anchorAction);
     }
+    for (const GirFrameRequiresSpec& need : result.contract.requires_) {
+        auto destinations = anchorEntries.find(need.destinationAction);
+        if (destinations == anchorEntries.end()) continue;
+        for (BasicBlock* block : destinations->second)
+            requiredValues[block][need.sourceAction][need.genId].insert(need.values.begin(),
+                                                                        need.values.end());
+    }
+
     for (const GirFrameIncomingSpec& incoming : result.contract.incomings) {
         if (!result.contract.generations.contains(incoming.genId))
             report_fatal_error("GirFrameAnalysis: INCOMING names unknown generation");
@@ -567,9 +455,10 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
             genLoops[genId] = chosen;
         } else if (!votes.empty()) {
             report_fatal_error("GirFrameAnalysis: generation maps ambiguously to ST loops");
-        } else if (result.contract.generations.at(genId).ring > 1) {
+        } else if (result.contract.generations.at(genId).advance != 0) {
             // Dropping it silently leaves its phase at 0 for the whole function, so every access
             // collapses onto `gdelta % ring` and distinct buffers alias onto one storage id.
+            // `advance == 0` never rotates by construction -- a guard generation is one.
             report_fatal_error("GirFrameAnalysis: rotating generation maps to no ST loop");
         }
     }
@@ -588,6 +477,22 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
     work.push_back({entry, base, 0});
     size_t stateCount = 1;
     constexpr size_t kMaxFrameStates = 1U << 20U;
+    // Can this frame take this edge?  A guard generation records which arm ran, so an edge the
+    // arm cannot reach is refused -- an undecided guard satisfies every constraint, which is what
+    // keeps a kernel with no correlated branches behaving exactly as before.
+    auto edgeFeasible = [&](const GirFrameNode& node, BasicBlock* successor) {
+        auto blockNeeds = requiredValues.find(successor);
+        if (blockNeeds == requiredValues.end()) return true;
+        uint64_t outgoingAction = node.incomingAction;
+        auto anchor = blockAnchor.find(node.block);
+        if (anchor != blockAnchor.end()) outgoingAction = anchor->second;
+        auto source = blockNeeds->second.find(outgoingAction);
+        if (source == blockNeeds->second.end()) return true;
+        for (const auto& [genId, allowed] : source->second)
+            if (!allowed.contains(node.frame.phaseOf(genId))) return false;
+        return true;
+    };
+
     auto advanceNode = [&](const GirFrameNode& node, BasicBlock* successor) {
         GirFrame next =
             advanceFrame(node.frame, node.block, successor, loops, genLoops, result.contract);
@@ -615,6 +520,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         GirFrameNode node = std::move(work.front());
         work.pop_front();
         for (BasicBlock* succ : node.block->getSuccessors()) {
+            if (!edgeFeasible(node, succ)) continue;
             GirFrameNode next = advanceNode(node, succ);
             if (frameSets[succ].insert({next.frame, next.incomingAction}).second) {
                 if (++stateCount > kMaxFrameStates)
@@ -634,7 +540,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
             GirFrameNode node{block, frame, incomingAction};
             auto& successors = result.edges[node];
             for (BasicBlock* succ : block->getSuccessors())
-                successors.push_back(advanceNode(node, succ));
+                if (edgeFeasible(node, succ)) successors.push_back(advanceNode(node, succ));
         }
     }
 
@@ -692,7 +598,6 @@ std::pair<StinkyInstruction*, GirFrame> lastBarrierBefore(const GirFrameAnalysis
     for (const auto& [from, tos] : frames.edges)
         for (const GirFrameNode& to : tos)
             preds[{to.block, to.frame}].push_back({from.block, from.frame});
-
     std::set<Key> seen{{block, frame}};
     std::deque<Key> work{{block, frame}};
     while (!work.empty()) {
@@ -748,6 +653,16 @@ GirFrameHazardAnalysis::Result GirFrameHazardAnalysis::run(Function& function,
         if (kind == GirHazardKind::WAW &&
             wawOrderedByRead(producerSpec, consumerSpec, frames.contract))
             return;
+
+        // The walk counts frame-graph nodes, which reduces mod the ring: a pair exactly one ring
+        // period apart lands back on the SAME node and reports 0.  The unreduced gdeltas still
+        // carry the real span, and within one block they share a `gen_rel` base, so their
+        // difference is the trip distance -- 2 for a `+2` write over a `+0` read, not 0.
+        if (producer.block == consumer.block && producerSpec.genId == consumerSpec.genId &&
+            producerSpec.absoluteGeneration < 0 && consumerSpec.absoluteGeneration < 0) {
+            const int span = consumerSpec.gdelta - producerSpec.gdelta;
+            if (span > gap) gap = span;
+        }
 
         LiveTouchKey producerKey{producer.frame, {producer.inst, producer.accessIndex}};
         LiveTouchKey consumerKey{consumer.frame, {consumer.inst, consumer.accessIndex}};

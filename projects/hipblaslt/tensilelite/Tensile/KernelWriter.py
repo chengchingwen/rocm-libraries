@@ -7281,7 +7281,6 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
                                # The legacy ST tensor arm stays disabled for both ULM modes so
                                # exactly one implementation owns tagged tensorcnt.
                                "EnableWaitCntInsertion": enableWaitCntInsertion,
-                               "DisableWaitCntRemoval": bool(kernel["UseLoopModel"]),
                                "DisableTensorcntInsertion": bool(kernel["UseLoopModel"]),
                                # Physical scheduling legality always comes from the reconstructed
                                # ST frame hazards in both modes. Numeric frame waits are separate:

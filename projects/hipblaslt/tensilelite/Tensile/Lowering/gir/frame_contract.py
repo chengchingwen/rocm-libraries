@@ -20,8 +20,10 @@ from dataclasses import dataclass, field
 from .analysis import AnalysisManager
 from .analyses.frame_map import FrameMap
 from .analyses.lds_buffers import LdsBufferIds
+from .analyses.cfg import reachable
+from .analyses.trip_domains import TripDomains
 from .emit_plan import plan_program
-from .nodes import Mark, Move
+from .nodes import Mark, Move, successor_labels
 
 
 #: The module metadata slot the contract travels in.
@@ -96,18 +98,33 @@ class Relation:
     gap: int = 0
 
 
+@dataclass(frozen=True)
+class Requires:
+    """An edge is takeable only when `gen` carries one of `values`.
+
+    The mirror of `Edge`: `incoming` ASSIGNS a phase on an edge, `requires` CONSTRAINS one. A
+    guard generation records which arm of a correlated branch ran, so a consuming edge can refuse
+    the arms that cannot reach it.  Absence of a record constrains nothing.
+    """
+    dst:    int
+    src:    int
+    gen:    int
+    values: tuple
+
+
 @dataclass
 class Contract:
     generations: dict = field(default_factory=dict)
     actions: dict = field(default_factory=dict)
     accesses: list = field(default_factory=list)
     edges: list = field(default_factory=list)
+    requires: list = field(default_factory=list)
     relations: list = field(default_factory=list)
 
     @property
     def is_empty(self) -> bool:
         return not (self.generations or self.actions or self.accesses
-                    or self.edges or self.relations)
+                    or self.edges or self.requires or self.relations)
 
 
 # --- deriving the facts from a program ---------------------------------------
@@ -219,8 +236,19 @@ def _region_of(operand, regions):
     return int(axes[0][0])
 
 
-def _accesses_of(action, storage, distributed):
-    """Every shared touch of one action, one `SharedAccess` per frame-region instance."""
+def _gens_by_region(prog):
+    """`(operand, region) -> gen id`, the inverse of `generation_regions`."""
+    return {(str(fact.get("operand")), int(fact.get("region", 0))): int(gen_id)
+            for gen_id, fact in ((prog.meta or {}).get("generation_regions", {}) or {}).items()}
+
+
+def _accesses_of(action, storage, distributed, by_region):
+    """Every shared touch of one action, one `SharedAccess` per frame-region instance.
+
+    An instance names ITS OWN region's generation.  A `Ref` carries one `gen`, so a read spanning
+    every region stamped them all with its own; a region whose reader and writer then sat on
+    different generations had no rotation between them at all, which reads as a same-trip WAR
+    against the write that recycles the very buffer being read."""
     out = []
     for ref, is_write in _shared_refs(action):
         operand = str(ref.tile.operand)
@@ -232,16 +260,20 @@ def _accesses_of(action, storage, distributed):
         gen = getattr(ref, "gen", None)
         absolute = getattr(ref, "abs_gen", None)
         for regions in storage.geometry.frame_region_instances_of(ref, is_write):
+            region = _region_of(operand, regions)
+            gen_id = -1 if gen is None else int(gen.id)
+            if gen is not None and region >= 0:
+                gen_id = by_region.get((operand, region), gen_id)
             out.append(SharedAccess(
                 action=action.action_id,
                 is_write=is_write,
                 operand=operand,
                 ring=max(1, int(storage.depth_of(ref.tile.operand))),
-                gen=-1 if gen is None else int(gen.id),
+                gen=gen_id,
                 gdelta=int(getattr(ref, "gdelta", 0) or 0),
                 absolute=-1 if absolute is None else int(absolute),
                 cross_agent=bool(distributed.get(ref.tile.operand)),
-                region=_region_of(operand, regions)))
+                region=region))
     return out
 
 
@@ -265,6 +297,61 @@ def _edges_of(prog, plans, frames):
                         out.add(Edge(int(destination), int(source), int(phi.gen.id),
                                      phase, relative))
     return sorted(out, key=lambda e: (e.relative, e.dst, e.src, e.gen, e.value))
+
+
+#: A guard generation is not a buffer -- it never rotates, and 0 means the arm is undecided.
+GUARD_UNDECIDED = 0
+
+
+def _guards_of(prog, plans, domains, first_free_gen):
+    """Guard generations for the branches whose ARM CHOICE some later edge can refuse.
+
+    A branch whose arms all reach every consumer carries no information, so it gets no generation;
+    allocating one per correlated branch is what lets the passes that build them stay ignorant of
+    each other -- they agree on a generation id, never on a predicate.
+    """
+    def arms_of(label):
+        out = []
+        for target in dict.fromkeys(successor_labels(prog.blocks[label])):
+            if target in prog.blocks:
+                out.append((target, domains.admits(label, target)))
+        return out
+
+    everywhere = [(lab, arms_of(lab)) for lab in prog.blocks]
+    consuming = [(src, dst, domains.admits(src, dst))
+                 for src, dst, in ((s, d) for s in prog.blocks for d in dict.fromkeys(
+                     successor_labels(prog.blocks[s])) if d in prog.blocks)]
+
+    generations, incomings, requires = {}, [], []
+    for label, arms in everywhere:
+        if len(arms) < 2 or all(d == domains.universe for _t, d in arms):
+            continue
+        # Only worth a generation if some edge admits one arm and refuses another -- and only
+        # where the arm has already been taken, since an edge before the branch reads `undecided`
+        # and would carry a constraint it can never fail.
+        downstream = reachable(prog)
+        after = {t for t, _d in arms} | {r for t, _d in arms for r in downstream.get(t, ())}
+        refusers = [(src, dst, edge) for src, dst, edge in consuming
+                    if src in after
+                    and any(not (d & edge) for _t, d in arms) and any(d & edge for _t, d in arms)
+                    and (src, dst) not in {(label, t) for t, _d in arms}]
+        if not refusers:
+            continue
+        gen_id = first_free_gen + len(generations)
+        generations[label] = (gen_id, arms)
+        for index, (target, _domain) in enumerate(arms, start=1):
+            for source in _anchor_actions(prog, plans, label, False):
+                for destination in _anchor_actions(prog, plans, target, True):
+                    incomings.append(Edge(int(destination), int(source), gen_id, index, False))
+        for src, dst, edge in refusers:
+            allowed = tuple(sorted(
+                [GUARD_UNDECIDED] + [i for i, (_t, d) in enumerate(arms, start=1) if d & edge]))
+            for source in _anchor_actions(prog, plans, src, False):
+                for destination in _anchor_actions(prog, plans, dst, True):
+                    requires.append(Requires(int(destination), int(source), gen_id, allowed))
+    guard_gens = {gen_id: Generation(gen_id, len(arms) + 1, GUARD_UNDECIDED, 0)
+                  for gen_id, arms in generations.values()}
+    return guard_gens, incomings, requires
 
 
 def _relations_of(actions, actions_by_source):
@@ -314,12 +401,19 @@ def build_contract(prog) -> Contract:
             by_source.setdefault(id(action.source), []).append(action)
 
     distributed = prog.meta.get("agent_distributed", {}) or {}
+    by_region = _gens_by_region(prog)
     contract = Contract(generations=_generations(prog))
     for action in actions:
         contract.actions[action.action_id] = Action(
             action.action_id, action.kind, anchors[action.action_id])
-        contract.accesses.extend(_accesses_of(action, storage, distributed))
+        contract.accesses.extend(_accesses_of(action, storage, distributed, by_region))
     contract.edges = _edges_of(prog, plans, frames)
+    domains = analyses.get(TripDomains(), prog)
+    first_free = max(contract.generations, default=-1) + 1
+    guard_gens, guard_incomings, guard_requires = _guards_of(prog, plans, domains, first_free)
+    contract.generations.update(guard_gens)
+    contract.edges = list(contract.edges) + guard_incomings
+    contract.requires = guard_requires
     contract.relations = _relations_of(actions, by_source)
     return contract
 
@@ -341,6 +435,13 @@ def render_contract(contract) -> str:
                      % ("transfer" if edge.relative else "incoming",
                         edge.dst, edge.src, edge.gen,
                         "delta" if edge.relative else "value", edge.value))
+
+    if contract.requires:
+        lines.append("")
+    for need in contract.requires:
+        lines.append("requires  dst=%d src=%d gen=%d values=%s"
+                     % (need.dst, need.src, need.gen,
+                        ",".join(str(v) for v in need.values)))
 
     if contract.relations:
         lines.append("")
@@ -398,6 +499,14 @@ def parse_contract(text: str) -> Contract:
             contract.edges.append(Edge(
                 _int(fields, "dst", line), _int(fields, "src", line), _int(fields, "gen", line),
                 _int(fields, "delta" if relative else "value", line), relative))
+        elif tag == "requires":
+            fields = _fields(words[1:], line)
+            raw = fields.get("values")
+            if not isinstance(raw, str):
+                raise RuntimeError("frame contract: %r needs a values=" % (line,))
+            contract.requires.append(Requires(
+                _int(fields, "dst", line), _int(fields, "src", line), _int(fields, "gen", line),
+                tuple(sorted(int(v) for v in raw.split(",") if v != ""))))
         elif tag == "rel":
             kind = words[2]
             if kind not in _HAZARD_KINDS:
@@ -411,6 +520,29 @@ def parse_contract(text: str) -> Contract:
     return contract
 
 
+def install_frame_contract(prog, st_module):
+    """Hand the contract to StinkyTofu as a STRUCT -- the one call the kernel writer makes.
+
+    Only what belongs to no instruction travels: the generation table, the phi edges and the guard
+    constraints.  Actions and the storage they touch ride on the instructions, and nothing is
+    encoded, so there is no text format for a writer and a reader to disagree about.
+    """
+    from rocisa import GirFrameContract
+
+    contract = build_contract(prog)
+    out = GirFrameContract()
+    for generation in sorted(contract.generations.values(), key=lambda g: g.id):
+        out.addGeneration(id=generation.id, ring=generation.ring, entry=generation.entry,
+                          advance=generation.advance)
+    for edge in contract.edges:
+        out.addIncoming(dst=edge.dst, src=edge.src, gen=edge.gen, value=edge.value,
+                        relative=edge.relative)
+    for need in contract.requires:
+        out.addRequires(dst=need.dst, src=need.src, gen=need.gen, values=list(need.values))
+    st_module.setGirFrameContract(out)
+    return contract
+
+
 def encode_frame_contract(prog) -> str:
-    """Build and render the contract for `prog` -- the one call the kernel writer makes."""
+    """The contract as text -- a DUMP for reading, never parsed back."""
     return render_contract(build_contract(prog))

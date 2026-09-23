@@ -22,7 +22,7 @@ class GirFrameContractImportPass final : public Pass {
     static char ID;
 
     explicit GirFrameContractImportPass(const StinkyAsmModule& module)
-        : contract(module.getPluginDataStr(kGirFrameContractKey, "")),
+        : contract(module.getGirFrameContract()),
           actionTagCount(module.getPluginDataI64("gir.action_tag_count", 0)) {}
 
     const char* getName() const override {
@@ -34,18 +34,18 @@ class GirFrameContractImportPass final : public Pass {
     }
 
     PreservedAnalyses run(Function& function, PassContext&, AnalysisManager&) override {
-        if (contract.empty())
+        if (!contract || !contract->loaded)
             report_fatal_error(
                 "GIR frame pipeline enabled but the module carries no frame contract");
         if (actionTagCount == 0)
             report_fatal_error(
                 "GIR frame contract imported but rocisa conversion produced no action tags");
-        function.setStringMetaData(kGirFrameContractKey, contract);
+        function.setStructMetaData<GirFrameContract>(kGirFrameContractKey, contract);
         return PreservedAnalyses::none();
     }
 
    private:
-    std::string contract;
+    std::shared_ptr<const GirFrameContract> contract;
     int64_t actionTagCount = 0;
 };
 

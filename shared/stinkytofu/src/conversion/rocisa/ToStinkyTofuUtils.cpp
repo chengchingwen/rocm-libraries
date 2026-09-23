@@ -1559,6 +1559,10 @@ void init_stinkytofu(nb::module_ m) {  // NOLINT(misc-use-internal-linkage)
         int64_t getPluginDataI64(const std::string& key, int64_t defaultVal = 0) const {
             return module_->getPluginDataI64(key, defaultVal);
         }
+        void setGirFrameContract(const GirFrameContract& contract) {
+            module_->setGirFrameContract(std::make_shared<const GirFrameContract>(contract));
+        }
+
         void setPluginDataStr(const std::string& key, const std::string& value) {
             module_->setPluginDataStr(key, value);
         }
@@ -1580,6 +1584,35 @@ void init_stinkytofu(nb::module_ m) {  // NOLINT(misc-use-internal-linkage)
             return module_;
         }
     };
+
+    // The frame contract carries ONLY what belongs to no instruction -- the generation table and
+    // the phi edges.  Actions and the storage they touch ride on the instructions themselves, so
+    // they never appear here.  Built as a struct, never encoded, so there is no text format for a
+    // writer and a reader to disagree about.
+    nb::class_<GirFrameContract>(m, "GirFrameContract")
+        .def(nb::init<>())
+        .def(
+            "addGeneration",
+            [](GirFrameContract& c, int id, int ring, int entry, int advance) {
+                c.generations[id] = GirGenerationSpec{id, ring, entry, advance};
+                c.loaded = true;
+            },
+            nb::arg("id"), nb::arg("ring"), nb::arg("entry"), nb::arg("advance"))
+        .def(
+            "addIncoming",
+            [](GirFrameContract& c, uint64_t dst, uint64_t src, int gen, int value, bool relative) {
+                c.incomings.push_back(GirFrameIncomingSpec{dst, src, gen, value, relative});
+                c.loaded = true;
+            },
+            nb::arg("dst"), nb::arg("src"), nb::arg("gen"), nb::arg("value"), nb::arg("relative"))
+        .def(
+            "addRequires",
+            [](GirFrameContract& c, uint64_t dst, uint64_t src, int gen,
+               const std::vector<int>& values) {
+                c.requires_.push_back(GirFrameRequiresSpec{dst, src, gen, values});
+                c.loaded = true;
+            },
+            nb::arg("dst"), nb::arg("src"), nb::arg("gen"), nb::arg("values"));
 
     // Bind CloneSpec so Python can construct entries for ModuleOptions::CloneList.
     // Used by Tensile to declare per-kernel region-clone jobs (e.g. InitCIterWmma).
@@ -1613,6 +1646,8 @@ void init_stinkytofu(nb::module_ m) {  // NOLINT(misc-use-internal-linkage)
              nb::arg("defaultVal") = 0, "Get an integer plugin data value")
         .def("setPluginDataStr", &StinkyAsmModuleWithSignature::setPluginDataStr, nb::arg("key"),
              nb::arg("value"), "Set a string plugin data value accessible by plugin passes")
+        .def("setGirFrameContract", &StinkyAsmModuleWithSignature::setGirFrameContract,
+             nb::arg("contract"), "Hand over the GIR frame contract as a struct")
         .def("getPluginDataStr", &StinkyAsmModuleWithSignature::getPluginDataStr, nb::arg("key"),
              nb::arg("defaultVal") = "", "Get a string plugin data value")
         .def("registerPassAtExtensionPoint",

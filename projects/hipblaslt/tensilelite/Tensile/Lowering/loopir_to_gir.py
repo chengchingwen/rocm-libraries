@@ -232,18 +232,29 @@ def _member_region_coord(coord, op, theta):
     return tuple(out)
 
 
-def _reg_residence(theta, op, coord, pl, env):
-    """`(group index, concrete slot, rotation width W)` for `op`'s register fragment AT `coord`."""
+def _slot_of(theta, op, coord, pl):
+    """The `pl.slots` entry naming THIS member's generation, as `(label, Expr)`.
+
+    A slot is keyed by the member's own group, so every caller asking "which slot applies here"
+    answers it from `coord`.  Taking `slots[0]` instead hands every member the first one's
+    generation, and a fused copy then writes each region at the wrong phase."""
     if not (pl and getattr(pl, "slots", None)):
-        return None, None, None
+        return None, None
     groups = op.fragment.groups() if op is not None else ("",)
-    label, gexpr = pl.slots[0]
     if op is not None and len(groups) > 1 and len(pl.slots) > 1:
         want = groups[_geometry.group_index(theta, op, coord)]
-        for _l, _e in pl.slots:
-            if _l == want:
-                label, gexpr = _l, _e
-                break
+        for label, gexpr in pl.slots:
+            if label == want:
+                return label, gexpr
+    return pl.slots[0]
+
+
+def _reg_residence(theta, op, coord, pl, env):
+    """`(group index, concrete slot, rotation width W)` for `op`'s register fragment AT `coord`."""
+    label, gexpr = _slot_of(theta, op, coord, pl)
+    if gexpr is None:
+        return None, None, None
+    groups = op.fragment.groups() if op is not None else ("",)
     grp_idx = list(groups).index(label) if label in groups else 0
     return grp_idx, gexpr.eval(env), (getattr(gexpr, "mod", 0) or 1)
 
@@ -358,7 +369,6 @@ def _convert_load(theta, inst, env, rel, gens):
     chunk = theta.summation_chunk_name("iter")     # the level the generation timeline runs on
     if ld.dst == Space.SHARED:
         # --- COPY: one Ref per fused token; dst carries the LDS generation ---
-        slot_expr = pl.slots[0][1] if pl and pl.slots else None
         srcs, dsts = [], []
         base_coord = _concrete_coord(ld.coord, env)
         present = []
@@ -368,6 +378,8 @@ def _convert_load(theta, inst, env, rel, gens):
                 continue                              # not in THIS movement; see `unit` below
             present.append(tok)
             coord = _member_region_coord(base_coord, op, theta)
+            # Per member: a fused copy moves several, and each lands in its own group's slot.
+            slot_expr = _slot_of(theta, op, coord, pl)[1]
             src_tile = Tile(op.name if op else tok, "global", coord,
                             (("bytes", ld.size_bytes),))
             dst_tile = Tile(op.name if op else tok, "shared", coord,

@@ -850,6 +850,14 @@ inline bool hasGirFrameOrdering(const StinkyInstruction& inst) {
 /// Returns true for a GIR-owned memory fence -- the order-only FENCE and both halves of the
 /// barrier it precedes.  addGirFrameHazardEdges pins each one between the ends of every
 /// cross-agent hazard it owns, which is the job the region cut used to do less precisely.
+/// Returns true if the GIR frame model names this instruction's storage, so the frame counter
+/// flow states its waits.  The proof of disjointness that `MemTokenData` used to carry lives in
+/// `GirActionData` here, so a fallback keyed on the token's absence must ask this too.
+inline bool girNamesStorage(const StinkyInstruction& inst) {
+    const GirActionData* action = inst.getModifier<GirActionData>();
+    return action != nullptr && !action->accesses.empty();
+}
+
 inline bool isGirOwnedFence(const StinkyInstruction& inst) {
     if (!isBarrier(inst) && !isFence(inst)) return false;
     const GirActionData* action = inst.getModifier<GirActionData>();

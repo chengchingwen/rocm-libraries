@@ -8,12 +8,14 @@
 #include <algorithm>
 #include <climits>
 #include <deque>
+#include <optional>
 #include <set>
 #include <unordered_map>
 #include <vector>
 
 #include "stinkytofu/analysis/AnalysisRegistration.hpp"
 #include "stinkytofu/analysis/asm/GirFrameAnalysis.hpp"
+#include "stinkytofu/transforms/asm/waitcnt/GirFrameCounterFlow.hpp"
 #include "stinkytofu/core/BasicBlock.hpp"
 #include "stinkytofu/core/PassManager.hpp"
 #include "stinkytofu/hardware/ArchHelper.hpp"
@@ -203,10 +205,79 @@ std::vector<Live> liveBefore(const Node& node, const std::vector<StinkyInstructi
     return out;
 }
 
+waitcnt::CounterKind kindOf(Counter counter) {
+    return counter == Counter::Ds ? waitcnt::CK_DS : waitcnt::CK_Tensor;
+}
+
+/// Every `GirFrameNode` sharing a `(block, frame)`: an occurrence names the pair, but the frame
+/// graph distinguishes nodes by the action that entered them, so all of them carry it.
+using NodesByKey = std::map<std::pair<BasicBlock*, GirFrame>, std::vector<GirFrameNode>>;
+
+NodesByKey collectNodes(const GirFrameAnalysis::Result& frames) {
+    NodesByKey byKey;
+    const auto remember = [&byKey](const GirFrameNode& node) {
+        auto& list = byKey[{node.block, node.frame}];
+        for (const GirFrameNode& seen : list)
+            if (seen == node) return;
+        list.push_back(node);
+    };
+    for (const auto& [node, successors] : frames.edges) {
+        remember(node);
+        for (const GirFrameNode& successor : successors) remember(successor);
+    }
+    return byKey;
+}
+
+/// What each live hazard already has in flight when this node BEGINS: `base` issues counted over
+/// the frame span from its producer, plus the index its in-block tail resumes from.  A residual is
+/// then `base` plus the same-counter issues in `[from, slot)`, which is the count the wait pass
+/// will measure for a fence at `slot` -- and the part before the block is exactly what a block-local
+/// count cannot see.
+struct Reach {
+    Counter counter = Counter::None;
+    int base = 0;
+    size_t from = 0;
+};
+
+std::optional<Reach> reachAtBlockStart(const GirFrameAnalysis::Result& frames,
+                                       const NodesByKey& byKey, const Node& node,
+                                       const GirFrameHazard& hazard,
+                                       const std::unordered_map<const StinkyInstruction*, size_t>& index) {
+    const Counter counter = counterOfProducer(*hazard.producer);
+    if (counter == Counter::None) return std::nullopt;
+
+    // A producer in this very node is already positioned; the span is its own distance forward.
+    auto producer = index.find(hazard.producer);
+    if (hazard.gap == 0 && hazard.producerFrame == node.frame && producer != index.end())
+        return Reach{counter, 1, producer->second + 1};
+
+    auto producerNodes = byKey.find({hazard.producerBlock, hazard.producerFrame});
+    auto anchorNodes = byKey.find({node.block, node.frame});
+    if (producerNodes == byKey.end() || anchorNodes == byKey.end()) return std::nullopt;
+
+    int base = -1;
+    for (const GirFrameNode& anchorNode : anchorNodes->second)
+        for (const GirFrameNode& producerNode : producerNodes->second) {
+            // The hazard's own gap is the frame's answer wherever it lands in this node; a hazard
+            // merely passing through is measured to here instead.
+            const int span = hazard.consumerBlock == node.block &&
+                                     hazard.consumerFrame == node.frame
+                                 ? hazard.gap
+                                 : waitcnt::girFrameDistance(frames, producerNode, anchorNode);
+            if (span < 0) continue;
+            const int count = waitcnt::girFrameIssuesAcrossSpan(
+                frames, kindOf(counter), producerNode, hazard.producerIndex, span, anchorNode, 0);
+            if (count > 0 && (base < 0 || count < base)) base = count;
+        }
+    if (base < 0) return std::nullopt;
+    return Reach{counter, base, 0};
+}
+
 /// The slot the cut goes in.  The dataflow fixes how MANY cuts and which slots are legal; inside
 /// that freedom the deepest wait wins, because one barrier carries one wait per counter and that
 /// wait is the minimum over everything it discharges.
-size_t chooseSlot(const std::vector<StinkyInstruction*>& body,
+size_t chooseSlot(const GirFrameAnalysis::Result& frames, const NodesByKey& byKey, const Node& node,
+                  const std::vector<StinkyInstruction*>& body,
                   const GirFrameHazardAnalysis::Result& hazards,
                   const std::vector<Live>& live, const std::vector<size_t>& violating,
                   size_t consumerSlot) {
@@ -228,22 +299,26 @@ size_t chooseSlot(const std::vector<StinkyInstruction*>& body,
             low = std::max(low, producer->second + 1);
     }
 
+    std::unordered_map<size_t, std::optional<Reach>> reach;
+    const auto reachOf = [&](size_t h) -> const std::optional<Reach>& {
+        auto found = reach.find(h);
+        if (found == reach.end())
+            found = reach.emplace(h, reachAtBlockStart(frames, byKey, node, hazards.hazards[h],
+                                                       index))
+                        .first;
+        return found->second;
+    };
+
     size_t chosen = consumerSlot;
     int best = -1;
     for (size_t slot = low; slot <= consumerSlot; ++slot) {
         int worst = INT_MAX;
         for (size_t h : live[slot]) {
-            const GirFrameHazard& hazard = hazards.hazards[h];
-            const Counter counter = counterOfProducer(*hazard.producer);
-            if (counter == Counter::None) continue;
-            size_t from = 0;
-            if (hazard.gap == 0) {
-                auto producer = index.find(hazard.producer);
-                if (producer != index.end()) from = producer->second + 1;
-            }
-            int residual = 0;
-            for (size_t k = from; k < slot; ++k)
-                if (countsFor(*body[k], counter)) ++residual;
+            const std::optional<Reach>& here = reachOf(h);
+            if (!here) continue;
+            int residual = here->base;
+            for (size_t k = here->from; k < slot; ++k)
+                if (countsFor(*body[k], here->counter)) ++residual;
             worst = std::min(worst, residual);
         }
         if (worst != INT_MAX && worst > best) {
@@ -278,6 +353,7 @@ class GirFencePlacementPass final : public StinkyInstPass {
         if (!signalDesc || !waitDesc)
             report_fatal_error("GirFencePlacementPass: no workgroup barrier on this architecture");
 
+        const NodesByKey byKey = collectNodes(frames);
         size_t placed = 0;
         for (;;) {
             FrameCFG cfg = buildFrameCFG(function, frames);
@@ -287,7 +363,7 @@ class GirFencePlacementPass final : public StinkyInstPass {
             size_t slot = 0;
             std::vector<size_t> violating;
             if (!firstViolation(cfg, hazards, in, node, slot, violating)) break;
-            slot = chooseSlot(cfg.body[node], hazards,
+            slot = chooseSlot(frames, byKey, cfg.nodes[node], cfg.body[node], hazards,
                               liveBefore(cfg.nodes[node], cfg.body[node], hazards, in[node]),
                               violating, slot);
             if (++placed > hazards.hazards.size())
@@ -301,6 +377,12 @@ class GirFencePlacementPass final : public StinkyInstPass {
             StinkyInstruction* wait = builder.create(waitDesc, anchor);
             wait->addSrcReg(StinkyRegister(kWorkgroupBarrierId));
             wait->addModifier<CommentData>(CommentData{"GIR fence"});
+            // The frame counter flow supplies this barrier's waits, so the token-absence fallback
+            // must not also drain it.  `NoWaitCntData` says exactly that and nothing more --
+            // marking it a GIR fence would also clear `hasSideEffect` and let it be moved away
+            // from the signal it pairs with.
+            signal->addModifier<NoWaitCntData>(NoWaitCntData{});
+            wait->addModifier<NoWaitCntData>(NoWaitCntData{});
         }
         // The fixpoint minimises the cut; this guarantees the property the wait pass queries.
         // They now ask the same question, so they cannot disagree about whether a barrier stands.
@@ -328,8 +410,61 @@ class GirFencePlacementPass final : public StinkyInstPass {
             StinkyInstruction* wait = builder.create(waitDesc, anchor);
             wait->addSrcReg(StinkyRegister(kWorkgroupBarrierId));
             wait->addModifier<CommentData>(CommentData{"GIR fence (cover)"});
+            signal->addModifier<NoWaitCntData>(NoWaitCntData{});
+            wait->addModifier<NoWaitCntData>(NoWaitCntData{});
             ++placed;
         }
+        // The fixpoint places greedily, so a later cut can subsume an earlier one.  Drop any
+        // barrier the remaining set already covers: fewer fences means the copies between them
+        // stay in flight together, which is what lets the wait be graded instead of a drain.
+        for (bool shrinking = true; shrinking;) {
+            shrinking = false;
+            // Pair the two halves EXPLICITLY.  Only the wait carries the tag, so collecting
+            // "tagged barriers" and pairing them by position takes two unrelated waits for one
+            // signal+wait pair and erases both -- which is how the signals outlived their waits.
+            std::vector<std::pair<StinkyInstruction*, StinkyInstruction*>> pairs;
+            for (BasicBlock& block : function) {
+                if (!passCtx.shouldProcessBasicBlock(block)) continue;
+                StinkyInstruction* pendingSignal = nullptr;
+                for (IRBase& node : block) {
+                    auto* inst = dyn_cast<StinkyInstruction>(&node);
+                    if (!inst) continue;
+                    if (isBarrierSignal(*inst)) {
+                        pendingSignal = inst;
+                    } else if (isBarrierWait(*inst) && inst->getModifier<CommentData>() &&
+                               pendingSignal != nullptr) {
+                        pairs.push_back({pendingSignal, inst});
+                        pendingSignal = nullptr;
+                    }
+                }
+            }
+            for (const auto& [signal, wait] : pairs) {
+                BasicBlock* owner = signal->getParent();
+                if (wait->getParent() != owner) continue;
+                std::vector<IRBase*> saved;
+                for (IRBase& node : *owner) saved.push_back(&node);
+                owner->removeIR(signal);
+                owner->removeIR(wait);
+                FrameCFG probe = buildFrameCFG(function, frames);
+                size_t n = 0, sl = 0;
+                std::vector<size_t> v;
+                const bool stillCovered =
+                    !probe.nodes.empty() && !firstViolation(probe, hazards, solve(probe, hazards),
+                                                            n, sl, v);
+                if (stillCovered) {
+                    signal->erase();
+                    wait->erase();
+                    shrinking = true;
+                    break;
+                }
+                // Put the block back exactly as it was: remove+append in the saved order.
+                for (IRBase* node : saved) {
+                    if (node->getParent()) owner->removeIR(node);
+                    owner->appendIR(node);
+                }
+            }
+        }
+
         if (placed == 0) return PreservedAnalyses::all();
         AM.invalidate(function, preserveCFGAnalyses());
         return preserveCFGAnalyses();
