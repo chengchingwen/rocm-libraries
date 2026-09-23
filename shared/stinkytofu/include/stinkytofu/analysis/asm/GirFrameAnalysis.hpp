@@ -73,6 +73,16 @@ struct GirActionSpec {
     std::vector<size_t> accesses;
 };
 
+/// An edge is takeable only when `genId` carries one of `values`.  The mirror of
+/// `GirFrameIncomingSpec`: incoming ASSIGNS a phase on an edge, this CONSTRAINS one, so a guard
+/// generation can refuse the arms that cannot reach a successor.  Absence constrains nothing.
+struct GirFrameRequiresSpec {
+    uint64_t destinationAction = 0;
+    uint64_t sourceAction = 0;
+    int genId = -1;
+    std::vector<int> values;
+};
+
 struct GirFrameContract {
     //: Whether a contract was supplied at all, as opposed to one that supplied no facts.
     bool loaded = false;
@@ -81,8 +91,7 @@ struct GirFrameContract {
     std::vector<GirAccessSpec> accesses;
     std::vector<GirFrameIncomingSpec> incomings;
     std::vector<GirFenceRelationSpec> relations;
-
-    static GirFrameContract parse(const std::string& text);
+    std::vector<GirFrameRequiresSpec> requires_;
 };
 
 struct GirFrame {

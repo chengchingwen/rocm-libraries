@@ -198,7 +198,8 @@ TEST(GirFrameAnalysisTest, HazardBecomesAnOrdinaryDagEdge) {
     GirFrameHazardAnalysis::Result hazards;
     hazards.hazards.push_back({GirHazardKind::RAW, copy, read, block, block, 0, 1, GirFrame{},
                                GirFrame{}, 0, false, 0, 1});
-    dag::addGirFrameHazardEdges(graph, hazards);
+    GirFrameAnalysis::Result frames;
+    dag::addGirFrameHazardEdges(graph, hazards, frames);
 
     ASSERT_TRUE(graph.graph[0].contains(1));
     EXPECT_EQ(graph.nodes[0].inDegree, 0u);

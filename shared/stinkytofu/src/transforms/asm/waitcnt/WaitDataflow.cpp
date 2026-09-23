@@ -27,6 +27,7 @@
 #include <unordered_set>
 
 #include "stinkytofu/core/BasicBlock.hpp"
+#include "stinkytofu/analysis/asm/GirFrameAnalysis.hpp"
 #include "stinkytofu/core/Function.hpp"
 #include "stinkytofu/core/PassManager.hpp"
 #include "stinkytofu/ir/asm/StinkyAsmIR.hpp"
@@ -192,8 +193,25 @@ bool isTensorAnchor(const StinkyInstruction& inst) {
 
 /// A barrier that orders execution but takes no conservative wait: it is deliberately untagged,
 /// so the MemTokenData fallbacks must not read its missing token as "cannot prove disjoint".
+/// True when the GIR frame pipeline owns this function's LDS and tensor ordering.
+///
+/// The conservative fallbacks below read a missing `MemTokenData` as "cannot prove disjoint" and
+/// drain to 0.  Under the frame contract the proof moved to the frame map, which grades the same
+/// hazards across the rotation, so the token's absence proves nothing and the drain only discards
+/// what the frame counter flow derived.
+bool girOwnsOrdering(const StinkyInstruction& inst) {
+    const BasicBlock* block = inst.getParent();
+    const Function* function = block ? block->getParentFunc() : nullptr;
+    if (!function) return false;
+    const auto* contract = function->getStructMetaData<GirFrameContract>(kGirFrameContractKey);
+    return contract != nullptr && contract->loaded;
+}
+
 bool takesNoWait(const StinkyInstruction& inst) {
-    return inst.getModifier<NoWaitCntData>() != nullptr;
+    // A GIR-owned fence is the second shape of the same fact: the frame counter flow states its
+    // wait exactly, so the token-absence fallback would only drain what the frame model graded.
+    return inst.getModifier<NoWaitCntData>() != nullptr || isGirOwnedFence(inst) ||
+           girOwnsOrdering(inst);
 }
 
 bool hasUntaggedTensorAnchor(BasicBlock& bb) {
@@ -826,11 +844,15 @@ void computeRequiredWaits(StinkyInstruction* inst, DataflowState& state,
         }
     };
 
-    if (isLdsWriterAnchor(*inst)) {
+    // A GIR-named anchor's LDS anti-dependences come from the frame counter flow, which grades
+    // them across the rotation.  The token scan answers the same question from residual tokens and
+    // only ever tightens, so leaving it on pins the anchor to the newest overlapping read -- a
+    // drain to 0 -- however finely the frame model graded it.
+    if (isLdsWriterAnchor(*inst) && !girNamesStorage(*inst)) {
         const auto* tk = inst->getModifier<MemTokenData>();
         if (tk != nullptr) scanDsAntiDeps(*inst, tk->tokens, /*barrierMode=*/false);
     }
-    if (isBarrier(*inst)) {
+    if (isBarrier(*inst) && !girNamesStorage(*inst)) {
         const auto* tk = inst->getModifier<MemTokenData>();
         if (tk != nullptr) scanDsAntiDeps(*inst, tk->tokens, /*barrierMode=*/true);
     }
@@ -839,7 +861,8 @@ void computeRequiredWaits(StinkyInstruction* inst, DataflowState& state,
     // that lacks MemTokenData cannot be proven disjoint from a tensor
     // anchor, so treat it as an extra dep. Tagged overlaps are already
     // covered by the SSA UD chain through LDS<token> pseudo-regs.
-    if (isTensorAnchor(*inst) && inst->getModifier<MemTokenData>() != nullptr) {
+    if (isTensorAnchor(*inst) && inst->getModifier<MemTokenData>() != nullptr &&
+        !girOwnsOrdering(*inst)) {
         for (const auto& q : state.queues[CK_Tensor]) {
             const int qsize = static_cast<int>(q.ops.size());
             for (int idx = 0; idx < qsize; ++idx) {
@@ -880,7 +903,8 @@ void computeRequiredWaits(StinkyInstruction* inst, DataflowState& state,
     // untagged producer means we cannot prove disjointness, so we
     // force the matching counter to 0.
     if (isTensorAnchor(*inst) && !takesNoWait(*inst) &&
-        inst->getModifier<MemTokenData>() == nullptr && anyOpInFlight(CK_Tensor)) {
+        inst->getModifier<MemTokenData>() == nullptr && !girNamesStorage(*inst) &&
+        anyOpInFlight(CK_Tensor)) {
         required[CK_Tensor] = 0;
     }
     if ((isLdsWriterAnchor(*inst) || isBarrier(*inst)) && !takesNoWait(*inst) &&
@@ -888,7 +912,8 @@ void computeRequiredWaits(StinkyInstruction* inst, DataflowState& state,
         required[CK_Async] = 0;
     }
     if (isLdsWriterAnchor(*inst) && inst->getModifier<MemTokenData>() == nullptr &&
-        anyOpInFlight(CK_DS) && !isDSWrite(*inst)) {
+        !girNamesStorage(*inst) && !girOwnsOrdering(*inst) && anyOpInFlight(CK_DS) &&
+        !isDSWrite(*inst)) {
         required[CK_DS] = 0;
     }
     if (isBarrier(*inst) && !takesNoWait(*inst) && anyOpInFlight(CK_DS)) {
