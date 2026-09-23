@@ -57,7 +57,11 @@ class GirToRocisa:
         self.tPA, self.tPB = tPA, tPB
         # L3 OWNS the leaf emitters (they ARE the layer-2->3 realization).  The register ring width
         # W is a GIR fact passed as a real field -- no reaching into a retired walker's internals.
-        self._M = int(prog.meta.get("peel_depth", 0))     # peel depth: prologue fills chunks 0..M-1
+        self._M = int(prog.meta.get("peel_depth", 0))
+        import os as _os, sys as _sys
+        if _os.environ.get("ST_DUMP_PEEL"):
+            print("[peel] M=%d PGR=%s PLR=%s" % (self._M, kernel.get("PrefetchGlobalRead"),
+                  kernel.get("PrefetchLocalRead")), file=_sys.stderr)     # peel depth: prologue fills chunks 0..M-1
         self._memberRegions = dict(prog.meta.get("unit_member_regions", {}) or {})
         self._regLayout = dict(prog.meta.get("register_layout", {}) or {})
         # The per-instruction half of the frame contract: each action's anchor and what it touches
@@ -124,10 +128,10 @@ class GirToRocisa:
                 tc = at["tc"]
                 # `tile` is the WITHIN-REGION index and `tile_flat` the register index; they differ
                 # only for a region-split operand, and passing one for both is the defect.
-                self._tag(out, phase, "read", "%s[tile=%s,k=%s%s] shared->reg X%s"
+                self._tag(out, phase, "read", "%s[tile=%s,k=%s%s] shared gen=%s->reg X%s"
                           % (tc, at.get("tile_flat", at["tile"]), at["k"],
                              "" if at.get("regions", 1) <= 1 else ",r%s" % at.get("region", 0),
-                             at["reg_buf"]))
+                             at.get("gen"), at["reg_buf"]))
                 _qd = cplan.decision(_i)
                 out.add(w.emitLdsReadTile(self.kernel, self._tp[tc], self._ctxRd[tc],
                                           tileIdx=at["tile"], kIdx=at["k"],
@@ -138,7 +142,7 @@ class GirToRocisa:
                                           regBase=self._reg_base(tc, at.get("group"),
                                                                  at.get("reg_buf")),
                                           kFlat=at.get("k_flat", at["k"]),
-                                          quantum=_qd))
+                                          quantum=_qd, gen=at.get("gen")))
             elif kind == "swap":
                 # A read swap names an operand, a copy swap names the Phi movement -- see
                 # `gir/refs.copy_unit` and the act table in `gir/emit_plan`.
@@ -176,11 +180,20 @@ class GirToRocisa:
             elif kind == "gsu_guard":
                 pass          # R4: realized via the scaffold-anchor path
             self._stamp_action(out.flatitems()[before:], act)
+        self._drop_mem_tokens(out)
         return out
 
     _ACTION_KINDS = {"read": GirActionKind.Read, "copy": GirActionKind.Copy,
                      "fence": GirActionKind.Fence, "wmma": GirActionKind.Wmma,
                      "waitcnt": GirActionKind.WaitCnt}
+
+    @staticmethod
+    def _drop_mem_tokens(code):
+        """Strip the legacy LDS memory token; `setGirActionData` already names the storage."""
+        for item in code.flatitems():
+            setter = getattr(item, "setMemToken", None)
+            if callable(setter):
+                setter(None)
 
     def _stamp_action(self, items, act):
         """Attach this action's GIR facts to every physical realization of it.

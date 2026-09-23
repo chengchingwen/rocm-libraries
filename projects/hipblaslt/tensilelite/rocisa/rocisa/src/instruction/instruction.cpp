@@ -98,7 +98,9 @@ void init_inst(nb::module_ m)
         .def_rw("instType", &rocisa::Instruction::instType)
         .def_rw("comment", &rocisa::Instruction::comment)
         .def_rw("memToken", &rocisa::Instruction::m_memToken)
-        .def("setMemToken", &rocisa::Instruction::setMemToken)
+        // None clears it: the member is a shared_ptr whose absence is meaningful, so a caller that
+        // wants no token must be able to say so.
+        .def("setMemToken", &rocisa::Instruction::setMemToken, nb::arg("token").none())
         .def("getMemToken", &rocisa::Instruction::getMemToken)
         .def("setNoWaitCnt", &rocisa::Instruction::setNoWaitCnt)
         .def("getNoWaitCnt", &rocisa::Instruction::getNoWaitCnt)
