@@ -518,10 +518,11 @@ class LeafEmitters:
                         kIdx: int, bufferIdx: int, iui: int = 0, memToken=None,
                         region: int = 0, regTileIdx: int = None, regUnitIdx: int = None,
                         regBase: int = None, kFlat: int = None,
-                        quantum=None) -> Module:
+                        quantum=None, gen: int = None) -> Module:
         """Emit the ds_read(s) for ONE operand M/N-tile `tileIdx` at K-substep `kIdx`.
  `memToken` -- the LDS memory-token id(s) this read CONSUMES, from GIR. Passed down
  verbatim; `None` leaves the scaffold's own derivation in place.
+ `gen` -- the LDS generation GIR says this read sources, tagged for comparison with the copy's.
  """
         w = self.writer
         comp = Component.LocalRead.find(w)
@@ -567,9 +568,10 @@ class LeafEmitters:
         # APPEND the GIR act to the existing path comment ("LDS Transpose" / "LDS general" says
         # WHICH READ PATH was taken and must survive); the tile/k/buffer says WHICH ACT it realizes.
         _cmt = ("<LoopIR: LDS Transpose>" if ctx.enableLDSTr else "<LoopIR: LDS general>") + \
-               "  " + gir_tag("read %s[tile=%u,k=%u%s]->X%u" % (
+               "  " + gir_tag("read %s[tile=%u,k=%u%s%s]->X%u" % (
                    tc, regTileIdx, kAddr,
-                   "" if not ctx.splitBoundaryBytes else ",r%u" % region, bufferIdx))
+                   "" if not ctx.splitBoundaryBytes else ",r%u" % region,
+                   "" if gen is None else ",gen=%u" % gen, bufferIdx))
         # ONE ds_read PER FRAGMENT.  The list is dtype-derived (`buildLdsReadContext`), so this
         # loop is the same for bf16's two reads and fp8's four; `unrollElems` is a displacement
         for unrollElems, fragReg in ctx.fragments:
