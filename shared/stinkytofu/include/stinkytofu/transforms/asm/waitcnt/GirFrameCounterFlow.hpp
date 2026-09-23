@@ -39,5 +39,10 @@ STINKYTOFU_EXPORT int girFrameIssuesAcrossSpan(const GirFrameAnalysis::Result& f
 STINKYTOFU_EXPORT int girFrameDistance(const GirFrameAnalysis::Result& frames,
                                        const GirFrameNode& from, const GirFrameNode& to);
 
+/// Span walks that ended with a path neither reaching the anchor nor retiring -- a hazard the
+/// counter flow did not model and then treated as discharged.  Should be 0; `ST_GIR_SPAN_STATS=1`
+/// reports it per function.
+STINKYTOFU_EXPORT extern unsigned girUnaccountedSpans;
+
 }  // namespace waitcnt
 }  // namespace stinkytofu
