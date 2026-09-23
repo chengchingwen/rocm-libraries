@@ -7255,13 +7255,11 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
           kernel["ProblemType"]["DataType"].isDouble())
 
       # Token-based DCP requires wait-count insertion at every optimization level.
-      # ULM's StinkyTofu comparison mode needs it too: it keeps the scaffold/tail waits and
-      # inserts the tagged tensor/ds waits from the post-schedule frame graph.
+      # ULM needs it too: it keeps the scaffold/tail waits and inserts the tagged tensor/ds
+      # waits from the post-schedule frame graph.
       enableWaitCntInsertion = (stinky_opt_level != 0
                                 or dcpThickGateFromTokenPasses(kernel)
-                                or (bool(kernel["UseLoopModel"])
-                                    and kernel.get("LoopModelWaitCntMode", "StinkyTofu")
-                                        == "StinkyTofu")
+                                or bool(kernel["UseLoopModel"])
                                 or not globalParameters.get("DisableSTWaitCnt", True))
 
       # Set StinkyTofu module options
@@ -7278,18 +7276,14 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
                                "PrintAfterPass": str(globalParameters.get("StinkyTofuPrintAfterPass") or ""),
                                "DebugPass": str(globalParameters.get("StinkyTofuDebugPass") or ""),
                                "PassOrderSnapshotJson": str(globalParameters.get("StinkyTofuPassOrderSnapshotJson") or ""),
-                               # The legacy ST tensor arm stays disabled for both ULM modes so
-                               # exactly one implementation owns tagged tensorcnt.
+                               # The legacy ST tensor arm stays disabled under ULM so exactly one
+                               # implementation owns tagged tensorcnt.
                                "EnableWaitCntInsertion": enableWaitCntInsertion,
                                "DisableTensorcntInsertion": bool(kernel["UseLoopModel"]),
-                               # Physical scheduling legality always comes from the reconstructed
-                               # ST frame hazards in both modes. Numeric frame waits are separate:
-                               # GIR keeps its own waits; StinkyTofu materializes the ST flow plan.
+                               # Fences, memory tokens and numeric waits are all StinkyTofu's under
+                               # ULM, derived after scheduling from the frame contract GIR exports.
                                "EnableGirFramePipeline": bool(kernel["UseLoopModel"]),
-                               "EnableGirFrameWaitCntInsertion": (
-                                   bool(kernel["UseLoopModel"])
-                                   and kernel.get("LoopModelWaitCntMode", "StinkyTofu")
-                                       == "StinkyTofu"),
+                               "EnableGirFrameWaitCntInsertion": bool(kernel["UseLoopModel"]),
                                # True: expert scheduling mode2; False: mode 0. Independent of ScheduleIterAlg/OptLevel.
                                "EnableESM2": kernel["EnableStinkyTofuESM2"],
                                "EnableESM2TrackValuVsrc": kernel["EnableESM2TrackValuVsrc"],

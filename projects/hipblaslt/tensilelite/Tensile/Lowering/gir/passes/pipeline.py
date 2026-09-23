@@ -14,40 +14,31 @@ from ..verify import verify_gir
 from .scaffold_shape import ScaffoldShapePass
 from .entrance_frames import EntranceFramePhisPass
 from .hoist_copies import HoistCopiesPass
-from .tokens import TokensPass
 from .collect_pending import CollectPendingMarksPass
 from .placement import PlacementPass
 from .apply_marks import ApplyMarksPass
 from .record_unemitted import RecordUnemittedPass
-from .wait_counts import WaitCntPass
 
 
-def pipeline(waitcnt_mode="GIR"):
+def pipeline():
     """The backend pass order.
 
     ScaffoldShapePass is the ONLY stage allowed to change the CFG: it merges the correct short-arm
     register order into the prologue/drain shape, proves equivalence, adds early-exit edges, and
     labels the terminators.
 
-    ``GIR`` materializes the existing numeric waits. ``StinkyTofu`` leaves waits out of GIR so
-    the post-schedule ST frame pipeline can own them.  The internal default remains GIR for direct
-    analysis/test callers; KernelWriter always passes the solution's explicit mode.
+    Fences, memory tokens and wait counts are all StinkyTofu's, derived after scheduling from the
+    frame contract this pipeline exports; GIR states the dataflow and stops there.
     """
-    passes = [
+    return [
         ScaffoldShapePass(),
         EntranceFramePhisPass(),
         HoistCopiesPass(reads=False),
         CollectPendingMarksPass(),
-        TokensPass(),
         PlacementPass(),
         ApplyMarksPass(),
         RecordUnemittedPass(),
     ]
-    if waitcnt_mode == "GIR":
-        passes.append(WaitCntPass())
-    elif waitcnt_mode != "StinkyTofu":
-        raise ValueError("unknown LoopModel wait-count mode %r" % (waitcnt_mode,))
-    return passes
 
 
 def run_pipeline(prog, passes=None, verify=True):

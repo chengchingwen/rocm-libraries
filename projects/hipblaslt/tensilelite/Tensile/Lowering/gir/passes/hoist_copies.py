@@ -7,8 +7,7 @@ HoistCopiesPass -- issue each movement at its earliest hazard-legal slot.
 from __future__ import annotations
 
 from ..nodes import Move
-from ..analyses.frame_hazards import SchedulingFrameHazards
-from ..analyses.fence_regions import FenceRegions
+from ..analyses.frame_hazards import FrameHazards, SchedulingFrameHazards
 from ..analyses.reg_hazards import RegHazards
 from .base import Pass
 
@@ -53,20 +52,21 @@ def _earliest(inst, label, *hazard_sets):
 
 
 def _raw_fence_profile(prog, am):
-    """Per RAW edge, semantic work preceding its planned fence."""
+    """Per RAW edge needing a fence, semantic work preceding the last point one may stand.
+
+    The edge itself bounds its fence -- nothing may separate the ends from outside them -- so the
+    consumer's own position is the answer, read straight off the hazard.  Deriving a placement
+    first and measuring that was a second derivation of the same rule, and StinkyTofu now owns the
+    placement anyway."""
     out = {}
-    for pending in am.get(FenceRegions(), prog):
-        raw = [hazard for hazard in pending.edges if hazard.kind == "RAW"]
-        if not raw:
+    for hazard in am.get(FrameHazards(), prog).needing_fence():
+        if hazard.kind != "RAW":
             continue
-        body = prog.block(pending.region.block).body
-        before = pending.region.before
-        slot = body.index(before) if before in body else len(body)
-        work = sum(not _is_read(inst) for inst in body[:slot])
-        for hazard in raw:
-            key = (id(hazard.producer.inst), id(hazard.consumer.inst),
-                   hazard.kind, int(hazard.gap), bool(hazard.cross_agent))
-            out[key] = max(work, out.get(key, -1))
+        body = prog.block(hazard.consumer.block).body
+        work = sum(not _is_read(inst) for inst in body[:hazard.consumer.pos])
+        key = (id(hazard.producer.inst), id(hazard.consumer.inst),
+               hazard.kind, int(hazard.gap), bool(hazard.cross_agent))
+        out[key] = max(work, out.get(key, -1))
     return out
 
 

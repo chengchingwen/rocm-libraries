@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from .base import Pass
 from ..analyses import (SwapRegions, GrIncrementRegions, RegionIncrementRegions,
-                        FenceRegions, Gl2PrefetchRegions)
+                        Gl2PrefetchRegions)
 
 
 class CollectPendingMarksPass(Pass):
@@ -19,7 +19,7 @@ class CollectPendingMarksPass(Pass):
         # region analyses to run; default = the R3 set.  R4 extends this list (GuardSite).
         self._analyses = (region_analyses if region_analyses is not None
                           else [SwapRegions(), GrIncrementRegions(),
-                                RegionIncrementRegions(), FenceRegions(),
+                                RegionIncrementRegions(),
                                 #: inert unless meta['prefetch_gl2'] > 0.
                                 Gl2PrefetchRegions()])
 

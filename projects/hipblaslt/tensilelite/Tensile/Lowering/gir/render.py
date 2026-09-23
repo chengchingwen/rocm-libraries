@@ -79,21 +79,6 @@ def _dep_str(inst):
     return "  deps[" + ", ".join(parts) + "]"
 
 
-def _token_str(mv):
-    """The two names a movement carries, spelled apart because they answer different questions.
-
-    `dep=` is what the backend orders on -- a def on the producer, a use on the consumer, so two
-    movements sharing one must be ordered.  `tok=` is what COMPLETED, the buffer generation."""
-    ids = getattr(mv, "token_ids", None)
-    tok = getattr(mv, "token", None)
-    bits = []
-    if ids:
-        bits.append("dep=" + ",".join(str(i) for i in ids))
-    if tok is not None:
-        bits.append(f"tok={tok}")
-    return ("  " + " ".join(bits)) if bits else ""
-
-
 def _relation_endpoint(endpoint, show_frame=True):
     mode = f"abs={endpoint['gdelta']}" if endpoint["absolute"] \
         else f"gdelta={endpoint['gdelta']}"
@@ -163,7 +148,7 @@ def _move_line(mv):
     kind = "copy" if any(d.tile.space == "shared" for d in mv.dsts) else "read"
     srcs = "+".join(_ref_str(r) for r in mv.srcs)
     dsts = "+".join(_ref_str(r) for r in mv.dsts)
-    return f"{kind:5s} {srcs} -> {dsts}{_token_str(mv)}{_dep_str(mv)}"
+    return f"{kind:5s} {srcs} -> {dsts}{_dep_str(mv)}"
 
 
 def _mma_line(mm):

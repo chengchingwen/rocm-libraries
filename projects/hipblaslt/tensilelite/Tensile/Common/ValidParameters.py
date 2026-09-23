@@ -1148,9 +1148,6 @@ validParameters = { # we need to make sure this matches develop
     # Route the inner-loop body through the LoopModel theta-schedule decoder + the GIR compiler
     # (Tensile/LoopModel + Tensile/Lowering).
     "UseLoopModel": [False, True],
-    # Select the owner of LoopModel wait-count insertion.  GIR is the comparison/reference
-    # implementation; StinkyTofu consumes the transported frame contract after scheduling.
-    "LoopModelWaitCntMode": ["StinkyTofu", "GIR"],
     # LoopModel inner-loop traversal order over the {K,M,N} axes (only meaningful with
     # UseLoopModel=True).  Ignored when UseLoopModel=False.
     #

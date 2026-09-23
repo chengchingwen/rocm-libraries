@@ -22,7 +22,7 @@ from Tensile.Lowering.gir.nodes import LoopBack, Trips
 from Tensile.Lowering.gir import (
     verify_gir, FrameMap, BackEdges, AnalysisManager, gir_counts, render_gir,
     SwapRegions, RegBandAnalysis, DepDefuseAnalysis, GrIncrementRegions,
-    check_register_slots, TokensPass, run_pipeline, Move, Mark, BLOCK_EXIT,
+    check_register_slots, run_pipeline, Move, Mark, BLOCK_EXIT,
 )
 from Tensile.Lowering.gir.emit_plan import plan_block
 from Tensile.Lowering.gir.emit_plan import plan_program
@@ -719,20 +719,6 @@ def test_register_slots_check_rejects_a_unit_past_the_compact_allocation():
         check_register_slots(prog, AnalysisManager())
 
 
-# ======================================================================= tokens / dep_defuse
-def test_tokens_stamped_from_generation():
-    prog = lower_to_gir(_theta(BF16_NT_KMN))
-    TokensPass().run(prog, AnalysisManager())
-    lds = [i for i in prog.block("steady").body if isinstance(i, Move) and i.token is not None]
-    assert lds, "expected stamped LDS moves in steady"
-    for mv in lds:
-        kind, operand, footprint = mv.token
-        assert kind == "lds" and operand in ("A", "B")
-        # the token now names the SET of generations this STATIC instruction can touch: a rolled
-        # loop's pointer rotates, so a steady Move touches the whole ring (tokens._footprint).
-        assert isinstance(footprint, tuple) and set(footprint) <= {0, 1} and footprint, mv.token
-
-
 def test_every_token_names_ONE_buffer():
     """the COMPLETION token is a one-element MUST-set -- "this access touches this buffer"."""
     for params in (BF16_NT_KMN, BF16_NT_KMN_PLR0, BF16_NT_KMN_FUSED_XAGENT):
@@ -810,9 +796,7 @@ def test_build_once_produces_finalized_program():
     verify_gir(prog)
     has = lambda kind: any(isinstance(i, Mark) and i.kind == kind
                            for b in prog.blocks.values() for i in b.body)
-    has_token = any(isinstance(i, Move) and i.token is not None
-                    for b in prog.blocks.values() for i in b.body)
-    assert has("swap") and has("gr_increment") and has_token
+    assert has("swap") and has("gr_increment")
 
 
 def test_build_once_mainloop_reused():
@@ -831,47 +815,8 @@ def _split_theta(per_region):
     return adapter.params_to_theta({**params, "PerRegionCompletion": per_region})
 
 
-def _lds_tokens(prog, block, operand, copies):
-    """Tokens stamped on `operand`'s copy (or read) Moves in `block`."""
-    out = set()
-    for inst in prog.block(block).body:
-        if not isinstance(inst, Move):
-            continue
-        is_copy = any(d.tile.space == "shared" for d in inst.dsts)
-        if is_copy != copies:
-            continue
-        for r in list(inst.srcs) + list(inst.dsts):
-            if r.tile.space == "shared" and r.tile.operand == operand and inst.token:
-                out.add(inst.token)
-    return out
 
 
-def test_shared_completion_collapses_all_regions_onto_one_token():
-    """DEFAULT pi (`per_region_completion=False`, what the scaffold implements today): every storage
-    region of an operand shares ONE completion class, so a read must await them all -- no region can
-    stay in flight.  The token keeps its 3-tuple shape, unchanged from before the toggle existed."""
-    prog = run_pipeline(lower_to_gir(_split_theta(False)))
-    toks = _lds_tokens(prog, "steady", "A", copies=True)
-    assert len(toks) == 1, f"expected the split regions to share one token, got {sorted(toks)}"
-    assert all(len(t) == 3 for t in toks), f"shared pi must keep the 3-tuple token: {sorted(toks)}"
-
-
-def test_per_region_completion_gives_each_region_its_own_token():
-    """PER-REGION pi: each region instance is its own completion class, so a read of region j pairs only with region j's copy and the other
- regions stay in flight. This is the whole point of the toggle."""
-    th = _split_theta(True)
-    prog = run_pipeline(lower_to_gir(th))
-    a_op = th.op("A")
-    assert a_op.split > 1, "fixture is not region-split; test would be vacuous"
-
-    toks = _lds_tokens(prog, "steady", "A", copies=True)
-    assert len(toks) == a_op.split, \
-        f"expected {a_op.split} distinct region tokens, got {sorted(toks)}"
-    assert all(len(t) > 3 for t in toks), \
-        f"per-region token must carry the region coordinate: {sorted(toks)}"
-    # the region component is what distinguishes them (same operand, same generation)
-    assert len({t[:3] for t in toks}) == 1 and len({t[3:] for t in toks}) == a_op.split, \
-        f"regions must differ ONLY in the region key: {sorted(toks)}"
 
 
 def test_both_completion_settings_verify_and_discharge():
@@ -889,13 +834,22 @@ def test_both_completion_settings_verify_and_discharge():
 
 # --------------------------------------------------------------------- TDMFuse (Phi) tokens
 def _units(prog):
-    """(produced, awaited) completion UNITS -- token[1] -- over the whole program."""
+    """(produced, awaited) completion UNITS over the whole program.
+
+    A movement's unit is its descriptor group when fusion merges several members into one
+    instruction, else the bare operand -- the same rule the retired completion token carried."""
+    from Tensile.Lowering.gir.nodes import descriptor_unit
     produced, awaited = set(), set()
     for blk in prog.blocks.values():
         for i in blk.body:
-            if isinstance(i, Move) and i.token:
-                tgt = produced if any(d.tile.space == "shared" for d in i.dsts) else awaited
-                tgt.add(i.token[1])
+            if not isinstance(i, Move):
+                continue
+            writes = [d for d in i.dsts if d.tile.space == "shared"]
+            ref = next((s for s in i.srcs if s.tile.space == "shared"), None) or next(iter(writes), None)
+            if ref is None:
+                continue
+            key = descriptor_unit(prog, (ref.tile.operand,))
+            (produced if writes else awaited).add(key if len(key) > 1 else key[0])
     return produced, awaited
 
 
@@ -1001,7 +955,7 @@ def test_fused_acts_name_the_movement_and_the_analyses_agree_with_theta():
     """The `unit` on every copy-side act is the Phi group, and it is the SAME group theta's
     `movement_units()` reports.
     """
-    from Tensile.Lowering.gir.passes.tokens import _unit_key
+    from Tensile.Lowering.gir.nodes import descriptor_unit
     theta = _fused_theta()
     assert [tuple(g) for g in theta.fused_copy_groups] == [("A", "B")], "fixture is not fused"
     prog = run_pipeline(lower_to_gir(theta))
@@ -1010,7 +964,6 @@ def test_fused_acts_name_the_movement_and_the_analyses_agree_with_theta():
         for a in plan_block(prog, lab):
             if a.kind == "copy":
                 assert a.at["unit"] == ("A", "B")
-                assert a.at["token"][1] == ("A", "B"), "the completion class is the group too"
             elif a.kind == "gr_inc" or (a.kind == "swap" and a.at["hop"] == "copy"):
                 assert a.at["unit"] == ("A", "B")
             elif a.kind == "swap":
@@ -1021,8 +974,8 @@ def test_fused_acts_name_the_movement_and_the_analyses_agree_with_theta():
             n += 1
     assert n, "no fused copy-side acts found"
     for member in ("A", "B"):
-        assert _unit_key(prog, member) == ("A", "B"), \
-            "TokensPass and copy_unit disagree about which movement carries this operand"
+        assert descriptor_unit(prog, (member,)) == ("A", "B"), \
+            "the descriptor lookup and copy_unit disagree about which movement carries this operand"
 
 
 def test_one_hop_direct_to_register_lowers_to_a_wellformed_cfg():
@@ -1036,46 +989,6 @@ def test_one_hop_direct_to_register_lowers_to_a_wellformed_cfg():
     assert "prologue" not in prog.blocks, "dtv fixture unexpectedly has a prologue"
     verify_gir(prog)
     assert prog.block("steady").preds == ("steady",)
-
-
-def test_heterogeneous_phi_region_paired_plus_whole_group():
-    """the heterogeneous Phi: TDMFuse=0 with TDMSplit=[2,2] must give {A,B} paired BY REGION
- INDEX into two cooperative movements (A0/B0, A1/B1 -- "two fused movements with two
- completions") alongside {MXSA,MXSB} as ONE whole movement, "a per-region-paired group with a
- whole-operand (unsplit) group in the same Phi".
-
- Under the per-region pi this is also the case that caught a hole in the token key: the MX group
- is unsplit, so its copy has ONE completion covering every region, but MXSA's READS carry a
- region coord -- keying the reads by region made them await a token no copy stamped. A read can
- only await at the granularity its PRODUCER offers.
- """
-    from Tensile.LoopModel import adapter
-    import loopmodel_scenarios as scenarios
-    _d, params = scenarios.SCENARIOS["mx_fuse_ab_split"]
-    for per_region in (False, True):
-        th = adapter.params_to_theta({**params, "PerRegionCompletion": per_region})
-        assert [tuple(g) for g in th.fused_copy_groups] == [("A", "B"), ("MXSA", "MXSB")]
-        units = {k: n for k, _m, n in th.movement_units()}
-        assert units[("A", "B")] == 2, f"A/B must pair into 2 region movements: {units}"
-        assert units[("MXSA", "MXSB")] == 1, f"unsplit MX group must move whole: {units}"
-
-        prog = run_pipeline(lower_to_gir(th))
-        produced, awaited = _units(prog)
-        assert not (awaited - produced), \
-            f"per_region={per_region}: awaited but never produced: {sorted(awaited-produced,key=str)}"
-
-        # full-token check: the AB group is per-region under per_region pi, the MX group never is
-        ptok = {t for blk in prog.blocks.values() for i in blk.body
-                if isinstance(i, Move) and i.token and any(d.tile.space == "shared" for d in i.dsts)
-                for t in [i.token]}
-        ab = {t for t in ptok if t[1] == ("A", "B")}
-        mx = {t for t in ptok if t[1] == ("MXSA", "MXSB")}
-        assert all(len(t) == 3 for t in mx), f"unsplit group must not carry a region key: {mx}"
-        if per_region:
-            assert all(len(t) > 3 for t in ab), f"split group must carry a region key: {ab}"
-            assert len({t[3:] for t in ab}) == 2, f"expected 2 region keys on A/B: {ab}"
-        else:
-            assert all(len(t) == 3 for t in ab), f"shared pi must keep 3-tuples: {ab}"
 
 
 # ----------------------------------------------------------- the full 6-axis reorder space
@@ -2142,16 +2055,9 @@ def test_read_hoist_is_rejected_when_it_moves_a_raw_fence_earlier():
     first_mma = next(i for i, node in enumerate(body) if isinstance(node, GirMma))
     reads = [i for i, node in enumerate(body) if isinstance(node, Move)
              and any(ref.tile.space == "register" for ref in node.dsts)]
-    tensor_waits = [node.at["tensorcnt"] for node in body
-                    if isinstance(node, Mark) and node.kind == "waitcnt"
-                    and "tensorcnt" in node.at]
-    copies = [i for i, node in enumerate(body) if isinstance(node, Move)
-              and any(ref.tile.space == "shared" for ref in node.dsts)]
-    fences = [i for i, node in enumerate(body)
-              if isinstance(node, Mark) and node.kind == "fence"]
     assert any(pos > first_mma for pos in reads), "all reads were pulled ahead of WMMA usage"
-    assert tensor_waits and tensor_waits[0] > 0
-    assert copies and all(any(fence < copy for fence in fences) for copy in copies)
+    # The entry drain this would have cost, and the fence that separates each copy, are both
+    # StinkyTofu's now; what GIR owes is the read that stays behind its WMMA.
 
 
 _FOLDED = {"MIWaveTile": [8, 8], "DepthU": 256, "PrefetchLocalRead": 1, "PrefetchGlobalRead": 2,
@@ -2214,241 +2120,6 @@ def test_read_hoist_preserves_hazards_when_split_coordinates_alias_one_register(
     assert signature(canonical) == signature(optimized)
 
 
-def test_dscnt_ranks_register_fills_instead_of_defaulting_every_site_to_zero():
-    """DSCNT must match a register producer; the LDS-only matcher made every rank empty."""
-    prog = build_gir(_theta(BF16_NT_KMN))
-    waits = [node.at for block in prog.blocks.values() for node in block.body
-             if isinstance(node, Mark) and node.kind == "waitcnt" and "dscnt" in node.at]
-    assert waits and any(wait["dscnt"] > 0 for wait in waits), waits
-    assert not [node for node in prog.block("prologue_join").body
-                if isinstance(node, Mark) and node.kind == "waitcnt"
-                and "dscnt" in node.at]
-
-
-def test_potential_waits_stamp_both_counters_and_anchor_cross_agent_waits_at_fences():
-    """Hazards are stamped before ranking; a fence is an anchor, never a counter issue."""
-    from Tensile.Lowering.gir.analyses import PotentialWaits, TENSORCNT, DSCNT
-    from Tensile.Lowering.gir.passes import pipeline
-    from Tensile.Lowering.gir.passes.wait_counts import WaitCntPass
-
-    pl = [item for item in pipeline() if not isinstance(item, WaitCntPass)]
-    prog = build_gir(_theta(BF16_NT_KMN_FUSED_XAGENT), pipeline=pl)
-    waits = AnalysisManager().get(PotentialWaits(), prog)
-    assert {potential.counter for potential in waits} == {TENSORCNT, DSCNT}
-
-    cross_agent = [potential for potential in waits if potential.hazard.cross_agent]
-    assert cross_agent
-    fm = AnalysisManager().get(FrameMap(), prog)
-    for potential in cross_agent:
-        body = prog.block(potential.block).body
-        assert potential.pos < len(body)
-        fence = body[potential.pos]
-        assert isinstance(fence, Mark) and fence.kind == "fence"
-        assert any(
-            relation["kind"] == potential.hazard.kind
-            and relation["producer"]["identity"] == id(potential.hazard.producer.inst)
-            and relation["consumer"]["identity"] == id(potential.hazard.consumer.inst)
-            and relation["producer"]["frame"] == fm.render(potential.producer_frame)
-            and relation["consumer"]["frame"] == fm.render(potential.consumer_frame)
-            for relation in fence.at["relations"])
-
-    counts = prog.meta["read_instructions"]
-    for (block, pos, _frame), info in waits.issues().items():
-        node = prog.block(block).body[pos]
-        if info.counter == TENSORCNT:
-            assert info.width == 1
-        else:
-            operand = node.dsts[0].tile.operand
-            assert info.width == counts[operand]
-    for block in prog.blocks.values():
-        for pos, node in enumerate(block.body):
-            if not (isinstance(node, Mark) and node.kind == "fence"):
-                continue
-            assert all(waits.issue(block.label, pos, frame) is None
-                       for frame in fm.frames(block.label))
-
-
-def test_retained_window_boundary_agrees_in_forward_and_backward_counter_models():
-    """A wait keeps ages strictly below n; equality means the producer retired."""
-    from types import SimpleNamespace
-
-    from Tensile.Lowering.gir.nodes import Block, Program, Return
-    from Tensile.Lowering.gir.analyses import TENSORCNT
-    from Tensile.Lowering.gir.analyses.backward_wait_counts import potential_ranks
-    from Tensile.Lowering.gir.analyses.counter_flow import simulate_counterflow
-    from Tensile.Lowering.gir.analyses.potential_waits import (
-        IssueInfo, IssueKey, PotentialWait, PotentialWaitSet)
-
-    prog = Program(entry="entry")
-    prog.add_block(Block("entry", body=[Mark("phase_boundary") for _ in range(4)],
-                         term=Return()))
-    fm = AnalysisManager().get(FrameMap(), prog)
-    frame = fm.frames("entry")[0]
-    producer = IssueKey(TENSORCNT, "entry", 0, frame, ("test",))
-    touch = SimpleNamespace(block="entry", pos=0, operand="A")
-    consumer = SimpleNamespace(block="entry", pos=4, operand="A")
-    hazard = SimpleNamespace(kind="RAW", producer=touch, consumer=consumer,
-                             gap=0, cross_agent=False)
-    potential = PotentialWait("entry", 4, frame, TENSORCNT, producer,
-                              frame, frame, hazard)
-    issues = {
-        ("entry", pos, frame): IssueInfo(
-            TENSORCNT, 1, (producer,) if pos == 0 else ())
-        for pos in range(4)
-    }
-    potentials = PotentialWaitSet((potential,), issues)
-
-    retained = {("entry", 2, TENSORCNT): 2}
-    retired = {("entry", 2, TENSORCNT): 1}
-    nested_retained = {("entry", 2, TENSORCNT): 2, ("entry", 3, TENSORCNT): 3}
-    nested_retired = {("entry", 2, TENSORCNT): 2, ("entry", 3, TENSORCNT): 2}
-    assert potential_ranks(prog, fm, potentials, potential, retained) == (3,)
-    assert potential_ranks(prog, fm, potentials, potential, retired) == ()
-    assert potential_ranks(prog, fm, potentials, potential, nested_retained) == (3,)
-    assert potential_ranks(prog, fm, potentials, potential, nested_retired) == ()
-
-    trace, _ = simulate_counterflow(prog, fm, potentials, retained)
-    assert not trace.safe and trace.ages_at(potential.site) == (3,)
-    trace, _ = simulate_counterflow(
-        prog, fm, potentials, {**retained, potential.site: 3})
-    assert trace.safe
-    assert simulate_counterflow(prog, fm, potentials, retired)[0].safe
-    assert simulate_counterflow(prog, fm, potentials, nested_retired)[0].safe
-
-
-def test_counterflow_merge_ignores_absent_paths_and_chooses_one_strongest_wait():
-    from types import SimpleNamespace
-
-    from Tensile.Lowering.gir.nodes import (
-        Block, Bound, CondGoto, Goto, Pred, Program, Return)
-    from Tensile.Lowering.gir.analyses import TENSORCNT
-    from Tensile.Lowering.gir.analyses.backward_wait_counts import potential_ranks
-    from Tensile.Lowering.gir.analyses.counter_flow import (
-        derive_counterflow_plan, simulate_counterflow)
-    from Tensile.Lowering.gir.analyses.potential_waits import (
-        IssueInfo, IssueKey, PotentialWait, PotentialWaitSet)
-
-    prog = Program(entry="entry")
-    prog.add_block(Block("entry", term=CondGoto(
-        Pred("T", "==", Bound(const=1)), "left", "right")))
-    prog.add_block(Block("left", body=[Mark("phase_boundary"), Mark("phase_boundary")],
-                         term=Goto("merge")))
-    prog.add_block(Block("right", body=[Mark("phase_boundary") for _ in range(3)],
-                         term=Goto("merge")))
-    prog.add_block(Block("merge", term=Return()))
-    fm = AnalysisManager().get(FrameMap(), prog)
-    frame = fm.frames("merge")[0]
-
-    left = IssueKey(TENSORCNT, "left", 0, frame, ("left",))
-    right = IssueKey(TENSORCNT, "right", 0, frame, ("right",))
-
-    def potential(key):
-        producer = SimpleNamespace(block=key.block, pos=0, operand=key.identity[0])
-        consumer = SimpleNamespace(block="merge", pos=0, operand=key.identity[0])
-        hazard = SimpleNamespace(kind="RAW", producer=producer, consumer=consumer,
-                                 gap=0, cross_agent=False)
-        return PotentialWait("merge", 0, frame, TENSORCNT, key, frame, frame, hazard)
-
-    waits = PotentialWaitSet(
-        (potential(left), potential(right)),
-        {
-            ("left", 0, frame): IssueInfo(TENSORCNT, 1, (left,)),
-            ("left", 1, frame): IssueInfo(TENSORCNT, 1),
-            ("right", 0, frame): IssueInfo(TENSORCNT, 1, (right,)),
-            ("right", 1, frame): IssueInfo(TENSORCNT, 1),
-            ("right", 2, frame): IssueInfo(TENSORCNT, 1),
-        })
-    decisions, trace, _observed = derive_counterflow_plan(prog, fm, waits)
-    site = ("merge", 0, TENSORCNT)
-    assert decisions == {site: 1}
-    assert trace.safe and trace.ages_at(site) == (1, 2)
-    assert potential_ranks(prog, fm, waits, waits.for_site(site)[0]) == (1,)
-    assert potential_ranks(prog, fm, waits, waits.for_site(site)[1]) == (2,)
-
-    # Removing both producing issues proves absence on every path, so no wait is required.
-    empty = PotentialWaitSet(tuple(waits), {})
-    assert simulate_counterflow(prog, fm, empty, {})[0].safe
-
-
-def test_counter_solvers_keep_exact_logical_ranks_above_backend_field_width():
-    """GIR never clamps either solver's logical rank to an encoding width."""
-    from types import SimpleNamespace
-
-    from Tensile.Lowering.gir.nodes import Block, Program, Return
-    from Tensile.Lowering.gir.analyses import BackwardWaitCounts, CounterFlow
-    from Tensile.Lowering.gir.analyses import TENSORCNT
-    from Tensile.Lowering.gir.analyses.backward_wait_counts import potential_ranks
-    from Tensile.Lowering.gir.analyses.counter_flow import derive_counterflow_plan
-    from Tensile.Lowering.gir.analyses.potential_waits import (
-        IssueInfo, IssueKey, PotentialWait, PotentialWaitSet)
-    from Tensile.Lowering.gir.passes import pipeline
-    from Tensile.Lowering.gir.passes.wait_counts import WaitCntPass
-
-    linear = Program(entry="entry")
-    linear.add_block(Block("entry", body=[Mark("phase_boundary") for _ in range(81)],
-                           term=Return()))
-    linear_fm = AnalysisManager().get(FrameMap(), linear)
-    frame = linear_fm.frames("entry")[0]
-    producer = IssueKey(TENSORCNT, "entry", 0, frame, ("tensor",))
-    touch = SimpleNamespace(block="entry", pos=0, operand="A")
-    hazard = SimpleNamespace(
-        kind="RAW", producer=touch,
-        consumer=SimpleNamespace(block="entry", pos=81, operand="A"),
-        gap=0, cross_agent=False)
-    potential = PotentialWait("entry", 81, frame, TENSORCNT, producer,
-                              frame, frame, hazard)
-    tensor_waits = PotentialWaitSet(
-        (potential,),
-        {("entry", pos, frame): IssueInfo(
-            TENSORCNT, 1, (producer,) if pos == 0 else ())
-         for pos in range(81)})
-    assert potential_ranks(linear, linear_fm, tensor_waits, potential) == (80,)
-    assert derive_counterflow_plan(linear, linear_fm, tensor_waits)[0] == {
-        ("entry", 81, TENSORCNT): 80}
-
-    pl = [item for item in pipeline() if not isinstance(item, WaitCntPass)]
-    prog = build_gir(_theta(BF16_NT_KMN), pipeline=pl)
-    prog.meta["read_instructions"] = {"A": 80, "B": 80}
-    prog.bump()
-    am = AnalysisManager()
-    forward = {(site.block, site.pos, site.counter): site.n
-               for site in am.get(CounterFlow(), prog)}
-    backward = {(site.block, site.pos, site.counter): site.n
-                for site in am.get(BackwardWaitCounts(), prog)}
-    assert forward == backward
-    assert max(forward.values()) > 63
-
-
-@pytest.mark.parametrize("order", ["KMN", "KNM", "MKN", "MNK", "NKM", "NMK"])
-def test_forward_and_backward_wait_solvers_agree_on_every_loop_order(order):
-    from Tensile.Lowering.gir.analyses import differential_wait_counts
-    from Tensile.Lowering.gir.passes import pipeline
-    from Tensile.Lowering.gir.passes.wait_counts import WaitCntPass
-
-    pl = [item for item in pipeline() if not isinstance(item, WaitCntPass)]
-    prog = build_gir(_theta({**BF16_NT_KMN, "LoopOrder": order}), pipeline=pl)
-    assert differential_wait_counts(prog, AnalysisManager()) == ()
-
-
-def test_backward_wait_rounds_keep_the_loop_carried_mxf8_tensor_site():
-    """Removing later candidates must not make an earlier round erase a still-live producer."""
-    from test_loopmodel import _mxf8_kernel
-
-    from Tensile.Lowering.gir.analyses import CounterFlow, differential_wait_counts
-    from Tensile.Lowering.gir.passes import pipeline
-    from Tensile.Lowering.gir.passes.wait_counts import WaitCntPass
-
-    kernel = dict(_mxf8_kernel("KMN", 0))
-    kernel.update(PrefetchGlobalRead=2, LocalReadVectorWidthA=16,
-                  LocalReadVectorWidthB=16)
-    theta = adapter.params_to_theta(adapter.kernel_to_params(kernel))
-    prog = build_gir(theta, pipeline=[item for item in pipeline()
-                                     if not isinstance(item, WaitCntPass)])
-    am = AnalysisManager()
-    assert differential_wait_counts(prog, am) == ()
-    waits = list(am.get(CounterFlow(), prog))
-    assert any(site.block == "steady" and site.counter == "tensorcnt"
-               and site.n == 2 and site.producer == "MXSA" for site in waits)
 
 
 def test_loopir_orders_smaller_prefetch_ring_reads_and_their_copies_first():
@@ -2504,160 +2175,6 @@ def test_loopir_orders_smaller_prefetch_ring_reads_and_their_copies_first():
     assert all(unit == ("A", "B") for unit in after[1:])
 
 
-def test_waitcnt_insertion_is_idempotent_and_has_one_mark_per_counter_site():
-    from Tensile.Lowering.gir.passes.wait_counts import WaitCntPass
-
-    prog = build_gir(_theta(BF16_NT_KMN))
-    before = {block.label: tuple((node.kind, repr(node.at))
-                                 for node in block.body
-                                 if isinstance(node, Mark) and node.kind == "waitcnt")
-              for block in prog.blocks.values()}
-    WaitCntPass().run(prog, AnalysisManager())
-    after = {block.label: tuple((node.kind, repr(node.at))
-                                for node in block.body
-                                if isinstance(node, Mark) and node.kind == "waitcnt")
-             for block in prog.blocks.values()}
-    assert after == before
-    for block in prog.blocks.values():
-        waits = [(pos, next(key for key in ("tensorcnt", "dscnt") if key in node.at))
-                 for pos, node in enumerate(block.body)
-                 if isinstance(node, Mark) and node.kind == "waitcnt"]
-        assert len(waits) == len(set(waits))
-
-
-def test_a_too_weak_existing_wait_is_tightened_without_duplicate_exact_waits():
-    from Tensile.Lowering.gir.analyses import WaitCounts
-    from Tensile.Lowering.gir.passes.wait_counts import WaitCntPass
-    from Tensile.Lowering.tool.frame_faithful_check import audit
-
-    prog = build_gir(_theta(BF16_NT_KMN))
-    victim = next(node for block in prog.blocks.values() for node in block.body
-                  if isinstance(node, Mark) and node.kind == "waitcnt"
-                  and node.at.get("dscnt", 0) > 0)
-    expected = victim.at["dscnt"]
-    victim.at["dscnt"] = expected + 1
-    prog.bump()
-    corrections = list(AnalysisManager().get(WaitCounts(), prog))
-    assert any(site.counter == "dscnt" and site.n == expected for site in corrections)
-    WaitCntPass().run(prog, AnalysisManager())
-    assert not audit(prog)[0]
-
-
-def test_both_counter_solvers_fail_closed_on_an_unresolved_shared_identity():
-    from Tensile.Lowering.gir.nodes import Block, Program, Ref, Return, Tile
-    from Tensile.Lowering.gir.analyses import BackwardWaitCounts, CounterFlow
-
-    prog = Program(entry="entry")
-    prog.add_block(Block(
-        "entry",
-        body=[Move(
-            (Ref(Tile("A", "global")),),
-            (Ref(Tile("A", "shared")),))],
-        term=Return()))
-    for analysis in (CounterFlow(), BackwardWaitCounts()):
-        with pytest.raises(RuntimeError, match="unresolved shared frame identity"):
-            AnalysisManager().get(analysis, prog)
-
-
-def test_frame_faithful_counter_replay_catches_missing_and_extra_waits():
-    import copy
-
-    from Tensile.Lowering.tool.frame_faithful_check import audit
-
-    prog = build_gir(_theta(BF16_NT_KMN))
-    assert not audit(prog)[0]
-
-    missing = copy.deepcopy(prog)
-    removed = False
-    for block in missing.blocks.values():
-        for pos, node in enumerate(block.body):
-            if isinstance(node, Mark) and node.kind == "waitcnt":
-                block.body.pop(pos)
-                removed = True
-                break
-        if removed:
-            break
-    missing.bump()
-    assert audit(missing)[0]["W1_under_wait"] > 0
-
-    extra = copy.deepcopy(prog)
-    extra.block(extra.entry).body.insert(0, Mark("waitcnt", {"tensorcnt": 0}))
-    extra.bump()
-    assert audit(extra)[0]["W2_over_wait"] > 0
-
-
-def test_later_loop_carried_dscnt_zero_does_not_tighten_earlier_waits():
-    """A late next-trip drain stays at loop bottom; it cannot rewrite an earlier residual to zero."""
-    from test_loopmodel import _mxf8_kernel
-
-    kernel = dict(_mxf8_kernel("KKMNMN", 1))
-    kernel.update(MatrixInstruction=[16, 16, 128, 1, 1, 4, 4, 2, 2],
-                  MIWaveTileA=4, MIWaveTileB=4, PrefetchGlobalRead=2,
-                  VectorWidthA=4, VectorWidthB=4)
-    target = {
-        "ReadVectorElems": {"MXSA": 16, "MXSB": 16},
-        "ReadPhi": {"MXSA": 4, "MXSB": 4},
-        "ReadRho": {"MXSA": 0, "MXSB": 0},
-    }
-    from Tensile.Lowering.gir.analyses import differential_wait_counts
-    from Tensile.Lowering.gir.passes import pipeline
-    from Tensile.Lowering.gir.passes.wait_counts import WaitCntPass
-
-    theta = adapter.params_to_theta(adapter.kernel_to_params(kernel, target))
-    prog = build_gir(theta, pipeline=[item for item in pipeline()
-                                     if not isinstance(item, WaitCntPass)])
-    assert differential_wait_counts(prog, AnalysisManager()) == ()
-    WaitCntPass().run(prog, AnalysisManager())
-    waits = [(pos, node.at["dscnt"]) for pos, node in enumerate(prog.block("steady").body)
-             if isinstance(node, Mark) and node.kind == "waitcnt" and "dscnt" in node.at]
-    positive = [pos for pos, value in waits if value > 0]
-    later_drains = [pos for pos, value in waits if value == 0 and positive and pos > min(positive)]
-    assert positive and later_drains, waits
-
-
-def test_waits_and_fences_retain_frame_relative_ring_relations():
-    """The dump must expose `token=(frame+gdelta)%ring`, not only legacy token unions."""
-    prog = build_gir(_theta(dict(BF16_NT_KMN_FUSED_XAGENT, PrefetchLocalRead=1)))
-    marks = [(block.phase, pos, node) for block in prog.blocks.values()
-             for pos, node in enumerate(block.body)
-             if isinstance(node, Mark) and node.kind in ("waitcnt", "fence")]
-    waits = [(phase, pos, node) for phase, pos, node in marks if node.kind == "waitcnt"]
-    assert waits and all(node.at.get("relations") for _phase, _pos, node in waits)
-    assert all(not ({"tensorcnt", "dscnt"} <= set(node.at)) for _p, _i, node in waits)
-    assert not any(phase.startswith("prologue") and "dscnt" in node.at
-                   for phase, _pos, node in waits)
-    assert any(phase in ("steady", "drain0", "drain1") and "dscnt" in node.at
-               for phase, _pos, node in waits)
-
-    join = [(pos, node) for phase, pos, node in marks if phase == "prologue_join"]
-    wait_pos = [pos for pos, node in join if node.kind == "waitcnt"
-                and "tensorcnt" in node.at]
-    fence_pos = [pos for pos, node in join if node.kind == "fence"]
-    assert wait_pos and fence_pos
-    assert any(wait + 1 == fence for wait in wait_pos for fence in fence_pos)
-
-    text = render_gir(prog)
-    assert "gdelta=" in text and "tok=(frame+" in text and "advance=" in text
-    assert "uniform rotation only; no divergent entrances" in text
-    assert "legacy_tokens" not in text
-
-
-@pytest.mark.parametrize("group", [True, False])
-@pytest.mark.parametrize("reads", [True, False])
-def test_every_flag_combination_emits_a_valid_plan(group, reads):
-    """Both flags are shipping options, so both settings of each are covered, not just the default.
-    `check_plan` judges the emitted acts and `unseparated_edges` the cross-wave order."""
-    from Tensile.Lowering.gir import check_plan
-    from Tensile.Lowering.tool.fence_token_check import unseparated_edges
-    for params in (dict(BF16_NT_KMN, NumWaves=2, PrefetchLocalRead=1, PrefetchGlobalRead=2,
-                        DepthU=64),
-                   dict(_FOLDED, ReadPhi={"A": 2, "B": 2}),
-                   dict(BF16_NT_KMN_FUSED_XAGENT, PrefetchGlobalRead=2, PrefetchLocalRead=1)):
-        prog = build_gir(_theta(params), pipeline=_hoist_pipeline(group, reads))
-        assert check_plan(prog) == [], (group, reads, check_plan(prog)[:2])
-        assert unseparated_edges(prog) == [], (group, reads)
-
-
 def test_hoisting_the_copies_grows_the_window_the_load_has_to_land_in():
     """The point of the issue point: in-flight time, not position."""
     params = dict(BF16_NT_KMN_PLR0, NumWaves=2, PrefetchGlobalRead=2, DepthU=64)
@@ -2702,27 +2219,6 @@ def test_the_loop_carried_RAW_and_WAR_are_both_found_at_the_failing_cell():
     assert {h.kind for h in hz} == {RAW, WAR}
     assert all(h.in_program_order for h in hz if h.kind == WAR)
     assert not any(h.in_program_order for h in hz if h.kind == RAW)
-
-
-def test_HOISTED_the_same_edges_are_found_with_the_text_order_reversed():
-    """HoistCopiesPass moves loop-carried movements to the front, so `in_program_order` flips on
-    edges whose producer moved.  The hazard SET must not: distance comes from the gdeltas, not from
-    position, and it is the distance that decides which trip discharges the edge."""
-    from Tensile.Lowering.gir.analyses.frame_hazards import RAW, WAR
-    from Tensile.Lowering.gir.analyses.fence_regions import _admissible_slots
-    params = dict(BF16_NT_KMN_PLR0, PrefetchGlobalRead=1)
-    plain = _steady(_hazards(params, hoist=False))
-    hoisted = _steady(_hazards(params))
-    assert {h.kind for h in hoisted} == {RAW, WAR}
-    assert {(h.kind, h.distance) for h in hoisted} == {(h.kind, h.distance) for h in plain}
-    assert not any(h.same_trip for h in hoisted), "nothing here is same-trip, so nothing pins order"
-    # Nothing is same-trip, so every edge takes the wrap branch and the flip cannot move a fence:
-    # the admissible window is the same whichever side of the body the producer was hoisted to.
-    n_slots = max(max(h.producer.pos, h.consumer.pos) for h in hoisted) + 2
-    for h in hoisted:
-        a, b = h.producer.pos, h.consumer.pos
-        assert _admissible_slots(h, n_slots, "steady") == frozenset(
-            s for s in range(n_slots) if s > a or s <= b)
 
 
 def test_a_same_agent_edge_needs_NO_fence_which_is_why_single_wave_needs_no_barrier_pass():
@@ -2776,36 +2272,6 @@ def test_cross_block_hazards_are_FOUND_not_left_to_the_block_boundary():
     assert hz.unresolved() == (), f"unnamed shared accesses remain: {hz.unresolved()}"
 
 
-def test_every_hazard_is_TOKEN_VISIBLE_or_FENCE_SEPARATED():
-    """The invariant this rests on, asserted rather than assumed."""
-    from Tensile.Lowering.gir import FrameHazards
-    for params in (BF16_NT_KMN_FUSED_XAGENT,
-                   dict(BF16_NT_KMN_FUSED_XAGENT, PrefetchGlobalRead=1),
-                   dict(BF16_NT_KMN_FUSED_XAGENT, PrefetchLocalRead=1)):
-        prog = build_gir(_theta(params))
-        applied = [i for blk in prog.blocks.values() for i in blk.body
-                   if getattr(i, "kind", None) == "fence"]
-        for h in AnalysisManager().get(FrameHazards(), prog):
-            pt, ct = h.producer.inst.token, h.consumer.inst.token
-            assert pt is not None and ct is not None, "a hazard endpoint carries no token"
-            if set(pt[2]) & set(ct[2]):
-                continue                                   # visible to the backend as an alias
-            assert h.cross_agent, (
-                f"{h.kind} d={h.distance} carries disjoint tokens {pt}/{ct} and is NOT cross-agent, "
-                f"so nothing orders it: no token overlap and no fence")
-            # ...and a fence must actually be THERE.
-            assert applied, (f"{h.kind} {h.producer.block}->{h.consumer.block} has disjoint tokens "
-                             f"and no fence Mark reached the body")
-
-
-def _fences(params, loop_copies=1):
-    """`loop_copies` IS PART OF THE FIXTURE, not a detail."""
-    from Tensile.Lowering.gir import FenceRegions
-    prog = (lower_to_gir(_theta(params), loop_copies=loop_copies) if loop_copies > 1
-            else build_gir(_theta(params)))
-    return prog, AnalysisManager().get(FenceRegions(), prog)
-
-
 def _slot_of(prog, pm):
     body = prog.block(pm.region.block).body
     return body.index(pm.region.before) if pm.region.before in body else len(body)
@@ -2852,176 +2318,6 @@ def _fence_slot(prog, pending):
     """Identity, not `.index` -- GIR nodes compare equal and `.index` returns the first twin."""
     body = prog.block(pending.region.block).body
     return next((i for i, node in enumerate(body) if node is pending.region.before), len(body))
-
-
-def test_a_fused_movement_is_published_by_one_fence():
-    """A Phi-fused movement is ONE instruction, so its components share a producer and a fence.
-
-    That is the property the deleted completion-class key existed to guarantee; keying on the
-    producer gives it directly."""
-    from Tensile.Lowering.gir import FenceRegions
-
-    prog, am = _prefence_program(dict(BF16_NT_KMN_FUSED_XAGENT, PrefetchLocalRead=1))
-    fused = [item for item in am.get(FenceRegions(), prog)
-             if item.region.block == "prologue_join"
-             and {edge.producer.operand for edge in item.edges} >= {"A", "B"}]
-    assert len(fused) == 1, "the fused prologue movement was published by several fences"
-    raws = [edge for edge in fused[0].edges if edge.kind == "RAW"]
-    assert raws and len({id(edge.producer.inst) for edge in raws}) == 1
-
-
-def test_every_cross_wave_edge_has_exactly_one_owning_fence():
-    """`potential_waits.anchor_site` raises on two relation owners, and StinkyTofu rejects it too,
-    so the cover must PARTITION the edges rather than merely hit them."""
-    from Tensile.Lowering.gir import FenceRegions
-    from Tensile.Lowering.gir.analyses import FrameHazards
-
-    prog, am = _prefence_program(dict(BF16_NT_KMN_FUSED_XAGENT, PrefetchLocalRead=1))
-    owners = {}
-    for pending in am.get(FenceRegions(), prog):
-        for edge in pending.edges:
-            owners.setdefault(id(edge), []).append(pending)
-    assert owners, "no fence owns any edge"
-    assert all(len(owning) == 1 for owning in owners.values())
-    assert set(owners) == {id(h) for h in am.get(FrameHazards(), prog).needing_fence()}
-
-
-@pytest.mark.parametrize("plr", [0, 1])
-def test_a_raw_fence_sits_where_its_wait_is_largest(plr):
-    """A RAW's wait is computed at the fence OWNING it, so that fence must sit at the latest slot
-    its own RAW edges allow -- or be separated from it by a span issuing nothing on that counter,
-    which leaves the residual identical."""
-    from Tensile.Lowering.gir import FenceRegions
-    from Tensile.Lowering.gir.analyses.fence_regions import _admissible_slots
-    from Tensile.Lowering.gir.analyses.wait_common import FANOUT_META, counter_for, issued
-
-    prog, am = _prefence_program(dict(BF16_NT_KMN_FUSED_XAGENT, PrefetchLocalRead=plr))
-    counts = (prog.meta or {}).get(FANOUT_META) or {}
-    checked = 0
-    for pending in am.get(FenceRegions(), prog):
-        label, slot = pending.region.block, _fence_slot(prog, pending)
-        body = prog.block(label).body
-        raws = [edge for edge in pending.edges if edge.kind == "RAW"]
-        if not raws:
-            continue
-        checked += 1
-        common = set.intersection(
-            *(set(_admissible_slots(edge, len(body) + 1, label)) for edge in raws))
-        for later in (s for s in common if s > slot):
-            assert all(issued(body, slot, later, counter_for(edge, prog), counts) == 0
-                       for edge in raws), (
-                f"{label}@{slot} could sit at {later}, where its producers are deeper")
-    assert checked, "fixture produced no RAW-bearing fence"
-
-
-def test_a_war_fence_sits_where_its_wait_is_largest():
-    """A WAR stamps too: its producer is a shared READ, so it carries a dscnt whose value is also
-    computed at its owning fence.  Riding whatever barrier happens to stand latest in its window
-    drains the reads sooner than the edge requires."""
-    from Tensile.Lowering.gir import FenceRegions
-    from Tensile.Lowering.gir.analyses.fence_regions import _admissible_slots
-    from Tensile.Lowering.gir.analyses.wait_common import FANOUT_META, counter_for, issued
-
-    prog, am = _prefence_program(dict(BF16_NT_KMN_FUSED_XAGENT, PrefetchLocalRead=1))
-    counts = (prog.meta or {}).get(FANOUT_META) or {}
-    checked = 0
-    for pending in am.get(FenceRegions(), prog):
-        label, slot = pending.region.block, _fence_slot(prog, pending)
-        body = prog.block(label).body
-        wars = [edge for edge in pending.edges if edge.kind != "RAW"]
-        if not wars:
-            continue
-        checked += 1
-        common = set.intersection(
-            *(set(_admissible_slots(edge, len(body) + 1, label)) for edge in wars))
-        for later in (s for s in common if s > slot):
-            assert all(issued(body, slot, later, counter_for(edge, prog), counts) == 0
-                       for edge in wars), (
-                f"{label}@{slot} could sit at {later}, where its reads are deeper")
-    assert checked, "fixture produced no WAR-bearing fence"
-
-
-def test_a_same_agent_kernel_gets_NO_fences():
-    """Nothing to stand between: program order plus the completion counter already discharge every
- same-agent edge. The hazards are still FOUND -- this is a placement decision, not a
- blind spot -- and the backend independently agrees by skipping its barrier pass at one wave."""
-    for params in (BF16_NT_KMN, BF16_NT_KMN_PLR0, dict(BF16_NT_KMN_PLR0, PrefetchGlobalRead=1)):
-        _prog, pend = _fences(params)
-        assert pend == []
-
-
-def test_every_cross_agent_edge_has_a_fence_on_EVERY_path_between_its_ends():
-    """The specification the cover must meet, checked by enumerating paths rather than by asking
-    the implementation what it thinks it covered.
-    """
-    from Tensile.Lowering.gir import FrameHazards
-    from Tensile.Lowering.gir.analyses.cfg import successors
-    from Tensile.Lowering.gir.analyses.fence_regions import _admissible_slots
-
-    def paths(succ, src, dst, seen=()):
-        if src == dst and seen:
-            yield list(seen) + [src]
-            return
-        if src in seen:
-            return
-        for nxt in succ.get(src, ()):
-            yield from paths(succ, nxt, dst, tuple(seen) + (src,))
-        if src == dst:
-            yield [src]
-
-    # The last two entries carry `loop_copies=2`: the multi-block steady chain is the only shape in
-    # which a candidate fence can be reachable from the producer solely along the BACK EDGE, which
-    # is what an existential reachability test accepts and a separator test rejects.
-    for params, ncopies in ((BF16_NT_KMN_FUSED_XAGENT, 1),
-                            (dict(BF16_NT_KMN_FUSED_XAGENT, PrefetchGlobalRead=1), 1),
-                            (dict(BF16_NT_KMN_FUSED_XAGENT, PrefetchLocalRead=1), 1),
-                            (BF16_NT_KMN_FUSED_XAGENT, 2),
-                            (dict(BF16_NT_KMN_FUSED_XAGENT, PrefetchLocalRead=1), 2)):
-        prog, pend = _fences(params, loop_copies=ncopies)
-        succ = successors(prog)
-        placed = {}
-        for pm in pend:
-            placed.setdefault(pm.region.block, []).append(_slot_of(prog, pm))
-        for h in AnalysisManager().get(FrameHazards(), prog).needing_fence():
-            pb, cb = h.producer.block, h.consumer.block
-            if not h.cross_block:
-                n = len(prog.block(cb).body) + 1
-                assert _admissible_slots(h, n, cb) & set(placed.get(cb, [])), \
-                    f"{h.kind} {pb} {h.producer.pos}->{h.consumer.pos} (d={h.distance}) unfenced"
-                continue
-            routes = [p for p in paths(succ, pb, cb) if len(p) >= 2]
-            assert routes, f"no path {pb}->{cb} but a cross-block hazard was reported"
-            # ONLY the ends' own blocks separate (#416): an intermediate block's fence sits on
-            # some path, and the producer can re-reach the consumer around it via the back edge.
-            on_path = (any(sl > h.producer.pos for sl in placed.get(pb, []))
-                       or any(sl <= h.consumer.pos for sl in placed.get(cb, [])))
-            assert on_path, f"{h.kind} {pb}->{cb} is fenced only in an intermediate block"
-
-
-def test_an_undischargeable_edge_is_an_ERROR_not_a_fence_somewhere_harmless():
-    """If no slot separates a pair, the emitted order itself is illegal. Placing a fence anywhere would hide a schedule
- defect behind a barrier that discharges nothing."""
-    import pytest as _pytest
-    from Tensile.Lowering.gir.analyses.fence_regions import _admissible_slots
-
-    class _Bad:
-        kind, gap, same_trip, in_program_order = "WAR", 0, True, True
-        cross_block = False
-        class producer: operand, pos, block = "A", 5, "steady"
-        class consumer: operand, pos, block = "A", 2, "steady"   # before producer: empty window
-    assert not _admissible_slots(_Bad(), 10, "steady")
-
-    # ...and an edge admitting no slot must reach the caller as an ERROR, not a fence somewhere
-    # harmless.  Starving the predicate is how a real illegal sigma presents.
-    import Tensile.Lowering.gir.analyses.fence_regions as _fr
-    prog, am = _prefence_program(dict(BF16_NT_KMN_FUSED_XAGENT, PrefetchLocalRead=1))
-    keep = _fr._admissible_slots
-    try:
-        _fr._admissible_slots = lambda *a, **k: frozenset()
-        with _pytest.raises(RuntimeError, match="undischargeable"):
-            _fr.FenceRegions().run(prog, am)
-    finally:
-        _fr._admissible_slots = keep
 
 
 def test_short_path_fold_compares_VALUES_not_producer_identities():
@@ -3092,35 +2388,6 @@ def _assert_fold_and_split_shapes(order):
 
     from Tensile.Lowering.gir.verify import verify_gir
     assert verify_gir(prog)
-
-
-def test_short_fold_merges_value_order_and_preserves_drain_tensor_hazard():
-    """The emitted PGR1 short path is prologue->drain, never a model-only substitute."""
-    from test_loopmodel import _mxf8_kernel
-
-    from Tensile.Lowering.gir.analyses import CounterFlow
-    from Tensile.Lowering.gir.passes import folded, pipeline
-    from Tensile.Lowering.gir.passes.wait_counts import WaitCntPass
-
-    kernel = dict(_mxf8_kernel("KMNKMN", 1))
-    kernel.update(
-        MatrixInstruction=[16, 16, 32, 1, 1, 4, 4, 1, 1],
-        MIWaveTileA=4, MIWaveTileB=4,
-        PrefetchGlobalRead=1, PrefetchLocalRead=1,
-        TDMFuse=0, TDMSplitA=1, TDMSplitB=1,
-        VectorWidthA=1, VectorWidthB=1,
-        LocalReadVectorWidthA=8, LocalReadVectorWidthB=8,
-    )
-    prog = build_gir(
-        adapter.params_to_theta(adapter.kernel_to_params(kernel)),
-        pipeline=[item for item in pipeline() if not isinstance(item, WaitCntPass)])
-
-    assert folded(prog)
-    assert not any(label.startswith("short") for label in prog.blocks)
-    assert "drain0" in prog.block("prologue").succs
-    assert "prologue" in prog.block("drain0").preds
-    assert any(site.block == "drain0" and site.counter == "tensorcnt"
-               for site in AnalysisManager().get(CounterFlow(), prog))
 
 
 def test_mxf8_carrier_pairings_drive_the_short_fold_order_merge():
@@ -3599,16 +2866,8 @@ def test_general_frame_phi_resolves_each_folded_drain_entrance(
         and hazard.consumer.block == target
         for hazard in hazards
     )
-    waits = [
-        node.at.get("tensorcnt")
-        for node in prog.block(target).body
-        if isinstance(node, Mark)
-        and node.kind == "waitcnt"
-        and "tensorcnt" in node.at
-    ]
-    assert waits
-    if full_drain:
-        assert 0 in waits
+    # The numeric wait this entrance earns is StinkyTofu's, derived after scheduling from the
+    # frame contract; what GIR owes is the phi above that makes the entrance resolvable at all.
 
 
 def test_frame_contract_preserves_forwarding_phi_transfer_on_the_long_drain_path():
@@ -3832,12 +3091,6 @@ def _tokens_of(params):
     return prog, AnalysisManager().get(LdsBufferIds(), prog)
 
 
-def _dep_tokens_of(prog):
-    """The obligation tokens -- what a stamp and a fence carry, as against the storage id."""
-    from Tensile.Lowering.gir.analyses.dep_tokens import DependenceTokens
-    return AnalysisManager().get(DependenceTokens(), prog)
-
-
 def test_every_logical_LDS_buffer_gets_its_own_id():
     """The key is (unit, region, generation) -- each part earns its place."""
     import loopmodel_scenarios as scenarios
@@ -3863,19 +3116,14 @@ def test_every_logical_LDS_buffer_gets_its_own_id():
              if isinstance(i, Move)
              and len([r for r in i.dsts if r.tile.space == "shared"]) > 1]
     assert fused, "this fixture must produce a fused copy with one dst Ref per member"
-    dt3 = _dep_tokens_of(p3)
-    # WHICH buffer of the ring is `FrameMap`'s answer -- `ids_for` is the may-set over the whole
-    # rotation, so the frame-concrete pair comes from the stamp.
+    # `ids_for` is the may-set over the whole rotation; WHICH end of the ring a frame names is
+    # `FrameMap`'s answer, resolved downstream rather than stamped on the instruction.
     for cp in fused:
-        want, stamp = set(), set()
+        want = set()
         for r in cp.dsts:
             if r.tile.space == "shared":
                 want |= set(ts3.ids_for(r))
-                stamp |= set(dt3.tokens_for(r))
-        assert len(stamp) == 2, f"a fused copy fills TWO buffers: {stamp}"
-        assert len(want) == 4, f"and may touch either end of each ring: {want}"
-        assert set(cp.token_ids) == stamp, \
-            f"the fused copy must def the UNION of its members' tokens: {cp.token_ids} vs {stamp}"
+        assert len(want) == 4, f"a fused copy may touch either end of each member's ring: {want}"
     # ...and each member's read stays on its own id
     reads = {}
     for b in p3.blocks.values():
@@ -3884,100 +3132,11 @@ def test_every_logical_LDS_buffer_gets_its_own_id():
                 continue
             srcs = [r for r in i.srcs if r.tile.space == "shared"]
             if len(srcs) == 1:
-                reads.setdefault(srcs[0].tile.operand, set()).update(i.token_ids)
+                reads.setdefault(srcs[0].tile.operand, set()).update(ts3.ids_for(srcs[0]))
     assert reads.get("A") and reads.get("B")
     assert reads["A"].isdisjoint(reads["B"]), \
         f"a fused movement must not put its members' READS on one token: {reads}"
 
-
-def test_the_ids_REACH_the_emit_plan():
-    """Stamped by TokensPass next to the completion token, and carried on the act -- the emitter
-    reads them instead of writing a mutable `states.<field>` and having the leaf read it back."""
-    from Tensile.Lowering.gir.emit_plan import plan_block
-    prog, _ts = _tokens_of(dict(BF16_NT_KMN, PrefetchGlobalRead=2, PrefetchLocalRead=1))
-    dt = _dep_tokens_of(prog)
-    acts = [a for a in plan_block(prog, "steady") if a.kind in ("read", "copy")]
-    assert acts, "the steady block should plan reads and copies"
-    for a in acts:
-        ids = a.at.get("token_ids")
-        assert ids, f"{a.kind} act carries no token ids: {a.at}"
-        assert all(0 <= int(t) < len(dt) for t in ids), (ids, len(dt))
-    # A's reads and B's reads land on different ids
-    reads = {a.at["tc"]: a.at["token_ids"] for a in acts if a.kind == "read"}
-    assert set(reads["A"]).isdisjoint(reads["B"]), reads
-
-
-def test_every_fence_carries_frame_relative_storage_relations():
-    """A fence owns per-frame ring relations; static dependency-token unions are not authoritative."""
-    prog, _ts = _tokens_of(dict(BF16_NT_KMN_FUSED_XAGENT, PrefetchGlobalRead=2, PrefetchLocalRead=1))
-    fences = [n.at for b in prog.blocks.values() for n in b.body
-              if isinstance(n, Mark) and n.kind == "fence"]
-    assert fences, "the cross-agent fixture must place fences"
-    for at in fences:
-        assert not at["tokens"] and not at["order_tokens"] and at["no_waitcnt"], at
-        assert at["relations"], at
-        for relation in at["relations"]:
-            for endpoint in (relation["producer"], relation["consumer"]):
-                assert endpoint["ring"] >= 1 and endpoint["token"] is not None
-                assert "gdelta" in endpoint and "advance" in endpoint
-
-
-def test_a_fence_names_every_buffer_LIVE_ACROSS_it_not_just_the_edges_that_placed_it():
-    """Every cross-agent edge has a fence naming BOTH its ends, re-derived from the edges.
-
-    Fewest-tokens is NOT also required, and asserting it was a defect: narrowing each fence to a
-    hitting set over its edges keeps every edge separated and puts `s_wait_tensorcnt 0` back in the
-    MAF loop, because the dropped names were inert while the kept ones were load-defined.
-    """
-    from Tensile.Lowering.tool.fence_token_check import unseparated_edges
-    for params in (dict(BF16_NT_KMN_FUSED_XAGENT, PrefetchGlobalRead=2, PrefetchLocalRead=1),
-                   dict(BF16_NT_KMN_FUSED_XAGENT, PrefetchGlobalRead=2, PrefetchLocalRead=1,
-                        TDMSplit=[2, 2])):
-        prog, _ts = _tokens_of(params)
-        seen = [n for blk in prog.blocks.values() if blk.loop for n in blk.body
-                if isinstance(n, Mark) and n.kind == "fence"]
-        assert seen, "the cross-agent fixture must place a fence inside the loop"
-        loose = unseparated_edges(prog)
-        assert not loose, (
-            f"{len(loose)} cross-agent edge(s) have no fence naming both ends, e.g. "
-            f"{loose[0].kind} {loose[0].producer.block}[{loose[0].producer.pos}] -> "
-            f"{loose[0].consumer.block}[{loose[0].consumer.pos}]")
-
-
-@pytest.mark.parametrize("break_it,match", [
-    ("unnamed", "the emitter reads the STAMP"),
-])
-def test_G_TOKEN_FIRES_on_an_unnamed_access(break_it, match):
-    """NEGATIVE CONTROL.  An unnamed access breaks StinkyTofu's all-or-none rule for its whole
-    basic block.  A fence with no ids is NOT one: it is the full drain.
-    """
-    prog, _ts = _tokens_of(dict(BF16_NT_KMN_FUSED_XAGENT, PrefetchGlobalRead=2,
-                                PrefetchLocalRead=1))
-    verify_gir(prog)                                    # clean before
-    if break_it == "unnamed":
-        for blk in prog.blocks.values():
-            for n in blk.body:
-                if isinstance(n, Move) and n.token_ids:
-                    n.token_ids = ()
-                    break
-            else:
-                continue
-            break
-    else:
-        for blk in prog.blocks.values():
-            for n in blk.body:
-                if isinstance(n, Mark) and n.kind == "fence":
-                    n.at["tokens"] = ()
-                    break
-            else:
-                continue
-            break
-    with pytest.raises(RuntimeError, match=match):
-        verify_gir(prog)
-
-
-# =================================================================================================
-# TDMSplit: GIR owns the REGION WALK.
 
 def _walked(name):
     """A FULLY LOWERED split program -- `build_gir`, not `lower_to_gir`."""
@@ -4045,21 +3204,6 @@ def test_an_UNSPLIT_movement_emits_no_walk_at_all():
     marks = [n for blk in prog.blocks.values() for n in blk.body
              if isinstance(n, Mark) and n.kind == "region_increment"]
     assert marks == []
-
-
-def test_each_region_is_loaded_ONCE_with_its_OWN_token():
-    """`regions` copies per chunk per movement, and no two share a memory token."""
-    from Tensile.Lowering.gir.emit_plan import plan_block
-    prog = _walked("our_split")
-    copies = [a for a in plan_block(prog, "steady") if a.kind == "copy"]
-    assert copies and all(a.at["regions"] == 2 for a in copies)
-    for unit in {a.at["unit"] for a in copies}:
-        mine = [a for a in copies if a.at["unit"] == unit]
-        assert sorted(a.at["region"] for a in mine) == [0, 1], \
-            f"{unit} must load each of its 2 regions exactly once per chunk"
-        toks = [a.at["token_ids"] for a in mine]
-        assert len(set(toks)) == len(toks) and all(toks), \
-            f"{unit}'s regions share a memory token: {toks}"
 
 
 @pytest.mark.parametrize("break_it", ["drop", "duplicate", "hoist"])
@@ -5568,7 +4712,7 @@ def test_agent_relative_read_maps_to_one_exact_frame_region():
             and dict(ref.tile.coord).get("M_split") == 1))
     by_id = {idx: buf for buf, idx in storage.buffers.items()}
     assert {buf.region for buf in storage.buffers_for(ref)} == {(1,)}
-    assert {by_id[idx].region for idx in storage.frame_at(ref, 0, False)} == {(0,)}
+    assert {by_id[idx].region for idx in storage.frame_at(ref, lambda _r: 0, False)} == {(0,)}
 
 
 def test_emit_plan_uses_region_displacement_only_for_coordinate_relative_reads():
@@ -5595,182 +4739,8 @@ def test_emit_plan_uses_region_displacement_only_for_coordinate_relative_reads()
     assert agent_relative.at["address_region"] == 0
 
 
-def test_agent_relative_frame_hazard_covers_the_workgroup_without_weakening_scheduling():
-    """Completion sees every agent's region; scheduling keeps one exact representative agent."""
-    from Tensile.Lowering.gir.analyses.frame_hazards import (
-        FrameHazards, SchedulingFrameHazards, WAR)
-
-    prog = build_gir(_theta({
-        **BF16_NT_KMN,
-        "MIWaveTile": [2, 2],
-        "MatrixInstruction": [16, 16, 32, 1, 1, 2, 2, 1, 1],
-        "DepthU": 64,
-        "PrefetchGlobalRead": 2,
-        "PrefetchLocalRead": 0,
-        "TDMSplit": [2, 1, 1, 1],
-        "TDMSplitWaveRegions": [1, 1],
-        "VectorWidthA": 2,
-        "VectorWidthB": 1,
-    }))
-    body = prog.block("steady").body
-    reads = [
-        (pos, node) for pos, node in enumerate(body)
-        if isinstance(node, Move)
-        and any(ref.tile.space == "shared" and ref.tile.operand == "A"
-                for ref in node.srcs)]
-    copy0 = next(
-        (pos, node) for pos, node in enumerate(body)
-        if isinstance(node, Move)
-        and any(ref.tile.space == "shared" and ref.tile.operand == "A"
-                and dict(ref.tile.coord).get("M_split") == 0
-                for ref in node.dsts))
-    assert copy0[0] > max(pos for pos, _node in reads)
-    region1_read = next(
-        node for _pos, node in reads
-        if any(dict(ref.tile.coord).get("M_split") == 1 for ref in node.srcs))
-    assert set(region1_read.token_ids).isdisjoint(copy0[1].token_ids)
-    hazards = AnalysisManager().get(SchedulingFrameHazards(), prog)
-    assert any(
-        hazard.kind == WAR and hazard.gap == 0
-        and hazard.producer.inst is region1_read
-        and hazard.consumer.inst is copy0[1]
-        and hazard.producer.regions == (frozenset({0}),)
-        and hazard.consumer.regions == (frozenset({0}),)
-        for hazard in hazards)
-    assert any(
-        hazard.kind == WAR
-        and hazard.producer.inst is region1_read
-        and hazard.consumer.inst is copy0[1]
-        and hazard.producer.regions == (frozenset({0, 1}),)
-        and hazard.consumer.regions == (frozenset({0}),)
-        for hazard in AnalysisManager().get(FrameHazards(), prog))
-
-    # ST receives the same complete footprint as separate exact ACCESS records, while
-    # SchedulingFrameHazards intentionally remains the representative-agent projection above.
-    read_action = next(
-        action for actions in plan_program(prog).values() for action in actions
-        if action.kind == "read" and action.source is region1_read)
-    accesses = [access.region for access in build_contract(prog).accesses
-                if access.action == read_action.action_id]
-    assert set(accesses) == {0, 1}
 
 
-def test_fp8_multiwave_drain_waits_for_both_physical_split_regions():
-    """The GPU-failing VWA2/VWB2 shape must drain region 1 before its first logical-region-0 read."""
-    from Tensile.LoopModel.adapter import kernel_to_params
-    from Tensile.Lowering.gir.analyses.frame_hazards import FrameHazards, RAW
-
-    kernel = _fp8_kernel(
-        NumWaves=4, MIWaveGroup=[2, 2], MIWaveTile=[2, 2],
-        MatrixInstruction=[16, 16, 128, 1, 1, 2, 2, 2, 2],
-        PrefetchGlobalRead=1, PrefetchLocalRead=0, LoopOrder="KMKNMN",
-        TDMFuse=0, TDMSplitA=1, TDMSplitB=1,
-        VectorWidthA=2, VectorWidthB=2, TransposeLDS=1,
-    )
-    prog = build_gir(adapter.params_to_theta(kernel_to_params(kernel)))
-    drain = prog.block("drain0")
-    first_read = next(
-        pos for pos, node in enumerate(drain.body)
-        if isinstance(node, Move)
-        and any(ref.tile.space == "shared" for ref in node.srcs)
-    )
-    prior_tensor_waits = [
-        node.at["tensorcnt"] for node in drain.body[:first_read]
-        if isinstance(node, Mark) and node.kind == "waitcnt"
-        and "tensorcnt" in node.at
-    ]
-    assert 0 in prior_tensor_waits
-
-    hazards = AnalysisManager().get(FrameHazards(), prog)
-    producer_regions = {
-        next(iter(hazard.producer.regions[0]))
-        for hazard in hazards
-        if hazard.kind == RAW
-        and hazard.producer.block == "prologue"
-        and hazard.consumer.block == "drain0"
-        and hazard.consumer.pos == first_read
-    }
-    assert producer_regions == {0, 1}
-
-
-def test_fp8_multiwave_plr1_drains_agent_relative_refills_before_loop_exit():
-    """The two PLR1 GPU failures need the full-region wait on both steady-loop realizations."""
-    from Tensile.LoopModel.adapter import kernel_to_params
-
-    kernel = _fp8_kernel(
-        NumWaves=4, MIWaveGroup=[2, 2], MIWaveTile=[2, 2],
-        MatrixInstruction=[16, 16, 128, 1, 1, 2, 2, 2, 2],
-        PrefetchGlobalRead=1, PrefetchLocalRead=1, LoopOrder="KMNMNK",
-        TDMFuse=0, TDMSplitA=1, TDMSplitB=0,
-        VectorWidthA=2, VectorWidthB=2, TransposeLDS=1,
-    )
-    prog = build_gir(adapter.params_to_theta(kernel_to_params(kernel)))
-    tensor_waits = {
-        label: [
-            node.at["tensorcnt"] for node in block.body
-            if isinstance(node, Mark) and node.kind == "waitcnt"
-            and "tensorcnt" in node.at
-        ]
-        for label, block in prog.blocks.items()
-    }
-    assert 0 in tensor_waits["prologue"]
-    assert 0 in tensor_waits["steady"]
-
-
-def test_each_tdmsplit_storage_region_has_its_own_generation_phi():
-    """Region 0 and region 1 are distinct LDS rings, not coordinates on one shared Gen."""
-    from test_loopmodel import _mxf8_kernel
-
-    kernel = dict(_mxf8_kernel("KKMNMN", 1))
-    kernel.update(MatrixInstruction=[16, 16, 128, 1, 1, 4, 4, 2, 2],
-                  MIWaveTileA=4, MIWaveTileB=4, PrefetchGlobalRead=2,
-                  VectorWidthA=4, VectorWidthB=4)
-    target = {
-        "ReadVectorElems": {"MXSA": 16, "MXSB": 16},
-        "ReadPhi": {"MXSA": 4, "MXSB": 4},
-        "ReadRho": {"MXSA": 0, "MXSB": 0},
-    }
-    prog = build_gir(adapter.params_to_theta(adapter.kernel_to_params(kernel, target)))
-    facts = prog.meta["generation_regions"]
-    assert {(fact["operand"], fact["region"]) for fact in facts.values()} == {
-        ("A", 0), ("A", 1), ("B", 0), ("B", 1), ("MXSA", 0), ("MXSB", 0),
-    }
-    assert len(prog.block("steady").phis) == 6
-
-    for block in prog.blocks.values():
-        for inst in block.body:
-            if not isinstance(inst, Move):
-                continue
-            for ref in tuple(inst.srcs) + tuple(inst.dsts):
-                if ref.tile.space != "shared" or ref.gen is None or ref.tile.operand not in ("A", "B"):
-                    continue
-                axis = "M_split" if ref.tile.operand == "A" else "N_split"
-                assert facts[ref.gen.id]["region"] == dict(ref.tile.coord)[axis]
-    # Every frame retains the exact split-region generation. Completion still covers the whole
-    # workgroup, so the second join wait includes the other agents' physical split and is one
-    # count stricter than the old representative-agent-only result.
-    assert not [node for block in ("prologue", "prefetch_peel")
-                for node in prog.block(block).body
-                if isinstance(node, Mark) and node.kind == "waitcnt"
-                and "tensorcnt" in node.at]
-    join = prog.block("prologue_join").body
-    tensor_waits = [(pos, node) for pos, node in enumerate(join)
-                    if isinstance(node, Mark) and node.kind == "waitcnt"
-                    and "tensorcnt" in node.at]
-    fences = [pos for pos, node in enumerate(join)
-              if isinstance(node, Mark) and node.kind == "fence"]
-    assert [node.at["tensorcnt"] for _pos, node in tensor_waits] == [5, 3]
-    assert all(pos + 1 in fences for pos, _node in tensor_waits)
-    relation_regions = [
-        relation["consumer"]["regions"]
-        for _pos, node in tensor_waits for relation in node.at["relations"]
-    ]
-    assert ((0, 1),) in relation_regions
-    assert all(regions in ((), ((0,),), ((1,),), ((0, 1),))
-               for regions in relation_regions)
-
-    text = render_gir(prog)
-    assert ":A/r1 = phi(" in text and ":B/r1 = phi(" in text
 
 
 def test_the_dump_shows_the_theta_facts_the_blocks_are_derived_from():
@@ -5796,14 +4766,11 @@ def test_the_dump_shows_the_theta_facts_the_blocks_are_derived_from():
     assert "movement A+B" in txt, "the walk is per MOVEMENT, not per operand"
     assert "fused copies:" in txt and "A+B" in txt
 
-    # The per-instruction facts: the obligation KIND (which decides issue order) and the LDS token
-    # ids (which ARE the alias relation the backend orders on).
+    # The per-instruction fact that survives the memory-token layer: the obligation KIND, which
+    # decides issue order.  Which storage the ends alias is now resolved from the frame contract.
     assert "deps[" in txt and ("RAW-residency" in txt or "crossing-RAW" in txt), \
         "the ledger edge and its hazard class must be visible; without the class a correctly and " \
         "an incorrectly ordered body render identically"
-    assert "dep=" in txt and "tok=" in txt, (
-        "BOTH the dependence token the backend orders on and the semantic completion token must be "
-        "visible, and spelled apart -- they answer different questions and one prefix for both hid it")
 
     # NON-VACUITY: an UNSPLIT single-wave kernel must NOT grow these lines, or the assertions above
     # are satisfied by boilerplate rather than by the fixture's actual shape.
@@ -6420,101 +5387,6 @@ def test_prefetch_guard_arms_reach_the_join_alike():
     through = _pointer_state(prog, [prog.entry, guard["block"]])
     assert skip == through, (
         "the guard's arms diverge before the join: skip=%r through=%r" % (skip, through))
-
-
-def test_prefetch_guard_compensates_the_shallow_path_before_the_deep_join_wait():
-    from test_loopmodel import _mxf8_kernel
-
-    from Tensile.Lowering.gir.analyses import CounterFlow
-    from Tensile.Lowering.gir.passes import pipeline
-    from Tensile.Lowering.gir.passes.wait_counts import WaitCntPass
-
-    kernel = dict(_mxf8_kernel("KKMNMN", 1))
-    kernel.update(MatrixInstruction=[16, 16, 128, 1, 1, 4, 4, 2, 2],
-                  MIWaveTileA=4, MIWaveTileB=4,
-                  PrefetchGlobalRead=2, PrefetchLocalRead=1,
-                  VectorWidthA=4, VectorWidthB=4)
-    target = {
-        "ReadVectorElems": {"MXSA": 16, "MXSB": 16},
-        "ReadPhi": {"MXSA": 4, "MXSB": 4},
-        "ReadRho": {"MXSA": 0, "MXSB": 0},
-    }
-    prog = build_gir(
-        adapter.params_to_theta(adapter.kernel_to_params(kernel, target)),
-        pipeline=[item for item in pipeline() if not isinstance(item, WaitCntPass)])
-    guard = prog.meta["prefetch_guard"]
-    waits = {(site.block, site.pos, site.counter): site.n
-             for site in AnalysisManager().get(CounterFlow(), prog)}
-    assert waits[(guard["skip"], 0, "tensorcnt")] == 0
-    assert sorted(n for (block, _pos, counter), n in waits.items()
-                  if block == guard["join"] and counter == "tensorcnt") == [3, 5]
-    WaitCntPass().run(prog, AnalysisManager())
-    assert [node.at["tensorcnt"] for node in prog.block(guard["skip"]).body
-            if isinstance(node, Mark) and node.kind == "waitcnt"
-            and "tensorcnt" in node.at] == [0]
-    assert 5 in [node.at["tensorcnt"] for node in prog.block(guard["join"]).body
-                 if isinstance(node, Mark) and node.kind == "waitcnt"
-                 and "tensorcnt" in node.at]
-    assert 3 in [node.at["tensorcnt"] for node in prog.block(guard["join"]).body
-                 if isinstance(node, Mark) and node.kind == "waitcnt"
-                 and "tensorcnt" in node.at]
-    join = prog.block(guard["join"]).body
-    tensor_wait_positions = [
-        pos for pos, node in enumerate(join)
-        if isinstance(node, Mark) and node.kind == "waitcnt" and "tensorcnt" in node.at
-    ]
-    assert all(pos + 1 < len(join)
-               and isinstance(join[pos + 1], Mark) and join[pos + 1].kind == "fence"
-               for pos in tensor_wait_positions)
-    assert {operand for node in join
-            if isinstance(node, Mark) and node.kind == "fence"
-            for operand in node.at["buffers"]} == {"A", "B", "MXSA", "MXSB"}
-
-
-def _racing_edges(prog, dep=None):
-    """(reached, named) cross-wave RAW frame instances and their fence relations."""
-    from Tensile.Lowering.gir.analyses.frame_hazards import FrameHazards, RAW
-    hz = AnalysisManager().get(FrameHazards(), prog)
-    fm = AnalysisManager().get(FrameMap(), prog)
-    relations = [relation for block in prog.blocks.values() for node in block.body
-                 if isinstance(node, Mark) and node.kind == "fence"
-                 for relation in node.at.get("relations", ())]
-    instances = [(fp, fc, hazard) for fp, fc, hazard in hz.instances()
-                 if hazard.cross_agent and hazard.kind == RAW]
-    named = sum(any(
-        relation["kind"] == hazard.kind
-        and relation["producer"].get("identity") == id(hazard.producer.inst)
-        and relation["consumer"].get("identity") == id(hazard.consumer.inst)
-        and relation["producer"]["frame"] == fm.render(fp)
-        and relation["consumer"]["frame"] == fm.render(fc)
-        for relation in relations) for fp, fc, hazard in instances)
-    return len(instances), named
-
-
-@pytest.mark.parametrize("pgr,plr", [(1, 0), (1, 1), (2, 0), (2, 1)])
-def test_the_token_reuse_check_inspects_real_refills(pgr, plr):
-    """G-TOKEN-REUSE is not vacuous: every config has racing refills, and all are named."""
-    prog, _ts = _tokens_of(dict(BF16_NT_KMN_FUSED_XAGENT,
-                                PrefetchGlobalRead=pgr, PrefetchLocalRead=plr))
-    reached, named = _racing_edges(prog)
-    assert reached, f"PGR{pgr}/PLR{plr}: the check reaches no edge -- it proves nothing"
-    assert named == reached, f"PGR{pgr}/PLR{plr}: {reached - named} edge(s) unnamed"
-
-
-def test_a_fence_that_drops_its_frame_relations_is_caught():
-    """A barrier at the right position is insufficient if it names no frame hazard."""
-    from dataclasses import replace
-    prog, _ts = _tokens_of(dict(BF16_NT_KMN_FUSED_XAGENT,
-                                PrefetchGlobalRead=2, PrefetchLocalRead=1))
-    assert verify_gir(prog)
-    reached, named = _racing_edges(prog)
-    assert reached and named == reached, "fixture is not fully fenced -- the mutation proves nothing"
-    for blk in prog.blocks.values():
-        blk.body = [replace(n, at=dict(n.at, relations=()))
-                    if isinstance(n, Mark) and n.kind == "fence" else n
-                    for n in blk.body]
-    with pytest.raises(RuntimeError, match="G-FRAME-FENCE"):
-        verify_gir(prog)
 
 
 #: Keys a pass writes only when its situation arises, so a single program need not carry them.

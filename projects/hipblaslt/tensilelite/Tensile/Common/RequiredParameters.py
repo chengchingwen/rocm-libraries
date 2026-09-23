@@ -81,7 +81,6 @@ def getRequiredParametersMin() -> set:
         'LDSTrInst',
         'LocalReadVectorWidth',
         'LocalWritePerMfma',
-        'LoopModelWaitCntMode',
         'LoopOrder',
         'MIArchVgpr',
         'MaxOccupancy',
