@@ -48,19 +48,27 @@ struct Node {
     bool operator==(const Node& other) const = default;
 };
 
-bool publishes(const StinkyInstruction& inst) {
-    return isBarrier(inst);
+/// Instructions a fence has been DECIDED to precede.  Holding the plan here instead of in the IR
+/// is what lets the fixpoint, the coverage check and the shrink all run over one unchanging
+/// program: no index goes stale, ownership is intrinsic, and an undo is a set erase.
+using Markers = std::set<const StinkyInstruction*>;
+
+bool publishes(const StinkyInstruction& inst, const Markers& markers) {
+    return isBarrier(inst) || markers.count(&inst) != 0;
 }
 
 /// Walk one node, applying gen at producers and the total kill at fences.  `report` sees every
 /// consumer whose producer is still live -- an undischarged hazard.
 template <class Report>
 Live transfer(const Node& node, const std::vector<StinkyInstruction*>& body,
-              const GirFrameHazardAnalysis::Result& hazards, const Live& in, Report report) {
+              const GirFrameHazardAnalysis::Result& hazards, const Live& in,
+              const Markers& markers, Report report) {
     Live live = in;
     for (size_t i = 0; i < body.size(); ++i) {
         StinkyInstruction* inst = body[i];
-        if (publishes(*inst)) live.clear();
+        // A marker names the instruction the fence is inserted BEFORE, so it kills here, exactly
+        // where a materialized barrier at this slot would.
+        if (publishes(*inst, markers)) live.clear();
         for (size_t h = 0; h < hazards.hazards.size(); ++h) {
             const GirFrameHazard& hazard = hazards.hazards[h];
             if (!hazard.crossAgent) continue;
@@ -124,7 +132,8 @@ FrameCFG buildFrameCFG(Function& function, const GirFrameAnalysis::Result& frame
 
 /// Least fixpoint of the may-reach set; meet is union, so a producer unfenced on ANY path in is
 /// unfenced here.  Finite frames plus a monotone transfer bound the iteration.
-std::vector<Live> solve(const FrameCFG& cfg, const GirFrameHazardAnalysis::Result& hazards) {
+std::vector<Live> solve(const FrameCFG& cfg, const GirFrameHazardAnalysis::Result& hazards,
+                        const Markers& markers) {
     std::vector<Live> in(cfg.nodes.size());
     std::vector<Live> out(cfg.nodes.size());
     std::deque<size_t> work;
@@ -137,7 +146,8 @@ std::vector<Live> solve(const FrameCFG& cfg, const GirFrameHazardAnalysis::Resul
         for (size_t p : cfg.preds[n]) merged.insert(out[p].begin(), out[p].end());
         if (merged == in[n] && !out[n].empty()) continue;
         in[n] = merged;
-        Live next = transfer(cfg.nodes[n], cfg.body[n], hazards, in[n], [](size_t, size_t) {});
+        Live next =
+            transfer(cfg.nodes[n], cfg.body[n], hazards, in[n], markers, [](size_t, size_t) {});
         if (next == out[n]) continue;
         out[n] = std::move(next);
         for (size_t m = 0; m < cfg.nodes.size(); ++m)
@@ -147,22 +157,14 @@ std::vector<Live> solve(const FrameCFG& cfg, const GirFrameHazardAnalysis::Resul
     return in;
 }
 
-/// A barrier THIS pass placed.  "Any barrier wait carrying any comment" is not an ownership test:
-/// the rocisa lowering attaches the comment to the wait half of every split barrier, so a scaffold
-/// barrier reaching this region would be a candidate for deletion.
-bool isOwnFence(const StinkyInstruction& inst) {
-    const CommentData* comment = inst.getModifier<CommentData>();
-    return comment && (comment->comment == "GIR fence" || comment->comment == "GIR fence (cover)");
-}
-
 /// The earliest consumer still seeing its own producer, and every hazard violating there.
 bool firstViolation(const FrameCFG& cfg, const GirFrameHazardAnalysis::Result& hazards,
-                    const std::vector<Live>& in, size_t& node, size_t& slot,
+                    const std::vector<Live>& in, const Markers& markers, size_t& node, size_t& slot,
                     std::vector<size_t>& violating) {
     for (size_t n = 0; n < cfg.nodes.size(); ++n) {
         size_t found = cfg.body[n].size();
         std::vector<size_t> here;
-        transfer(cfg.nodes[n], cfg.body[n], hazards, in[n], [&](size_t i, size_t h) {
+        transfer(cfg.nodes[n], cfg.body[n], hazards, in[n], markers, [&](size_t i, size_t h) {
             if (i < found) {
                 found = i;
                 here.clear();
@@ -196,11 +198,12 @@ bool countsFor(const StinkyInstruction& inst, Counter counter) {
 /// What is unfenced just before each instruction, so a candidate slot knows what it would
 /// discharge -- and therefore which residuals its one wait must be the minimum of.
 std::vector<Live> liveBefore(const Node& node, const std::vector<StinkyInstruction*>& body,
-                             const GirFrameHazardAnalysis::Result& hazards, const Live& in) {
+                             const GirFrameHazardAnalysis::Result& hazards, const Live& in,
+                             const Markers& markers) {
     std::vector<Live> out(body.size() + 1);
     Live live = in;
     for (size_t i = 0; i < body.size(); ++i) {
-        if (publishes(*body[i])) live.clear();
+        if (publishes(*body[i], markers)) live.clear();
         out[i] = live;
         for (size_t h = 0; h < hazards.hazards.size(); ++h) {
             const GirFrameHazard& hazard = hazards.hazards[h];
@@ -288,13 +291,13 @@ size_t chooseSlot(const GirFrameAnalysis::Result& frames, const NodesByKey& byKe
                   const std::vector<StinkyInstruction*>& body,
                   const GirFrameHazardAnalysis::Result& hazards,
                   const std::vector<Live>& live, const std::vector<size_t>& violating,
-                  size_t consumerSlot) {
+                  size_t consumerSlot, const Markers& markers) {
     std::unordered_map<const StinkyInstruction*, size_t> index;
     for (size_t i = 0; i < body.size(); ++i) index[body[i]] = i;
 
     size_t low = 0;
     for (size_t i = consumerSlot; i-- > 0;)
-        if (isBranch(*body[i]) || isLabel(*body[i]) || publishes(*body[i])) {
+        if (isBranch(*body[i]) || isLabel(*body[i]) || publishes(*body[i], markers)) {
             low = i + 1;
             break;
         }
@@ -362,25 +365,75 @@ class GirFencePlacementPass final : public StinkyInstPass {
             report_fatal_error("GirFencePlacementPass: no workgroup barrier on this architecture");
 
         const NodesByKey byKey = collectNodes(frames);
-        size_t placed = 0;
-        size_t erased = 0;
-        for (;;) {
-            FrameCFG cfg = buildFrameCFG(function, frames);
-            if (cfg.nodes.empty()) break;
-            const std::vector<Live> in = solve(cfg, hazards);
-            size_t node = 0;
-            size_t slot = 0;
-            std::vector<size_t> violating;
-            if (!firstViolation(cfg, hazards, in, node, slot, violating)) break;
-            slot = chooseSlot(frames, byKey, cfg.nodes[node], cfg.body[node], hazards,
-                              liveBefore(cfg.nodes[node], cfg.body[node], hazards, in[node]),
-                              violating, slot);
-            if (++placed > hazards.hazards.size())
-                report_fatal_error("GirFencePlacementPass failed to converge");
+        // ONE program, decided over once.  Every phase below reads this CFG and writes only
+        // `markers`; nothing touches the IR until the plan is final, so no hazard index goes
+        // stale under an insertion and an undo costs a set erase instead of a block rebuild.
+        const FrameCFG cfg = buildFrameCFG(function, frames);
+        if (cfg.nodes.empty()) return PreservedAnalyses::all();
+        Markers markers;
+        const auto marked = [&markers](const StinkyInstruction& inst) {
+            return markers.count(&inst) != 0;
+        };
 
-            BasicBlock* block = cfg.nodes[node].block;
-            AsmIRBuilder builder(*block, archId);
-            IRBase* anchor = cfg.body[node][slot];
+        // Phase 1: cut every violating hazard, greedily, at the slot with the deepest residual.
+        for (;;) {
+            const std::vector<Live> in = solve(cfg, hazards, markers);
+            size_t node = 0, slot = 0;
+            std::vector<size_t> violating;
+            if (!firstViolation(cfg, hazards, in, markers, node, slot, violating)) break;
+            slot = chooseSlot(frames, byKey, cfg.nodes[node], cfg.body[node], hazards,
+                              liveBefore(cfg.nodes[node], cfg.body[node], hazards, in[node],
+                                         markers),
+                              violating, slot, markers);
+            if (!markers.insert(cfg.body[node][slot]).second)
+                report_fatal_error("GirFencePlacementPass failed to converge");
+        }
+
+        // Phase 2: the cut fixpoint answers LIVENESS; the wait pass asks POSITION -- does a
+        // barrier stand before this consumer.  Cover what the first question does not imply,
+        // asking `lastBarrierBefore` about the plan so both phases speak of the same fences.
+        for (const GirFrameHazard& hazard : hazards.hazards) {
+            if (!hazard.crossAgent) continue;
+            if (!passCtx.shouldProcessBasicBlock(*hazard.consumerBlock)) continue;
+            if (lastBarrierBefore(frames, hazard.consumerBlock, hazard.consumerFrame,
+                                  hazard.consumerIndex, marked)
+                    .first)
+                continue;
+            size_t index = 0;
+            for (IRBase& node : *hazard.consumerBlock) {
+                auto* inst = dyn_cast<StinkyInstruction>(&node);
+                if (!inst) continue;
+                if (index++ == hazard.consumerIndex) {
+                    markers.insert(inst);
+                    break;
+                }
+            }
+        }
+
+        // Phase 3: greedy places more than it needs, so drop any marker the rest already covers.
+        // Fewer fences means the copies between them stay in flight together, which is what lets
+        // the wait be graded instead of a drain.
+        for (bool shrinking = true; shrinking;) {
+            shrinking = false;
+            for (const StinkyInstruction* candidate : Markers(markers)) {
+                markers.erase(candidate);
+                size_t n = 0, sl = 0;
+                std::vector<size_t> v;
+                if (!firstViolation(cfg, hazards, solve(cfg, hazards, markers), markers, n, sl,
+                                    v)) {
+                    shrinking = true;
+                    break;
+                }
+                markers.insert(candidate);
+            }
+        }
+
+        // Phase 4: and only now does the plan become instructions.
+        const size_t placed = markers.size();
+        const size_t erased = 0;
+        for (const StinkyInstruction* target : markers) {
+            auto* anchor = const_cast<StinkyInstruction*>(target);
+            AsmIRBuilder builder(*anchor->getParent(), archId);
             StinkyInstruction* signal = builder.create(signalDesc, anchor);
             signal->addSrcReg(StinkyRegister(kWorkgroupBarrierId));
             StinkyInstruction* wait = builder.create(waitDesc, anchor);
@@ -393,90 +446,7 @@ class GirFencePlacementPass final : public StinkyInstPass {
             signal->addModifier<NoWaitCntData>(NoWaitCntData{});
             wait->addModifier<NoWaitCntData>(NoWaitCntData{});
         }
-        // The fixpoint minimises the cut; this guarantees the property the wait pass queries.
-        // They now ask the same question, so they cannot disagree about whether a barrier stands.
-        for (const GirFrameHazard& hazard : hazards.hazards) {
-            if (!hazard.crossAgent) continue;
-            if (!passCtx.shouldProcessBasicBlock(*hazard.consumerBlock)) continue;
-            if (lastBarrierBefore(frames, hazard.consumerBlock, hazard.consumerFrame,
-                                  hazard.consumerIndex)
-                    .first)
-                continue;
-            size_t index = 0;
-            IRBase* anchor = nullptr;
-            for (IRBase& node : *hazard.consumerBlock) {
-                auto* inst = dyn_cast<StinkyInstruction>(&node);
-                if (!inst) continue;
-                if (index++ == hazard.consumerIndex) {
-                    anchor = &node;
-                    break;
-                }
-            }
-            if (!anchor) continue;
-            AsmIRBuilder builder(*hazard.consumerBlock, archId);
-            StinkyInstruction* signal = builder.create(signalDesc, anchor);
-            signal->addSrcReg(StinkyRegister(kWorkgroupBarrierId));
-            StinkyInstruction* wait = builder.create(waitDesc, anchor);
-            wait->addSrcReg(StinkyRegister(kWorkgroupBarrierId));
-            wait->addModifier<CommentData>(CommentData{"GIR fence (cover)"});
-            signal->addModifier<NoWaitCntData>(NoWaitCntData{});
-            wait->addModifier<NoWaitCntData>(NoWaitCntData{});
-            ++placed;
-        }
-        // The fixpoint places greedily, so a later cut can subsume an earlier one.  Drop any
-        // barrier the remaining set already covers: fewer fences means the copies between them
-        // stay in flight together, which is what lets the wait be graded instead of a drain.
-        for (bool shrinking = true; shrinking;) {
-            shrinking = false;
-            // Pair the two halves EXPLICITLY.  Only the wait carries the tag, so collecting
-            // "tagged barriers" and pairing them by position takes two unrelated waits for one
-            // signal+wait pair and erases both -- which is how the signals outlived their waits.
-            std::vector<std::pair<StinkyInstruction*, StinkyInstruction*>> pairs;
-            for (BasicBlock& block : function) {
-                if (!passCtx.shouldProcessBasicBlock(block)) continue;
-                StinkyInstruction* pendingSignal = nullptr;
-                for (IRBase& node : block) {
-                    auto* inst = dyn_cast<StinkyInstruction>(&node);
-                    if (!inst) continue;
-                    if (isBarrierSignal(*inst)) {
-                        pendingSignal = inst;
-                    } else if (isBarrierWait(*inst) && isOwnFence(*inst) &&
-                               pendingSignal != nullptr) {
-                        pairs.push_back({pendingSignal, inst});
-                        pendingSignal = nullptr;
-                    }
-                }
-            }
-            for (const auto& [signal, wait] : pairs) {
-                BasicBlock* owner = signal->getParent();
-                if (wait->getParent() != owner) continue;
-                std::vector<IRBase*> saved;
-                for (IRBase& node : *owner) saved.push_back(&node);
-                owner->removeIR(signal);
-                owner->removeIR(wait);
-                FrameCFG probe = buildFrameCFG(function, frames);
-                size_t n = 0, sl = 0;
-                std::vector<size_t> v;
-                const bool stillCovered =
-                    !probe.nodes.empty() && !firstViolation(probe, hazards, solve(probe, hazards),
-                                                            n, sl, v);
-                if (stillCovered) {
-                    signal->erase();
-                    wait->erase();
-                    shrinking = true;
-                    ++erased;
-                    break;
-                }
-                // Put the block back exactly as it was: remove+append in the saved order.
-                for (IRBase* node : saved) {
-                    if (node->getParent()) owner->removeIR(node);
-                    owner->appendIR(node);
-                }
-            }
-        }
 
-        // An erase mutates the IR as surely as a placement does; reporting all-preserved after
-        // one leaves the frame and hazard analyses stale for the wait pass that reads them next.
         if (placed == 0 && erased == 0) return PreservedAnalyses::all();
         AM.invalidate(function, preserveCFGAnalyses());
         return preserveCFGAnalyses();

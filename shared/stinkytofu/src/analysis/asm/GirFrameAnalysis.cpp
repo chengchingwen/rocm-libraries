@@ -577,17 +577,21 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
     return result;
 }
 
-std::pair<StinkyInstruction*, GirFrame> lastBarrierBefore(const GirFrameAnalysis::Result& frames,
-                                                          BasicBlock* block, const GirFrame& frame,
-                                                          size_t limit) {
-    const auto inBlock = [](BasicBlock* bb, size_t upTo) -> StinkyInstruction* {
+std::pair<StinkyInstruction*, GirFrame> lastBarrierBefore(
+    const GirFrameAnalysis::Result& frames, BasicBlock* block, const GirFrame& frame, size_t limit,
+    const std::function<bool(const StinkyInstruction&)>& alsoFences) {
+    // `alsoFences` lets a caller that has DECIDED on a fence but not yet materialized it ask this
+    // same question of its own plan.  One definition of "a barrier stands here", parameterized by
+    // what counts as one, rather than a second walk that can drift from this one.
+    const auto inBlock = [&alsoFences](BasicBlock* bb, size_t upTo) -> StinkyInstruction* {
         StinkyInstruction* found = nullptr;
         size_t index = 0;
         for (IRBase& node : *bb) {
             auto* inst = dyn_cast<StinkyInstruction>(&node);
             if (!inst) continue;
             if (index++ >= upTo) break;
-            if (isFence(*inst) || isBarrier(*inst)) found = inst;
+            if (isFence(*inst) || isBarrier(*inst) || (alsoFences && alsoFences(*inst)))
+                found = inst;
         }
         return found;
     };
