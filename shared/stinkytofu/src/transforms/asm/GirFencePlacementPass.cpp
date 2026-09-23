@@ -147,6 +147,14 @@ std::vector<Live> solve(const FrameCFG& cfg, const GirFrameHazardAnalysis::Resul
     return in;
 }
 
+/// A barrier THIS pass placed.  "Any barrier wait carrying any comment" is not an ownership test:
+/// the rocisa lowering attaches the comment to the wait half of every split barrier, so a scaffold
+/// barrier reaching this region would be a candidate for deletion.
+bool isOwnFence(const StinkyInstruction& inst) {
+    const CommentData* comment = inst.getModifier<CommentData>();
+    return comment && (comment->comment == "GIR fence" || comment->comment == "GIR fence (cover)");
+}
+
 /// The earliest consumer still seeing its own producer, and every hazard violating there.
 bool firstViolation(const FrameCFG& cfg, const GirFrameHazardAnalysis::Result& hazards,
                     const std::vector<Live>& in, size_t& node, size_t& slot,
@@ -355,6 +363,7 @@ class GirFencePlacementPass final : public StinkyInstPass {
 
         const NodesByKey byKey = collectNodes(frames);
         size_t placed = 0;
+        size_t erased = 0;
         for (;;) {
             FrameCFG cfg = buildFrameCFG(function, frames);
             if (cfg.nodes.empty()) break;
@@ -431,7 +440,7 @@ class GirFencePlacementPass final : public StinkyInstPass {
                     if (!inst) continue;
                     if (isBarrierSignal(*inst)) {
                         pendingSignal = inst;
-                    } else if (isBarrierWait(*inst) && inst->getModifier<CommentData>() &&
+                    } else if (isBarrierWait(*inst) && isOwnFence(*inst) &&
                                pendingSignal != nullptr) {
                         pairs.push_back({pendingSignal, inst});
                         pendingSignal = nullptr;
@@ -455,6 +464,7 @@ class GirFencePlacementPass final : public StinkyInstPass {
                     signal->erase();
                     wait->erase();
                     shrinking = true;
+                    ++erased;
                     break;
                 }
                 // Put the block back exactly as it was: remove+append in the saved order.
@@ -465,7 +475,9 @@ class GirFencePlacementPass final : public StinkyInstPass {
             }
         }
 
-        if (placed == 0) return PreservedAnalyses::all();
+        // An erase mutates the IR as surely as a placement does; reporting all-preserved after
+        // one leaves the frame and hazard analyses stale for the wait pass that reads them next.
+        if (placed == 0 && erased == 0) return PreservedAnalyses::all();
         AM.invalidate(function, preserveCFGAnalyses());
         return preserveCFGAnalyses();
     }
