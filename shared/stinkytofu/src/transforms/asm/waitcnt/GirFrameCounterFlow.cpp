@@ -439,19 +439,28 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
                     const GirFrameNode& producerNode, size_t producerIndex, int gap,
                     const StinkyInstruction* anchor, const GirFrameNode& anchorNode,
                     size_t anchorIndex, RetireAt retireAt, RetireAtEnd retireAtEnd,
-                    std::map<BasicBlock*, int, std::less<BasicBlock*>>* perPred) {
+                    std::map<BasicBlock*, int, std::less<BasicBlock*>>* perPred,
+                    const FeasibleDomainMap* feasible = nullptr) {
     struct Step {
         GirFrameNode node;
         size_t index = 0;
         int steps = 0;
         int count = 0;
         BasicBlock* pred = nullptr;
+        // Trip counts this path is still possible for. A short prefetch arm reaches the steady
+        // loop for no trip count, so the rank along it is not a constraint on the steady wait.
+        std::set<int> trips;
     };
 
     const int span = std::max(0, gap);
     int best = -1;
     bool unaccounted = false;
-    std::deque<Step> work{{producerNode, producerIndex + 1, 0, 1, nullptr}};
+    std::set<int> producerTrips;
+    if (feasible) {
+        auto found = feasible->find(producerNode);
+        if (found != feasible->end()) producerTrips = found->second;
+    }
+    std::deque<Step> work{{producerNode, producerIndex + 1, 0, 1, nullptr, producerTrips}};
     // The frame graph is a graph, so the same state is reachable many ways and an unmemoised walk
     // re-expands it exponentially.  Truncating that with a budget is what made the answer depend
     // on exploration order; deduplicating the state makes the walk finite AND complete, because a
@@ -507,7 +516,12 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
         auto successors = frames.edges.find(step.node);
         if (successors == frames.edges.end()) { unaccounted = true; continue; }
         for (const GirFrameNode& successor : successors->second) {
-            Step next{successor, 0, step.steps + 1, step.count, step.node.block};
+            std::set<int> trips = step.trips;
+            if (feasible && !trips.empty()) {
+                trips = edgeTripDomain(step.node.block, successor.block, trips);
+                if (trips.empty()) continue;  // no trip count takes this edge onward
+            }
+            Step next{successor, 0, step.steps + 1, step.count, step.node.block, std::move(trips)};
             if (visited.insert(stateKey(next)).second) work.push_back(std::move(next));
         }
     }
@@ -519,7 +533,8 @@ SpanResult countAcrossSpan(const GirFrameAnalysis::Result& frames, const Decisio
                            const GirFrameNode& producerNode, const Potential& potential,
                            StinkyInstruction* anchor, const GirFrameNode& anchorNode,
                            size_t anchorIndex,
-                           std::map<BasicBlock*, int, std::less<BasicBlock*>>* perPred) {
+                           std::map<BasicBlock*, int, std::less<BasicBlock*>>* perPred,
+                           const FeasibleDomainMap* feasible) {
     return walkSpan(
         frames, counter, producerNode, potential.producerIndex, potential.gap, anchor, anchorNode,
         anchorIndex,
@@ -534,13 +549,13 @@ SpanResult countAcrossSpan(const GirFrameAnalysis::Result& frames, const Decisio
             auto tail = tailDecisions.find({block, counter});
             return tail != tailDecisions.end() && count > tail->second;
         },
-        perPred);
+        perPred, feasible);
 }
 
 RequirementMap simulate(Function& function, const GirFrameAnalysis::Result& frames,
                         const PotentialMap& potentials, const DecisionMap& decisions,
                         const TailDecisionMap& tailDecisions) {
-    (void)function;
+    const FeasibleDomainMap feasible = computeFeasibleDomains(function, frames);
     RequirementMap requirements;
 
     // A `(block, frame)` pair can name several nodes, which differ only by the action that entered
@@ -569,7 +584,8 @@ RequirementMap simulate(Function& function, const GirFrameAnalysis::Result& fram
                     std::map<BasicBlock*, int, std::less<BasicBlock*>> perPred;
                     const SpanResult span =
                         countAcrossSpan(frames, decisions, tailDecisions, site.counter, producerNode,
-                                        potential, site.anchor, anchorNode, anchorIndex, &perPred);
+                                        potential, site.anchor, anchorNode, anchorIndex, &perPred,
+                                        &feasible);
                     // Only a walk that reached the anchor on NO path and ended some path by
                     // exhaustion is a modelling failure.  In a branching graph most paths simply
                     // lead elsewhere, so counting every one of those measures the graph, not a bug.
