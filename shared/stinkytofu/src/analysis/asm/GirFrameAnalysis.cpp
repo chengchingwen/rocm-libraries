@@ -586,15 +586,24 @@ std::pair<StinkyInstruction*, GirFrame> lastBarrierBefore(
     // `alsoFences` lets a caller that has DECIDED on a fence but not yet materialized it ask this
     // same question of its own plan.  One definition of "a barrier stands here", parameterized by
     // what counts as one, rather than a second walk that can drift from this one.
-    const auto inBlock = [&alsoFences](BasicBlock* bb, size_t upTo) -> StinkyInstruction* {
+    // A split all-wave barrier is ONE barrier, named by its signal: a drain between the two halves
+    // lets the wave announce completion before its own writes have landed.
+    const auto opensPair = [](const StinkyInstruction& inst) {
+        return isBarrierSignal(inst) && isSplitBarrierAllWave(inst);
+    };
+    const auto closesPair = [](const StinkyInstruction& inst) {
+        return isBarrierWait(inst) && isSplitBarrierAllWave(inst);
+    };
+    const auto inBlock = [&](BasicBlock* bb, size_t upTo) -> StinkyInstruction* {
         StinkyInstruction* found = nullptr;
         size_t index = 0;
         for (IRBase& node : *bb) {
             auto* inst = dyn_cast<StinkyInstruction>(&node);
             if (!inst) continue;
             if (index++ >= upTo) break;
-            if (isFence(*inst) || isBarrier(*inst) || (alsoFences && alsoFences(*inst)))
-                found = inst;
+            if (!(isFence(*inst) || isBarrier(*inst) || (alsoFences && alsoFences(*inst)))) continue;
+            if (closesPair(*inst) && found && opensPair(*found)) continue;
+            found = inst;
         }
         return found;
     };
