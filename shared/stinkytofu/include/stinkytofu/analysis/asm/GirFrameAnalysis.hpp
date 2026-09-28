@@ -35,7 +35,6 @@ struct GirGenerationSpec {
     int id = -1;
     int ring = 1;
     int entry = 0;
-    int advance = 0;
 };
 
 struct GirAccessSpec {
@@ -93,6 +92,7 @@ struct GirFrameContract {
     std::vector<GirFrameIncomingSpec> incomings;
     std::vector<GirFenceRelationSpec> relations;
     std::vector<GirFrameRequiresSpec> requires_;
+
 };
 
 struct GirFrame {
