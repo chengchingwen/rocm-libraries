@@ -535,11 +535,14 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         for (const auto& [frame, _incomingAction] : states) frames.insert(frame);
         result.blockFrames[block] = std::vector<GirFrame>(frames.begin(), frames.end());
     }
-    for (const auto& [block, states] : frameSets) {
-        for (const auto& [frame, incomingAction] : states) {
-            GirFrameNode node{block, frame, incomingAction};
+    // Program order, not `frameSets` order: the edge map keeps what it is given.
+    for (BasicBlock& block : function) {
+        auto states = frameSets.find(&block);
+        if (states == frameSets.end()) continue;
+        for (const auto& [frame, incomingAction] : states->second) {
+            GirFrameNode node{&block, frame, incomingAction};
             auto& successors = result.edges[node];
-            for (BasicBlock* succ : block->getSuccessors())
+            for (BasicBlock* succ : block.getSuccessors())
                 if (edgeFeasible(node, succ)) successors.push_back(advanceNode(node, succ));
         }
     }
@@ -697,14 +700,20 @@ GirFrameHazardAnalysis::Result GirFrameHazardAnalysis::run(Function& function,
                                   actionOf(producer.inst), actionOf(consumer.inst)});
     };
 
-    // `incoming` is hashed on the block address, and the hazard vector's order decides which of
-    // two occurrences of one pair a later dedup keeps.  Emit in the program's own order instead.
+    // Emit in program order, by POSITION: a label carries a per-run suffix, so ordering on it is
+    // as unstable as the address it replaced.
+    std::unordered_map<const BasicBlock*, size_t> position;
+    for (BasicBlock& block : function) position.emplace(&block, position.size());
+    const auto positionOf = [&position](const BasicBlock* block) {
+        auto found = position.find(block);
+        return found == position.end() ? std::numeric_limits<size_t>::max() : found->second;
+    };
     std::vector<const GirFrameNode*> order;
     order.reserve(incoming.size());
     for (const auto& [node, _state] : incoming) order.push_back(&node);
-    std::sort(order.begin(), order.end(), [](const GirFrameNode* lhs, const GirFrameNode* rhs) {
-        if (lhs->block->getLabel() != rhs->block->getLabel())
-            return lhs->block->getLabel() < rhs->block->getLabel();
+    std::sort(order.begin(), order.end(), [&](const GirFrameNode* lhs, const GirFrameNode* rhs) {
+        const size_t left = positionOf(lhs->block), right = positionOf(rhs->block);
+        if (left != right) return left < right;
         if (!(lhs->frame == rhs->frame)) return lhs->frame < rhs->frame;
         return lhs->incomingAction < rhs->incomingAction;
     });
