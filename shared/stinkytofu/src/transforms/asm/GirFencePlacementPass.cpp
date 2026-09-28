@@ -374,6 +374,21 @@ class GirFencePlacementPass final : public StinkyInstPass {
         const auto marked = [&markers](const StinkyInstruction& inst) {
             return markers.count(&inst) != 0;
         };
+        std::unordered_map<const StinkyInstruction*, size_t> position;
+        for (BasicBlock& block : function)
+            for (IRBase& node : block)
+                if (auto* inst = dyn_cast<StinkyInstruction>(&node))
+                    position.emplace(inst, position.size());
+        const auto inProgramOrder = [&position](const Markers& plan) {
+            std::vector<const StinkyInstruction*> out(plan.begin(), plan.end());
+            std::sort(out.begin(), out.end(), [&position](const auto* lhs, const auto* rhs) {
+                auto left = position.find(lhs), right = position.find(rhs);
+                const size_t l = left == position.end() ? SIZE_MAX : left->second;
+                const size_t r = right == position.end() ? SIZE_MAX : right->second;
+                return l < r;
+            });
+            return out;
+        };
 
         // Phase 1: cut every violating hazard, greedily, at the slot with the deepest residual.
         for (;;) {
@@ -415,7 +430,7 @@ class GirFencePlacementPass final : public StinkyInstPass {
         // the wait be graded instead of a drain.
         for (bool shrinking = true; shrinking;) {
             shrinking = false;
-            for (const StinkyInstruction* candidate : Markers(markers)) {
+            for (const StinkyInstruction* candidate : inProgramOrder(markers)) {
                 markers.erase(candidate);
                 size_t n = 0, sl = 0;
                 std::vector<size_t> v;
@@ -431,7 +446,7 @@ class GirFencePlacementPass final : public StinkyInstPass {
         // Phase 4: and only now does the plan become instructions.
         const size_t placed = markers.size();
         const size_t erased = 0;
-        for (const StinkyInstruction* target : markers) {
+        for (const StinkyInstruction* target : inProgramOrder(markers)) {
             auto* anchor = const_cast<StinkyInstruction*>(target);
             AsmIRBuilder builder(*anchor->getParent(), archId);
             StinkyInstruction* signal = builder.create(signalDesc, anchor);
