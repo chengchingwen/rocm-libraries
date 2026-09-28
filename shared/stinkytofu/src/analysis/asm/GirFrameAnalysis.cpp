@@ -22,6 +22,7 @@
 #include "stinkytofu/support/ErrorHandling.hpp"
 
 namespace stinkytofu {
+
 namespace {
 
 uint64_t edgeKey(const BasicBlock* from, const BasicBlock* to) {
@@ -58,15 +59,18 @@ GirFrame advanceFrame(const GirFrame& input, BasicBlock* from, BasicBlock* to,
                       const GirFrameContract& contract) {
     GirFrame result = input;
     for (const auto& [genId, loop] : genLoops) {
-        const GirGenerationSpec& gen = contract.generations.at(genId);
+        const int ring = contract.generations.at(genId).ring;
         // A back edge runs from inside the loop INTO the header.  Treating every edge out of the
         // latch as one rotated the loop's EXIT too, so a single-block loop handed its drain a
         // phase one trip ahead and a buffer aliased onto the wrong generation.
+        // The back edge rotates by its relative `incoming`, applied in `advanceNode`. Keep the
+        // setPhase here: a frame's identity is which generations appear in it, not only their
+        // values, so dropping the call changes the node even when the phase would not.
         const bool backEdge = to == loop->headerBB && loop->contains(from);
         if (backEdge)
-            result.setPhase(genId, (result.phaseOf(genId) + gen.advance) % gen.ring);
+            result.setPhase(genId, result.phaseOf(genId) % ring);
         else if (to == loop->headerBB)
-            result.setPhase(genId, gen.entry % gen.ring);
+            result.setPhase(genId, contract.generations.at(genId).entry % ring);
     }
     return result;
 }
@@ -451,14 +455,31 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
                 tied = true;
             }
         }
-        if (chosen && !tied) {
+        // An INCOMING names its destination block, so it says which loop rotates this generation
+        // exactly; the vote only counts where accesses happen to sit, and an unequal split across
+        // two loops is a silent majority rather than an error.
+        std::set<const Loop*> byIncoming;
+        for (const GirFrameIncomingSpec& in : result.contract.incomings) {
+            if (in.genId != genId) continue;
+            auto destinations = anchorEntries.find(in.destinationAction);
+            if (destinations == anchorEntries.end()) continue;
+            for (BasicBlock* block : destinations->second)
+                if (const Loop* loop = containingLoop(loops, block)) byIncoming.insert(loop);
+        }
+        if (byIncoming.size() == 1) {
+            genLoops[genId] = *byIncoming.begin();
+        } else if (chosen && !tied) {
             genLoops[genId] = chosen;
         } else if (!votes.empty()) {
             report_fatal_error("GirFrameAnalysis: generation maps ambiguously to ST loops");
-        } else if (result.contract.generations.at(genId).advance != 0) {
+        } else if (std::any_of(result.contract.incomings.begin(),
+                               result.contract.incomings.end(),
+                               [genId](const GirFrameIncomingSpec& in) {
+                                   return in.genId == genId && in.relative;
+                               })) {
             // Dropping it silently leaves its phase at 0 for the whole function, so every access
             // collapses onto `gdelta % ring` and distinct buffers alias onto one storage id.
-            // `advance == 0` never rotates by construction -- a guard generation is one.
+            // A generation rotates exactly when a relative incoming advances it; a guard has none.
             report_fatal_error("GirFrameAnalysis: rotating generation maps to no ST loop");
         }
     }

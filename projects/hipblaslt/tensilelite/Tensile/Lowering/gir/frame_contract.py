@@ -532,8 +532,7 @@ def install_frame_contract(prog, st_module):
     contract = build_contract(prog)
     out = GirFrameContract()
     for generation in sorted(contract.generations.values(), key=lambda g: g.id):
-        out.addGeneration(id=generation.id, ring=generation.ring, entry=generation.entry,
-                          advance=generation.advance)
+        out.addGeneration(id=generation.id, ring=generation.ring, entry=generation.entry)
     for edge in contract.edges:
         out.addIncoming(dst=edge.dst, src=edge.src, gen=edge.gen, value=edge.value,
                         relative=edge.relative)

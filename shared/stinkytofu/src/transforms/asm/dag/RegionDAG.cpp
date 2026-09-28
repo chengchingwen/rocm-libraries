@@ -144,31 +144,6 @@ static void orderInRegion(RegionDAG& dag, StinkyInstruction* before, StinkyInstr
     addEdgeById(&dag.nodes[from->second], &dag.nodes[to->second], dag.graph);
 }
 
-/// Pin every GIR fence between the ends of the cross-agent hazards it owns.  A fence no longer
-/// cuts a scheduling region, so these edges are what keep it in its admissible window; a
-/// loop-carried producer is a trip away and needs no edge of its own.
-static void addGirFenceEdges(RegionDAG& dag, const GirFrameHazardAnalysis::Result& hazards,
-                             const GirFrameAnalysis::Result& frames) {
-    for (const GirFrameHazard& hazard : hazards.hazards) {
-        if (!hazard.crossAgent) continue;
-        for (const GirFenceRelationSpec& relation : frames.contract.relations) {
-            if (relation.kind != hazard.kind ||
-                relation.producerAction != hazard.producerAction ||
-                relation.consumerAction != hazard.consumerAction ||
-                (relation.gap == 0) != (hazard.gap == 0))
-                continue;
-            auto owned = frames.actionInstructions.find(relation.fenceAction);
-            if (owned == frames.actionInstructions.end()) continue;
-            for (StinkyInstruction* fence : owned->second) {
-                if (!isFence(*fence) && !isBarrier(*fence)) continue;
-                if (hazard.gap == 0)
-                    orderInRegion(dag, hazard.producer, fence, "GIR fence precedes its producer");
-                orderInRegion(dag, fence, hazard.consumer, "GIR fence follows its consumer");
-            }
-        }
-    }
-}
-
 /// Keep the pieces of one fence in their emitted order.  The order-only FENCE and the two halves
 /// of the barrier share no register, so nothing else stops the wait from being issued first.
 static void chainGirFencePieces(RegionDAG& dag, const GirFrameAnalysis::Result& frames) {
@@ -196,7 +171,6 @@ void addGirFrameHazardEdges(RegionDAG& dag, const GirFrameHazardAnalysis::Result
                       "GIR frame hazard introduces a scheduling DAG cycle");
     }
     chainGirFencePieces(dag, frames);
-    addGirFenceEdges(dag, hazards, frames);
 }
 
 void dumpDAGGraph(const RegionDAG& dag, std::ostream& os,

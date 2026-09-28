@@ -5,9 +5,9 @@
 # the PREVIOUS trip landed -- the wait it needs is on a copy that crossed the back edge, which is
 # the case a straight-line body cannot express.
 #
-# The `transfer` record is what rotates the phase across the back edge; the `incoming` record pins
-# the phase the prologue arm delivers.  Without them the two predecessors of ^loop disagree and no
-# single placement is correct.
+# `advance` rotates the phase across the back edge; the `incoming` record pins the phase the
+# prologue arm delivers.  Without them the two predecessors of ^loop disagree and no single
+# placement is correct.
 #
 # CHECK-LABEL: @gir_frame_waitcnt_loop_rotation
 # CHECK: ^loop:
@@ -24,9 +24,7 @@ gir-frame-contract
 
 # one LDS double-buffer, entering at phase 0 and rotating one buffer per trip
 gen 0  ring=2 entry=0 advance=1
-
 incoming  dst=1 src=0 gen=0 value=0
-transfer  dst=1 src=1 gen=0 delta=1
 }
 
 st.func @gir_frame_waitcnt_loop_rotation() {

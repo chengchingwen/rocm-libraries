@@ -1593,11 +1593,11 @@ void init_stinkytofu(nb::module_ m) {  // NOLINT(misc-use-internal-linkage)
         .def(nb::init<>())
         .def(
             "addGeneration",
-            [](GirFrameContract& c, int id, int ring, int entry, int advance) {
-                c.generations[id] = GirGenerationSpec{id, ring, entry, advance};
+            [](GirFrameContract& c, int id, int ring, int entry) {
+                c.generations[id] = GirGenerationSpec{id, ring, entry};
                 c.loaded = true;
             },
-            nb::arg("id"), nb::arg("ring"), nb::arg("entry"), nb::arg("advance"))
+            nb::arg("id"), nb::arg("ring"), nb::arg("entry"))
         .def(
             "addIncoming",
             [](GirFrameContract& c, uint64_t dst, uint64_t src, int gen, int value, bool relative) {

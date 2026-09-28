@@ -21,13 +21,12 @@ Nothing in the contract appears in the generated `.s`, so a change to what
 crosses is invisible to an assembly diff. Gate contract changes on comparing
 generated assembly, not on the contract alone.
 
-This document is in three parts:
+This document is in two parts:
 
 | Part | Contents |
 | --- | --- |
 | [Set by the producer](#part-1--set-by-the-producer) | The input surface. Everything a frontend must supply. |
 | [Built by the analysis](#part-2--built-by-the-analysis) | Internal structures derived from that input. Not settable. |
-| [Dead surface](#part-3--dead-surface) | Declared, never populated. |
 
 ---
 
@@ -111,28 +110,84 @@ Parsed by `src/serialization/asm/ModifierSerializer.cpp:708`:
 ## 1.2 Per module
 
 ```cpp
-contract.addGeneration(id, ring, entry, advance);
+contract.addGeneration(id, ring, entry);
 contract.addIncoming(dst, src, gen, value, relative);
 contract.addRequires(dst, src, gen, values);
 module.setGirFrameContract(std::make_shared<const GirFrameContract>(contract));
 ```
 
 Those three are the whole settable surface
-(`src/conversion/rocisa/ToStinkyTofuUtils.cpp:1592-1615`); each also sets
-`loaded`. A caller may equally populate the members directly.
+(`src/conversion/rocisa/ToStinkyTofuUtils.cpp`); each also sets `loaded`. A
+caller may equally populate the members directly.
+
+### What the three records state
+
+They describe the **producer's** control-flow graph, not StinkyTofu's. The
+producer has blocks, phis and per-trip transfers; the contract restates those
+facts in the one name that survives lowering.
+
+| Record | What it states |
+| --- | --- |
+| `gen id ring entry` | A rotating buffer: how deep it is, and the phase it enters at. |
+| `incoming dst src gen value` | A **phi input**: at producer block `dst`, generation `gen` receives `value` along the edge from producer block `src`. |
+| `requires dst src gen values` | A **guard on that same edge**: it is takeable only when `gen` holds one of `values`. |
+
+There is no frame-node id to key on, and there cannot be: the walk at
+`:519-536` consults `incoming` and `requires` to decide each successor's phase,
+and that phase is part of the node's identity. The frame graph is the result of
+reading these records, so it cannot also be their subject.
+
+### Anchors — how an edge names a block
+
+`dst` and `src` are producer blocks written as **anchor actions**, because
+producer blocks have no StinkyTofu identity.
+
+`GirActionData::anchorAction` is that name. Every action **declares** the anchor
+it hangs from; StinkyTofu never derives one. The actions sharing an anchor are
+one producer block, and `anchorBlocks[anchor]` (`GirFrameAnalysis.cpp:352`) is
+the set of `BasicBlock`s that producer block became. The anchor need not be an
+action any instruction carries — an edge endpoint is valid if it is a realized
+action **or** a named anchor (`:391`).
+
+Two mappings, and only the second is one-to-one:
+
+| Direction | Multiplicity | Cause |
+| --- | --- | --- |
+| producer block to `BasicBlock` | one to many | CFG splitting at labels, region cloning |
+| anchor to producer block | one to one | the producer assigns it |
+
+Because a `BasicBlock` may hold instructions from two producer blocks — nothing
+splits them when no label intervenes — it is filed under **both** anchors, and
+`blockAnchor` must still pick one. It takes the anchor of the **largest action
+id** in that block (`:353-358`). That is the *outgoing* side: `advanceNode`
+(`:496-500`) uses `blockAnchor` to answer "which producer block am I leaving",
+and control leaving a merged block leaves the last one. The incoming side needs
+no winner, which is why `anchorBlocks` keeps both.
+
+Whether a merged block occurs in practice is unmeasured; the tie-break may be
+defensive.
 
 ### `GirGenerationSpec` — from `addGeneration`
 
-`GirFrameAnalysis.hpp:34`. One rotating buffer set. **All four fields:**
+`GirFrameAnalysis.hpp:34`. One rotating buffer. **All three fields:**
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `id` | `int` | `-1` | Identity of the rotation. |
 | `ring` | `int` | `1` | Period: how many buffers it cycles through. |
-| `entry` | `int` | `0` | Phase on entry to the loop that rotates it. |
-| `advance` | `int` | `0` | How far one trip advances the phase. `0` never rotates — a guard generation is one. |
+| `entry` | `int` | `0` | Phase held on entry to the loop that rotates it. |
 
-Every generation must map to exactly one loop; see [Validation](#validation).
+There is no per-trip step. A **relative** `incoming` on the back edge is the only
+statement of the rotation, and it is what `advanceFrame`'s back-edge branch used
+to duplicate.
+
+`entry` cannot move to an edge the same way. `advanceFrame` applies it on every
+non-back edge into a loop header, including edges no `incoming` covers.
+
+`ring` cannot either, though `GirAccessSpec::ring` carries the same number.
+Taking it from the accesses changes 601 of 1116 mxf8 kernels. Overriding the
+*value* in place is byte-identical, so the numbers agree; why sourcing it
+elsewhere does not is unresolved. Treat `ring` as load-bearing.
 
 ### `GirFrameIncomingSpec` — from `addIncoming`
 
@@ -146,6 +201,9 @@ fields:**
 | `genId` | `int` | `-1` | Which generation this states. |
 | `value` | `int` | `0` | The phase, or the step when `relative`. |
 | `relative` | `bool` | `false` | `false` — the edge **assigns** `value`. `true` — the edge **advances** the phase by `value`. |
+
+A relative incoming on a back edge is what rotates a generation once per trip.
+It is the only statement of that fact.
 
 ### `GirFrameRequiresSpec` — from `addRequires`
 
@@ -169,9 +227,8 @@ that `.stir` tests carry as a module metadata block:
 st.metadata "gir.frame_contract" {
 gir-frame-contract
 
-gen 0  ring=2 entry=0 advance=1
+gen 0  entry=0
 incoming  dst=1 src=0 gen=0 value=0
-transfer  dst=1 src=1 gen=0 delta=1
 }
 ```
 
@@ -180,9 +237,7 @@ the five registered tests depending on it —
 `FileCheck.gir_frame_waitcnt_{fused_copy_group, guarded_prologue_join,
 inflight_depth, loop_rotation, war_retire_depth}` — all fail: the block is
 ignored, so the analysis is empty and the pass emits nothing. Treat the syntax as
-a record of intent until a parser exists. `transfer` has no struct counterpart of
-its own; the closest is `GirFrameIncomingSpec` with `relative = true` and `delta`
-as `value`, but that correspondence is **unverified** — no code implements it.
+a record of intent until a parser exists.
 
 Instruction-level data is unaffected: `mod.gir_action` *is* parsed.
 
@@ -230,7 +285,7 @@ with `absolute` spelled `absoluteGeneration`. **All nine fields:**
 
 ### `GirFrameContract` — the assembled whole
 
-`GirFrameAnalysis.hpp:87`. **All seven members**, by origin:
+`GirFrameAnalysis.hpp`. **All six members**, by origin:
 
 | Member | Origin |
 | --- | --- |
@@ -240,7 +295,6 @@ with `absolute` spelled `absoluteGeneration`. **All nine fields:**
 | `requires_` | Part 1.2, `addRequires` |
 | `actions` | **derived** from `GirActionData` |
 | `accesses` | **derived** from `GirAccessData` |
-| `relations` | **never populated** — see Part 3 |
 
 ## 2.2 Storage identity
 
@@ -305,26 +359,6 @@ silently would leave its phase at 0 for the whole function, collapsing every
 access onto `gdelta % ring` and aliasing distinct buffers onto one storage id.
 
 ---
-
-# Part 3 — Dead surface
-
-### `GirFenceRelationSpec`
-
-`GirFrameAnalysis.hpp:54`. Declared, and read by `addGirFenceEdges`
-(`src/transforms/asm/dag/RegionDAG.cpp:154`) to turn a fence/hazard pairing into
-scheduling-order edges. **But `GirFrameContract::relations` has no writer** —
-there is no `addRelation`, and nothing in the analysis populates it — so the
-vector is always empty and that loop never executes.
-
-Recorded for completeness; treat it as unimplemented rather than as a channel:
-
-| Field | Type | Default | Intended meaning |
-| --- | --- | --- | --- |
-| `fenceAction` | `uint64_t` | `0` | The `Fence` action. |
-| `kind` | `GirHazardKind` | `RAW` | Which hazard kind it discharges. |
-| `producerAction` | `uint64_t` | `0` | Producer side. |
-| `consumerAction` | `uint64_t` | `0` | Consumer side. |
-| `gap` | `int` | `0` | Same-trip (`0`) or later-trip; matched on zero-ness, not value. |
 
 ## Related documents
 

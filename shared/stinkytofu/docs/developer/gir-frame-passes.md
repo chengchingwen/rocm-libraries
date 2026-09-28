@@ -94,13 +94,18 @@ phase 0 and propagates:
 
 ```cpp
 const bool backEdge = to == loop->headerBB && loop->contains(from);
-if (backEdge)          phase = (phase + gen.advance) % gen.ring;
+if (backEdge)          phase = phaseOf(genId) % gen.ring;   // the relative incoming rotates it
 else if (to == header) phase = gen.entry % gen.ring;
 ```
 
-Only a **back edge** rotates. Treating every edge out of the latch as one
-rotated the loop's *exit* too, which handed the drain a phase one trip ahead and
-aliased a buffer onto the wrong generation.
+Only an edge into the header touches the phase here. Treating every edge out of
+the latch as a back edge rotated the loop's *exit* too, which handed the drain a
+phase one trip ahead and aliased a buffer onto the wrong generation.
+
+The back-edge branch looks like a no-op and is not. `setPhase` inserts when the
+generation is absent, and a frame compares by its vector, so the call keeps the
+generation present in the node even though the phase is unchanged. Dropping it
+changes 601 of 1116 mxf8 kernels.
 
 ### Mapping generations to loops
 
