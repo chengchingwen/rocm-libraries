@@ -545,11 +545,17 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
     for (const GirFrameIncomingSpec& incoming : result.contract.incomings) {
         if (!result.contract.generations.contains(incoming.genId))
             report_fatal_error("GirFrameAnalysis: INCOMING names unknown generation");
+        auto destinations = anchorEntries.find(incoming.destinationAction);
+        const bool source = realizedAnchors.contains(incoming.sourceAction);
+        const bool destination = destinations != anchorEntries.end();
+        // The contract is MODULE scope and this is one function of it, so an edge between two
+        // actions neither of which lands here belongs to another function. One end landing and the
+        // other not is a dangling edge, which is still an error.
+        if (!source && !destination) continue;
         if (!namedActions.contains(incoming.sourceAction) ||
             !namedActions.contains(incoming.destinationAction))
             report_fatal_error("GirFrameAnalysis: INCOMING names unknown action");
-        auto destinations = anchorEntries.find(incoming.destinationAction);
-        if (!realizedAnchors.contains(incoming.sourceAction) || destinations == anchorEntries.end())
+        if (!source || !destination)
             report_fatal_error(
                 "GirFrameAnalysis: INCOMING action anchor has no physical realization");
         const int ring = result.contract.generations.at(incoming.genId).ring;
@@ -568,15 +574,20 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
     std::unordered_map<int, const Loop*> genLoops;
     for (const auto& [genId, _gen] : result.contract.generations) {
         std::unordered_map<const Loop*, size_t> votes;
+        bool realizedHere = false;
         for (const GirAccessSpec& access : result.contract.accesses) {
             if (access.genId != genId) continue;
             auto actionIt = result.actionInstructions.find(access.actionId);
             if (actionIt == result.actionInstructions.end()) continue;
             for (StinkyInstruction* inst : actionIt->second) {
+                realizedHere = true;
                 const Loop* loop = containingLoop(loops, instructionBlock.at(inst));
                 if (loop) ++votes[loop];
             }
         }
+        // The contract is MODULE scope; a generation no access here realizes is another
+        // function's and has no loop of ours to map to.
+        if (!realizedHere) continue;
         const Loop* chosen = nullptr;
         size_t best = 0;
         bool tied = false;
