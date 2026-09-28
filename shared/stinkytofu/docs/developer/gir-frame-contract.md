@@ -9,47 +9,47 @@ here that disagrees with them is a bug in this document.
 
 The frame contract tells StinkyTofu which rotating buffer each shared-memory
 access touches. It is the sole input to
-[`GirFrameAnalysis` and the GIR frame passes](gir-frame-passes.md). Without a
-contract those passes see an empty result and do nothing.
+[`GirFrameAnalysis` and the GIR frame passes](gir-frame-passes.md). Without one
+those passes see an empty result and do nothing.
 
-The contract carries **rotation facts only** — never instructions, never waits,
-never barriers. It says "this `tensor_load_to_lds` writes operand `A`, region 0,
-one generation ahead of the loop-carried phase, on a rotation of period 2". What
-that implies for barriers and `s_wait_*cnt` is decided entirely inside
-StinkyTofu.
+It carries **rotation facts only** — never instructions, never waits, never
+barriers. It says "this `tensor_load_to_lds` writes operand `A`, region 0, one
+generation ahead of the loop-carried phase, on a rotation of period 2". What
+that implies for barriers and `s_wait_*cnt` is decided inside StinkyTofu.
 
-Nothing in the contract appears in the generated `.s`. A change to what crosses
-is therefore invisible to an assembly diff, which is why contract changes must be
-gated on comparing generated assembly rather than on the contract alone.
+Nothing in the contract appears in the generated `.s`, so a change to what
+crosses is invisible to an assembly diff. Gate contract changes on comparing
+generated assembly, not on the contract alone.
 
-## Two channels
+This document is in three parts:
 
-Facts arrive by two routes, and which one carries what is a deliberate split.
-
-```mermaid
-flowchart LR
-  a["Instruction modifier: GirActionData"] --> an["GirFrameAnalysis"]
-  b["Module: setGirFrameContract(GirFrameContract)"] --> an
-  an --> h["GirFrameHazardAnalysis"]
-```
-
-**Per instruction** — a `GirActionData` modifier. Everything that is a fact
-*about an instruction* rides on that instruction: its GIR identity and every
-shared-memory touch it performs. This survives IR conversion, logical lowering,
-CFG splitting and scheduling, because the fact moves with the instruction rather
-than being held in a side table keyed by position.
-
-**Per module** — `StinkyAsmModule::setGirFrameContract`, holding a
-`std::shared_ptr<const GirFrameContract>`. Only what belongs to *no* single
-instruction travels here: the generation table, the phi edges, the guard
-constraints, and the fence relations.
-
-Both are structs. Nothing is encoded, so there is no text format for a writer
-and a reader to disagree about.
+| Part | Contents |
+| --- | --- |
+| [Set by the producer](#part-1--set-by-the-producer) | The input surface. Everything a frontend must supply. |
+| [Built by the analysis](#part-2--built-by-the-analysis) | Internal structures derived from that input. Not settable. |
+| [Dead surface](#part-3--dead-surface) | Declared, never populated. |
 
 ---
 
-## Per-instruction data
+# Part 1 — Set by the producer
+
+Two channels, and which one carries what is a deliberate split.
+
+```mermaid
+flowchart LR
+  a["per instruction: GirActionData modifier"] --> an["GirFrameAnalysis"]
+  b["per module: setGirFrameContract"] --> imp["GirFrameContractImportPass"] --> an
+```
+
+**Per instruction** — a `GirActionData` modifier. Every fact *about an
+instruction* rides on it, and so survives IR conversion, logical lowering, CFG
+splitting and scheduling.
+
+**Per module** — `StinkyAsmModule::setGirFrameContract`, holding a
+`std::shared_ptr<const GirFrameContract>`. Only what belongs to *no* single
+instruction: the generation table, the phi edges, the guard constraints.
+
+## 1.1 Per instruction
 
 ### `GirActionKind`
 
@@ -72,14 +72,14 @@ enum class GirActionKind : uint8_t { Other, Read, Copy, Fence, Wmma, WaitCnt };
 
 ### `GirActionData`
 
-`StinkyModifiers.hpp:1136`. The instruction's GIR identity.
+`StinkyModifiers.hpp:1136`. **All four fields:**
 
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `actionId` | `uint64_t` | Identity of the GIR action this instruction realizes. Several instructions may share one id when one action expands to many. |
-| `anchorAction` | `uint64_t` | The action this one hangs from. Used to locate the physical block an action's edges attach to. |
-| `kind` | `GirActionKind` | Role, above. |
-| `accesses` | `vector<GirAccessData>` | Every shared-memory touch this instruction makes. Empty for an action that touches no LDS. |
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `actionId` | `uint64_t` | `0` | Identity of the GIR action this instruction realizes. Several instructions may share one id when one action expands to many. |
+| `anchorAction` | `uint64_t` | `0` | The action this one hangs from; locates the physical block an action's edges attach to. |
+| `kind` | `GirActionKind` | `Other` | Role, above. |
+| `accesses` | `vector<GirAccessData>` | `{}` | Every shared-memory touch. Empty for an action touching no LDS. |
 
 ### `GirAccessData`
 
@@ -88,40 +88,40 @@ enum class GirActionKind : uint8_t { Other, Read, Copy, Fence, Wmma, WaitCnt };
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `isWrite` | `bool` | `false` | Write, else read. A read/read pair is never a hazard. |
-| `operand` | `std::string` | `""` | Operand name: `A`, `B`, `MXSA`, `MXSB`, ... Part of the storage identity, compared by value. |
-| `ring` | `int` | `1` | Period of the rotation this access participates in. `1` means it never rotates. |
-| `genId` | `int` | `-1` | Which generation rotates it. **`-1` means not bound to a generation**, so the access is pinned or static. |
+| `operand` | `std::string` | `""` | `A`, `B`, `MXSA`, `MXSB`, ... Part of the storage identity, compared by value. |
+| `ring` | `int` | `1` | Period of the rotation. `1` never rotates. |
+| `genId` | `int` | `-1` | Which generation rotates it. **`-1` = not bound to a generation.** |
 | `gdelta` | `int` | `0` | Offset from the loop-carried phase, in generations. |
-| `absolute` | `int` | `-1` | A pinned phase. **`-1` means relative** — resolve through the frame instead. |
-| `crossAgent` | `bool` | `false` | Whether agents other than this wave observe the access. This is what makes a hazard need a barrier rather than only a wait. |
-| `region` | `int` | `-1` | The one storage region this touch selects. **`-1` names the whole operand**, so it meets every region of the same operand. |
+| `absolute` | `int` | `-1` | A pinned phase. **`-1` = relative**, resolve through the frame. |
+| `crossAgent` | `bool` | `false` | Observed by agents other than this wave. This is what makes a hazard need a barrier rather than only a wait. |
+| `region` | `int` | `-1` | The one storage region selected. **`-1` = the whole operand**, meeting every region of that operand. |
 
----
+### Spelling in `.stir`
 
-## Module data
+Parsed by `src/serialization/asm/ModifierSerializer.cpp:708`:
 
-### `GirFrameContract`
+```text
+{ mod.gir_action = { action = 1, anchor = 1, kind = copy,
+                     access0_write = 1, access0_operand = A, access0_ring = 2,
+                     access0_gen = 0, access0_gdelta = 1, access0_abs = 0 } }
+```
 
-`GirFrameAnalysis.hpp:87`. **All seven members:**
+`access<N>_` repeats per access. `kind` is the lowercased enumerator.
 
-| Member | Type | Meaning |
-| --- | --- | --- |
-| `loaded` | `bool` | Whether a contract was supplied *at all*, as opposed to one that supplied no facts. Every `add*` call sets it. |
-| `generations` | `map<int, GirGenerationSpec>` | The rotation table, keyed by generation id. |
-| `actions` | `map<uint64_t, GirActionSpec>` | Action table, keyed by action id. |
-| `accesses` | `vector<GirAccessSpec>` | Flat access list; `GirActionSpec::accesses` indexes into it. |
-| `incomings` | `vector<GirFrameIncomingSpec>` | Per-edge phase assignments. |
-| `relations` | `vector<GirFenceRelationSpec>` | Which fence discharges which hazard. |
-| `requires_` | `vector<GirFrameRequiresSpec>` | Per-edge phase constraints. |
+## 1.2 Per module
 
-A caller may populate the members directly. `src/conversion/rocisa/ToStinkyTofuUtils.cpp`
-additionally exposes three construction helpers — `addGeneration`, `addIncoming`
-and `addRequires` — each of which appends one record and sets `loaded`. Note
-those three cover only the generation table, the incomings and the guard
-constraints: `actions`, `accesses` and `relations` reach the analysis by other
-means, the first two on the instructions themselves.
+```cpp
+contract.addGeneration(id, ring, entry, advance);
+contract.addIncoming(dst, src, gen, value, relative);
+contract.addRequires(dst, src, gen, values);
+module.setGirFrameContract(std::make_shared<const GirFrameContract>(contract));
+```
 
-### `GirGenerationSpec`
+Those three are the whole settable surface
+(`src/conversion/rocisa/ToStinkyTofuUtils.cpp:1592-1615`); each also sets
+`loaded`. A caller may equally populate the members directly.
+
+### `GirGenerationSpec` — from `addGeneration`
 
 `GirFrameAnalysis.hpp:34`. One rotating buffer set. **All four fields:**
 
@@ -129,42 +129,12 @@ means, the first two on the instructions themselves.
 | --- | --- | --- | --- |
 | `id` | `int` | `-1` | Identity of the rotation. |
 | `ring` | `int` | `1` | Period: how many buffers it cycles through. |
-| `entry` | `int` | `0` | Phase held on entry to the loop that rotates it. |
-| `advance` | `int` | `0` | How far one trip of that loop advances the phase. `0` never rotates — a guard generation is one. |
+| `entry` | `int` | `0` | Phase on entry to the loop that rotates it. |
+| `advance` | `int` | `0` | How far one trip advances the phase. `0` never rotates — a guard generation is one. |
 
-The analysis requires every generation to map to exactly one loop; see
-[Validation](#validation).
+Every generation must map to exactly one loop; see [Validation](#validation).
 
-### `GirAccessSpec`
-
-`GirFrameAnalysis.hpp:41`. The contract-table form of an access — the same facts
-as `GirAccessData` plus the owning action, and with `absolute` spelled
-`absoluteGeneration`. **All nine fields:**
-
-| Field | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `actionId` | `uint64_t` | `0` | The action that performs this access. |
-| `isWrite` | `bool` | `false` | Write, else read. |
-| `genId` | `int` | `-1` | Generation, or `-1` for none. |
-| `ring` | `int` | `1` | That generation's period. |
-| `gdelta` | `int` | `0` | Offset from the loop-carried phase. |
-| `absoluteGeneration` | `int` | `-1` | Pinned phase, or `-1` for relative. |
-| `crossAgent` | `bool` | `false` | Observed by other agents. |
-| `operand` | `std::string` | `""` | Operand name. |
-| `region` | `int` | `-1` | Storage region, `-1` for the whole operand. |
-
-### `GirActionSpec`
-
-`GirFrameAnalysis.hpp:70`. **All four fields:**
-
-| Field | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `id` | `uint64_t` | `0` | Action identity. |
-| `anchorAction` | `uint64_t` | `0` | The action this one hangs from. |
-| `kind` | `GirActionKind` | `Other` | Role. |
-| `accesses` | `vector<size_t>` | `{}` | Indices into `GirFrameContract::accesses`. |
-
-### `GirFrameIncomingSpec`
+### `GirFrameIncomingSpec` — from `addIncoming`
 
 `GirFrameAnalysis.hpp:62`. What phase a generation takes on one edge. **All five
 fields:**
@@ -177,12 +147,11 @@ fields:**
 | `value` | `int` | `0` | The phase, or the step when `relative`. |
 | `relative` | `bool` | `false` | `false` — the edge **assigns** `value`. `true` — the edge **advances** the phase by `value`. |
 
-### `GirFrameRequiresSpec`
+### `GirFrameRequiresSpec` — from `addRequires`
 
-`GirFrameAnalysis.hpp:80`. The mirror of `GirFrameIncomingSpec`: incoming
-*assigns* a phase on an edge, this *constrains* one, so a guard generation can
-refuse arms that cannot reach a successor. **Absence constrains nothing.** All
-four fields:
+`GirFrameAnalysis.hpp:80`. The mirror of the above: incoming *assigns* a phase on
+an edge, this *constrains* one, so a guard generation can refuse arms that cannot
+reach a successor. **Absence constrains nothing.** All four fields:
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
@@ -191,118 +160,10 @@ four fields:
 | `genId` | `int` | `-1` | Which generation is constrained. |
 | `values` | `vector<int>` | `{}` | The edge is takeable only when `genId` holds one of these. |
 
-### `GirFenceRelationSpec`
+### Spelling in `.stir` — currently not wired up
 
-`GirFrameAnalysis.hpp:54`. Which fence discharges which hazard. **All five
-fields:**
-
-| Field | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `fenceAction` | `uint64_t` | `0` | The `Fence` action. |
-| `kind` | `GirHazardKind` | `RAW` | Which hazard kind it discharges. |
-| `producerAction` | `uint64_t` | `0` | Producer side. |
-| `consumerAction` | `uint64_t` | `0` | Consumer side. |
-| `gap` | `int` | `0` | Same-trip (`0`) or later-trip (non-zero). Matched on zero-ness, not on value. |
-
-Relations are **not** used to place fences or derive waits. Their one consumer is
-`addGirFenceEdges` (`src/transforms/asm/dag/RegionDAG.cpp:150`), which turns each
-match into scheduling-order edges so a fence stays in its admissible window:
-`fence` before `consumer` always, and `producer` before `fence` when
-`gap == 0`. A loop-carried producer is a trip away and needs no edge of its own.
-
----
-
-## Storage identity
-
-An access names concrete storage only once a **frame** — an assignment of a phase
-to every generation — is supplied:
-
-```text
-phase   = absoluteGeneration >= 0
-          ? absoluteGeneration mod ring
-          : (frame.phaseOf(genId) + gdelta) mod ring
-
-storage = (operand, region, phase)
-```
-
-`concreteStorage` (`src/analysis/asm/GirFrameAnalysis.cpp:93`) interns that
-triple into a dense integer id. **The triple is the whole identity**: two
-accesses collide if and only if they agree on operand, region and phase. A
-`region` of `-1` meets every region of the same operand
-(`disjointRegions`, `:75`).
-
-The pinned/relative split is structural rather than a flag to interpret: an
-access at a compile-time known chunk carries `absoluteGeneration` and no
-generation; a loop-carried access carries a generation and a `gdelta`.
-
-## Frame and node types
-
-| Type | Fields | Meaning |
-| --- | --- | --- |
-| `GirFrame` | `phases: vector<pair<int,int>>` | Phase per generation. `phaseOf(genId)`, `setPhase(genId, phase)`. Ordered by `phases`, so frames are comparable and hashable (`GirFrameHash`). |
-| `GirFrameNode` | `block`, `frame`, `incomingAction` | A point in the frame graph. `incomingAction` records which action's edge entered, so one `(block, frame)` pair reached two ways stays two nodes. |
-| `GirAccessOccurrence` | `inst`, `block`, `instructionIndex`, `accessIndex`, `frame`, `storage` | One dynamic touch: an access of an instruction, at a frame, resolved to a storage id. |
-
-## Validation
-
-`GirFrameAnalysis` refuses a malformed contract rather than degrading. Each is a
-`report_fatal_error`:
-
-| Condition | Message fragment |
-| --- | --- |
-| An incoming names a generation not in the table | `INCOMING names unknown generation` |
-| An incoming names an action nothing realized | `INCOMING names unknown action` |
-| An incoming's anchor has no instruction | `INCOMING action anchor has no physical realization` |
-| Two incomings disagree on one physical block | `conflicting INCOMING values for physical block` |
-| A generation's accesses tie across two loops | `generation maps ambiguously to ST loops` |
-| A rotating generation maps to no loop | `rotating generation maps to no ST loop` |
-
-The last is worth understanding. Generations are mapped to loops by majority vote
-over the blocks their accesses live in. Dropping an unmapped generation silently
-would leave its phase at 0 for the whole function, so every access would collapse
-onto `gdelta % ring` and distinct buffers would alias onto one storage id. A
-generation with `advance == 0` never rotates by construction, so only a rotating
-one triggers the error.
-
-## How the contract reaches a function
-
-```mermaid
-flowchart LR
-  m["StinkyAsmModule::setGirFrameContract"] --> imp["GirFrameContractImportPass"]
-  imp --> f["Function struct metadata @ kGirFrameContractKey"]
-  f --> an["GirFrameAnalysis::run"]
-  inst["GirActionData on instructions"] --> an
-```
-
-`GirFrameContractImportPass` (`src/transforms/asm/GirFrameContractImportPass.cpp`)
-copies the module's `shared_ptr<const GirFrameContract>` onto each function as
-struct metadata under `kGirFrameContractKey` (`"gir.frame_contract"`).
-`GirFrameAnalysis::run` reads it back with
-`function.getStructMetaData<GirFrameContract>(kGirFrameContractKey)` and returns
-an empty result when it is absent or `loaded` is false.
-
-The import pass refuses two states rather than proceeding:
-
-| Condition | Message |
-| --- | --- |
-| GIR pipeline on, module carries no contract | `GIR frame pipeline enabled but the module carries no frame contract` |
-| Contract present but no instruction carries an action tag | `GIR frame contract imported but rocisa conversion produced no action tags` |
-
-The second is a genuine consistency check: a generation table with no tagged
-instruction describes rotations nothing performs.
-
-`generations`, `incomings`, `relations` and `requires_` arrive this way.
-`actions` and `accesses` do **not** — `GirFrameAnalysis` builds those by
-scanning every instruction's `GirActionData` modifier
-(`src/analysis/asm/GirFrameAnalysis.cpp:330-344`), interning each
-`GirAccessData` as a `GirAccessSpec` and recording its index on the owning
-`GirActionSpec`.
-
-## The text form — currently not wired up
-
-`kGirFrameContractMarker` (`"gir-frame-contract"`) names a line-oriented
-`tag [positional] key=value` form that appears in `.stir` tests as a module
-metadata block:
+`kGirFrameContractMarker` (`"gir-frame-contract"`) names a line-oriented form
+that `.stir` tests carry as a module metadata block:
 
 ```text
 st.metadata "gir.frame_contract" {
@@ -314,25 +175,156 @@ transfer  dst=1 src=1 gen=0 delta=1
 }
 ```
 
-**No parser for this block exists in the tree.** Nothing reads
-`kGirFrameContractMarker`, and the five registered tests that depend on it —
+**No parser for this block exists.** Nothing reads `kGirFrameContractMarker`, and
+the five registered tests depending on it —
 `FileCheck.gir_frame_waitcnt_{fused_copy_group, guarded_prologue_join,
 inflight_depth, loop_rotation, war_retire_depth}` — all fail: the block is
-ignored, so `GirFrameAnalysis` is empty and the pass emits nothing. Treat the
-syntax above as a record of intent, not as a supported input, until a parser
-exists.
+ignored, so the analysis is empty and the pass emits nothing. Treat the syntax as
+a record of intent until a parser exists. `transfer` has no struct counterpart of
+its own; the closest is `GirFrameIncomingSpec` with `relative = true` and `delta`
+as `value`, but that correspondence is **unverified** — no code implements it.
 
-Note the `transfer` record has no struct counterpart of its own; the closest is
-`GirFrameIncomingSpec` with `relative = true`, where `delta` would be `value`.
-That correspondence is **unverified** — there is no code implementing it.
+Instruction-level data is unaffected: `mod.gir_action` *is* parsed.
 
-Instruction-level data is unaffected: `mod.gir_action` *is* parsed from `.stir`
-(`src/serialization/asm/ModifierSerializer.cpp:708`), with per-access fields
-spelled `access<N>_write`, `access<N>_operand`, `access<N>_ring`,
-`access<N>_gen`, `access<N>_gdelta`, `access<N>_abs`.
+---
 
-The marker is an identifier, **not a version**. Producer and parser ship
-together, so a mismatch is a build error rather than something to negotiate.
+# Part 2 — Built by the analysis
+
+None of this is settable. `GirFrameAnalysis::run` derives all of it.
+
+## 2.1 Rebuilt from the instructions
+
+`GirFrameContract::actions` and `::accesses` are **not** supplied by the module
+channel. `GirFrameAnalysis` scans every instruction's `GirActionData`
+(`src/analysis/asm/GirFrameAnalysis.cpp:330-344`), interning each `GirAccessData`
+as a `GirAccessSpec` and recording its index on the owning `GirActionSpec`.
+They are the contract-table mirror of Part 1.1, not a second input.
+
+### `GirActionSpec`
+
+`GirFrameAnalysis.hpp:70`. **All four fields:**
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `id` | `uint64_t` | `0` | Action identity. |
+| `anchorAction` | `uint64_t` | `0` | The action this one hangs from. |
+| `kind` | `GirActionKind` | `Other` | Role. |
+| `accesses` | `vector<size_t>` | `{}` | Indices into `GirFrameContract::accesses`. |
+
+### `GirAccessSpec`
+
+`GirFrameAnalysis.hpp:41`. Same facts as `GirAccessData` plus the owning action,
+with `absolute` spelled `absoluteGeneration`. **All nine fields:**
+
+| Field | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `actionId` | `uint64_t` | `0` | The action performing this access. |
+| `isWrite` | `bool` | `false` | Write, else read. |
+| `genId` | `int` | `-1` | Generation, or `-1` for none. |
+| `ring` | `int` | `1` | That generation's period. |
+| `gdelta` | `int` | `0` | Offset from the loop-carried phase. |
+| `absoluteGeneration` | `int` | `-1` | Pinned phase, or `-1` for relative. |
+| `crossAgent` | `bool` | `false` | Observed by other agents. |
+| `operand` | `std::string` | `""` | Operand name. |
+| `region` | `int` | `-1` | Storage region, `-1` for the whole operand. |
+
+### `GirFrameContract` — the assembled whole
+
+`GirFrameAnalysis.hpp:87`. **All seven members**, by origin:
+
+| Member | Origin |
+| --- | --- |
+| `loaded` | set by any `add*`; false means no contract was supplied |
+| `generations` | Part 1.2, `addGeneration` |
+| `incomings` | Part 1.2, `addIncoming` |
+| `requires_` | Part 1.2, `addRequires` |
+| `actions` | **derived** from `GirActionData` |
+| `accesses` | **derived** from `GirAccessData` |
+| `relations` | **never populated** — see Part 3 |
+
+## 2.2 Storage identity
+
+An access names concrete storage only once a **frame** is supplied:
+
+```text
+phase   = absoluteGeneration >= 0
+          ? absoluteGeneration mod ring
+          : (frame.phaseOf(genId) + gdelta) mod ring
+
+storage = (operand, region, phase)
+```
+
+`concreteStorage` (`GirFrameAnalysis.cpp:93`) interns that triple into a dense
+id. **The triple is the whole identity**: two accesses collide if and only if
+they agree on operand, region and phase. `region == -1` meets every region of the
+same operand (`disjointRegions`, `:75`).
+
+## 2.3 Frame graph structures
+
+| Type | Members | Meaning |
+| --- | --- | --- |
+| `GirFrame` | `phases: vector<pair<int,int>>` | Phase per generation. `phaseOf`, `setPhase`. Ordered and hashable (`GirFrameHash`). |
+| `GirFrameNode` | `block`, `frame`, `incomingAction` | A point in the frame graph. `incomingAction` keeps one `(block, frame)` reached two ways as two nodes. |
+| `GirFrameEdges` | `entries`, `index` | Successors per node, iterated in **insertion** order; the fill walks blocks in program order. `operator[]`, `find`, `begin`/`end`, `size`. |
+| `GirAccessOccurrence` | `inst`, `block`, `instructionIndex`, `accessIndex`, `frame`, `storage` | One dynamic touch resolved to a storage id. |
+
+### `GirFrameAnalysis::Result`
+
+| Member | Meaning |
+| --- | --- |
+| `contract` | The assembled contract, above |
+| `actionInstructions` | actionId to every instruction realizing it |
+| `blockFrames` | Every frame reachable at a block |
+| `edges` | The frame graph |
+| `occurrences` | Every `(instruction, access, frame)` with its storage id |
+| `backEdges` | Latch-to-header edge keys |
+
+`empty()` is `!contract.loaded`. State growth is bounded by `kMaxFrameStates`
+(2^20).
+
+## Validation
+
+`GirFrameAnalysis` refuses a malformed contract rather than degrading:
+
+| Condition | Message fragment |
+| --- | --- |
+| An incoming names a generation not in the table | `INCOMING names unknown generation` |
+| An incoming names an action nothing realized | `INCOMING names unknown action` |
+| An incoming's anchor has no instruction | `INCOMING action anchor has no physical realization` |
+| Two incomings disagree on one physical block | `conflicting INCOMING values for physical block` |
+| A generation's accesses tie across two loops | `generation maps ambiguously to ST loops` |
+| A rotating generation maps to no loop | `rotating generation maps to no ST loop` |
+
+`GirFrameContractImportPass` adds two more before the analysis runs: the pipeline
+enabled with no contract, and a contract with no instruction carrying an action
+tag. The second is a real consistency check — a generation table with no tagged
+instruction describes rotations nothing performs.
+
+The "maps to no loop" case matters because dropping an unmapped generation
+silently would leave its phase at 0 for the whole function, collapsing every
+access onto `gdelta % ring` and aliasing distinct buffers onto one storage id.
+
+---
+
+# Part 3 — Dead surface
+
+### `GirFenceRelationSpec`
+
+`GirFrameAnalysis.hpp:54`. Declared, and read by `addGirFenceEdges`
+(`src/transforms/asm/dag/RegionDAG.cpp:154`) to turn a fence/hazard pairing into
+scheduling-order edges. **But `GirFrameContract::relations` has no writer** —
+there is no `addRelation`, and nothing in the analysis populates it — so the
+vector is always empty and that loop never executes.
+
+Recorded for completeness; treat it as unimplemented rather than as a channel:
+
+| Field | Type | Default | Intended meaning |
+| --- | --- | --- | --- |
+| `fenceAction` | `uint64_t` | `0` | The `Fence` action. |
+| `kind` | `GirHazardKind` | `RAW` | Which hazard kind it discharges. |
+| `producerAction` | `uint64_t` | `0` | Producer side. |
+| `consumerAction` | `uint64_t` | `0` | Consumer side. |
+| `gap` | `int` | `0` | Same-trip (`0`) or later-trip; matched on zero-ness, not value. |
 
 ## Related documents
 
