@@ -18,7 +18,8 @@ using namespace stinkytofu::test;
 namespace {
 constexpr const char* kRingTwoContract =
     "gir-frame-contract\n"
-    "gen 0  ring=2 entry=0 advance=1\n";
+    "gen 0  ring=2 entry=0\n"
+    "incoming  dst=1 src=1 gen=0 value=1 relative=1\n";
 
 constexpr const char* kDiamondContract =
     "gir-frame-contract\n";
@@ -27,38 +28,36 @@ constexpr const char* kWarContract =
     "gir-frame-contract\n";
 
 constexpr const char* kFenceContract =
-    "gir-frame-contract\n"
-    "rel 1  RAW  producer=0 consumer=2\n";
+    "gir-frame-contract\n";
 
 constexpr const char* kPromotionContract =
     "gir-frame-contract\n";
 
 constexpr const char* kEntrancePhiContract =
     "gir-frame-contract\n"
-    "gen 0  ring=2 entry=0 advance=1\n"
+    "gen 0  ring=2 entry=0\n"
     "incoming  dst=2 src=0 gen=0 value=1\n";
 
 constexpr const char* kRingWrapEntranceContract =
     "gir-frame-contract\n"
-    "gen 0  ring=2 entry=0 advance=1\n"
+    "gen 0  ring=2 entry=0\n"
     "incoming  dst=2 src=0 gen=0 value=1\n";
 
 constexpr const char* kForwardingExitContract =
     "gir-frame-contract\n"
-    "gen 0  ring=2 entry=0 advance=1\n"
-    "transfer  dst=0 src=0 gen=0 delta=1\n"
-    "transfer  dst=1 src=0 gen=0 delta=0\n";
+    "gen 0  ring=2 entry=0\n"
+    "incoming  dst=0 src=0 gen=0 value=1 relative=1\n"
+    "incoming  dst=1 src=0 gen=0 value=0 relative=1\n";
 
 constexpr const char* kCanonicalSourceAnchorContract =
     "gir-frame-contract\n"
-    "gen 0  ring=2 entry=0 advance=1\n"
+    "gen 0  ring=2 entry=0\n"
     "incoming  dst=2 src=0 gen=0 value=1\n";
 
 constexpr const char* kAgentRelativeRegionsContract =
     "gir-frame-contract\n"
-    "gen 0  ring=2 entry=0 advance=1\n"
-    "incoming  dst=2 src=0 gen=0 value=1\n"
-    "rel 2  RAW  producer=0 consumer=3  gap=1\n";
+    "gen 0  ring=2 entry=0\n"
+    "incoming  dst=2 src=0 gen=0 value=1\n";
 
 }  // namespace
 
