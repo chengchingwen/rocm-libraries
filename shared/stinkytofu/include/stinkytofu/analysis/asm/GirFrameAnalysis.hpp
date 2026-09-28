@@ -8,7 +8,9 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
+#include <string_view>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -94,6 +96,12 @@ struct GirFrameContract {
     std::vector<GirFrameRequiresSpec> requires_;
 
 };
+
+/// A `gir.frame_contract` metadata blob, for hand-written `.stir` tests. `text` is the body
+/// without its braces. Null on a malformed or unknown record rather than a contract that silently
+/// says less than its author wrote.
+STINKYTOFU_EXPORT std::shared_ptr<const GirFrameContract> parseGirFrameContract(
+    std::string_view text, std::string* error = nullptr);
 
 struct GirFrame {
     std::vector<std::pair<int, int>> phases;

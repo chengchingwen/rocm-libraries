@@ -5,8 +5,11 @@
 # the PREVIOUS trip landed -- the wait it needs is on a copy that crossed the back edge, which is
 # the case a straight-line body cannot express.
 #
-# `advance` rotates the phase across the back edge; the `incoming` record pins the phase the
-# prologue arm delivers.  Without them the two predecessors of ^loop disagree and no single
+# The wait is GRADED, not a drain: this trip's own copy may still be in flight, so retiring every
+# copy but the newest is exactly enough.
+#
+# The relative `incoming` rotates the phase across the back edge; the plain one pins the phase
+# the prologue arm delivers.  Without them the two predecessors of ^loop disagree and no single
 # placement is correct.
 #
 # CHECK-LABEL: @gir_frame_waitcnt_loop_rotation
@@ -14,17 +17,18 @@
 # CHECK-NEXT: "st.s_wait_dscnt"(0)
 # CHECK-SAME: dlcnt = 0
 # CHECK-NEXT: tensor_load_to_lds
-# CHECK-NEXT: "st.s_wait_tensorcnt"(0)
-# CHECK-SAME: tlcnt = 0
+# CHECK-NEXT: "st.s_wait_tensorcnt"(1)
+# CHECK-SAME: tlcnt = 1
 # CHECK-NEXT: ds_load_b64
 # CHECK-NEXT: s_cbranch_scc1
 
 st.metadata "gir.frame_contract" {
 gir-frame-contract
 
-# one LDS double-buffer, entering at phase 0 and rotating one buffer per trip
-gen 0  ring=2 entry=0 advance=1
+# one LDS double-buffer, entering at phase 0
+gen 0  ring=2 entry=0
 incoming  dst=1 src=0 gen=0 value=0
+incoming  dst=1 src=1 gen=0 value=1 relative=1
 }
 
 st.func @gir_frame_waitcnt_loop_rotation() {

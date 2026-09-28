@@ -938,6 +938,17 @@ int main(int argc, char** argv) {
                                  static_cast<uint64_t>(asmSignature->kernelDescriptor.totalVgprs));
             }
             for (const auto& [key, value] : stirMetadata) func.setStringMetaData(key, value);
+            if (auto contractText = stirMetadata.find(stinkytofu::kGirFrameContractKey);
+                contractText != stirMetadata.end()) {
+                std::string problem;
+                auto contract = stinkytofu::parseGirFrameContract(contractText->second, &problem);
+                if (!contract) {
+                    std::cerr << "Error: " << problem << "\n";
+                    return 1;
+                }
+                func.setStructMetaData<stinkytofu::GirFrameContract>(
+                    stinkytofu::kGirFrameContractKey, std::move(contract));
+            }
 
             passManager.run(func);
             if (passManager.getPassContext().getAnalysisFailed()) analysisFailed = true;

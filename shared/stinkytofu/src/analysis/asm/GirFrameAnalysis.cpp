@@ -271,6 +271,130 @@ uint64_t actionOf(const StinkyInstruction* inst) {
 }  // namespace
 
 
+namespace {
+
+std::string_view trimRecord(std::string_view text) {
+    const auto first = text.find_first_not_of(" \t\r");
+    if (first == std::string_view::npos) return {};
+    return text.substr(first, text.find_last_not_of(" \t\r") - first + 1);
+}
+
+/// `tag [positional] key=value ...` split into its words. A bare word after the tag is a flag.
+struct Record {
+    std::string_view tag;
+    std::vector<std::string_view> positional;
+    std::map<std::string_view, std::string_view, std::less<>> fields;
+};
+
+Record splitRecord(std::string_view line) {
+    Record out;
+    size_t pos = 0;
+    while (pos < line.size()) {
+        const size_t begin = line.find_first_not_of(" \t", pos);
+        if (begin == std::string_view::npos) break;
+        const size_t end = line.find_first_of(" \t", begin);
+        const std::string_view word =
+            line.substr(begin, end == std::string_view::npos ? end : end - begin);
+        if (out.tag.empty())
+            out.tag = word;
+        else if (const size_t eq = word.find('='); eq != std::string_view::npos)
+            out.fields.emplace(word.substr(0, eq), word.substr(eq + 1));
+        else
+            out.positional.push_back(word);
+        if (end == std::string_view::npos) break;
+        pos = end;
+    }
+    return out;
+}
+
+bool readInt(std::string_view text, int& out) {
+    return std::from_chars(text.data(), text.data() + text.size(), out).ec == std::errc{};
+}
+
+bool readField(const Record& record, std::string_view key, int& out) {
+    auto found = record.fields.find(key);
+    return found != record.fields.end() && readInt(found->second, out);
+}
+
+bool readAction(const Record& record, std::string_view key, uint64_t& out) {
+    auto found = record.fields.find(key);
+    if (found == record.fields.end()) return false;
+    const std::string_view text = found->second;
+    return std::from_chars(text.data(), text.data() + text.size(), out).ec == std::errc{};
+}
+
+}  // namespace
+
+std::shared_ptr<const GirFrameContract> parseGirFrameContract(std::string_view text,
+                                                              std::string* error) {
+    auto contract = std::make_shared<GirFrameContract>();
+    bool marked = false;
+    unsigned lineNumber = 0;
+    const auto fail = [&](const std::string& what) {
+        if (error)
+            *error = "gir.frame_contract line " + std::to_string(lineNumber) + ": " + what;
+        return nullptr;
+    };
+
+    std::istringstream stream{std::string(text)};
+    for (std::string raw; std::getline(stream, raw);) {
+        ++lineNumber;
+        const std::string_view line = trimRecord(raw);
+        if (line.empty() || line.front() == '#') continue;
+        if (line == kGirFrameContractMarker) {
+            marked = true;
+            continue;
+        }
+        if (!marked) return fail("a record precedes the marker");
+
+        const Record record = splitRecord(line);
+        if (record.tag == "gen") {
+            GirGenerationSpec gen;
+            if (record.positional.size() != 1 || !readInt(record.positional.front(), gen.id))
+                return fail("gen needs one positional id");
+            if (!readField(record, "ring", gen.ring) || !readField(record, "entry", gen.entry))
+                return fail("gen needs ring= and entry=");
+            if (gen.ring < 1) return fail("gen ring must be positive");
+            contract->generations[gen.id] = gen;
+        } else if (record.tag == "incoming") {
+            GirFrameIncomingSpec incoming;
+            int relative = 0;
+            readField(record, "relative", relative);
+            incoming.relative = relative != 0;
+            if (!readAction(record, "dst", incoming.destinationAction) ||
+                !readAction(record, "src", incoming.sourceAction) ||
+                !readField(record, "gen", incoming.genId) ||
+                !readField(record, "value", incoming.value))
+                return fail("incoming needs dst=, src=, gen= and value=");
+            contract->incomings.push_back(incoming);
+        } else if (record.tag == "requires") {
+            GirFrameRequiresSpec need;
+            if (!readAction(record, "dst", need.destinationAction) ||
+                !readAction(record, "src", need.sourceAction) ||
+                !readField(record, "gen", need.genId))
+                return fail("requires needs dst=, src= and gen=");
+            auto values = record.fields.find("values");
+            if (values == record.fields.end()) return fail("requires needs values=");
+            std::string_view rest = values->second;
+            while (!rest.empty()) {
+                const size_t comma = rest.find(',');
+                int value = 0;
+                if (!readInt(rest.substr(0, comma), value)) return fail("requires values= is not a list of integers");
+                need.values.push_back(value);
+                if (comma == std::string_view::npos) break;
+                rest = rest.substr(comma + 1);
+            }
+            contract->requires_.push_back(need);
+        } else {
+            return fail("unknown record '" + std::string(record.tag) + "'");
+        }
+    }
+
+    if (!marked) return fail("missing the marker line");
+    contract->loaded = true;
+    return contract;
+}
+
 int GirFrame::phaseOf(int genId) const {
     auto it = std::lower_bound(phases.begin(), phases.end(), genId,
                                [](const auto& item, int id) { return item.first < id; });
@@ -314,7 +438,17 @@ const std::vector<GirFrame>& GirFrameAnalysis::Result::frames(const BasicBlock* 
 GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManager& AM) {
     Result result;
     const auto* encoded = function.getStructMetaData<GirFrameContract>(kGirFrameContractKey);
-    if (!encoded || !encoded->loaded) return result;
+    std::shared_ptr<const GirFrameContract> parsed;
+    if (!encoded) {
+        // A hand-written contract arrives as text; the struct is what a producer installs.
+        const auto text = function.getStringMetaData(kGirFrameContractKey);
+        if (!text || text->empty()) return result;
+        std::string problem;
+        parsed = parseGirFrameContract(*text, &problem);
+        if (!parsed) report_fatal_error("GirFrameAnalysis: " + problem);
+        encoded = parsed.get();
+    }
+    if (!encoded->loaded) return result;
     result.contract = *encoded;
 
     std::unordered_map<StinkyInstruction*, size_t> instructionIndex;
