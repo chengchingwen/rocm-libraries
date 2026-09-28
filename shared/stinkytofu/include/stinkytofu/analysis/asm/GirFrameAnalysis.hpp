@@ -123,6 +123,39 @@ struct GirFrameNodeHash {
     size_t operator()(const GirFrameNode& node) const;
 };
 
+/// Frame-graph successors, iterated in INSERTION order; the fill walks blocks in program order.
+/// Hashing on the block address let the heap decide it, and with it every tie downstream.
+class GirFrameEdges {
+   public:
+    using Entry = std::pair<GirFrameNode, std::vector<GirFrameNode>>;
+    using const_iterator = std::vector<Entry>::const_iterator;
+
+    std::vector<GirFrameNode>& operator[](const GirFrameNode& node) {
+        auto [slot, fresh] = index.try_emplace(node, entries.size());
+        if (fresh) entries.emplace_back(node, std::vector<GirFrameNode>{});
+        return entries[slot->second].second;
+    }
+
+    const_iterator find(const GirFrameNode& node) const {
+        auto slot = index.find(node);
+        return slot == index.end() ? entries.end() : entries.begin() + slot->second;
+    }
+
+    const_iterator begin() const {
+        return entries.begin();
+    }
+    const_iterator end() const {
+        return entries.end();
+    }
+    size_t size() const {
+        return entries.size();
+    }
+
+   private:
+    std::vector<Entry> entries;
+    std::unordered_map<GirFrameNode, size_t, GirFrameNodeHash> index;
+};
+
 struct GirAccessOccurrence {
     StinkyInstruction* inst = nullptr;
     BasicBlock* block = nullptr;
@@ -140,7 +173,7 @@ struct STINKYTOFU_EXPORT GirFrameAnalysis {
         GirFrameContract contract;
         std::unordered_map<uint64_t, std::vector<StinkyInstruction*>> actionInstructions;
         std::unordered_map<BasicBlock*, std::vector<GirFrame>> blockFrames;
-        std::unordered_map<GirFrameNode, std::vector<GirFrameNode>, GirFrameNodeHash> edges;
+        GirFrameEdges edges;
         std::vector<GirAccessOccurrence> occurrences;
         std::unordered_set<uint64_t> backEdges;
 
