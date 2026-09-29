@@ -863,11 +863,16 @@ GirFrameHazardAnalysis::Result GirFrameHazardAnalysis::run(Function& function,
             wawOrderedByRead(producerSpec, consumerSpec, frames.contract))
             return;
 
-        // The walk counts frame-graph nodes, which reduces mod the ring: a pair exactly one ring
-        // period apart lands back on the SAME node and reports 0.  The unreduced gdeltas still
-        // carry the real span, and within one block they share a `gen_rel` base, so their
-        // difference is the trip distance -- 2 for a `+2` write over a `+0` read, not 0.
+        const bool crossAgent = function.getGemmTileConfig().NumWaves > 1 &&
+                                (producerSpec.crossAgent || consumerSpec.crossAgent);
+        // The walk counts frame-graph nodes, which reduces mod the ring: a loop-carried pair
+        // exactly one ring period apart lands back on the SAME node and reports 0. The unreduced
+        // gdeltas recover that span only when program order proves the edge wraps around the
+        // block. If the producer already precedes the consumer, 0 is the real same-trip gap for
+        // both same- and cross-agent hazards; a barrier does not turn logical generation distance
+        // into execution distance or retire the producer's completion counter.
         if (producer.block == consumer.block && producerSpec.genId == consumerSpec.genId &&
+            producer.instructionIndex >= consumer.instructionIndex &&
             producerSpec.absoluteGeneration < 0 && consumerSpec.absoluteGeneration < 0) {
             const int span = consumerSpec.gdelta - producerSpec.gdelta;
             if (span > gap) gap = span;
@@ -876,8 +881,6 @@ GirFrameHazardAnalysis::Result GirFrameHazardAnalysis::run(Function& function,
         LiveTouchKey producerKey{producer.frame, {producer.inst, producer.accessIndex}};
         LiveTouchKey consumerKey{consumer.frame, {consumer.inst, consumer.accessIndex}};
         if (!emitted.emplace(static_cast<int>(kind), producerKey, consumerKey, gap).second) return;
-        const bool crossAgent = function.getGemmTileConfig().NumWaves > 1 &&
-                                (producerSpec.crossAgent || consumerSpec.crossAgent);
         result.hazards.push_back({kind, producer.inst, consumer.inst, producer.block,
                                   consumer.block, producer.instructionIndex,
                                   consumer.instructionIndex, producer.frame, consumer.frame, gap,

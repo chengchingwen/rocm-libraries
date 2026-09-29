@@ -33,7 +33,7 @@ def pipeline():
     return [
         ScaffoldShapePass(),
         EntranceFramePhisPass(),
-        HoistCopiesPass(reads=False),
+        HoistCopiesPass(reads=True),
         CollectPendingMarksPass(),
         PlacementPass(),
         ApplyMarksPass(),

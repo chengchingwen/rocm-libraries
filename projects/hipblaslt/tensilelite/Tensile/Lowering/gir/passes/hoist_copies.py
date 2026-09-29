@@ -148,9 +148,10 @@ def hoisted(blk, lds, reg=(), group=True, reads=False, copies=True):
 class HoistCopiesPass(Pass):
     """See module docstring.  Runs before the tokens so every later analysis sees this order."""
 
-    def __init__(self, group=True, reads=False):
+    def __init__(self, group=True, reads=False, copies=True):
         self.group = group
         self.reads = reads
+        self.copies = copies
 
     def run(self, prog, am):
         changed = False
@@ -181,5 +182,6 @@ class HoistCopiesPass(Pass):
                     prog.bump()
                     am.invalidate()
                     changed = False
-        apply(copies=True, reads=False)
+        if self.copies:
+            apply(copies=True, reads=False)
         return ("body",) if changed else ()
