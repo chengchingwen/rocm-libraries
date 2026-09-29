@@ -41,9 +41,9 @@ gen 400  ring=4 entry=0
 
 st.func @gir_frame_waitcnt_fused_copy_group() {
 ^entry:
-  "st.tensor_load_to_lds"(s[0:3], s[10:17]) { mod.gir_action = { action = 0, anchor = 0, kind = copy, access0_write = 1, access0_operand = B, access0_ring = 2, access0_abs = 0, access1_write = 1, access1_operand = MXSA, access1_ring = 2, access1_abs = 0, access2_write = 1, access2_operand = MXSB, access2_ring = 2, access2_abs = 0 } }
-  "st.tensor_load_to_lds"(s[4:7], s[10:17]) { mod.gir_action = { action = 1, anchor = 0, kind = copy, access0_write = 1, access0_operand = A, access0_ring = 2, access0_abs = 0 } }
-  v[0:1] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 0, gds = false }, mod.gir_action = { action = 2, anchor = 0, kind = read, access0_write = 0, access0_operand = MXSB, access0_ring = 2, access0_abs = 0 } }
+  "st.tensor_load_to_lds"(s[0:3], s[10:17]) { mod.gir_action = { action = 0, anchor = 0, kind = copy, access0_write = 1, access0_operand = 1, access0_ring = 2, access0_abs = 0, access1_write = 1, access1_operand = 2, access1_ring = 2, access1_abs = 0, access2_write = 1, access2_operand = 3, access2_ring = 2, access2_abs = 0 } }
+  "st.tensor_load_to_lds"(s[4:7], s[10:17]) { mod.gir_action = { action = 1, anchor = 0, kind = copy, access0_write = 1, access0_operand = 0, access0_ring = 2, access0_abs = 0 } }
+  v[0:1] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 0, gds = false }, mod.gir_action = { action = 2, anchor = 0, kind = read, access0_write = 0, access0_operand = 3, access0_ring = 2, access0_abs = 0 } }
 }
 
 #
@@ -69,7 +69,7 @@ st.func @gir_frame_waitcnt_guarded_prologue_join() {
   "st.s_cbranch_scc1"("skip", SCC0)
   Successors: ^peel, ^skip
 ^peel:
-  "st.tensor_load_to_lds"(s[0:3], s[10:17]) { mod.gir_action = { action = 100, anchor = 100, kind = copy, access0_write = 1, access0_operand = A, access0_ring = 2, access0_gen = 100 } }
+  "st.tensor_load_to_lds"(s[0:3], s[10:17]) { mod.gir_action = { action = 100, anchor = 100, kind = copy, access0_write = 1, access0_operand = 0, access0_ring = 2, access0_gen = 100 } }
   "st.s_branch"("join")
   Successors: ^join
 ^skip:
@@ -77,7 +77,7 @@ st.func @gir_frame_waitcnt_guarded_prologue_join() {
   "st.s_branch"("join")
   Successors: ^join
 ^join:
-  v[0:1] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 0, gds = false }, mod.gir_action = { action = 102, anchor = 102, kind = read, access0_write = 0, access0_operand = A, access0_ring = 2, access0_gen = 100 } }
+  v[0:1] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 0, gds = false }, mod.gir_action = { action = 102, anchor = 102, kind = read, access0_write = 0, access0_operand = 0, access0_ring = 2, access0_gen = 100 } }
 }
 
 #
@@ -99,10 +99,10 @@ st.func @gir_frame_waitcnt_guarded_prologue_join() {
 
 st.func @gir_frame_waitcnt_inflight_depth() {
 ^entry:
-  "st.tensor_load_to_lds"(s[0:3], s[10:17]) { mod.gir_action = { action = 200, anchor = 200, kind = copy, access0_write = 1, access0_operand = A, access0_ring = 4, access0_abs = 0 } }
-  "st.tensor_load_to_lds"(s[4:7], s[10:17]) { mod.gir_action = { action = 201, anchor = 200, kind = copy, access0_write = 1, access0_operand = A, access0_ring = 4, access0_abs = 1 } }
-  "st.tensor_load_to_lds"(s[8:11], s[10:17]) { mod.gir_action = { action = 202, anchor = 200, kind = copy, access0_write = 1, access0_operand = A, access0_ring = 4, access0_abs = 2 } }
-  v[0:1] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 0, gds = false }, mod.gir_action = { action = 203, anchor = 200, kind = read, access0_write = 0, access0_operand = A, access0_ring = 4, access0_abs = 0 } }
+  "st.tensor_load_to_lds"(s[0:3], s[10:17]) { mod.gir_action = { action = 200, anchor = 200, kind = copy, access0_write = 1, access0_operand = 0, access0_ring = 4, access0_abs = 0 } }
+  "st.tensor_load_to_lds"(s[4:7], s[10:17]) { mod.gir_action = { action = 201, anchor = 200, kind = copy, access0_write = 1, access0_operand = 0, access0_ring = 4, access0_abs = 1 } }
+  "st.tensor_load_to_lds"(s[8:11], s[10:17]) { mod.gir_action = { action = 202, anchor = 200, kind = copy, access0_write = 1, access0_operand = 0, access0_ring = 4, access0_abs = 2 } }
+  v[0:1] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 0, gds = false }, mod.gir_action = { action = 203, anchor = 200, kind = read, access0_write = 0, access0_operand = 0, access0_ring = 4, access0_abs = 0 } }
 }
 
 #
@@ -130,12 +130,12 @@ st.func @gir_frame_waitcnt_inflight_depth() {
 
 st.func @gir_frame_waitcnt_loop_rotation() {
 ^entry:
-  "st.tensor_load_to_lds"(s[0:3], s[10:17]) { mod.gir_action = { action = 300, anchor = 300, kind = copy, access0_write = 1, access0_operand = A, access0_ring = 2, access0_abs = 0 } }
+  "st.tensor_load_to_lds"(s[0:3], s[10:17]) { mod.gir_action = { action = 300, anchor = 300, kind = copy, access0_write = 1, access0_operand = 0, access0_ring = 2, access0_abs = 0 } }
   "st.s_branch"("loop")
   Successors: ^loop
 ^loop:
-  "st.tensor_load_to_lds"(s[4:7], s[10:17]) { mod.gir_action = { action = 301, anchor = 301, kind = copy, access0_write = 1, access0_operand = A, access0_ring = 2, access0_gen = 300 } }
-  v[0:1] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 0, gds = false }, mod.gir_action = { action = 302, anchor = 301, kind = read, access0_write = 0, access0_operand = A, access0_ring = 2, access0_gen = 300, access0_gdelta = 1 } }
+  "st.tensor_load_to_lds"(s[4:7], s[10:17]) { mod.gir_action = { action = 301, anchor = 301, kind = copy, access0_write = 1, access0_operand = 0, access0_ring = 2, access0_gen = 300 } }
+  v[0:1] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 0, gds = false }, mod.gir_action = { action = 302, anchor = 301, kind = read, access0_write = 0, access0_operand = 0, access0_ring = 2, access0_gen = 300, access0_gdelta = 1 } }
   "st.s_cbranch_scc1"("loop", SCC0)
   Successors: ^loop, ^exit
 ^exit:
@@ -157,8 +157,8 @@ st.func @gir_frame_waitcnt_loop_rotation() {
 
 st.func @gir_frame_waitcnt_war_retire_depth() {
 ^entry:
-  v[0:1] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 0, gds = false }, mod.gir_action = { action = 400, anchor = 400, kind = read, access0_write = 0, access0_operand = A, access0_ring = 4, access0_abs = 0 } }
-  v[2:3] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 16, gds = false }, mod.gir_action = { action = 401, anchor = 400, kind = read, access0_write = 0, access0_operand = A, access0_ring = 4, access0_abs = 1 } }
-  v[4:5] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 32, gds = false }, mod.gir_action = { action = 402, anchor = 400, kind = read, access0_write = 0, access0_operand = A, access0_ring = 4, access0_abs = 2 } }
-  "st.tensor_load_to_lds"(s[0:3], s[10:17]) { mod.gir_action = { action = 403, anchor = 400, kind = copy, access0_write = 1, access0_operand = A, access0_ring = 4, access0_abs = 0 } }
+  v[0:1] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 0, gds = false }, mod.gir_action = { action = 400, anchor = 400, kind = read, access0_write = 0, access0_operand = 0, access0_ring = 4, access0_abs = 0 } }
+  v[2:3] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 16, gds = false }, mod.gir_action = { action = 401, anchor = 400, kind = read, access0_write = 0, access0_operand = 0, access0_ring = 4, access0_abs = 1 } }
+  v[4:5] = "st.ds_load_b64"(v10) { mod.ds = { na = 1, offset = 32, gds = false }, mod.gir_action = { action = 402, anchor = 400, kind = read, access0_write = 0, access0_operand = 0, access0_ring = 4, access0_abs = 2 } }
+  "st.tensor_load_to_lds"(s[0:3], s[10:17]) { mod.gir_action = { action = 403, anchor = 400, kind = copy, access0_write = 1, access0_operand = 0, access0_ring = 4, access0_abs = 0 } }
 }

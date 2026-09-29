@@ -14,7 +14,6 @@ step with `stinkytofu/src/analysis/asm/GirFrameAnalysis.cpp`.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 
 from .analysis import AnalysisManager
@@ -32,10 +31,6 @@ CONTRACT_KEY = "gir.frame_contract"
 #: Identifies the blob; NOT a version. The producer and the consumer ship together, so a contract
 #: that does not match its parser is a build error, never something to negotiate at runtime.
 CONTRACT_MARKER = "gir-frame-contract"
-
-#: An operand name is written bare, so it must be a plain token. Escaping instead would put an
-#: encode/decode pair in two languages to serve a name no kernel has ever produced.
-_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
 
 _HAZARD_KINDS = {"RAW": ("copy", "read"), "WAR": ("read", "copy"), "WAW": ("copy", "copy")}
 
@@ -65,13 +60,12 @@ class SharedAccess:
     """One shared-memory touch an action makes."""
     action: int
     is_write: bool
-    operand: str
+    operand: int               # id of the (operand, region) pair this touch names
     ring: int
     gen: int = -1              # -1 = not bound to a generation
     gdelta: int = 0
     absolute: int = -1         # -1 = the generation is relative, not pinned
     cross_agent: bool = False
-    region: int = -1           # -1 = the whole operand
 
 
 @dataclass(frozen=True)
@@ -242,7 +236,16 @@ def _gens_by_region(prog):
             for gen_id, fact in ((prog.meta or {}).get("generation_regions", {}) or {}).items()}
 
 
-def _accesses_of(action, storage, distributed, by_region):
+def _storage_id(operand, region, storage_ids):
+    """The id of one `(operand, region)` pair, allocated on first sight.
+
+    Whether an operand is region-split is a property of `region_axes`, so a region of -1 and a
+    concrete region never name the same operand and an id compared for equality says everything
+    the pair did."""
+    return storage_ids.setdefault((operand, region), len(storage_ids))
+
+
+def _accesses_of(action, storage, distributed, by_region, storage_ids):
     """Every shared touch of one action, one `SharedAccess` per frame-region instance.
 
     An instance names ITS OWN region's generation.  A `Ref` carries one `gen`, so a read spanning
@@ -252,11 +255,6 @@ def _accesses_of(action, storage, distributed, by_region):
     out = []
     for ref, is_write in _shared_refs(action):
         operand = str(ref.tile.operand)
-        if not _TOKEN.match(operand):
-            raise RuntimeError(
-                "frame contract: operand name %r is not a bare token, so it cannot be written "
-                "unescaped. Rename the operand rather than adding an escape to both parsers."
-                % (operand,))
         gen = getattr(ref, "gen", None)
         absolute = getattr(ref, "abs_gen", None)
         for regions in storage.geometry.frame_region_instances_of(ref, is_write):
@@ -267,13 +265,12 @@ def _accesses_of(action, storage, distributed, by_region):
             out.append(SharedAccess(
                 action=action.action_id,
                 is_write=is_write,
-                operand=operand,
+                operand=_storage_id(operand, region, storage_ids),
                 ring=max(1, int(storage.depth_of(ref.tile.operand))),
                 gen=gen_id,
                 gdelta=int(getattr(ref, "gdelta", 0) or 0),
                 absolute=-1 if absolute is None else int(absolute),
-                cross_agent=bool(distributed.get(ref.tile.operand)),
-                region=region))
+                cross_agent=bool(distributed.get(ref.tile.operand))))
     return out
 
 
@@ -402,11 +399,13 @@ def build_contract(prog) -> Contract:
 
     distributed = prog.meta.get("agent_distributed", {}) or {}
     by_region = _gens_by_region(prog)
+    storage_ids = {}
     contract = Contract(generations=_generations(prog))
     for action in actions:
         contract.actions[action.action_id] = Action(
             action.action_id, action.kind, anchors[action.action_id])
-        contract.accesses.extend(_accesses_of(action, storage, distributed, by_region))
+        contract.accesses.extend(
+            _accesses_of(action, storage, distributed, by_region, storage_ids))
     contract.edges = _edges_of(prog, plans, frames)
     domains = analyses.get(TripDomains(), prog)
     first_free = max(contract.generations, default=-1) + 1

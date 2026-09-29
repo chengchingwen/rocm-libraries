@@ -1119,13 +1119,12 @@ enum class GirActionKind : uint8_t { Other, Read, Copy, Fence, Wmma, WaitCnt };
 /// it rather than in a contract table keyed by action id.
 struct GirAccessData {
     bool isWrite = false;
-    std::string operand;
+    int operand = -1;                          // id of the (operand, region) pair this names
     int ring = 1;
     int genId = -1;                            // -1 = not bound to a generation
     int gdelta = 0;
     int absolute = -1;                         // -1 = relative, not pinned
     bool crossAgent = false;
-    int region = -1;                           // -1 = the whole operand
 
     bool operator==(const GirAccessData&) const = default;
 };

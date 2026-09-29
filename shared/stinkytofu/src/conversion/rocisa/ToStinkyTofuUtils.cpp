@@ -1025,7 +1025,7 @@ GirActionData girActionOf(const rocisa::GirActionData& src) {
     accesses.reserve(src.accesses.size());
     for (const rocisa::GirAccess& a : src.accesses)
         accesses.push_back(GirAccessData{a.isWrite, a.operand, a.ring, a.genId, a.gdelta,
-                                         a.absolute, a.crossAgent, a.region});
+                                         a.absolute, a.crossAgent});
     return GirActionData{src.actionId, src.anchorAction,
                          static_cast<GirActionKind>(src.kind), std::move(accesses)};
 }

@@ -531,7 +531,6 @@ bool serializeVisit(const GirActionData& mod, std::ostream& os) {
         if (access.gdelta) os << ", " << tag << "gdelta = " << access.gdelta;
         if (access.absolute >= 0) os << ", " << tag << "abs = " << access.absolute;
         if (access.crossAgent) os << ", " << tag << "cross = 1";
-        if (access.region >= 0) os << ", " << tag << "region = " << access.region;
     }
     os << " }";
     return true;
@@ -712,13 +711,12 @@ void deserializeVisit(StinkyInstruction* inst, const std::string& attrKey,
             if (!fields.contains(tag + "operand")) break;
             GirAccessData access;
             access.isWrite = getInt(fields, tag + "write", 0) != 0;
-            access.operand = getStr(fields, tag + "operand", "");
+            access.operand = getInt(fields, tag + "operand", -1);
             access.ring = getInt(fields, tag + "ring", 1);
             access.genId = getInt(fields, tag + "gen", -1);
             access.gdelta = getInt(fields, tag + "gdelta", 0);
             access.absolute = getInt(fields, tag + "abs", -1);
             access.crossAgent = getInt(fields, tag + "cross", 0) != 0;
-            access.region = getInt(fields, tag + "region", -1);
             accesses.push_back(std::move(access));
         }
         inst->addModifier(GirActionData(action, getUInt64(fields, "anchor", action),

@@ -132,14 +132,13 @@ namespace rocisa
     // rides on it rather than in a side table the frame contract keys by action id.
     struct GirAccess
     {
-        bool        isWrite    = false;
-        std::string operand;
-        int         ring       = 1;
-        int         genId      = -1;   // -1 = not bound to a generation
-        int         gdelta     = 0;
-        int         absolute   = -1;   // -1 = relative, not pinned
-        bool        crossAgent = false;
-        int         region     = -1;   // -1 = the whole operand
+        bool isWrite    = false;
+        int  operand    = -1;   // id of the (operand, region) pair this touch names
+        int  ring       = 1;
+        int  genId      = -1;   // -1 = not bound to a generation
+        int  gdelta     = 0;
+        int  absolute   = -1;   // -1 = relative, not pinned
+        bool crossAgent = false;
     };
 
     struct GirActionData

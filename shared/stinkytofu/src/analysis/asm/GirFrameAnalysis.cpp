@@ -75,28 +75,28 @@ GirFrame advanceFrame(const GirFrame& input, BasicBlock* from, BasicBlock* to,
     return result;
 }
 
-// A region of -1 is the whole operand, so it meets every region of the same operand.
-bool disjointRegions(const GirAccessSpec& a, const GirAccessSpec& b) {
-    if (a.operand != b.operand) return true;
-    return a.region >= 0 && b.region >= 0 && a.region != b.region;
+// The operand id already names one (operand, region) pair, so two touches meet exactly when
+// they carry the same id.
+bool disjointStorage(const GirAccessSpec& a, const GirAccessSpec& b) {
+    return a.operand != b.operand;
 }
 
 bool wawOrderedByRead(const GirAccessSpec& producer, const GirAccessSpec& consumer,
                       const GirFrameContract& contract) {
     if (producer.ring <= 1) return false;
     for (const GirAccessSpec& access : contract.accesses)
-        if (!access.isWrite && !disjointRegions(producer, access) &&
-            !disjointRegions(consumer, access))
+        if (!access.isWrite && !disjointStorage(producer, access) &&
+            !disjointStorage(consumer, access))
             return true;
     return false;
 }
 
-using StorageKey = std::tuple<std::string, int, int>;
+using StorageKey = std::pair<int, int>;
 
-// (operand, region, generation) names exactly one slot, so a touch has exactly one storage id.
+// (operand, generation) names exactly one slot, so a touch has exactly one storage id.
 int concreteStorage(const GirAccessSpec& access, int generation,
                     std::map<StorageKey, int>& storageIds) {
-    StorageKey key{access.operand, access.region, generation};
+    StorageKey key{access.operand, generation};
     return storageIds.emplace(std::move(key), static_cast<int>(storageIds.size())).first->second;
 }
 
@@ -482,7 +482,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
                         result.contract.accesses.push_back(
                             GirAccessSpec{action->actionId, touch.isWrite, touch.genId, touch.ring,
                                           touch.gdelta, touch.absolute, touch.crossAgent,
-                                          touch.operand, touch.region});
+                                          touch.operand});
                     }
                 }
                 const uint64_t canonical = spec->second.anchorAction;
