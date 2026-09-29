@@ -119,13 +119,12 @@ void init_inst(nb::module_ m)
                     auto        d = nb::cast<nb::dict>(item);
                     rocisa::GirAccess a;
                     a.isWrite    = nb::cast<bool>(d["is_write"]);
-                    a.operand    = nb::cast<std::string>(d["operand"]);
+                    a.operand    = nb::cast<int>(d["operand"]);
                     a.ring       = nb::cast<int>(d["ring"]);
                     a.genId      = nb::cast<int>(d["gen"]);
                     a.gdelta     = nb::cast<int>(d["gdelta"]);
                     a.absolute   = nb::cast<int>(d["absolute"]);
                     a.crossAgent = nb::cast<bool>(d["cross_agent"]);
-                    a.region     = nb::cast<int>(d["region"]);
                     out.push_back(std::move(a));
                 }
                 self.setGirActionData(actionId, anchorAction, kind, out);

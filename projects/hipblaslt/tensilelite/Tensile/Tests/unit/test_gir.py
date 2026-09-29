@@ -62,8 +62,8 @@ def test_frame_contract_has_dense_actions_and_no_gir_cfg_edges():
         if block_actions:
             assert all(anchors[action.action_id] == block_actions[0].action_id
                        for action in block_actions)
-    # An access names ONE region, or the whole operand; a MAY-set is not expressible.
-    assert all(access.region >= -1 for access in built.accesses)
+    # An access names ONE storage -- one (operand, region) pair; a MAY-set is not expressible.
+    assert all(access.operand >= 0 for access in built.accesses)
 
 
 class _Reaching:

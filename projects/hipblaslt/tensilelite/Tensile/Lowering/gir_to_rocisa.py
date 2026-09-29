@@ -205,7 +205,7 @@ class GirToRocisa:
         accesses = [
             {"is_write": access.is_write, "operand": access.operand, "ring": access.ring,
              "gen": access.gen, "gdelta": access.gdelta, "absolute": access.absolute,
-             "cross_agent": access.cross_agent, "region": access.region}
+             "cross_agent": access.cross_agent}
             for access in self._actionAccesses.get(act.action_id, ())]
         anchor = self._actionAnchors.get(act.action_id, act.action_id)
         for item in items:

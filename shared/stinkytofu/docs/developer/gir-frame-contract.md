@@ -13,8 +13,8 @@ access touches. It is the sole input to
 those passes see an empty result and do nothing.
 
 It carries **rotation facts only** — never instructions, never waits, never
-barriers. It says "this `tensor_load_to_lds` writes operand `A`, region 0, one
-generation ahead of the loop-carried phase, on a rotation of period 2". What
+barriers. It says "this `tensor_load_to_lds` writes storage 0, one generation
+ahead of the loop-carried phase, on a rotation of period 2". What
 that implies for barriers and `s_wait_*cnt` is decided inside StinkyTofu.
 
 Nothing in the contract appears in the generated `.s`, so a change to what
@@ -82,18 +82,17 @@ enum class GirActionKind : uint8_t { Other, Read, Copy, Fence, Wmma, WaitCnt };
 
 ### `GirAccessData`
 
-`StinkyModifiers.hpp:1120`. One shared-memory touch. **All eight fields:**
+`StinkyModifiers.hpp:1120`. One shared-memory touch. **All seven fields:**
 
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `isWrite` | `bool` | `false` | Write, else read. A read/read pair is never a hazard. |
-| `operand` | `std::string` | `""` | `A`, `B`, `MXSA`, `MXSB`, ... Part of the storage identity, compared by value. |
+| `operand` | `int` | `-1` | The storage this names: one id per `(operand, region)` pair, allocated by the producer. Compared only for equality — two touches meet exactly when their ids match. |
 | `ring` | `int` | `1` | Period of the rotation. `1` never rotates. |
 | `genId` | `int` | `-1` | Which generation rotates it. **`-1` = not bound to a generation.** |
 | `gdelta` | `int` | `0` | Offset from the loop-carried phase, in generations. |
 | `absolute` | `int` | `-1` | A pinned phase. **`-1` = relative**, resolve through the frame. |
 | `crossAgent` | `bool` | `false` | Observed by agents other than this wave. This is what makes a hazard need a barrier rather than only a wait. |
-| `region` | `int` | `-1` | The one storage region selected. **`-1` = the whole operand**, meeting every region of that operand. |
 
 ### Spelling in `.stir`
 
@@ -101,7 +100,7 @@ Parsed by `src/serialization/asm/ModifierSerializer.cpp:708`:
 
 ```text
 { mod.gir_action = { action = 1, anchor = 1, kind = copy,
-                     access0_write = 1, access0_operand = A, access0_ring = 2,
+                     access0_write = 1, access0_operand = 0, access0_ring = 2,
                      access0_gen = 0, access0_gdelta = 1, access0_abs = 0 } }
 ```
 
@@ -280,8 +279,7 @@ with `absolute` spelled `absoluteGeneration`. **All nine fields:**
 | `gdelta` | `int` | `0` | Offset from the loop-carried phase. |
 | `absoluteGeneration` | `int` | `-1` | Pinned phase, or `-1` for relative. |
 | `crossAgent` | `bool` | `false` | Observed by other agents. |
-| `operand` | `std::string` | `""` | Operand name. |
-| `region` | `int` | `-1` | Storage region, `-1` for the whole operand. |
+| `operand` | `int` | `-1` | The `(operand, region)` id the touch names. |
 
 ### `GirFrameContract` — the assembled whole
 
@@ -305,13 +303,15 @@ phase   = absoluteGeneration >= 0
           ? absoluteGeneration mod ring
           : (frame.phaseOf(genId) + gdelta) mod ring
 
-storage = (operand, region, phase)
+storage = (operand, phase)
 ```
 
-`concreteStorage` (`GirFrameAnalysis.cpp:93`) interns that triple into a dense
-id. **The triple is the whole identity**: two accesses collide if and only if
-they agree on operand, region and phase. `region == -1` meets every region of the
-same operand (`disjointRegions`, `:75`).
+`concreteStorage` (`GirFrameAnalysis.cpp:93`) interns that pair into a dense id.
+**The pair is the whole identity**: two accesses collide if and only if they
+agree on operand id and phase (`disjointStorage`, `:78`). Whether an operand is
+region-split is a property of `region_axes`, so no operand names both the whole
+operand and a concrete region and equality of the id says everything the
+`(operand, region)` pair did.
 
 ## 2.3 Frame graph structures
 

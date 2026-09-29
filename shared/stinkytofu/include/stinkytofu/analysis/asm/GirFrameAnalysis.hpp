@@ -47,9 +47,8 @@ struct GirAccessSpec {
     int gdelta = 0;
     int absoluteGeneration = -1;
     bool crossAgent = false;
-    std::string operand;
-    // The one storage region this touch selects; -1 names the whole operand.
-    int region = -1;
+    // The storage this touch names: one id per (operand, region) pair, assigned by the producer.
+    int operand = -1;
 };
 
 struct GirFenceRelationSpec {
