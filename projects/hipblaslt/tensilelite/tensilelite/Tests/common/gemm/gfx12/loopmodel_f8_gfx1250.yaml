@@ -48,7 +48,8 @@ BenchmarkProblems:
         - LDSTrInst: [false]
         - SourceSwap: [false]
         - ExpandPointerSwap: [false]
-        - LoopOrder: [KMN, KNM, MKN, MNK, NKM, NMK]
+        - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
+        - WmmaOuterOrder: [0]
       BenchmarkForkParameters:
       JoinParameters:
       BenchmarkJoinParameters:
@@ -91,7 +92,8 @@ BenchmarkProblems:
         - LDSTrInst: [true]
         - SourceSwap: [false]
         - ExpandPointerSwap: [false]
-        - LoopOrder: [KMN, KNM, MKN, MNK, NKM, NMK]
+        - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
+        - WmmaOuterOrder: [0]
       BenchmarkForkParameters:
       JoinParameters:
       BenchmarkJoinParameters:
@@ -140,7 +142,8 @@ BenchmarkProblems:
         - VectorWidthB: [-1, 2]
         - TDMSplitA: [0, 1, 2]
         - TDMSplitB: [0, 1, 2]
-        - LoopOrder: [KMN, KMKNMN, KMNKMN, KMNMNK]
+        - WmmaInnerOrder: [1, 4]  # was KMN, KMNKMN, KMNMNK (+1 from the product)
+          WmmaOuterOrder: [0, 3]
       BenchmarkForkParameters:
       JoinParameters:
       BenchmarkJoinParameters:

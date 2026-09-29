@@ -95,6 +95,45 @@ def canonical_loop_order(order):
     return word
 
 
+#: `WmmaInnerOrder` is an index into this: the order the TILE axes nest in, innermost last.
+WMMA_INNER_ORDERS = ("KMN", "KNM", "MKN", "MNK", "NKM", "NMK")
+
+#: `WmmaOuterOrder` names the axis whose SPLIT sits outermost; 0 keeps each split beside its tile.
+WMMA_OUTER_AXES = (None, "M", "N", "K")
+
+
+def wmma_loop_order(params) -> str:
+    """The traversal word for a solution.
+
+    `WmmaInnerOrder`/`WmmaOuterOrder` are the parameters; `LoopOrder` is accepted only as a
+    direct spelling for hand-built thetas, which is what the unit fixtures pass.
+    """
+    if "WmmaInnerOrder" in params or "WmmaOuterOrder" in params:
+        return loop_order_of(params.get("WmmaInnerOrder", 1), params.get("WmmaOuterOrder", 0))
+    return params.get("LoopOrder", "KMN")
+
+
+def loop_order_of(inner_order: int, outer_order: int) -> str:
+    """The loop-order word `WmmaInnerOrder` and `WmmaOuterOrder` name.
+
+    `outer_order` 0 keeps every split beside the tile it divides, which is the 3-letter order.
+    Otherwise that axis's split leads and the rest follow in tile order; at most two splits are
+    ever live, so naming the outer one fixes the traversal and the third's position is free.
+    """
+    try:
+        inner = WMMA_INNER_ORDERS[int(inner_order) - 1]
+    except (IndexError, TypeError, ValueError):
+        raise ValueError(
+            f"WmmaInnerOrder={inner_order!r} must be 1..{len(WMMA_INNER_ORDERS)} "
+            f"({', '.join(WMMA_INNER_ORDERS)})")
+    if not 0 <= int(outer_order) < len(WMMA_OUTER_AXES):
+        raise ValueError(f"WmmaOuterOrder={outer_order!r} must be 0..{len(WMMA_OUTER_AXES) - 1}")
+    outer = WMMA_OUTER_AXES[int(outer_order)]
+    if outer is None:
+        return inner
+    return outer + "".join(a for a in inner if a != outer) + inner
+
+
 def _word_to_modes(word):
     AXIS = {"K": "K", "M": "M", "N": "N"}
     seen = set()
@@ -693,7 +732,7 @@ def _movement_params(kernel, target):
                                 _tdm_split.wave_region_span(kernel, "B")],
         "MXBlockA": int(kernel["ProblemType"].get("MXBlockA", 0) or 0),
         "MXBlockB": int(kernel["ProblemType"].get("MXBlockB", 0) or 0),
-        "LoopOrder": kernel.get("LoopOrder", "KMN"),
+        "LoopOrder": wmma_loop_order(kernel),
         "ReadVectorElems": _read_vector_elems(kernel, target),
         "ReadQuantum": _read_coverage(kernel, target),
         # The MX half-wave fold is DERIVED from the kernel, not only supplied by a target: one

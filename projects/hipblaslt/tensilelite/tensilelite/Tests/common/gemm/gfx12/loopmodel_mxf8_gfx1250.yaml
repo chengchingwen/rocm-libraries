@@ -89,7 +89,8 @@ BenchmarkProblems:
         - PrefetchLocalRead: [0, 1]
         - StaggerU: [0, 32]
         - ScheduleIterAlg: [0, 4]
-        - LoopOrder: [KMN, KNM, MKN, MNK, NKM, NMK]
+        - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
+        - WmmaOuterOrder: [0]
       BenchmarkForkParameters:
       JoinParameters:
       BenchmarkJoinParameters:
@@ -163,7 +164,8 @@ BenchmarkProblems:
         - PrefetchLocalRead: [0, 1]
         - StaggerU: [0]
         - ScheduleIterAlg: [0, 4]
-        - LoopOrder: [KMN, KNM, MKN, MNK, NKM, NMK]
+        - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
+        - WmmaOuterOrder: [0]
       BenchmarkForkParameters:
       JoinParameters:
       BenchmarkJoinParameters:
@@ -238,7 +240,8 @@ BenchmarkProblems:
         - PrefetchLocalRead: [1]
         - StaggerU: [0]
         - ScheduleIterAlg: [0, 4]
-        - LoopOrder: [KMN]
+        - WmmaInnerOrder: [1]
+        - WmmaOuterOrder: [0]
       BenchmarkForkParameters:
       JoinParameters:
       BenchmarkJoinParameters:
@@ -311,7 +314,8 @@ BenchmarkProblems:
         - PrefetchLocalRead: [1]
         - StaggerU: [0]
         - ScheduleIterAlg: [0, 4]
-        - LoopOrder: [KMN]
+        - WmmaInnerOrder: [1]
+        - WmmaOuterOrder: [0]
       BenchmarkForkParameters:
       JoinParameters:
       BenchmarkJoinParameters:
@@ -386,7 +390,8 @@ BenchmarkProblems:
         - PrefetchLocalRead: [0, 1]
         - StaggerU: [0]
         - ScheduleIterAlg: [0, 4]
-        - LoopOrder: [KMN]
+        - WmmaInnerOrder: [1]
+        - WmmaOuterOrder: [0]
       BenchmarkForkParameters:
       JoinParameters:
       BenchmarkJoinParameters:
@@ -460,7 +465,8 @@ BenchmarkProblems:
         - PrefetchLocalRead: [0, 1, 2]
         - StaggerU: [0]
         - ScheduleIterAlg: [0, 4]
-        - LoopOrder: [KMN]
+        - WmmaInnerOrder: [1]
+        - WmmaOuterOrder: [0]
       BenchmarkForkParameters:
       JoinParameters:
       BenchmarkJoinParameters:
@@ -535,7 +541,8 @@ BenchmarkProblems:
         - ScheduleIterAlg: [0, 4]
         - TDMSplitA: [0, 1, 2]
         - TDMSplitB: [0, 1, 2]
-        - LoopOrder: [KMN, KMKNMN, KMNKMN, KMNMNK]
+        - WmmaInnerOrder: [1, 4]  # was KMN, KMNKMN, KMNMNK (+1 from the product)
+          WmmaOuterOrder: [0, 3]
       BenchmarkForkParameters:
       JoinParameters:
       BenchmarkJoinParameters:
@@ -609,7 +616,8 @@ BenchmarkProblems:
         - PrefetchLocalRead: [0, 1]
         - StaggerU: [0]
         - ScheduleIterAlg: [0, 4]
-        - LoopOrder: [KMN]
+        - WmmaInnerOrder: [1]
+        - WmmaOuterOrder: [0]
       BenchmarkForkParameters:
       JoinParameters:
       BenchmarkJoinParameters:
@@ -683,7 +691,8 @@ BenchmarkProblems:
         - PrefetchLocalRead: [0]
         - StaggerU: [0, 32]
         - ScheduleIterAlg: [0, 4]
-        - LoopOrder: [KMN, KNM, MKN, MNK, NKM, NMK]
+        - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
+        - WmmaOuterOrder: [0]
       BenchmarkForkParameters:
       JoinParameters:
       BenchmarkJoinParameters:
@@ -760,7 +769,8 @@ BenchmarkProblems:
       - TDMFuse: [0, 1, 2, 3]
       - TDMSplitA: [0,1,2]
       - TDMSplitB: [0,1,2]
-      - LoopOrder: ["KMNKMN", "MKNMKN"]
+      - WmmaInnerOrder: [1, 3]  # was KMNKMN, MKNMKN (+2 from the product)
+        WmmaOuterOrder: [1, 3]
       BenchmarkForkParameters: null
       JoinParameters: null
       BenchmarkJoinParameters: null
@@ -840,7 +850,8 @@ BenchmarkProblems:
         - TDMFuse: [0]
         - TDMSplitA: [0, 1]
         - TDMSplitB: [0, 1]
-        - LoopOrder: [KMN, KNM, MKN, MNK, NKM, NMK, KMNKMN, NKMNKM, NKNKMM]
+        - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]  # was KMN, KNM, MKN, MNK, NKM, NMK, KMNKMN, NKMNKM (+10 from the product)
+          WmmaOuterOrder: [0, 2, 3]
       BenchmarkForkParameters:
       JoinParameters:
       BenchmarkJoinParameters:
@@ -920,7 +931,8 @@ BenchmarkProblems:
         - TDMFuse: [0]
         - TDMSplitA: [1]
         - TDMSplitB: [1]
-        - LoopOrder: [KMN, MKN, NKM]
+        - WmmaInnerOrder: [1, 3, 5]
+        - WmmaOuterOrder: [0]
       BenchmarkForkParameters:
       JoinParameters:
       BenchmarkJoinParameters:
@@ -998,7 +1010,8 @@ BenchmarkProblems:
         - TDMFuse: [0]
         - TDMSplitA: [0]
         - TDMSplitB: [0]
-        - LoopOrder: [KMN, MKN, NKM]
+        - WmmaInnerOrder: [1, 3, 5]
+        - WmmaOuterOrder: [0]
       BenchmarkForkParameters:
       JoinParameters:
       BenchmarkJoinParameters:
@@ -1076,7 +1089,8 @@ BenchmarkProblems:
         - TDMFuse: [0, 1, 2, 3]
         - TDMSplitA: [0, 1]
         - TDMSplitB: [0, 1]
-        - LoopOrder: [KMN, MKN, NKM]
+        - WmmaInnerOrder: [1, 3, 5]
+        - WmmaOuterOrder: [0]
       BenchmarkForkParameters:
       JoinParameters:
       BenchmarkJoinParameters:

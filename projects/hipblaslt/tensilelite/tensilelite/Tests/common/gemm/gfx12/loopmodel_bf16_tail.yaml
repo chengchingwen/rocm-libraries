@@ -57,7 +57,8 @@ BenchmarkProblems:
         - LDSTrInst: [true]
         - SourceSwap: [false]
         - ExpandPointerSwap: [false]
-        - LoopOrder: [KMN, MNK]
+        - WmmaInnerOrder: [1, 4]
+        - WmmaOuterOrder: [0]
       BenchmarkForkParameters:
       JoinParameters:
       BenchmarkJoinParameters:
