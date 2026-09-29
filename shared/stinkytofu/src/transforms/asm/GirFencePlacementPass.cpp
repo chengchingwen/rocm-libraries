@@ -10,18 +10,20 @@
 #include <deque>
 #include <optional>
 #include <set>
+#include <string>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
 #include "stinkytofu/analysis/AnalysisRegistration.hpp"
 #include "stinkytofu/analysis/asm/GirFrameAnalysis.hpp"
-#include "stinkytofu/transforms/asm/waitcnt/GirFrameCounterFlow.hpp"
 #include "stinkytofu/core/BasicBlock.hpp"
 #include "stinkytofu/core/PassManager.hpp"
 #include "stinkytofu/hardware/ArchHelper.hpp"
 #include "stinkytofu/ir/asm/StinkyAsmIR.hpp"
 #include "stinkytofu/ir/asm/StinkyModifiers.hpp"
 #include "stinkytofu/support/ErrorHandling.hpp"
+#include "stinkytofu/transforms/asm/waitcnt/GirFrameCounterFlow.hpp"
 
 #define DEBUG_TYPE "GirFencePlacementPass"
 
@@ -52,6 +54,39 @@ struct Node {
 /// is what lets the fixpoint, the coverage check and the shrink all run over one unchanging
 /// program: no index goes stale, ownership is intrinsic, and an undo is a set erase.
 using Markers = std::set<const StinkyInstruction*>;
+using HazardKinds = std::set<GirHazardKind>;
+using MarkerKinds = std::map<const StinkyInstruction*, HazardKinds>;
+
+struct MarkerOwnership {
+    HazardKinds kinds;
+    bool allRawAreTensor = true;
+};
+
+using MarkerOwnershipMap = std::map<const StinkyInstruction*, MarkerOwnership>;
+
+const char* hazardKindName(GirHazardKind kind) {
+    switch (kind) {
+        case GirHazardKind::RAW:
+            return "RAW";
+        case GirHazardKind::WAR:
+            return "WAR";
+        case GirHazardKind::WAW:
+            return "WAW";
+    }
+    STINKY_UNREACHABLE("unknown GIR hazard kind");
+}
+
+std::string fenceStamp(const HazardKinds& kinds) {
+    std::string result = "GIR fence (";
+    bool first = true;
+    for (GirHazardKind kind : kinds) {
+        if (!first) result += ",";
+        result += hazardKindName(kind);
+        first = false;
+    }
+    result += ")";
+    return result;
+}
 
 bool publishes(const StinkyInstruction& inst, const Markers& markers) {
     return isBarrier(inst) || markers.count(&inst) != 0;
@@ -61,8 +96,8 @@ bool publishes(const StinkyInstruction& inst, const Markers& markers) {
 /// consumer whose producer is still live -- an undischarged hazard.
 template <class Report>
 Live transfer(const Node& node, const std::vector<StinkyInstruction*>& body,
-              const GirFrameHazardAnalysis::Result& hazards, const Live& in,
-              const Markers& markers, Report report) {
+              const GirFrameHazardAnalysis::Result& hazards, const Live& in, const Markers& markers,
+              Report report) {
     Live live = in;
     for (size_t i = 0; i < body.size(); ++i) {
         StinkyInstruction* inst = body[i];
@@ -195,6 +230,113 @@ bool countsFor(const StinkyInstruction& inst, Counter counter) {
     return false;
 }
 
+/// Give every tensor/DS RAW its own latest physical publication point. RAWs from one logical
+/// producer action may share the earliest of their deadlines only when that slot is legal for
+/// every edge and no issue on the producer's counter lies between them; each edge's FIFO rank is
+/// then unchanged. Different groups that land on the same instruction naturally share one marker.
+Markers rawMarkers(const FrameCFG& cfg, const GirFrameHazardAnalysis::Result& hazards) {
+    using Group = std::tuple<BasicBlock*, uint64_t, Counter>;
+    using ByDeadline = std::map<size_t, std::vector<const GirFrameHazard*>>;
+    std::map<Group, ByDeadline> deadlines;
+    for (const GirFrameHazard& hazard : hazards.hazards) {
+        if (!hazard.crossAgent || hazard.kind != GirHazardKind::RAW) continue;
+        const Counter counter = counterOfProducer(*hazard.producer);
+        if (counter == Counter::None) continue;
+        deadlines[{hazard.consumerBlock, hazard.producerAction, counter}][hazard.consumerIndex]
+            .push_back(&hazard);
+    }
+
+    std::map<BasicBlock*, const std::vector<StinkyInstruction*>*, std::less<BasicBlock*>> bodies;
+    for (size_t n = 0; n < cfg.nodes.size(); ++n) bodies.emplace(cfg.nodes[n].block, &cfg.body[n]);
+
+    Markers markers;
+    for (const auto& [group, byDeadline] : deadlines) {
+        BasicBlock* block = std::get<0>(group);
+        const Counter counter = std::get<2>(group);
+        auto body = bodies.find(block);
+        if (body == bodies.end() || byDeadline.empty())
+            report_fatal_error("GirFencePlacementPass: RAW consumer block has no frame body");
+        const std::vector<StinkyInstruction*>& instructions = *body->second;
+
+        const auto legalAt = [block](const GirFrameHazard& hazard, size_t slot) {
+            if (slot > hazard.consumerIndex) return false;
+            return hazard.producerBlock != block || hazard.gap != 0 || slot > hazard.producerIndex;
+        };
+        for (const auto& [slot, edges] : byDeadline) {
+            if (slot >= instructions.size() ||
+                !std::all_of(edges.begin(), edges.end(),
+                             [&](const GirFrameHazard* hazard) { return legalAt(*hazard, slot); }))
+                report_fatal_error("GirFencePlacementPass: RAW has no legal consumer deadline");
+        }
+
+        auto deadline = byDeadline.rbegin();
+        size_t clusterHigh = deadline->first;
+        size_t clusterLow = deadline->first;
+        std::vector<const GirFrameHazard*> cluster = deadline->second;
+        const auto flush = [&] {
+            if (clusterLow >= instructions.size())
+                report_fatal_error("GirFencePlacementPass: RAW deadline is outside its block");
+            markers.insert(instructions[clusterLow]);
+        };
+        for (++deadline; deadline != byDeadline.rend(); ++deadline) {
+            const size_t candidate = deadline->first;
+            bool crossedIssue =
+                candidate >= instructions.size() || clusterHigh > instructions.size();
+            for (size_t i = candidate; !crossedIssue && i < clusterHigh; ++i) {
+                StinkyInstruction& inst = *instructions[i];
+                crossedIssue = countsFor(inst, counter) || isBarrier(inst);
+                int observed[waitcnt::CK_Count];
+                if (!crossedIssue && waitcnt::observedWaitDrains(inst, observed)) {
+                    const waitcnt::CounterKind kind =
+                        counter == Counter::Ds ? waitcnt::CK_DS : waitcnt::CK_Tensor;
+                    crossedIssue = observed[kind] >= 0;
+                }
+            }
+            const bool legal =
+                std::all_of(
+                    cluster.begin(), cluster.end(),
+                    [&](const GirFrameHazard* hazard) { return legalAt(*hazard, candidate); }) &&
+                std::all_of(
+                    deadline->second.begin(), deadline->second.end(),
+                    [&](const GirFrameHazard* hazard) { return legalAt(*hazard, candidate); });
+            if (crossedIssue || !legal) {
+                flush();
+                clusterHigh = candidate;
+                cluster = deadline->second;
+            } else {
+                cluster.insert(cluster.end(), deadline->second.begin(), deadline->second.end());
+            }
+            clusterLow = candidate;
+        }
+        flush();
+    }
+    return markers;
+}
+
+MarkerOwnershipMap collectMarkerOwnership(const GirFrameAnalysis::Result& frames,
+                                          const GirFrameHazardAnalysis::Result& hazards,
+                                          const Markers& markers,
+                                          const std::function<bool(const BasicBlock&)>& covers) {
+    const auto marked = [&markers](const StinkyInstruction& inst) {
+        return markers.count(&inst) != 0;
+    };
+    MarkerOwnershipMap result;
+    for (const GirFrameHazard& hazard : hazards.hazards) {
+        if (!hazard.crossAgent || !covers(*hazard.consumerBlock)) continue;
+        StinkyInstruction* owner =
+            lastBarrierBefore(frames, hazard.consumerBlock, hazard.consumerFrame,
+                              hazard.consumerIndex, marked)
+                .first;
+        if (!owner || !markers.count(owner)) continue;
+        MarkerOwnership& summary = result[owner];
+        summary.kinds.insert(hazard.kind);
+        if (hazard.kind == GirHazardKind::RAW)
+            summary.allRawAreTensor &=
+                waitcnt::classifyMemOp(*hazard.producer) == waitcnt::CK_Tensor;
+    }
+    return result;
+}
+
 /// What is unfenced just before each instruction, so a candidate slot knows what it would
 /// discharge -- and therefore which residuals its one wait must be the minimum of.
 std::vector<Live> liveBefore(const Node& node, const std::vector<StinkyInstruction*>& body,
@@ -314,9 +456,9 @@ size_t chooseSlot(const GirFrameAnalysis::Result& frames, const NodesByKey& byKe
     const auto reachOf = [&](size_t h) -> const std::optional<Reach>& {
         auto found = reach.find(h);
         if (found == reach.end())
-            found = reach.emplace(h, reachAtBlockStart(frames, byKey, node, hazards.hazards[h],
-                                                       index))
-                        .first;
+            found =
+                reach.emplace(h, reachAtBlockStart(frames, byKey, node, hazards.hazards[h], index))
+                    .first;
         return found->second;
     };
 
@@ -355,6 +497,9 @@ class GirFencePlacementPass final : public StinkyInstPass {
         const auto& frames = AM.getResult<GirFrameAnalysis>(function);
         const auto& hazards = AM.getResult<GirFrameHazardAnalysis>(function);
         if (frames.empty() || hazards.empty()) return PreservedAnalyses::all();
+        if (std::none_of(hazards.hazards.begin(), hazards.hazards.end(),
+                         [](const GirFrameHazard& hazard) { return hazard.crossAgent; }))
+            return PreservedAnalyses::all();
 
         const GfxArchID archId =
             getGfxArchID(passCtx.getGemmTileConfig().arch[0], passCtx.getGemmTileConfig().arch[1],
@@ -370,9 +515,16 @@ class GirFencePlacementPass final : public StinkyInstPass {
         // stale under an insertion and an undo costs a set erase instead of a block rebuild.
         const FrameCFG cfg = buildFrameCFG(function, frames);
         if (cfg.nodes.empty()) return PreservedAnalyses::all();
-        Markers markers;
+        const Markers mandatoryRawMarkers = rawMarkers(cfg, hazards);
+        Markers markers = mandatoryRawMarkers;
+        MarkerKinds markerKinds;
+        for (const StinkyInstruction* marker : mandatoryRawMarkers)
+            markerKinds[marker].insert(GirHazardKind::RAW);
         const auto marked = [&markers](const StinkyInstruction& inst) {
             return markers.count(&inst) != 0;
+        };
+        const auto covers = [&passCtx](const BasicBlock& block) {
+            return passCtx.shouldProcessBasicBlock(const_cast<BasicBlock&>(block));
         };
         std::unordered_map<const StinkyInstruction*, size_t> position;
         for (BasicBlock& block : function)
@@ -396,12 +548,14 @@ class GirFencePlacementPass final : public StinkyInstPass {
             size_t node = 0, slot = 0;
             std::vector<size_t> violating;
             if (!firstViolation(cfg, hazards, in, markers, node, slot, violating)) break;
-            slot = chooseSlot(frames, byKey, cfg.nodes[node], cfg.body[node], hazards,
-                              liveBefore(cfg.nodes[node], cfg.body[node], hazards, in[node],
-                                         markers),
-                              violating, slot, markers);
-            if (!markers.insert(cfg.body[node][slot]).second)
+            slot =
+                chooseSlot(frames, byKey, cfg.nodes[node], cfg.body[node], hazards,
+                           liveBefore(cfg.nodes[node], cfg.body[node], hazards, in[node], markers),
+                           violating, slot, markers);
+            const StinkyInstruction* marker = cfg.body[node][slot];
+            if (!markers.insert(marker).second)
                 report_fatal_error("GirFencePlacementPass failed to converge");
+            for (size_t h : violating) markerKinds[marker].insert(hazards.hazards[h].kind);
         }
 
         // Phase 2: the cut fixpoint answers LIVENESS; the wait pass asks POSITION -- does a
@@ -420,26 +574,111 @@ class GirFencePlacementPass final : public StinkyInstPass {
                 if (!inst) continue;
                 if (index++ == hazard.consumerIndex) {
                     markers.insert(inst);
+                    markerKinds[inst].insert(hazard.kind);
                     break;
                 }
             }
         }
 
-        // Phase 3: greedy places more than it needs, so drop any marker the rest already covers.
-        // Fewer fences means the copies between them stay in flight together, which is what lets
-        // the wait be graded instead of a drain.
+        // Phase 3: greedy can over-place auxiliary WAR/WAW cuts, so drop any the rest cover.
+        // RAW markers are ownership points, not hitting-set candidates: deleting a later one
+        // would bind that RAW's wait to an earlier fence and shorten its in-flight interval.
         for (bool shrinking = true; shrinking;) {
             shrinking = false;
             for (const StinkyInstruction* candidate : inProgramOrder(markers)) {
+                if (mandatoryRawMarkers.count(candidate)) continue;
                 markers.erase(candidate);
                 size_t n = 0, sl = 0;
                 std::vector<size_t> v;
                 if (!firstViolation(cfg, hazards, solve(cfg, hazards, markers), markers, n, sl,
                                     v)) {
+                    markerKinds.erase(candidate);
                     shrinking = true;
                     break;
                 }
                 markers.insert(candidate);
+            }
+        }
+
+        // Phase 3b: plan waits against the still-virtual fence set. Tensor RAW ownership without a
+        // tensor wait publishes no new completion, so drop that ownership. If the marker then owns
+        // nothing else, remove it only when the remaining markers still cover every cross-agent
+        // hazard, then re-plan. Fence and wait ownership therefore reach one fixpoint before IR
+        // materialization.
+        bool waitAwareShrinkConverged = false;
+        const size_t markerBound = markers.size();
+        waitcnt::WaitInsertionPlan finalVirtualWaits;
+        for (size_t round = 0; round <= markerBound; ++round) {
+            MarkerOwnershipMap ownership = collectMarkerOwnership(frames, hazards, markers, covers);
+            waitcnt::WaitInsertionPlan virtualWaits =
+                waitcnt::buildGirFrameWaitPlan(function, frames, hazards, covers, marked);
+
+            bool removed = false;
+            for (const StinkyInstruction* candidate : inProgramOrder(markers)) {
+                auto owned = ownership.find(candidate);
+                auto wait =
+                    virtualWaits.anchorWaits.find(const_cast<StinkyInstruction*>(candidate));
+                const bool hasTensorWait =
+                    wait != virtualWaits.anchorWaits.end() &&
+                    wait->second.tensorCount != waitcnt::WaitCountSpec::kUnused;
+
+                if (owned != ownership.end() && !hasTensorWait && owned->second.allRawAreTensor)
+                    owned->second.kinds.erase(GirHazardKind::RAW);
+                if (owned != ownership.end() && !owned->second.kinds.empty()) continue;
+
+                markers.erase(candidate);
+                size_t n = 0, sl = 0;
+                std::vector<size_t> violations;
+                if (firstViolation(cfg, hazards, solve(cfg, hazards, markers), markers, n, sl,
+                                   violations)) {
+                    markers.insert(candidate);
+                    report_fatal_error(
+                        "GirFencePlacementPass cannot remove an unwaited/unowned marker");
+                }
+                markerKinds.erase(candidate);
+                removed = true;
+                break;
+            }
+            if (removed) continue;
+
+            markerKinds.clear();
+            for (const auto& [marker, summary] : ownership) markerKinds[marker] = summary.kinds;
+            finalVirtualWaits = std::move(virtualWaits);
+            waitAwareShrinkConverged = true;
+            break;
+        }
+        if (!waitAwareShrinkConverged)
+            report_fatal_error("GirFencePlacementPass wait-aware shrink failed to converge");
+
+        for (const auto& [marker, kinds] : markerKinds) {
+            if (!kinds.contains(GirHazardKind::RAW)) continue;
+            auto wait = finalVirtualWaits.anchorWaits.find(const_cast<StinkyInstruction*>(marker));
+            if (wait == finalVirtualWaits.anchorWaits.end() ||
+                wait->second.tensorCount == waitcnt::WaitCountSpec::kUnused)
+                report_fatal_error("GirFencePlacementPass stamped RAW without a tensorcnt");
+        }
+
+        // A pure WAR marker is movable toward its tensor consumer. If the next WAR-owning marker
+        // in the same block has no tensor issue before it, Phase 3 must have removed the earlier
+        // one. Keeping both would add an earlier dscnt/barrier without ordering any extra write.
+        for (BasicBlock& block : function) {
+            const StinkyInstruction* earlierPureWar = nullptr;
+            bool tensorIssued = false;
+            for (IRBase& node : block) {
+                auto* inst = dyn_cast<StinkyInstruction>(&node);
+                if (!inst) continue;
+                if (markers.count(inst)) {
+                    const HazardKinds& kinds = markerKinds.at(inst);
+                    if (kinds.contains(GirHazardKind::WAR)) {
+                        if (earlierPureWar && !tensorIssued)
+                            report_fatal_error("GirFencePlacementPass left mergeable WAR barriers");
+                        earlierPureWar = kinds.size() == 1
+                                             ? inst
+                                             : static_cast<const StinkyInstruction*>(nullptr);
+                        tensorIssued = false;
+                    }
+                }
+                if (isTensorLoad(*inst)) tensorIssued = true;
             }
         }
 
@@ -453,7 +692,10 @@ class GirFencePlacementPass final : public StinkyInstPass {
             signal->addSrcReg(StinkyRegister(kWorkgroupBarrierId));
             StinkyInstruction* wait = builder.create(waitDesc, anchor);
             wait->addSrcReg(StinkyRegister(kWorkgroupBarrierId));
-            wait->addModifier<CommentData>(CommentData{"GIR fence"});
+            auto kinds = markerKinds.find(target);
+            if (kinds == markerKinds.end() || kinds->second.empty())
+                report_fatal_error("GirFencePlacementPass: barrier has no hazard-kind stamp");
+            wait->addModifier<CommentData>(CommentData{fenceStamp(kinds->second)});
             // The frame counter flow supplies this barrier's waits, so the token-absence fallback
             // must not also drain it.  `NoWaitCntData` says exactly that and nothing more --
             // marking it a GIR fence would also clear `hasSideEffect` and let it be moved away

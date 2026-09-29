@@ -766,8 +766,16 @@ std::pair<StinkyInstruction*, GirFrame> lastBarrierBefore(
         for (IRBase& node : *bb) {
             auto* inst = dyn_cast<StinkyInstruction>(&node);
             if (!inst) continue;
-            if (index++ >= upTo) break;
-            if (!(isFence(*inst) || isBarrier(*inst) || (alsoFences && alsoFences(*inst)))) continue;
+            const size_t here = index++;
+            // A virtual marker on instruction `upTo` materializes immediately BEFORE it, so it
+            // is a valid barrier before that instruction. An already-materialized barrier at the
+            // same index is not.
+            if (here >= upTo) {
+                if (here == upTo && alsoFences && alsoFences(*inst)) found = inst;
+                break;
+            }
+            if (!(isFence(*inst) || isBarrier(*inst) || (alsoFences && alsoFences(*inst))))
+                continue;
             if (closesPair(*inst) && found && opensPair(*found)) continue;
             found = inst;
         }
@@ -868,11 +876,12 @@ GirFrameHazardAnalysis::Result GirFrameHazardAnalysis::run(Function& function,
         LiveTouchKey producerKey{producer.frame, {producer.inst, producer.accessIndex}};
         LiveTouchKey consumerKey{consumer.frame, {consumer.inst, consumer.accessIndex}};
         if (!emitted.emplace(static_cast<int>(kind), producerKey, consumerKey, gap).second) return;
+        const bool crossAgent = function.getGemmTileConfig().NumWaves > 1 &&
+                                (producerSpec.crossAgent || consumerSpec.crossAgent);
         result.hazards.push_back({kind, producer.inst, consumer.inst, producer.block,
                                   consumer.block, producer.instructionIndex,
                                   consumer.instructionIndex, producer.frame, consumer.frame, gap,
-                                  producerSpec.crossAgent || consumerSpec.crossAgent,
-                                  actionOf(producer.inst), actionOf(consumer.inst)});
+                                  crossAgent, actionOf(producer.inst), actionOf(consumer.inst)});
     };
 
     // Emit in program order, by POSITION: a label carries a per-run suffix, so ordering on it is
