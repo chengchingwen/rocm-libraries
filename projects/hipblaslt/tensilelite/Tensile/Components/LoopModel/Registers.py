@@ -1,10 +1,6 @@
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
-"""Valu-ring register allocation for ULM1, derived from the cached θ/S.
-
-θ governs the ring widths rather than bounding them, so `applyLoopModelValuRegs` overwrites the
-scaffold's sizing once it has run.
-"""
+"""Derive LoopModel Valu-ring register allocation from cached theta and S."""
 
 from ...LoopModel import traversal as _geometry
 

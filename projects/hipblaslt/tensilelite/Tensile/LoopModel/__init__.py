@@ -1,8 +1,5 @@
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
-"""LoopModel -- the theta schedule-model decoder, ported into TensileLite (was `spacetime` in the
-decoder_proto repo).
-"""
 
 from . import traversal
 from .checks import Obligation, build_ledger, check_ledger_discharged, validate_loopir

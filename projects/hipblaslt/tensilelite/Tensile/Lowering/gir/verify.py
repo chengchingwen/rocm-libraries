@@ -6,14 +6,12 @@ verify_gir -- the GIR well-formedness verifier.
 
 from __future__ import annotations
 
-from .nodes import (Tile, Gen, Ref, Move, Mma, Mark, MARK_KINDS,
-                    Goto, CondGoto, CondChain, LoopBack, Return, Block, Program)
+from .nodes import Move, Mma, Mark, MARK_KINDS, terminator_targets
 from .analysis import AnalysisManager
 from .analyses import BackEdges
 from .analyses.loop_shape import LoopShape, reduction_coverage_violations
 from .analyses.barrier_uniformity import BarrierUniformity
-from .analyses.frame_hazards import FrameHazards, RAW, _disjoint_storage
-from .analyses.frame_map import FrameMap
+from .analyses.frame_hazards import FrameHazards, _disjoint_storage
 from .analyses.reg_band import RegBandAnalysis
 from .analyses.lds_buffers import LdsBufferIds, shared_refs
 from .analyses.region_increment import walk_violations
@@ -39,10 +37,6 @@ _MARK_SCHEMA = {
     "chunk_pin":      ("unit", "chunk"),
     # The buffer generation a movement's pointer must hold HERE, for the same reason.
     "buffer_pin":     ("hop", "unit", "gen"),
-    # The completion-counter residuals owed at this point.  A counter key is present only
-    # when it is CHARGED, so absence is "says nothing", NOT zero -- hence neither counter
-    # is a required field and the check below demands at least one.
-    "waitcnt":        ("hazard", "from", "frames"),
 }
 
 
@@ -246,32 +240,18 @@ def _check_trip(prog, am):
         raise RuntimeError("G-TRIP: " + "; ".join(viol))
 
 
-def _term_targets(term):
-    if isinstance(term, Goto):
-        return [term.target]
-    if isinstance(term, CondGoto):
-        return [term.t_target, term.f_target]
-    if isinstance(term, LoopBack):
-        return [term.body, term.exit_target]
-    if isinstance(term, CondChain):
-        return [tgt for _p, tgt in term.arms] + [term.default]
-    if isinstance(term, Return):
-        return []                      # G4: a sink terminator legitimately has no targets
-    return []
-
-
 def _check_term(prog):
     for lab, blk in prog.blocks.items():
         if blk.term is None:
             raise RuntimeError(f"G-TERM: block {lab} has no terminator")
-        for t in _term_targets(blk.term):
+        for t in terminator_targets(blk.term):
             if t not in prog.blocks and t != "end":
                 raise RuntimeError(f"G-TERM: block {lab} targets missing block '{t}'")
     # declared succs must equal the terminator's raw targets ("end" sink included)
     for lab, blk in prog.blocks.items():
         if blk.succs:
             declared = set(blk.succs)
-            actual = set(_term_targets(blk.term))
+            actual = set(terminator_targets(blk.term))
             if declared != actual:
                 raise RuntimeError(
                     f"G-TERM: block {lab} succs {sorted(declared)} disagree with terminator "
@@ -279,7 +259,7 @@ def _check_term(prog):
     # declared preds must equal the CFG preds among REAL blocks (the "end" sink has no block)
     computed_preds = {lab: set() for lab in prog.blocks}
     for lab, blk in prog.blocks.items():
-        for t in _term_targets(blk.term):
+        for t in terminator_targets(blk.term):
             if t in prog.blocks:
                 computed_preds[t].add(lab)
     for lab, blk in prog.blocks.items():
@@ -319,18 +299,6 @@ def _check_marks(prog):
         if missing:
             raise RuntimeError(
                 f"G-MARK: Mark('{inst.kind}') in {blk.label} missing fields {missing}")
-        if inst.kind == "waitcnt":
-            named = [k for k in ("tensorcnt", "dscnt") if k in have]
-            if not named:
-                raise RuntimeError(
-                    f"G-MARK: Mark('waitcnt') in {blk.label} names no counter -- a wait\n"
-                    f"        that charges nothing should not have been emitted")
-            for key in named:
-                n = inst.at.get(key)
-                if not isinstance(n, int) or n < 0:
-                    raise RuntimeError(
-                        f"G-MARK: Mark('waitcnt') in {blk.label} has {key}={n!r}; a residual\n"
-                        f"        is a non-negative instruction count (0 = full drain)")
         if inst.kind == "swap":
             # The pointer name is hop-dependent (see _MARK_SCHEMA).  Requiring the RIGHT one, not
             # merely "some name", is what stops a copy swap from being labelled with a bare operand

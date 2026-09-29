@@ -1,13 +1,11 @@
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
-"""
-loopir_to_gir -- the layer 1->2 lowering.
-"""
+"""Lower LoopIR (layer 1) into GIR (layer 2)."""
 
 from __future__ import annotations
 
 from dataclasses import replace
-from ..LoopModel import Space, Loop, Branch, Bind, Peel, Inst, Load, Mma as LMma, Cond
+from ..LoopModel import Space, Loop, Branch, Bind, Peel, Inst, Load, Cond
 from ..LoopModel.emit import emit_mainloop
 from ..LoopModel.schedule import peel_depths
 from ..LoopModel.schedule import build_S
@@ -38,11 +36,7 @@ def _gir_bound(e) -> Bound:
 
 
 def _short_steps(els, M):
-    """The short-loop (`Cond.els`) arm, split into its per-step (guard, nodes) -- or a raise.
- THE TWO SHAPES. TensileLite's scaffold and the LoopIR describe the same kernel with
- DIFFERENT STRUCTURE.
- 
-    """
+    """Split the short-loop arm into per-step ``(guard, nodes)`` pairs."""
     if not els:
         return []
     if len(els) != M:
@@ -67,11 +61,7 @@ def _short_steps(els, M):
 
 
 def _trips_of(loop_trip, per_trip: int = 1) -> Trips:
-    """The LoopIR outer `Loop`'s RANGE, read as a trip COUNT.
- LoopModel states the steady region as a range -- `[delta, T)`, i.e. `T - M` iterations -- and carries
- it as `Loop.trip = iter < T - M`. That `<` is the range's upper bound, not a machine
- comparison; read as a bound, the count IS that bound.
- """
+    """Convert a LoopIR range bound into a GIR trip count."""
     if loop_trip.op != "<":
         raise NotImplementedError(
             f"steady loop range uses {loop_trip.op!r}; the trip count is read from a `<` upper "
@@ -92,22 +82,14 @@ def _gir_pred(p) -> Pred:
 
 
 def _expr_raw(e, env) -> int:
-    """Evaluate an Expr WITHOUT applying its own modulus -- the raw generation offset. Used to
- derive a steady ref's `gdelta` (the constant read-ahead / prefetch offset on top of the
- loop-carried `iter` base), so frame_map's `(entry + gdelta) % ring` reproduces the
- concrete generation.
-    """
+    """Evaluate an expression without applying its modulus."""
     if e is None:
         return 0
     return e if isinstance(e, int) else replace(e, mod=0).eval(env)
 
 
 def _deps_of(inst):
-    """Carry the LoopIR awaits (RAW/WAR, per /dep_defuse) onto a GIR verb as `deps`.
- Each dep is a plain hashable record (dep_name, counter, kind, scope) -- a semantic edge, no
- count (the numeric residual is L4's; R-SEMANTIC). This is the ONE place LoopIR awaits enter
- GIR, and therefore the one place a field can be dropped on the way in.
-    """
+    """Return the LoopIR awaits as GIR dependency records."""
     return tuple((a.dep, a.counter, a.kind, a.scope) for a in getattr(inst, "awaits", ()))
 
 
@@ -612,10 +594,6 @@ def _coverage_facts(theta):
     inner = theta.inner_axes()
     return {
         "read_coverage": {op.name: h.coverage for op, h in reads if h.coverage is not None},
-        # hardware read instructions one fill issues -- what a completion counter counts.  EVERY
-        # read operand is here: a missing entry would silently count that Move as zero instructions.
-        "read_instructions": {op.name: int(getattr(op.fragment, "instructions", 0) or 0)
-                              for op, _h in reads},
         # `{axis: factor}` for each axis the coverage folds only IN PART (1 < q < N), so the axis
         # stays in the loop nest at a reduced trip rather than disappearing from it.
         "read_fold": {op.name: dict(_geometry.transfer_coverage(theta, op, h))

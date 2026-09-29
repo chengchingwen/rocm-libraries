@@ -8,18 +8,16 @@ from __future__ import annotations
 
 from rocisa.code import Module
 
-from .gir_tag import gir_tag, sync_comment
-from .gir.emit_plan import plan_block
-from .gir.coverage import plan_coverage
-from .gir.nodes import Move
 from .gir.analysis import AnalysisManager
 from .gir.analyses.reg_band import RegBandAnalysis
+from .gir.coverage import plan_coverage
+from .gir.emit_plan import plan_block
+from .gir.frame_contract import build_contract
+from .gir.nodes import Move
+from .gir_tag import gir_tag
 from .leaves import LeafEmitters
 from ..Components.TDMFuse import tdmFusedGroups, tdmSetOwner
-from rocisa.container import MemTokenData
-from rocisa.instruction import GirActionKind
-from .gir.frame_contract import build_contract
-from rocisa.instruction import SBarrier, SSchedulingFence, SWaitCnt, SWaitTensorcnt
+from rocisa.instruction import GirActionKind, SBarrier
 
 
 def _register_depth(prog, band=None):
@@ -55,17 +53,17 @@ class GirToRocisa:
         self.writer = writer
         self.kernel = kernel
         self.tPA, self.tPB = tPA, tPB
-        # L3 OWNS the leaf emitters (they ARE the layer-2->3 realization).  The register ring width
-        # W is a GIR fact passed as a real field -- no reaching into a retired walker's internals.
+        # Leaf emitters provide the layer-2-to-3 realization. The register ring
+        # width is a GIR fact passed as a field.
         self._M = int(prog.meta.get("peel_depth", 0))
         import os as _os, sys as _sys
         if _os.environ.get("ST_DUMP_PEEL"):
             print("[peel] M=%d PGR=%s PLR=%s" % (self._M, kernel.get("PrefetchGlobalRead"),
-                  kernel.get("PrefetchLocalRead")), file=_sys.stderr)     # peel depth: prologue fills chunks 0..M-1
+                  kernel.get("PrefetchLocalRead")), file=_sys.stderr)
         self._memberRegions = dict(prog.meta.get("unit_member_regions", {}) or {})
         self._regLayout = dict(prog.meta.get("register_layout", {}) or {})
-        # The per-instruction half of the frame contract: each action's anchor and what it touches
-        # ride on the instruction, so only the generation table and the phi edges stay in the text.
+        # Instruction anchors and accesses are carried by the frame contract;
+        # only generation and phi-edge data remains in the module metadata.
         contract = build_contract(prog)
         self._actionAnchors = {a.id: a.anchor for a in contract.actions.values()}
         self._actionAccesses = {}
@@ -77,8 +75,8 @@ class GirToRocisa:
         self._ctxRd = {"A": self._leaf.buildLdsReadContext(kernel, tPA),
                        "B": self._leaf.buildLdsReadContext(kernel, tPB)}
         self._tp = {"A": tPA, "B": tPB}
-        # MICROSCALING SCALE TENSORS are ordinary operands here: theta gives `MXSA`/`MXSB` their own
-        # paths, so GIR emits read acts for them exactly as it does for A and B, and they
+        # Microscaling tensors are ordinary operands here. Theta gives MXSA and
+        # MXSB their own paths, so GIR emits their reads like A and B.
         for _parent in (tPA, tPB):
             _mx = _parent.get("MX")
             if _mx is not None:
@@ -86,7 +84,7 @@ class GirToRocisa:
                 self._tp[_tc] = _mx
                 self._ctxRd[_tc] = self._leaf.buildMxScaleReadContext(kernel, _mx)
 
-    # -- scaffold consumed BY TAG (handed in by the fork per stage) --------------------------
+    # Scaffold metadata consumed by the tags handed in for each stage.
     def emit_block(self, prog, phase, *, tpByOperand=None, internalPointerSwap=False) -> Module:
         """Realize the finalized GIR block `phase` into a rocisa Module."""
         tpByOperand = tpByOperand or self._tp
@@ -96,8 +94,8 @@ class GirToRocisa:
         acts = plan_block(prog, phase)
         cplan = plan_coverage(
             acts, lambda op: (prog.meta.get("read_coverage", {}) or {}).get(op),
-            # whether theta FOLDED this operand's read axis, so a lone leader act is a
-            # complete carrier group (it carries its span) rather than a missing one.
+            # A folded read axis makes a lone leader act a complete carrier
+            # group because it carries the whole span.
             folded_of=lambda op: bool((prog.meta.get("read_fold", {}) or {}).get(op))
                               or bool((prog.meta.get("coverage_axes", {}) or {}).get(op)))
         for _v in cplan.violations:
@@ -175,8 +173,6 @@ class GirToRocisa:
                 self._emit_region_inc_act(out, phase, at, tpByOperand)
             elif kind == "fence":
                 self._emit_fence(out, phase, at)
-            elif kind == "waitcnt":
-                self._emit_waitcnt(out, phase, at)
             elif kind == "gsu_guard":
                 pass          # R4: realized via the scaffold-anchor path
             self._stamp_action(out.flatitems()[before:], act)
@@ -184,8 +180,7 @@ class GirToRocisa:
         return out
 
     _ACTION_KINDS = {"read": GirActionKind.Read, "copy": GirActionKind.Copy,
-                     "fence": GirActionKind.Fence, "wmma": GirActionKind.Wmma,
-                     "waitcnt": GirActionKind.WaitCnt}
+                     "fence": GirActionKind.Fence, "wmma": GirActionKind.Wmma}
 
     @staticmethod
     def _drop_mem_tokens(code):
@@ -241,17 +236,6 @@ class GirToRocisa:
     def _tag(self, out, phase, kind, detail):
         """Stamp a GIR act so a finding in the `.s` names the node that emitted it."""
         out.addComment0(gir_tag("%s %s %s" % (phase, kind, detail)))
-
-    def _emit_waitcnt(self, out, phase, at):
-        """Record GIR's residual as a tag; StinkyTofu states the instruction.
-
-        The frame counter flow derives every wait from the frame map, so emitting one here only
-        pins ST to whatever GIR guessed -- insertion CREDITS what it finds, so a `dscnt 0` left
-        here survives however finely the frame model graded it."""
-        out.addComment0(gir_tag(
-            "%s waitcnt %s hazard=%s from=%s frames=%s"
-            % (phase, ",".join("%s=%s" % (c, at[c]) for c in ("tensorcnt", "dscnt") if c in at),
-               at.get("hazard"), at.get("from"), at.get("frames"))))
 
     def _emit_fence(self, out, phase, at):
         """Record WHERE GIR wanted a fence; StinkyTofu decides how many and emits them.

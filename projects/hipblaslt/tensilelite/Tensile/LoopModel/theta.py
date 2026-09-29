@@ -1,7 +1,5 @@
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
-"""theta -- the canonical Spacetime-layout point the decoder consumes.
-"""
 
 from __future__ import annotations
 
@@ -9,8 +7,6 @@ from dataclasses import dataclass, field
 
 from .ir import COPY, FORWARD, HOP_COUNTER, READ, REVERSE, STORE, Space
 
-
-# ---  ------------------------------------------------------------------------------------------------
 
 def group_labels(count: int) -> tuple:
     """Register groups are indexed, not named: group i is `g{i}` for every count."""
@@ -35,7 +31,6 @@ class Fragment:
     labels: tuple = None
     grouping_mode: str = None
     group_policy: dict = None
-    instructions: int = 0
     fragment_elements: int = 4
     vector_elements: int = 0
     coverage: object = None
@@ -68,7 +63,7 @@ class Fragment:
     def total_slots(self) -> int:
         return sum(self.parts)
 
-    def group_broadcast(self, group=None) -> set:
+    def group_broadcast(self) -> set:
         return set(self.broadcast_axes)
 
     def policy_of(self, group):
@@ -329,10 +324,6 @@ class Operand:
 
 AGENT_LEVELS = ("block", "wave", "subwave")
 
-#: The finest level a synchronization scope may name
-SYNC_FLOOR_LEVEL = "wave"
-
-
 ASSIGNMENT_ROLES = ("read", "copy")
 
 
@@ -366,7 +357,6 @@ class AgentAxisAssignment:
 class AgentAssignment:
     """Loop-axis assignment and producer/consumer partition."""
     axis_assignments: tuple = ()
-    roles: tuple = ()
 
     def __post_init__(self):
         limit = AGENT_LEVELS.index("wave")
@@ -506,16 +496,11 @@ class Theta:
             for level, depth in movement.offsets.items()
         }
 
-        # --- the axes it varies over & reduction ---
-
     def output_operands(self):
         return [operand for operand in self.operands if operand.is_output]
 
     def wave_served_axes(self) -> set:
         return self.agent_assignment.served_axes()
-
-
-
 
     def tensor_instrs_per_kiter(self) -> int:
         """distinct global->shared instructions per kiter (one shared counter tracks all)."""
