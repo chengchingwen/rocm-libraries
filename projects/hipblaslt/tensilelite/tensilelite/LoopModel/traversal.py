@@ -1222,15 +1222,18 @@ def _regions_ride_the_ring(theta, operand, group) -> bool:
 def ring_block_width(theta, operand, group, buffers) -> int:
     """Slots the enumerator owns before the region digits begin -- its own span, normally.
 
-    A region riding the ring owns a block, so there the enumerator wraps inside its share of the
-    depth rather than spanning it whole, which would land the region digit where the modulus is 0.
+    A region owns a block, so the enumerator wraps inside its share of the depth rather than
+    spanning it whole, which would land the region digit where the modulus is 0.  Its share is
+    reserved whenever there IS more than one region -- `group_ring_depth` counts them
+    unconditionally, so gating the reservation on a read-ahead erased the digit at PLR=0.
     """
     span = 1
     for _name, extent in ring_axes(theta, operand, group):
         span *= max(1, extent)
-    if not _regions_ride_the_ring(theta, operand, group):
+    regions = max(1, _region_count(theta, operand))
+    if regions <= 1:
         return max(1, span)
-    return max(1, min(span, max(1, int(buffers)) // max(1, _region_count(theta, operand))))
+    return max(1, min(span, max(1, int(buffers)) // regions))
 
 
 def regions_time_share(theta, operand, group, buffers) -> bool:
