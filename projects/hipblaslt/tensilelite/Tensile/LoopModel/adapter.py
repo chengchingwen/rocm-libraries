@@ -123,11 +123,11 @@ def _canonical_ord(substeps, splits, m_inner, n_inner, order):
     axes = {role: Axis(role, extents[role]) for role in CANON_NAMES}
     roles = _word_to_modes(_loop_order_word(order))
     def _keep(role):
-        if extents[role] > 1:
+        # A TILE AXIS NEVER DEGENERATES OUT OF THE NEST.  Its presence is what the loop order
+        # says, not what its extent happens to be, so no derivation keys on whether it survived.
+        if role in INNER_TO_SPLIT:
             return True
-        if role == "K_inner":  # the K chain is live when the shared split is
-            return extents["K_split"] > 1
-        return extents.get(INNER_TO_SPLIT.get(role, ""), 1) > 1
+        return extents[role] > 1
     # `ord` CARRIES ONLY THE SHARED LINK.  `kResA`/`kResB` are one operand's own residue: putting
     # them on the shared nest asks the other operand to have an opinion about an axis that is not
     # its.  Each side gets its own nest, the shared one with its residue spliced back in.

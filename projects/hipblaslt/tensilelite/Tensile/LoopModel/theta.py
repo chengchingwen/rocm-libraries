@@ -468,8 +468,21 @@ class Theta:
         axis = self.reduction_chunk_mode()
         return axis.name if axis is not None else default
 
+    #: tile axis -> the storage-region axis whose liveness keeps it in the walk
+    _TILE_REGION = {"K_inner": "K_split", "M_inner": "M_split", "N_inner": "N_split"}
+
     def inner_axes(self):
-        return self.inner
+        """The inner axes a traversal WALKS.
+
+        `ord` carries every tile axis whatever its extent, so presence there no longer says
+        whether anything moves along one.  Something does when the axis itself steps, or when
+        the region axis it pairs with does: one tile of a split operand is still visited once
+        per region.  `levels()` is the full nest for anyone who needs the declaration.
+        """
+        extents = {axis.name: max(1, int(axis.extent)) for axis in self.inner}
+        return [axis for axis in self.inner
+                if extents[axis.name] > 1
+                or extents.get(self._TILE_REGION.get(axis.name, ""), 1) > 1]
 
     def free_extent(self, mode_name):
         for axis in self.ord:
