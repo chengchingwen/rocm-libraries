@@ -356,9 +356,8 @@ validParameters = { # we need to make sure this matches develop
     "PrefetchGlobalReadB": [-1] + list(range(16 + 1)),
     # number of iteration prefetch local reads from lds to VGPRs buffer = PLR
     "PrefetchLocalRead": list(range(128 + 1)),
-    # PrefetchLocalReadA/B = -1: derive the depth from the operand's position in the nest.  An
-    # equal pair is the scalar and collapses onto it; Components/DecoupleLocalRead.py holds the
-    # rule, the way Components/DecouplePGR.py holds it for the global side.
+    # PrefetchLocalReadA/B = -1: derive the depth from the operand's position in the nest.
+    # An equal pair says nothing the scalar does not, and collapses onto it.
     "PrefetchLocalReadA": [-1] + list(range(128 + 1)),
     "PrefetchLocalReadB": [-1] + list(range(128 + 1)),
     # Enable global memory to GL2 cache prefetch using global_prefetch_b8 instruction (gfx1250 only).
