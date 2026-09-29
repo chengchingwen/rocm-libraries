@@ -1155,39 +1155,21 @@ validParameters = { # we need to make sure this matches develop
     # 0  : disable CMS even if supported
     # 1  : enable  CMS, is set to 0 if not supported
     "UseCustomMainLoopSchedule" : [-1, 0, 1],
-    # Route the inner-loop body through the LoopModel theta-schedule decoder + the GIR compiler
-    # (Tensile/LoopModel + Tensile/Lowering).
+    # Route the inner-loop body through the LoopModel path
     "UseLoopModel": [False, True],
-    # LoopModel inner-loop traversal order over the {K,M,N} axes (only meaningful with
-    # UseLoopModel=True).  Ignored when UseLoopModel=False.
-    #
-    # THE WHOLE SPACE IS 90 TRAVERSALS, and they are DERIVED here rather than listed so this and
-    # `translate._loop_order_word` (which accepts any word with each of K,M,N exactly twice) cannot
-    # drift apart.  Each axis contributes a SPLIT mode and an INNER mode — first occurrence of a
-    # letter is `X_split`, second is `X_inner` — so a word is a permutation of `KKMMNN`:
-    #
-    #   6 CONTIGUOUS   each axis's (split, inner) pair adjacent.  Spelled in the 3-letter shortcut
-    #                  form, because `_loop_order_word` expands `KMN` to `KKMMNN` — listing both
-    #                  spellings would be ONE traversal under TWO kernel names, i.e. exactly the
-    #                  silent duplicate the 6-letter gate in `Solution.py` exists to prevent.
-    #  84 INTERLEAVED  the pairs woven together.  These are the only way to reach the
-    #                  MULTI-BODY PEEL — with the pairs contiguous the traversal is `clean` and the
-    #                  steady region is a single body.
-    #
-    # A 6-letter word needs a LIVE SPLIT AXIS or it collapses to the 3-letter order its INNER modes
-    # spell; `Solution.py` rejects that rather than emit a duplicate.  How many of the 90 are
-    # DISTINCT at a given config depends on which split modes survive: 30 at `TDMSplitA/B = 1`.
-    # Which ones a benchmark actually forks is a yaml decision — `loopmodel_bf16_gfx1250.yaml`
-    # block 11 picks 3 of the 84 to bound the run.
-    # ACCEPTS EVERY SPELLING the decoder parses — the 6 shortcuts and all 90 permutations, 96
-    # strings.  `Solution.py` canonicalizes a DOUBLED word to its 3-letter form before the kernel
-    # name is built (`adapter.canonical_loop_order`), so the 96 spellings collapse to 90 distinct
-    # traversals and no schedule gets two names.  Listing only 90 here would have made `KKMMNN` an
-    # invalid parameter for a word the decoder happily accepts.
-    # WmmaInnerOrder indexes WMMA_INNER_ORDERS: the order the TILE axes nest in, innermost last.
+    # Axis order of wmma loop
+    # 1 : KMN
+    # 2 : KNM
+    # 3 : MNK
+    # 4 : MKN
+    # 5 : NMK
+    # 6 : NKM
     "WmmaInnerOrder": [1, 2, 3, 4, 5, 6],
-    # Which axis's SPLIT sits outermost, above every tile axis.  0 keeps each split beside the
-    # tile it divides, which is the 3-letter order.  At most two splits are ever live, so naming
+    # Which TDMSplit axis sits outermost, above every tile axis. reject >0 for TDMS0
+    # 0 : no outer order, ordered by inner order
+    # 1 : M as outer most axis
+    # 2 : N as outer most axis
+    # 3 : K as outer most axis
     # the outer one fixes the traversal: the other live split follows it.
     "WmmaOuterOrder": [0, 1, 2, 3],
     # 0  : Generate original Store blocks: NonEdgeN, ThenN, and Then1 for StoreVectorWidth N
