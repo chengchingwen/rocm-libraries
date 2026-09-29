@@ -95,7 +95,8 @@ def canonical_loop_order(order):
 
 
 #: `WmmaInnerOrder` is an index into this: the order the TILE axes nest in, innermost last.
-WMMA_INNER_ORDERS = ("KMN", "KNM", "MKN", "MNK", "NKM", "NMK")
+#: The numbering is the one `Common/ValidParameters.py` documents.
+WMMA_INNER_ORDERS = ("KMN", "KNM", "MNK", "MKN", "NMK", "NKM")
 
 #: `WmmaOuterOrder` names the axis whose SPLIT sits outermost; 0 keeps each split beside its tile.
 WMMA_OUTER_AXES = (None, "M", "N", "K")
@@ -685,21 +686,24 @@ def _set_register_depths(theta, kernel):
                                int(kernel.get("ClusterLocalRead", 0) or 0))
         prefetch = _per_operand(kernel, "PrefetchLocalRead", side,
                                 int(kernel.get("PrefetchLocalRead", 0) or 0))
+        # POSITIONS THE RING ENUMERATES, off the same `ring_axes` the slot expression walks, so a
+        # buffer can never out-count its slots.  Regions are left out: `group_ring_depth` puts
+        # back the ones in the rotation unit, and the rest are not ring positions at all.
+        group = operand.fragment.groups()[0]
+        rotation = {name for name, _e in geometry.rotation_unit_modes(theta, operand)}
+        regions = set(getattr(operand, "region_axes", ()) or ()) & rotation
+        ring = [max(1, int(extent))
+                for name, extent in geometry.ring_axes(theta, operand, group)
+                if name not in regions]
+        positions = max(1, geometry.product(ring) if ring else 1)
         if cluster:
-            # All-inner holds one buffer; otherwise one per position the RING enumerates -- the
-            # same `ring_axes` the slot expression walks, so the buffer cannot out-count the
-            # slots.  A read-ahead still fits: the refill is in place, deferred past the last use.
-            # Regions are left out because `group_ring_depth` multiplies them back in.
-            group = operand.fragment.groups()[0]
-            rotation = {name for name, _e in geometry.rotation_unit_modes(theta, operand)}
-            regions = set(getattr(operand, "region_axes", ()) or ()) & rotation
-            ring = [max(1, int(extent))
-                    for name, extent in geometry.ring_axes(theta, operand, group)
-                    if name not in regions]
-            depth = 1 if geometry.reloads_whole_set(theta, operand) else max(
-                1, geometry.product(ring) if ring else 1)
+            # All-inner holds one buffer; otherwise the whole ring.  A read-ahead still fits: the
+            # refill is in place, deferred past the last use.
+            depth = 1 if geometry.reloads_whole_set(theta, operand) else positions
         else:
-            depth = max(1, int(prefetch) + 1)
+            # A scale takes its tensor's read-ahead but enumerates its own ring, and one scale
+            # read can cover every free tile -- so the depth it asks for is bounded by the ring.
+            depth = min(max(1, int(prefetch) + 1), positions)
         operand.fragment.ring_depths = {
             label: depth for label in operand.fragment.groups()}
 

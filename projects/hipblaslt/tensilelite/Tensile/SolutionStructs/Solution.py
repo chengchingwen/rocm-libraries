@@ -261,6 +261,34 @@ tdmSplitFactors = _tdm_split.split_factors
 tdmSplitOf      = _tdm_split.split_of
 
 
+#: `-1` on a per-operand local-read key: take the value the operand's position implies.
+LOCAL_READ_AUTO = -1
+
+
+def localReadPair(state, base):
+  """`(decoupled, a, b)` for PrefetchLocalRead/ClusterLocalRead, falling back to the scalar."""
+  scalar = state.get(base, 0)
+  a, b = state.get(base + "A"), state.get(base + "B")
+  if a is None and b is None:
+    return False, scalar, scalar
+  return True, scalar if a is None else a, scalar if b is None else b
+
+
+def collapseEqualPair(state, base):
+  """Drop a per-operand pair that says nothing the scalar does not.
+
+  BOTH sides must name the same real value.  An absent side is not a value: reading it as the
+  scalar made `PrefetchLocalReadB=3` beside a scalar of 3 look equal, so the one level the caller
+  did set was collapsed away before the cap could refuse it.
+  """
+  a, b = state.get(base + "A"), state.get(base + "B")
+  if a is None or b is None or a != b or int(a) == LOCAL_READ_AUTO:
+    return
+  for suffix in ("A", "B"):
+    state.pop(base + suffix, None)
+  state[base] = a
+
+
 #: the axes an operand varies over -- its read-ahead is measured along ITS OWN outermost one
 _READ_AHEAD_AXES = {"A": ("M", "K"), "B": ("N", "K")}
 
@@ -2380,10 +2408,8 @@ class Solution(collections.abc.Mapping):
       # requests resolving to one schedule would carry two names and dedupe would miss it.
       state["ClusterLocalReadA"], state["ClusterLocalReadB"] = _cluster["A"], _cluster["B"]
       state["ClusterLocalRead"] = min(_cluster["A"], _cluster["B"])
-    for _tc in ("A", "B"):
-      _key = "PrefetchLocalRead" + _tc
-      if _key in state and int(state[_key]) == LOCAL_READ_AUTO:
-        state[_key] = int(state.get("PrefetchLocalRead", 0) or 0)
+    # PrefetchLocalReadA/B stay AUTO here: deriving them needs `LoopIters`, which
+    # `assignProblemIndependentDerivedParameters` has not written yet.
 
     Solution.assignProblemIndependentDerivedParameters(state, printRejectionReason, isaInfoMap)
 
@@ -4186,8 +4212,8 @@ class Solution(collections.abc.Mapping):
     # read-ahead depth plus the value in use.  `_localReadBuffers` asks per operand, so a pair
     # that differs is not averaged into one wrong number.
     def _localReadBuffers(tc):
-      _cl, _clA, _clB = clusterLevels(state)
-      _pl, _plA, _plB = localReadLevels(state)
+      _cl, _clA, _clB = localReadPair(state, "ClusterLocalRead")
+      _pl, _plA, _plB = localReadPair(state, "PrefetchLocalRead")
       cluster = (_clA if tc == "A" else _clB) if _cl else state["ClusterLocalRead"]
       prefetch = (_plA if tc == "A" else _plB) if _pl else state["PrefetchLocalRead"]
       return state["LoopIters"] if cluster else prefetch + 1
@@ -4419,13 +4445,7 @@ class Solution(collections.abc.Mapping):
         numComponents = state["NumWaves"] // 2
         du = state["_DepthU%s" % tc]
         sparse = state["ProblemType"]["Sparse"]
-        # `TDMSplit` is popped before this runs, and the per-operand pair names an AXIS, not a
-        # descriptor dim -- MT is dim1 only when the operand is unrolled-major.  Ask the geometry
-        # which dim the divisor lands on rather than assuming dim1.
-        _geo = _tdm_split.derive(*_tdm_split.split_of(state, tc),
-                                 tlu=bool(state["ProblemType"]["TLU%s" % tc]),
-                                 mt=mt, du=du, bpe=getLdsBpe(tc))
-        dim1Divisor = _geo.factor if (_geo.splitDim == 1 and not sparse) else 1
+        dim1Divisor = 2 if state["TDMSplit%s" % tc] and not sparse else 1
 
         # _DepthU{tc} is the effective A/B storage depth: it equals DepthU for
         # dense tensors and already accounts for the compressed sparse operand.
@@ -6367,7 +6387,7 @@ class Solution(collections.abc.Mapping):
           and state["enableTDM%s" % tc]
           and state["NumWaves"] > 1
           and not state.get("UseSubtileImpl", False)
-          and not _tdm_split.any_split(state)
+          and not state["TDMSplit%s" % tc]
           and state["UnrollMajorLDS%s" % tc]
           and pad != 0
           and block != 0)
@@ -7373,21 +7393,36 @@ class Solution(collections.abc.Mapping):
         return
       state["ClusterLocalRead"] = 0
       state["PrefetchLocalRead"] = 0
-    if state.get("UseLoopModel", False) and state["PrefetchLocalRead"] > 0:
-      # REJECT, DO NOT CLAMP.  Theta takes the depth verbatim and allocates a ring for it, so a
-      # request past the operand's own outer axis buys a register buffer no read can reach.
-      # Silently lowering it would build a schedule the kernel name does not describe.
+    if state.get("UseLoopModel", False):
+      # -1 DERIVES, anything else STANDS.  `PrefetchLocalRead` is the request and each operand
+      # runs ahead along its own outermost axis, so under MNK one scalar gives A and B different
+      # answers.  A level the caller named is used as it is; only one the axis cannot reach is
+      # refused, because the extra ring slot would be written and read by nothing.
+      _plr = {}
       for _tc in ("A", "B"):
         _cap = loopModelReadAheadCap(state, _tc)
-        _ask = state.get("PrefetchLocalRead" + _tc)
-        _ask = state["PrefetchLocalRead"] if _ask is None or int(_ask) < 0 else int(_ask)
-        if _ask > _cap:
+        _named = state.get("PrefetchLocalRead" + _tc)
+        if _named is None or int(_named) == LOCAL_READ_AUTO:
+          _plr[_tc] = min(int(state["PrefetchLocalRead"]), _cap)
+          continue
+        if int(_named) > _cap:
           reject(state, printRejectionReason,
                  "PrefetchLocalRead%s=%d exceeds %d, the most %s can run ahead along its own "
-                 "outermost axis: the extra ring slot is never written or read.  Lower it, or "
-                 "raise the tile so the axis has more values."
-                 % (_tc, _ask, _cap, _tc))
+                 "outermost axis: the extra ring slot is never written or read.  Lower it, set "
+                 "it to -1 to derive it, or raise the tile so the axis has more values."
+                 % (_tc, int(_named), _cap, _tc))
           return
+        _plr[_tc] = int(_named)
+      if _plr["A"] == _plr["B"]:                 # one answer: the scalar says it, the pair goes
+        state["PrefetchLocalRead"] = _plr["A"]
+        for _tc in ("A", "B"):
+          state.pop("PrefetchLocalRead" + _tc, None)
+      else:
+        # The scalar stays in the name beside the pair, so PIN it to the pair -- two requests
+        # deriving one schedule would carry two names.  PLR is capped DOWNWARD, so the operand
+        # that kept the request is the max.
+        state["PrefetchLocalReadA"], state["PrefetchLocalReadB"] = _plr["A"], _plr["B"]
+        state["PrefetchLocalRead"] = max(_plr["A"], _plr["B"])
     if not state["EnableMatrixInstruction"]:
       state["ClusterLocalRead"] = 0
       # dot2: allow PLR=1
