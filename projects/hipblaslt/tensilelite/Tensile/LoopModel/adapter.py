@@ -12,7 +12,6 @@ from ..Components import TDMSplit as _tdm_split
 from ..Lowering.lds_geometry import read_fragments
 from .traversal import readahead_level
 from .ir import Space
-from .schedule import select_register_depths
 from .theta import (AgentAssignment, AgentAxisAssignment, Fragment, Global,
                     RegionLayout, Shared, Trajectory, Axis, Operand, Theta, group_labels)
 from .ir import COPY, READ
@@ -199,9 +198,9 @@ DEFAULTS = {
     "InnerUnroll": 1, "ElemBytes": 2,
     "MXBlockA": 0, "MXBlockB": 0, "TDMFuse": 0,
     "NumWaves": 1,
-    "LoopOrder": "KMN",
     "PrefetchGlobalReadA": -1, "PrefetchGlobalReadB": -1,
     "PrefetchLocalReadA": -1, "PrefetchLocalReadB": -1,
+    "ClusterLocalRead": 0, "ClusterLocalReadA": -1, "ClusterLocalReadB": -1,
     "LDSBufferA": -1, "LDSBufferB": -1,
     "LDSBufferMXSA": -1, "LDSBufferMXSB": -1,
     "ReadVectorElems": {},
@@ -297,7 +296,7 @@ def _build_ord(fanM, fanN, kernel, substeps, splits):
     # TDMSplit is a coordinate factorization, independent of which regions a physical wave reads.
     m_inner = _tdm_split.factor_axis(fanM, splits.mSplit, "MIWaveTileA")
     n_inner = _tdm_split.factor_axis(fanN, splits.nSplit, "MIWaveTileB")
-    order_word = _loop_order_word(kernel["LoopOrder"])
+    order_word = _loop_order_word(wmma_loop_order(kernel))
     ord_, canonical_axes, canonical_extents = _canonical_ord(
         substeps, splits, m_inner, n_inner, order_word)
 
@@ -555,8 +554,9 @@ def _build_operands(configure_read, elem_bytes, frags, movements, kernel, matrix
     def add_scale(name, free_mode, parent, copy_width, broadcast, free_mi, block):
         fragment = frags.reg_fragment(broadcast, free_mode, 1, name)
         fragment.fragment_elements = _mx_frag_elems(kernel, free_mi, block)
-        shared = Shared(vector_elements=copy_width, ring_depth=frags[name].lds_buffers,
-                        regions=region_layout(parent))
+        # A SCALE IS NEVER SPLIT, so it owns no region axis.  Borrowing the parent's gave it
+        # `region_axes` with `split=1`, and every region-count reader had to work around that.
+        shared = Shared(vector_elements=copy_width, ring_depth=frags[name].lds_buffers)
         operands.append(Operand(
             name, free_mode,
             trajectory=Trajectory(Global(), shared,
@@ -600,7 +600,9 @@ def _read_off_requests(kernel, operands, outer_level, copy_depth, read_depth):
     read_requests = {}
     for operand in operands:
         copies = _per_operand(kernel, "PrefetchGlobalRead", operand.name, copy_depth)
-        reads = _per_operand(kernel, "PrefetchLocalRead", operand.name, read_depth)
+        # A scale reads the local-read dials of the tensor it scales, as its ring depth does.
+        reads = _per_operand(kernel, "PrefetchLocalRead",
+                             _REGISTER_SIDE.get(operand.name, operand.name), read_depth)
         if operand.movements and operand.movements[0].dst == Space.SHARED and copies > 0:
             movement = operand.movements[0]
             movement.destination.offsets[outer_level] = copies
@@ -652,8 +654,54 @@ def _build_theta(agent_inputs, copy_depth, read_depth, view, groups, kernel, nes
         if operand.movements and operand.fragment:
             operand.fragment.grouping_mode = geometry.grouping_mode_name(theta, operand)
     _place_read_offsets(theta, read_requests)
-    select_register_depths(theta, kernel.get("RegisterBudget"))
+    _set_register_depths(theta, kernel)
     return theta
+
+
+#: an operand reads the PLR/CLR of the data tensor it belongs to
+_REGISTER_SIDE = {"A": "A", "MXSA": "A", "B": "B", "MXSB": "B"}
+
+
+def _set_register_depths(theta, kernel):
+    """The ring depth is STATED by the solution, not searched for.
+
+    This is the ROTATION count, not the width.  `ClusterLocalRead` keeps the operand's whole set
+    resident, and what that costs depends on whether the operand has an OUTER axis:
+
+      all-inner  -- it rereads the same set every trip, so nothing rotates and the ring is 1
+      has-outer  -- it advances along its outer axis, so a full buffer is one slot per value
+
+    Without clustering the ring is the read-ahead depth plus the value in use.  Every arm is
+    measured on the operand's OWN axis, which is why the depth is per operand at all.  This
+    replaces the depth SEARCH and nothing else -- the grouping is left exactly as it was.
+    """
+    for operand in theta.operands:
+        if not (operand.movements and operand.fragment):
+            continue
+        side = _REGISTER_SIDE.get(operand.name)
+        if side is None:
+            continue
+        cluster = _per_operand(kernel, "ClusterLocalRead", side,
+                               int(kernel.get("ClusterLocalRead", 0) or 0))
+        prefetch = _per_operand(kernel, "PrefetchLocalRead", side,
+                                int(kernel.get("PrefetchLocalRead", 0) or 0))
+        if cluster:
+            # All-inner holds one buffer; otherwise one per position the RING enumerates -- the
+            # same `ring_axes` the slot expression walks, so the buffer cannot out-count the
+            # slots.  A read-ahead still fits: the refill is in place, deferred past the last use.
+            # Regions are left out because `group_ring_depth` multiplies them back in.
+            group = operand.fragment.groups()[0]
+            rotation = {name for name, _e in geometry.rotation_unit_modes(theta, operand)}
+            regions = set(getattr(operand, "region_axes", ()) or ()) & rotation
+            ring = [max(1, int(extent))
+                    for name, extent in geometry.ring_axes(theta, operand, group)
+                    if name not in regions]
+            depth = 1 if geometry.reloads_whole_set(theta, operand) else max(
+                1, geometry.product(ring) if ring else 1)
+        else:
+            depth = max(1, int(prefetch) + 1)
+        operand.fragment.ring_depths = {
+            label: depth for label in operand.fragment.groups()}
 
 
 def params_to_theta(p: dict) -> Theta:
@@ -694,7 +742,13 @@ def _shape_params(elem_bytes, kernel, mi, wt0, wt1):
         "MIWaveTile": [wt0, wt1],
         "ElemBytes": max(1, elem_bytes),
         "PrefetchGlobalRead": kernel.get("PrefetchGlobalRead", 2),
+        # Both spellings: the solution keeps the pair only where the operands differ.
         "PrefetchLocalRead": kernel.get("PrefetchLocalRead", 1),
+        "PrefetchLocalReadA": kernel.get("PrefetchLocalReadA", -1),
+        "PrefetchLocalReadB": kernel.get("PrefetchLocalReadB", -1),
+        "ClusterLocalRead": kernel.get("ClusterLocalRead", 0),
+        "ClusterLocalReadA": kernel.get("ClusterLocalReadA", -1),
+        "ClusterLocalReadB": kernel.get("ClusterLocalReadB", -1),
         "GlobalReadVectorWidthA": kernel.get("GlobalReadVectorWidthA", 8) or 8,
         "GlobalReadVectorWidthB": kernel.get("GlobalReadVectorWidthB", 8) or 8,
         "VectorWidthA": kernel.get("VectorWidthA", 2) or 2,
