@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import dataclasses
+from itertools import product as _iproduct
 from dataclasses import dataclass
 
 from .ir import (Bind, Branch, Cond, Inst, Load, Loop, Mma, Peel, Space,
@@ -655,6 +656,85 @@ def _check_short_loop(errs, ir):
                             f"'{_TRIP_SYMBOL} > {t}' -- it would read an out-of-bounds chunk")
 
 
+def _ring_slots(placement, environments):
+    """`{group: {slot, ...}}` -- every concrete slot a placement resolves to."""
+    out = {}
+    for label, expression in getattr(placement, "slots", ()) or ():
+        seen = out.setdefault(label or "g0", set())
+        for environment in environments:
+            try:
+                seen.add(int(expression.eval(environment)))
+            except Exception:
+                pass  # a slot that will not settle here says nothing about the ring
+    return out
+
+
+def _slot_environments(theta, samples=8):
+    """Every inner coordinate, over a few chunks -- enough for each slot to come up."""
+    axes = [(axis.name, min(samples, max(1, int(axis.extent)))) for axis in theta.inner_axes()]
+    chunk = theta.summation_chunk_name()
+    names = [name for name, _extent in axes]
+    for point in _iproduct(*[range(count) for _name, count in axes]):
+        base = dict(zip(names, point))
+        for value in range(samples):
+            yield {**base, **({chunk: value} if chunk else {})}
+
+
+def _check_dead_slots(_errs, ir, theta):
+    """Every slot the ring declares is written by a read and sourced by a wmma.
+
+    NOT A REJECTION -- this RAISES.  A request past an operand's own outer axis is refused at the
+    solution, so by the time a tree exists every declared slot must be reachable.  One that is
+    not means the depth and the traversal were derived from different things, which is a defect
+    in the model, not a configuration a caller can choose differently.
+    """
+    environments = list(_slot_environments(theta))
+    written, consumed = {}, {}
+    for inst in walk_insts(ir):
+        operand = inst.op
+        if isinstance(operand, Load) and operand.dst == Space.REGISTER:
+            for label, slots in _ring_slots(inst.placement, environments).items():
+                written.setdefault((operand.tokens[0], label), set()).update(slots)
+        elif isinstance(operand, Mma) and isinstance(inst.placement, dict):
+            for name, placement in inst.placement.items():
+                for label, slots in _ring_slots(placement, environments).items():
+                    consumed.setdefault((name, label), set()).update(slots)
+    from .traversal import _region_count
+    for operand in theta.operands:
+        depths = getattr(getattr(operand, "fragment", None), "ring_depths", None) or {}
+        # Slots the emitter addresses: `group_ring_depth` gives each region its own turn.
+        regions = max(1, int(_region_count(theta, operand)))
+        for label, depth in depths.items():
+            declared = set(range(int(depth) * regions))
+            key = (operand.name, label)
+            for what, seen in (("written by a read", written.get(key, set())),
+                               ("read by a wmma", consumed.get(key, set()))):
+                missing = sorted(declared - seen)
+                if missing:
+                    from . import traversal as _g
+                    def _safe(fn, *a):
+                        try:
+                            return fn(*a)
+                        except Exception as error:
+                            return "!%s" % type(error).__name__
+                    # The depth decision's own inputs, not a summary of them.
+                    facts = ("requested_read_ahead=%s reloads_whole=%s outer_role=%s varying=%s "
+                             "read_coverage=%s nest=%s ord=%s"
+                             % (_safe(_g.requested_read_ahead, theta, operand),
+                                _safe(_g.reloads_whole_set, theta, operand),
+                                _safe(_g.operand_outer_role, theta, operand),
+                                _safe(_g.varying_axes, theta, operand),
+                                _safe(_g.read_coverage, theta, operand),
+                                [(a.name, int(a.extent)) for a in theta.inner_axes()],
+                                [a.name for a in theta.ord]))
+                    raise ValueError(
+                        "register ring over-allocated: %s:%s declares depth %d but slot(s) %s "
+                        "are never %s.  The solution refuses a read-ahead past this operand's "
+                        "own outer axis, so a slot nothing reaches means the ring depth and the "
+                        "traversal disagree -- fix the derivation, not the kernel.  [%s]"
+                        % (operand.name, label, depth, missing, what, facts))
+
+
 def validate_loopir(theta, ir, depths=None, undischarged=None):
     errs = []
     iter_name = theta.summation_chunk_name("iter")
@@ -665,6 +745,7 @@ def validate_loopir(theta, ir, depths=None, undischarged=None):
     _check_ledger(errs, ir, theta, depths, undischarged)
     _check_cond_kinds(errs, ir)
     _check_short_loop(errs, ir)
+    _check_dead_slots(errs, ir, theta)
     return errs
 
 

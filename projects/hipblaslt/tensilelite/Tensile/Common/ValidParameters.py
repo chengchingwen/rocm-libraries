@@ -356,6 +356,11 @@ validParameters = { # we need to make sure this matches develop
     "PrefetchGlobalReadB": [-1] + list(range(16 + 1)),
     # number of iteration prefetch local reads from lds to VGPRs buffer = PLR
     "PrefetchLocalRead": list(range(128 + 1)),
+    # PrefetchLocalReadA/B = -1: derive the depth from the operand's position in the nest.  An
+    # equal pair is the scalar and collapses onto it; Components/DecoupleLocalRead.py holds the
+    # rule, the way Components/DecouplePGR.py holds it for the global side.
+    "PrefetchLocalReadA": [-1] + list(range(128 + 1)),
+    "PrefetchLocalReadB": [-1] + list(range(128 + 1)),
     # Enable global memory to GL2 cache prefetch using global_prefetch_b8 instruction (gfx1250 only).
     # So when global reads are issued, the data is likely to be in GL2 cache.
     # 0: disable
@@ -370,6 +375,11 @@ validParameters = { # we need to make sure this matches develop
     # If set ClusterLocalRead, each iteration dedicated vgprBuffer for localRead
     # So we can schedule these localReads to the front of the loop
     "ClusterLocalRead": [0, 1],
+    # ClusterLocalReadA/B = -1: derive it from the operand's position.  An ALL-INNER operand -- one
+    # whose every axis is inside the outermost tile axis, B under MNK -- reads its whole set every
+    # trip, so it takes a full buffer and cannot be 0.
+    "ClusterLocalReadA": [-1, 0, 1],
+    "ClusterLocalReadB": [-1, 0, 1],
     # Allocating PGR+1 LDS buffer if we have enough LDS memory size
     # Only for DirectToLdsA+B + PGR>=2
     # -1: auto (enable this for PGR>=3)
