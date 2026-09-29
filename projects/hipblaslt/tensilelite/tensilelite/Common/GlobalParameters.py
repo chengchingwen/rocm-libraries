@@ -655,6 +655,7 @@ defaultBenchmarkCommonParameters = [
     {"MinGRIncPerMfma": [-1]},
     {"UsePLRPack": [0]},
     {"TDMInst": [0]},
+    {"TDMSplit": [False]},
     {"TDMFuse": [0]},
     {"TDMSplitA": [0]},
     {"TDMSplitB": [0]},
