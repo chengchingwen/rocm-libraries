@@ -714,6 +714,126 @@ TEST(GirFrameAnalysisTest, FrameWarRetiresVacatingDsRead) {
     EXPECT_GE(wait->dlcnt, 0);
 }
 
+TEST(GirFrameAnalysisTest, SameTripRingAliasWarDrainsBeforeOverwrite) {
+    Function function("same_trip_ring_alias_war");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 1);
+    BasicBlock* loop = function.createBasicBlock("loop");
+    function.addEdge(loop, loop);
+
+    StinkyInstruction* read = createDsReadB128InBlock(loop, GfxArchID::Gfx1250, 0, 20);
+    read->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 0, -1, false}}});
+    StinkyInstruction* copy = createTensorLoadInBlock(loop, GfxArchID::Gfx1250, 0, 8);
+    copy->addModifier<GirActionData>(
+        GirActionData{1, 1, GirActionKind::Copy, {GirAccessData{true, 0, 2, 0, 2, -1, false}}});
+    function.setStringMetaData(kGirFrameContractKey, kRingTwoContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+
+    const auto& hazards = analyses.getResult<GirFrameHazardAnalysis>(function);
+    auto war = std::find_if(
+        hazards.hazards.begin(), hazards.hazards.end(), [&](const GirFrameHazard& hazard) {
+            return hazard.kind == GirHazardKind::WAR && hazard.producer == read &&
+                   hazard.consumer == copy && hazard.gap == 0 && !hazard.crossAgent;
+        });
+    ASSERT_NE(war, hazards.hazards.end());
+
+    createGirFencePlacementPass()->run(function, context, analyses);
+    EXPECT_TRUE(std::none_of(loop->begin(), loop->end(), [](IRBase& node) {
+        auto* inst = dyn_cast<StinkyInstruction>(&node);
+        return inst && isBarrier(*inst);
+    }));
+
+    createGirWaitCntInsertionPass()->run(function, context, analyses);
+    StinkyInstruction* beforeCopy = nullptr;
+    for (IRBase& node : *loop) {
+        auto* inst = dyn_cast<StinkyInstruction>(&node);
+        if (inst == copy) break;
+        beforeCopy = inst;
+    }
+    ASSERT_NE(beforeCopy, nullptr);
+    const auto* wait = beforeCopy->getModifier<SWaitCntData>();
+    ASSERT_NE(wait, nullptr);
+    EXPECT_EQ(wait->dlcnt, 0);
+}
+
+TEST(GirFrameAnalysisTest, CrossAgentRingAliasWarDrainsBeforeBarrier) {
+    Function function("multi_wave_ring_alias_war");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* loop = function.createBasicBlock("loop");
+    function.addEdge(loop, loop);
+
+    StinkyInstruction* read = createDsReadB128InBlock(loop, GfxArchID::Gfx1250, 0, 20);
+    read->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 0, -1, true}}});
+    StinkyInstruction* copy = createTensorLoadInBlock(loop, GfxArchID::Gfx1250, 0, 8);
+    copy->addModifier<GirActionData>(
+        GirActionData{1, 1, GirActionKind::Copy, {GirAccessData{true, 0, 2, 0, 2, -1, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kRingTwoContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    const auto& hazards = analyses.getResult<GirFrameHazardAnalysis>(function);
+    auto war = std::find_if(
+        hazards.hazards.begin(), hazards.hazards.end(), [&](const GirFrameHazard& hazard) {
+            return hazard.kind == GirHazardKind::WAR && hazard.producer == read &&
+                   hazard.consumer == copy && hazard.gap == 0 && hazard.crossAgent;
+        });
+    ASSERT_NE(war, hazards.hazards.end());
+
+    createGirFencePlacementPass()->run(function, context, analyses);
+    createGirWaitCntInsertionPass()->run(function, context, analyses);
+
+    std::vector<StinkyInstruction*> instructions;
+    for (IRBase& node : *loop)
+        if (auto* inst = dyn_cast<StinkyInstruction>(&node)) instructions.push_back(inst);
+
+    bool allWarSignalsDrained = true;
+    int warSignals = 0;
+    for (size_t i = 0; i + 1 < instructions.size(); ++i) {
+        if (!isBarrierSignal(*instructions[i]) || !isBarrierWait(*instructions[i + 1])) continue;
+        const auto* stamp = instructions[i + 1]->getModifier<CommentData>();
+        if (!stamp || stamp->comment.find("WAR") == std::string::npos) continue;
+        const auto* wait = i > 0 ? instructions[i - 1]->getModifier<SWaitCntData>() : nullptr;
+        allWarSignalsDrained &= wait && wait->dlcnt == 0;
+        ++warSignals;
+    }
+    EXPECT_GT(warSignals, 0);
+    EXPECT_TRUE(allWarSignalsDrained);
+}
+
+TEST(GirFrameAnalysisTest, LoopWrapStillUsesUnreducedGenerationSpan) {
+    Function function("loop_wrap_generation_span");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    BasicBlock* loop = function.createBasicBlock("loop");
+    function.addEdge(loop, loop);
+
+    StinkyInstruction* read = createDsReadB128InBlock(loop, GfxArchID::Gfx1250, 0, 20);
+    read->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 2, -1, false}}});
+    StinkyInstruction* copy = createTensorLoadInBlock(loop, GfxArchID::Gfx1250, 0, 8);
+    copy->addModifier<GirActionData>(
+        GirActionData{1, 1, GirActionKind::Copy, {GirAccessData{true, 0, 2, 0, 0, -1, false}}});
+    function.setStringMetaData(kGirFrameContractKey, kRingTwoContract);
+
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    const auto& hazards = analyses.getResult<GirFrameHazardAnalysis>(function);
+    auto raw = std::find_if(
+        hazards.hazards.begin(), hazards.hazards.end(), [&](const GirFrameHazard& hazard) {
+            return hazard.kind == GirHazardKind::RAW && hazard.producer == copy &&
+                   hazard.consumer == read && hazard.gap == 2;
+        });
+    EXPECT_NE(raw, hazards.hazards.end());
+}
+
 TEST(GirFrameAnalysisTest, CrossAgentWaitAnchorsAtVirtualFence) {
     Function function("fence");
     setFunctionArch(function, GfxArchID::Gfx1250);
