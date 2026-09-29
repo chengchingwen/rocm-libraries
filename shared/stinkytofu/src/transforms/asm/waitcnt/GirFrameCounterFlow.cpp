@@ -125,17 +125,16 @@ CounterKind counterFor(const GirFrameHazard& hazard) {
     return CK_Tensor;
 }
 
-
 /// The barrier a cross-agent hazard's wait anchors on: the LAST one standing between the two
 /// occurrences on the frame graph.  Resolved by position, not by any fence-to-hazard table handed
 /// down, so a barrier StinkyTofu placed itself anchors exactly like one it inherited.
 /// The barrier this hazard's wait anchors on, via the one shared definition.
-std::pair<StinkyInstruction*, GirFrame> enclosingFence(Function& function,
-                                                      const GirFrameHazard& hazard,
-                                                      const GirFrameAnalysis::Result& frames) {
+std::pair<StinkyInstruction*, GirFrame> enclosingFence(
+    Function& function, const GirFrameHazard& hazard, const GirFrameAnalysis::Result& frames,
+    const std::function<bool(const StinkyInstruction&)>& alsoFences) {
     (void)function;
     auto found = lastBarrierBefore(frames, hazard.consumerBlock, hazard.consumerFrame,
-                                   hazard.consumerIndex);
+                                   hazard.consumerIndex, alsoFences);
     if (found.first) return found;
     std::ostringstream message;
     message << "Cross-agent ST frame hazard is discharged by no barrier"
@@ -153,7 +152,8 @@ bool hazardFeasible(Function& function, const GirFrameAnalysis::Result& frames,
 
 PotentialMap buildPotentials(Function& function, const GirFrameAnalysis::Result& frames,
                              const GirFrameHazardAnalysis::Result& hazards,
-                             const std::function<bool(const BasicBlock&)>& covers) {
+                             const std::function<bool(const BasicBlock&)>& covers,
+                             const std::function<bool(const StinkyInstruction&)>& alsoFences) {
     PotentialMap result;
     const FeasibleDomainMap feasible = computeFeasibleDomains(function, frames);
     std::set<std::tuple<StinkyInstruction*, GirFrame, CounterKind, StinkyInstruction*, GirFrame,
@@ -175,7 +175,7 @@ PotentialMap buildPotentials(Function& function, const GirFrameAnalysis::Result&
         StinkyInstruction* anchor = hazard.consumer;
         GirFrame anchorFrame = hazard.consumerFrame;
         if (hazard.crossAgent)
-            std::tie(anchor, anchorFrame) = enclosingFence(function, hazard, frames);
+            std::tie(anchor, anchorFrame) = enclosingFence(function, hazard, frames, alsoFences);
         // The span is part of the identity: the hazard analysis deliberately keeps one pair at two
         // distances, and folding them together kept whichever the vector happened to hold first.
         auto key = std::make_tuple(anchor, anchorFrame, counter, hazard.producer,
@@ -468,10 +468,12 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
     std::unordered_set<size_t> visited;
     const auto stateKey = [](const Step& step) {
         size_t key = GirFrameNodeHash{}(step.node);
-        for (const size_t part : {step.index, static_cast<size_t>(step.steps),
-                                  static_cast<size_t>(step.count),
-                                  std::hash<BasicBlock*>{}(step.pred)})
+        for (const size_t part :
+             {step.index, static_cast<size_t>(step.steps), static_cast<size_t>(step.count),
+              std::hash<BasicBlock*>{}(step.pred)})
             key = key * 1099511628211ULL ^ part;
+        key = key * 1099511628211ULL ^ step.trips.size();
+        for (int trip : step.trips) key = key * 1099511628211ULL ^ static_cast<size_t>(trip);
         return key;
     };
     visited.insert(stateKey(work.front()));
@@ -488,6 +490,9 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
             const size_t here = position++;
             if (here < step.index) continue;
 
+            // `span` ends at the hazard's consumer. GIR fence placement gives each RAW a latest
+            // owning barrier in that endpoint node, so matching an earlier frame step would bind
+            // the RAW to an unrelated publication point and tighten its wait.
             if (inst == anchor && step.steps == span && here == anchorIndex &&
                 step.node == anchorNode) {
                 if (best < 0 || step.count < best) best = step.count;
@@ -511,10 +516,16 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
         if (retireAtEnd(step.node.block, step.count)) continue;
         // Ran out of span, or off the end of the frame graph, without ever reaching the anchor:
         // this path was not modelled, so it proves nothing about the producer being retired.
-        if (step.steps >= span) { unaccounted = true; continue; }
+        if (step.steps >= span) {
+            unaccounted = true;
+            continue;
+        }
 
         auto successors = frames.edges.find(step.node);
-        if (successors == frames.edges.end()) { unaccounted = true; continue; }
+        if (successors == frames.edges.end()) {
+            unaccounted = true;
+            continue;
+        }
         for (const GirFrameNode& successor : successors->second) {
             std::set<int> trips = step.trips;
             if (feasible && !trips.empty()) {
@@ -535,21 +546,20 @@ SpanResult countAcrossSpan(const GirFrameAnalysis::Result& frames, const Decisio
                            size_t anchorIndex,
                            std::map<BasicBlock*, int, std::less<BasicBlock*>>* perPred,
                            const FeasibleDomainMap* feasible) {
-    return walkSpan(
-        frames, counter, producerNode, potential.producerIndex, potential.gap, anchor, anchorNode,
-        anchorIndex,
-        [&](const StinkyInstruction& inst, int count) {
-            for (const int keep :
-                 {decisionFor(decisions, const_cast<StinkyInstruction*>(&inst), counter),
-                  observedWait(inst, counter)})
-                if (keep >= 0 && count > keep) return true;
-            return false;
-        },
-        [&](BasicBlock* block, int count) {
-            auto tail = tailDecisions.find({block, counter});
-            return tail != tailDecisions.end() && count > tail->second;
-        },
-        perPred, feasible);
+    auto retireAt = [&](const StinkyInstruction& inst, int count) {
+        for (const int keep :
+             {decisionFor(decisions, const_cast<StinkyInstruction*>(&inst), counter),
+              observedWait(inst, counter)})
+            if (keep >= 0 && count > keep) return true;
+        return false;
+    };
+    auto retireAtEnd = [&](BasicBlock* block, int count) {
+        auto tail = tailDecisions.find({block, counter});
+        return tail != tailDecisions.end() && count > tail->second;
+    };
+
+    return walkSpan(frames, counter, producerNode, potential.producerIndex, potential.gap, anchor,
+                    anchorNode, anchorIndex, retireAt, retireAtEnd, perPred, feasible);
 }
 
 RequirementMap simulate(Function& function, const GirFrameAnalysis::Result& frames,
@@ -647,7 +657,8 @@ struct PromotionPlan {
     TailProducerMap tailProducers;
 };
 
-PromotionPlan derivePromotions(const RequirementMap& requirements, const DecisionMap& decisions) {
+PromotionPlan derivePromotions(const RequirementMap& requirements, const DecisionMap& decisions,
+                               const std::function<bool(const BasicBlock&)>& covers) {
     PromotionPlan result;
     for (const auto& [site, summary] : requirements) {
         auto current = decisions.find(site);
@@ -673,7 +684,8 @@ PromotionPlan derivePromotions(const RequirementMap& requirements, const Decisio
         bool valid = true;
         for (const auto& [pred, need] : summary.byPred) {
             if (!pred || need >= common) continue;
-            if (pred->getSuccessors().size() != 1 || pred->getSuccessors().front() != block) {
+            if (!covers(*pred) || pred->getSuccessors().size() != 1 ||
+                pred->getSuccessors().front() != block) {
                 valid = false;
                 break;
             }
@@ -766,6 +778,107 @@ WaitInsertionPlan materializePlan(const DecisionMap& decisions,
     return plan;
 }
 
+/// Prove every planned wait can change its counter. A weaker/equal wait after the queue is already
+/// bounded (accounting for every CFG path and intervening issue) is a counter-model defect, not an
+/// optimization opportunity: fail generation instead of hiding it in emitted assembly.
+void validateNoRedundantWaits(Function& function, WaitInsertionPlan& plan) {
+    using Bounds = std::array<int, CK_Count>;
+    const std::array<CounterKind, 2> counters{CK_DS, CK_Tensor};
+    constexpr int kBeyondEncodableWait = 64;
+    const auto unknownBounds = [] {
+        Bounds result;
+        result.fill(-1);
+        return result;
+    };
+
+    const auto scanBlock = [&](BasicBlock& block, Bounds upperBound, bool validate) {
+        const auto applyPlanned = [&](WaitCountSpec& spec, CounterKind counter,
+                                      const StinkyInstruction* anchor) {
+            int& wait = counterField(spec, counter);
+            if (wait == WaitCountSpec::kUnused) return;
+            int& bound = upperBound[counter];
+            if (bound >= 0 && wait >= bound) {
+                if (validate)
+                    report_fatal_error(
+                        std::string("GIR counter flow produced redundant ") +
+                        (counter == CK_DS ? "dscnt" : "tensorcnt") +
+                        " wait=" + std::to_string(wait) + " after bound=" + std::to_string(bound) +
+                        " in " + (anchor ? anchor->getParent()->getLabel() : block.getLabel()));
+                return;
+            }
+            if (bound < 0 || wait < bound) bound = wait;
+        };
+
+        for (IRBase& node : block) {
+            auto* inst = dyn_cast<StinkyInstruction>(&node);
+            if (!inst) continue;
+
+            auto planned = plan.anchorWaits.find(inst);
+            if (planned != plan.anchorWaits.end())
+                for (CounterKind counter : counters) applyPlanned(planned->second, counter, inst);
+
+            int observed[CK_Count];
+            if (observedWaitDrains(*inst, observed))
+                for (CounterKind counter : counters)
+                    if (observed[counter] >= 0 &&
+                        (upperBound[counter] < 0 || observed[counter] < upperBound[counter]))
+                        upperBound[counter] = observed[counter];
+
+            const CounterKind issue = classifyMemOp(*inst);
+            if ((issue == CK_DS || issue == CK_Tensor) && upperBound[issue] >= 0)
+                upperBound[issue] = std::min(kBeyondEncodableWait, upperBound[issue] + 1);
+        }
+
+        for (TailDrain& drain : plan.tailDrains) {
+            if (drain.predBB != &block) continue;
+            for (CounterKind counter : counters) applyPlanned(drain.spec, counter, nullptr);
+        }
+        return upperBound;
+    };
+
+    std::map<BasicBlock*, Bounds, std::less<BasicBlock*>> out;
+    std::deque<BasicBlock*> work;
+    std::unordered_set<BasicBlock*> queued;
+    for (BasicBlock& block : function) {
+        out[&block] = unknownBounds();
+        work.push_back(&block);
+        queued.insert(&block);
+    }
+    const auto mergedInput = [&](BasicBlock& block) {
+        Bounds merged = unknownBounds();
+        const auto& predecessors = block.getPredecessors();
+        if (predecessors.empty()) return merged;
+        for (CounterKind counter : counters) {
+            bool known = true;
+            int bound = 0;
+            for (BasicBlock* pred : predecessors) {
+                auto found = out.find(pred);
+                if (found == out.end() || found->second[counter] < 0) {
+                    known = false;
+                    break;
+                }
+                bound = std::max(bound, found->second[counter]);
+            }
+            if (known) merged[counter] = bound;
+        }
+        return merged;
+    };
+
+    while (!work.empty()) {
+        BasicBlock* block = work.front();
+        work.pop_front();
+        queued.erase(block);
+        Bounds next = scanBlock(*block, mergedInput(*block), false);
+        if (next == out[block]) continue;
+        out[block] = next;
+        for (BasicBlock* successor : block->getSuccessors())
+            if (out.contains(successor) && queued.insert(successor).second)
+                work.push_back(successor);
+    }
+
+    for (BasicBlock& block : function) (void)scanBlock(block, mergedInput(block), true);
+}
+
 StinkyInstruction* instructionAt(BasicBlock* block, size_t index) {
     size_t position = 0;
     for (IRBase& node : *block) {
@@ -815,10 +928,12 @@ int girFrameDistance(const GirFrameAnalysis::Result& frames, const GirFrameNode&
     return -1;
 }
 
-WaitInsertionPlan buildGirFrameWaitPlan(Function& function, const GirFrameAnalysis::Result& frames,
-                                        const GirFrameHazardAnalysis::Result& hazards,
-                                        const std::function<bool(const BasicBlock&)>& covers) {
-    const PotentialMap potentials = buildPotentials(function, frames, hazards, covers);
+WaitInsertionPlan buildGirFrameWaitPlan(
+    Function& function, const GirFrameAnalysis::Result& frames,
+    const GirFrameHazardAnalysis::Result& hazards,
+    const std::function<bool(const BasicBlock&)>& covers,
+    const std::function<bool(const StinkyInstruction&)>& alsoFences) {
+    const PotentialMap potentials = buildPotentials(function, frames, hazards, covers, alsoFences);
     if (potentials.empty()) return {};
 
     DecisionMap decisions;
@@ -836,7 +951,7 @@ WaitInsertionPlan buildGirFrameWaitPlan(Function& function, const GirFrameAnalys
         if (site.anchor->getParent()->getPredecessors().size() > 1) ++joinSites;
     }
     for (size_t round = 0; round <= joinSites; ++round) {
-        PromotionPlan promotions = derivePromotions(requirements, decisions);
+        PromotionPlan promotions = derivePromotions(requirements, decisions, covers);
         bool changed = false;
         for (const auto& [site, wait] : promotions.anchors) {
             auto found = decisions.find(site);
@@ -858,6 +973,59 @@ WaitInsertionPlan buildGirFrameWaitPlan(Function& function, const GirFrameAnalys
         requirements = closeDecisions(function, frames, potentials, decisions, tailDecisions);
     }
 
+    // Strengthening closure can make a later site unnecessary after an earlier wait is added.
+    // Relax one site at a time: accepting all absent sites as one batch can make closure re-add
+    // an alternating subset forever. A trial is accepted only when it and every previously
+    // accepted removal remain kUnused after re-closing.
+    std::vector<StaticSite> sites;
+    for (BasicBlock& block : function)
+        for (IRBase& node : block) {
+            auto* inst = dyn_cast<StinkyInstruction>(&node);
+            if (!inst) continue;
+            for (CounterKind counter : {CK_DS, CK_Tensor}) {
+                StaticSite site{inst, counter};
+                if (decisions.contains(site)) sites.push_back(site);
+            }
+        }
+
+    std::set<StaticSite> removedSites;
+    std::set<StaticSite> rejectedSites;
+    for (;;) {
+        requirements = simulate(function, frames, potentials, decisions, tailDecisions);
+        bool accepted = false;
+        for (const StaticSite& site : sites) {
+            if (removedSites.contains(site) || rejectedSites.contains(site)) continue;
+            auto decision = decisions.find(site);
+            if (decision == decisions.end() || decision->second == WaitCountSpec::kUnused) continue;
+            auto found = requirements.find(site);
+            if (found != requirements.end() && found->second.strictest != WaitCountSpec::kUnused)
+                continue;
+
+            DecisionMap trial = decisions;
+            trial[site] = WaitCountSpec::kUnused;
+            RequirementMap trialRequirements =
+                closeDecisions(function, frames, potentials, trial, tailDecisions);
+            bool stable = trial.at(site) == WaitCountSpec::kUnused;
+            for (const StaticSite& removed : removedSites)
+                stable &= trial.at(removed) == WaitCountSpec::kUnused;
+            if (!stable) {
+                rejectedSites.insert(site);
+                continue;
+            }
+
+            PASS_DEBUG(std::cerr << "[gir-relax] anchor=" << site.anchor->getParent()->getLabel()
+                                 << "#" << indexInBlock(*site.anchor) << " counter="
+                                 << (site.counter == CK_DS ? "ds" : "tensor") << "\n");
+            decisions = std::move(trial);
+            requirements = std::move(trialRequirements);
+            removedSites.insert(site);
+            rejectedSites.clear();
+            accepted = true;
+            break;
+        }
+        if (!accepted) break;
+    }
+
     // kUnused is "emit nothing", which is weaker than any count -- never a pass for a site the
     // final state still constrains.
     requirements = simulate(function, frames, potentials, decisions, tailDecisions);
@@ -868,7 +1036,8 @@ WaitInsertionPlan buildGirFrameWaitPlan(Function& function, const GirFrameAnalys
             decision->second > summary.strictest)
             report_fatal_error("GIR finite-frame counter flow produced an unsafe wait decision");
     }
-    for (const auto& [site, wait] : decisions)
+    for (const auto& [site, wait] : decisions) {
+        if (wait == WaitCountSpec::kUnused) continue;
         PASS_DEBUG({
             std::cerr << "[gir-wait] fn=" << function.getName()
                       << " anchor=" << site.anchor->getParent()->getLabel() << "#"
@@ -882,10 +1051,13 @@ WaitInsertionPlan buildGirFrameWaitPlan(Function& function, const GirFrameAnalys
                               << indexInBlock(*producer.inst);
             std::cerr << "\n";
         });
+    }
     if (girUnaccountedSpans && std::getenv("ST_GIR_SPAN_STATS"))
         std::cerr << "[gir-span] " << function.getName() << ": " << girUnaccountedSpans
                   << " unaccounted span walk(s)\n";
-    return materializePlan(decisions, tailDecisions, tailProducers, requirements);
+    WaitInsertionPlan plan = materializePlan(decisions, tailDecisions, tailProducers, requirements);
+    validateNoRedundantWaits(function, plan);
+    return plan;
 }
 
 }  // namespace stinkytofu::waitcnt

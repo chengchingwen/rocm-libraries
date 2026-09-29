@@ -8,6 +8,7 @@
 #include "TestHelpers.hpp"
 #include "stinkytofu/analysis/AnalysisRegistration.hpp"
 #include "stinkytofu/analysis/asm/GirFrameAnalysis.hpp"
+#include "stinkytofu/transforms/asm/GirFencePlacementPass.hpp"
 #include "stinkytofu/transforms/asm/GirWaitCntInsertionPass.hpp"
 #include "stinkytofu/transforms/asm/StinkyBuildImplicitDependencyPass.hpp"
 #include "transforms/asm/dag/RegionDAG.hpp"
@@ -59,6 +60,12 @@ constexpr const char* kAgentRelativeRegionsContract =
     "gen 0  ring=2 entry=0\n"
     "incoming  dst=2 src=0 gen=0 value=1\n";
 
+void setFunctionNumWaves(Function& function, uint32_t numWaves) {
+    GemmTileConfig config = function.getGemmTileConfig();
+    config.NumWaves = numWaves;
+    function.setGemmTileConfig(config);
+}
+
 }  // namespace
 
 TEST(GirFrameAnalysisTest, ReconstructsRingOnStCfgAndFindsSameTripRaw) {
@@ -68,9 +75,11 @@ TEST(GirFrameAnalysisTest, ReconstructsRingOnStCfgAndFindsSameTripRaw) {
     function.addEdge(loop, loop);
 
     StinkyInstruction* copy = createTensorLoadInBlock(loop, GfxArchID::Gfx1250, 0, 8);
-    copy->addModifier<GirActionData>(GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 2, 0, 0, -1, false}}});
+    copy->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 2, 0, 0, -1, false}}});
     StinkyInstruction* read = createDsReadB128InBlock(loop, GfxArchID::Gfx1250, 0, 20);
-    read->addModifier<GirActionData>(GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 0, -1, false}}});
+    read->addModifier<GirActionData>(
+        GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 0, -1, false}}});
     function.setStringMetaData(kGirFrameContractKey, kRingTwoContract);
 
     AnalysisManager analyses;
@@ -140,7 +149,8 @@ TEST(GirFrameAnalysisTest, LogicalAnchorsSurviveBlockSplittingAndFoldedFirstActi
         secondBuilder.create(getMCIDByUOp(GFX::s_nop, GfxArchID::Gfx1250));
     secondAction->addModifier<GirActionData>(GirActionData{1, 0, GirActionKind::Other, {}});
     StinkyInstruction* read = createDsReadB128InBlock(drain, GfxArchID::Gfx1250, 0, 20);
-    read->addModifier<GirActionData>(GirActionData{3, 2, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 0, -1, false}}});
+    read->addModifier<GirActionData>(
+        GirActionData{3, 2, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 0, -1, false}}});
     function.setStringMetaData(kGirFrameContractKey, kCanonicalSourceAnchorContract);
 
     AnalysisManager analyses;
@@ -153,19 +163,26 @@ TEST(GirFrameAnalysisTest, LogicalAnchorsSurviveBlockSplittingAndFoldedFirstActi
 TEST(GirFrameAnalysisTest, AgentRelativeReadWaitsForEveryPhysicalRegionProducer) {
     Function function("agent_relative_regions");
     setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
     BasicBlock* entry = function.createBasicBlock("entry");
     BasicBlock* drain = function.createBasicBlock("drain");
     function.addEdge(entry, drain);
 
     StinkyInstruction* first = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 0, 8);
-    first->addModifier<GirActionData>(GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 1, 2, -1, 0, 0, true}}});
+    first->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 1, 2, -1, 0, 0, true}}});
     StinkyInstruction* second = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 16, 24);
-    second->addModifier<GirActionData>(GirActionData{1, 0, GirActionKind::Copy, {GirAccessData{true, 2, 2, -1, 0, 0, true}}});
+    second->addModifier<GirActionData>(
+        GirActionData{1, 0, GirActionKind::Copy, {GirAccessData{true, 2, 2, -1, 0, 0, true}}});
     AsmIRBuilder builder(*drain, GfxArchID::Gfx1250);
     StinkyInstruction* fence = builder.createFence();
     fence->addModifier<GirActionData>(GirActionData{2, 2, GirActionKind::Fence, {}});
     StinkyInstruction* read = createDsReadB128InBlock(drain, GfxArchID::Gfx1250, 0, 20);
-    read->addModifier<GirActionData>(GirActionData{3, 2, GirActionKind::Read, {GirAccessData{false, 1, 2, 0, -1, -1, true}, GirAccessData{false, 2, 2, 0, -1, -1, true}}});
+    read->addModifier<GirActionData>(GirActionData{3,
+                                                   2,
+                                                   GirActionKind::Read,
+                                                   {GirAccessData{false, 1, 2, 0, -1, -1, true},
+                                                    GirAccessData{false, 2, 2, 0, -1, -1, true}}});
     function.setStringMetaData(kGirFrameContractKey, kAgentRelativeRegionsContract);
 
     PassContext context;
@@ -184,6 +201,355 @@ TEST(GirFrameAnalysisTest, AgentRelativeReadWaitsForEveryPhysicalRegionProducer)
     const auto* wait = beforeFence->getModifier<SWaitTensorCntData>();
     ASSERT_NE(wait, nullptr);
     EXPECT_EQ(wait->tlcnt, 0);
+}
+
+// A graded wait for the first RAW leaves the newer producer in flight. Its later-block RAW needs
+// another late barrier and wait; treating the first barrier as publishing every future RAW drops
+// the second one.
+TEST(GirFrameAnalysisTest, LateRawFenceRanksSuccessorRegionAtEndpoint) {
+    Function function("late_fence_region");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* entry = function.createBasicBlock("entry");
+    BasicBlock* drain = function.createBasicBlock("drain");
+    function.addEdge(entry, drain);
+
+    StinkyInstruction* first = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 0, 8);
+    first->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* second = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 16, 24);
+    second->addModifier<GirActionData>(
+        GirActionData{1, 0, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+
+    StinkyInstruction* firstRead = createDsReadB128InBlock(entry, GfxArchID::Gfx1250, 0, 20);
+    firstRead->addModifier<GirActionData>(
+        GirActionData{2, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* secondRead = createDsReadB128InBlock(drain, GfxArchID::Gfx1250, 4, 24);
+    secondRead->addModifier<GirActionData>(
+        GirActionData{3, 3, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kDiamondContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+
+    const auto& hazards = analyses.getResult<GirFrameHazardAnalysis>(function);
+    auto successorRaw = std::find_if(
+        hazards.hazards.begin(), hazards.hazards.end(), [&](const GirFrameHazard& hazard) {
+            return hazard.kind == GirHazardKind::RAW && hazard.producer == second &&
+                   hazard.consumer == secondRead && hazard.gap == 1 && hazard.crossAgent;
+        });
+    ASSERT_NE(successorRaw, hazards.hazards.end());
+
+    createGirFencePlacementPass()->run(function, context, analyses);
+    createGirWaitCntInsertionPass()->run(function, context, analyses);
+
+    const auto waitsIn = [](BasicBlock* block) {
+        std::vector<int> waits;
+        for (IRBase& node : *block) {
+            auto* inst = dyn_cast<StinkyInstruction>(&node);
+            if (!inst) continue;
+            if (const auto* wait = inst->getModifier<SWaitTensorCntData>())
+                waits.push_back(wait->tlcnt);
+        }
+        return waits;
+    };
+    EXPECT_EQ(waitsIn(entry), (std::vector<int>{1}));
+    EXPECT_EQ(waitsIn(drain), (std::vector<int>{0}));
+}
+
+TEST(GirFrameAnalysisTest, UnwaitedTensorRawFenceIsRemoved) {
+    Function function("late_raw_fences");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* entry = function.createBasicBlock("entry");
+    BasicBlock* first = function.createBasicBlock("first");
+    BasicBlock* merge = function.createBasicBlock("merge");
+    function.addEdge(entry, first);
+    function.addEdge(first, merge);
+
+    StinkyInstruction* producerA = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 0, 8);
+    producerA->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* producerB = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 16, 24);
+    producerB->addModifier<GirActionData>(
+        GirActionData{1, 0, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+    StinkyInstruction* filler = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 32, 40);
+    filler->addModifier<GirActionData>(
+        GirActionData{2, 0, GirActionKind::Copy, {GirAccessData{true, 2, 1, -1, 0, 0, true}}});
+    StinkyInstruction* firstRead = createDsReadB128InBlock(first, GfxArchID::Gfx1250, 4, 24);
+    firstRead->addModifier<GirActionData>(
+        GirActionData{3, 3, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+    StinkyInstruction* mergeRead = createDsReadB128InBlock(merge, GfxArchID::Gfx1250, 0, 20);
+    mergeRead->addModifier<GirActionData>(
+        GirActionData{4, 4, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kFenceContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    const auto& hazards = analyses.getResult<GirFrameHazardAnalysis>(function);
+    EXPECT_TRUE(std::any_of(
+        hazards.hazards.begin(), hazards.hazards.end(), [&](const GirFrameHazard& hazard) {
+            return hazard.kind == GirHazardKind::RAW && hazard.producer == producerB &&
+                   hazard.consumer == firstRead && hazard.crossAgent;
+        }));
+    EXPECT_TRUE(std::any_of(
+        hazards.hazards.begin(), hazards.hazards.end(), [&](const GirFrameHazard& hazard) {
+            return hazard.kind == GirHazardKind::RAW && hazard.producer == producerA &&
+                   hazard.consumer == mergeRead && hazard.crossAgent;
+        }));
+
+    const auto counts = [](BasicBlock* block) {
+        std::pair<int, int> result;
+        for (IRBase& node : *block) {
+            auto* inst = dyn_cast<StinkyInstruction>(&node);
+            if (!inst) continue;
+            if (isBarrierSignal(*inst)) ++result.first;
+            if (inst->getModifier<SWaitTensorCntData>()) ++result.second;
+        }
+        return result;
+    };
+
+    createGirFencePlacementPass()->run(function, context, analyses);
+    EXPECT_EQ(counts(entry), (std::pair{0, 0}));
+    EXPECT_EQ(counts(first), (std::pair{1, 0}));
+    EXPECT_EQ(counts(merge), (std::pair{0, 0}));
+
+    createGirWaitCntInsertionPass()->run(function, context, analyses);
+    EXPECT_EQ(counts(entry), (std::pair{0, 0}));
+    EXPECT_EQ(counts(first), (std::pair{1, 1}));
+    EXPECT_EQ(counts(merge), (std::pair{0, 0}));
+
+    std::vector<int> firstWaits;
+    for (IRBase& node : *first)
+        if (auto* inst = dyn_cast<StinkyInstruction>(&node))
+            if (const auto* wait = inst->getModifier<SWaitTensorCntData>())
+                firstWaits.push_back(wait->tlcnt);
+    EXPECT_EQ(firstWaits, (std::vector<int>{1}));
+}
+
+TEST(GirFrameAnalysisTest, UnwaitedRawOwnershipDropsFromWarFence) {
+    Function function("raw_to_war_fence");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* block = function.createBasicBlock("entry");
+
+    StinkyInstruction* copyA = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
+    copyA->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* firstReadA = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
+    firstReadA->addModifier<GirActionData>(
+        GirActionData{1, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* readB = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 4, 24);
+    readB->addModifier<GirActionData>(
+        GirActionData{2, 0, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+    StinkyInstruction* secondReadA = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 8, 28);
+    secondReadA->addModifier<GirActionData>(
+        GirActionData{3, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* copyB = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
+    copyB->addModifier<GirActionData>(
+        GirActionData{4, 0, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kFenceContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    createGirFencePlacementPass()->run(function, context, analyses);
+    createGirWaitCntInsertionPass()->run(function, context, analyses);
+
+    std::vector<std::string> stamps;
+    int tensorWaits = 0;
+    for (IRBase& node : *block) {
+        auto* inst = dyn_cast<StinkyInstruction>(&node);
+        if (!inst) continue;
+        if (isBarrierWait(*inst)) {
+            const auto* comment = inst->getModifier<CommentData>();
+            ASSERT_NE(comment, nullptr);
+            stamps.push_back(comment->comment);
+        }
+        tensorWaits += inst->getModifier<SWaitTensorCntData>() != nullptr;
+    }
+    EXPECT_EQ(stamps, (std::vector<std::string>{"GIR fence (RAW)", "GIR fence (WAR)"}));
+    EXPECT_EQ(tensorWaits, 1);
+}
+
+TEST(GirFrameAnalysisTest, CoLocatedRawsShareOneFence) {
+    Function function("colocated_raws");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* block = function.createBasicBlock("entry");
+
+    StinkyInstruction* first = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
+    first->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* second = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
+    second->addModifier<GirActionData>(
+        GirActionData{1, 0, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+    StinkyInstruction* read = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
+    read->addModifier<GirActionData>(GirActionData{
+        2,
+        0,
+        GirActionKind::Read,
+        {GirAccessData{false, 0, 1, -1, 0, 0, true}, GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kFenceContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    createGirFencePlacementPass()->run(function, context, analyses);
+    createGirWaitCntInsertionPass()->run(function, context, analyses);
+
+    int signals = 0;
+    int tensorWaits = 0;
+    const CommentData* stamp = nullptr;
+    for (IRBase& node : *block) {
+        auto* inst = dyn_cast<StinkyInstruction>(&node);
+        if (!inst) continue;
+        signals += isBarrierSignal(*inst);
+        tensorWaits += inst->getModifier<SWaitTensorCntData>() != nullptr;
+        if (isBarrierWait(*inst)) stamp = inst->getModifier<CommentData>();
+    }
+    EXPECT_EQ(signals, 1);
+    EXPECT_EQ(tensorWaits, 1);
+    ASSERT_NE(stamp, nullptr);
+    EXPECT_EQ(stamp->comment, "GIR fence (RAW)");
+}
+
+TEST(GirFrameAnalysisTest, SharedFenceStampsEveryOwnedHazardKind) {
+    Function function("stamped_fence");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* block = function.createBasicBlock("entry");
+
+    StinkyInstruction* copyA = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
+    copyA->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* firstCopyC = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
+    firstCopyC->addModifier<GirActionData>(
+        GirActionData{1, 0, GirActionKind::Copy, {GirAccessData{true, 2, 1, -1, 0, 0, true}}});
+    StinkyInstruction* readB = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 4, 24);
+    readB->addModifier<GirActionData>(
+        GirActionData{2, 0, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+    StinkyInstruction* readA = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
+    readA->addModifier<GirActionData>(
+        GirActionData{3, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* copyB = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 32, 40);
+    copyB->addModifier<GirActionData>(
+        GirActionData{4, 0, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+    StinkyInstruction* secondCopyC = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 48, 56);
+    secondCopyC->addModifier<GirActionData>(
+        GirActionData{5, 0, GirActionKind::Copy, {GirAccessData{true, 2, 1, -1, 0, 0, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kFenceContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    const auto& hazards = analyses.getResult<GirFrameHazardAnalysis>(function);
+    std::set<GirHazardKind> kinds;
+    for (const GirFrameHazard& hazard : hazards.hazards)
+        if (hazard.crossAgent) kinds.insert(hazard.kind);
+    EXPECT_EQ(kinds, (std::set{GirHazardKind::RAW, GirHazardKind::WAR, GirHazardKind::WAW}));
+
+    createGirFencePlacementPass()->run(function, context, analyses);
+
+    int signals = 0;
+    const CommentData* stamp = nullptr;
+    for (IRBase& node : *block) {
+        auto* inst = dyn_cast<StinkyInstruction>(&node);
+        if (!inst) continue;
+        signals += isBarrierSignal(*inst);
+        if (isBarrierWait(*inst)) stamp = inst->getModifier<CommentData>();
+    }
+    EXPECT_EQ(signals, 1);
+    ASSERT_NE(stamp, nullptr);
+    EXPECT_EQ(stamp->comment, "GIR fence (RAW,WAR,WAW)");
+}
+
+TEST(GirFrameAnalysisTest, WarBarriersMergeAtLaterSlotWithoutTensorIssue) {
+    Function function("merge_war_fences");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* block = function.createBasicBlock("entry");
+
+    StinkyInstruction* readA = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
+    readA->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* readB = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 4, 24);
+    readB->addModifier<GirActionData>(
+        GirActionData{1, 0, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+    StinkyInstruction* copyA = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
+    copyA->addModifier<GirActionData>(
+        GirActionData{2, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* copyB = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
+    copyB->addModifier<GirActionData>(
+        GirActionData{3, 0, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kFenceContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    createGirFencePlacementPass()->run(function, context, analyses);
+
+    int signals = 0;
+    const CommentData* stamp = nullptr;
+    StinkyInstruction* instructionAfterWait = nullptr;
+    bool sawWait = false;
+    for (IRBase& node : *block) {
+        auto* inst = dyn_cast<StinkyInstruction>(&node);
+        if (!inst) continue;
+        signals += isBarrierSignal(*inst);
+        if (isBarrierWait(*inst)) {
+            stamp = inst->getModifier<CommentData>();
+            sawWait = true;
+        } else if (sawWait && !instructionAfterWait) {
+            instructionAfterWait = inst;
+        }
+    }
+    EXPECT_EQ(signals, 1);
+    EXPECT_EQ(instructionAfterWait, copyA);
+    ASSERT_NE(stamp, nullptr);
+    EXPECT_EQ(stamp->comment, "GIR fence (WAR)");
+}
+
+TEST(GirFrameAnalysisTest, TensorIssueKeepsWarBarriersSeparate) {
+    Function function("split_war_fences");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* block = function.createBasicBlock("entry");
+
+    StinkyInstruction* readA = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
+    readA->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* copyA = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
+    copyA->addModifier<GirActionData>(
+        GirActionData{1, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* readB = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 4, 24);
+    readB->addModifier<GirActionData>(
+        GirActionData{2, 0, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+    StinkyInstruction* copyB = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
+    copyB->addModifier<GirActionData>(
+        GirActionData{3, 0, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kFenceContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    createGirFencePlacementPass()->run(function, context, analyses);
+
+    int signals = 0;
+    for (IRBase& node : *block) {
+        auto* inst = dyn_cast<StinkyInstruction>(&node);
+        if (inst && isBarrierSignal(*inst)) ++signals;
+    }
+    EXPECT_EQ(signals, 2);
 }
 
 TEST(GirFrameAnalysisTest, HazardBecomesAnOrdinaryDagEdge) {
@@ -351,14 +717,17 @@ TEST(GirFrameAnalysisTest, FrameWarRetiresVacatingDsRead) {
 TEST(GirFrameAnalysisTest, CrossAgentWaitAnchorsAtVirtualFence) {
     Function function("fence");
     setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
     BasicBlock* block = function.createBasicBlock("entry");
     StinkyInstruction* copy = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
-    copy->addModifier<GirActionData>(GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+    copy->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
     AsmIRBuilder builder(*block, GfxArchID::Gfx1250);
     StinkyInstruction* fence = builder.createFence();
     fence->addModifier<GirActionData>(GirActionData{1, 1, GirActionKind::Fence, {}});
     StinkyInstruction* read = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
-    read->addModifier<GirActionData>(GirActionData{2, 2, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+    read->addModifier<GirActionData>(
+        GirActionData{2, 2, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
     function.setStringMetaData(kGirFrameContractKey, kFenceContract);
 
     PassContext context;
@@ -380,9 +749,52 @@ TEST(GirFrameAnalysisTest, CrossAgentWaitAnchorsAtVirtualFence) {
     EXPECT_EQ(beforeRead, fence);
 }
 
+TEST(GirFrameAnalysisTest, SingleWaveUsesWaitWithoutWorkgroupBarrier) {
+    Function function("single_wave");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 1);
+    BasicBlock* block = function.createBasicBlock("entry");
+
+    StinkyInstruction* copy = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
+    copy->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* read = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
+    read->addModifier<GirActionData>(
+        GirActionData{1, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kFenceContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    const auto& hazards = analyses.getResult<GirFrameHazardAnalysis>(function);
+    ASSERT_FALSE(hazards.hazards.empty());
+    EXPECT_TRUE(std::none_of(hazards.hazards.begin(), hazards.hazards.end(),
+                             [](const GirFrameHazard& hazard) { return hazard.crossAgent; }));
+
+    createGirFencePlacementPass()->run(function, context, analyses);
+    EXPECT_TRUE(std::none_of(block->begin(), block->end(), [](IRBase& node) {
+        auto* inst = dyn_cast<StinkyInstruction>(&node);
+        return inst && isBarrier(*inst);
+    }));
+
+    createGirWaitCntInsertionPass()->run(function, context, analyses);
+    StinkyInstruction* beforeRead = nullptr;
+    for (IRBase& node : *block) {
+        auto* inst = dyn_cast<StinkyInstruction>(&node);
+        if (inst == read) break;
+        beforeRead = inst;
+    }
+    ASSERT_NE(beforeRead, nullptr);
+    const auto* wait = beforeRead->getModifier<SWaitTensorCntData>();
+    ASSERT_NE(wait, nullptr);
+    EXPECT_EQ(wait->tlcnt, 0);
+}
+
 TEST(GirFrameAnalysisTest, ClonedFenceActionAnchorsWaitOnEachCfgPath) {
     Function function("cloned_fence");
     setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
     BasicBlock* entry = function.createBasicBlock("entry");
     BasicBlock* left = function.createBasicBlock("left");
     BasicBlock* right = function.createBasicBlock("right");
@@ -390,19 +802,22 @@ TEST(GirFrameAnalysisTest, ClonedFenceActionAnchorsWaitOnEachCfgPath) {
     function.addEdge(entry, right);
 
     StinkyInstruction* copy = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 0, 8);
-    copy->addModifier<GirActionData>(GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+    copy->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
 
     AsmIRBuilder leftBuilder(*left, GfxArchID::Gfx1250);
     StinkyInstruction* leftFence = leftBuilder.createFence();
     leftFence->addModifier<GirActionData>(GirActionData{1, 1, GirActionKind::Fence, {}});
     StinkyInstruction* leftRead = createDsReadB128InBlock(left, GfxArchID::Gfx1250, 0, 20);
-    leftRead->addModifier<GirActionData>(GirActionData{2, 2, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+    leftRead->addModifier<GirActionData>(
+        GirActionData{2, 2, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
 
     AsmIRBuilder rightBuilder(*right, GfxArchID::Gfx1250);
     StinkyInstruction* rightFence = rightBuilder.createFence();
     rightFence->addModifier<GirActionData>(GirActionData{1, 1, GirActionKind::Fence, {}});
     StinkyInstruction* rightRead = createDsReadB128InBlock(right, GfxArchID::Gfx1250, 0, 20);
-    rightRead->addModifier<GirActionData>(GirActionData{2, 2, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+    rightRead->addModifier<GirActionData>(
+        GirActionData{2, 2, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
     function.setStringMetaData(kGirFrameContractKey, kFenceContract);
 
     PassContext context;

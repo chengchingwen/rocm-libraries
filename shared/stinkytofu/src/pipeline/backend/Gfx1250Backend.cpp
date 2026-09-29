@@ -224,20 +224,23 @@ bool buildGfx1250Pipeline(ModulePassManager& mpm, StinkyAsmModule& module, const
                                    runScheduler, moduleOptions.DisableWaitCntRemoval);
             PB.applyExtensionPoint(PipelineExtensionPoint::InnerRegionEnd, innerPM, module);
             if (moduleOptions.EnableWaitCntInsertion) {
-                if (moduleOptions.EnableGirFramePipeline &&
-                    moduleOptions.EnableGirFrameWaitCntInsertion) {
+                const bool insertGirFrameWaits = moduleOptions.EnableGirFramePipeline &&
+                                                 moduleOptions.EnableGirFrameWaitCntInsertion;
+                if (insertGirFrameWaits) {
                     // Placement first: the wait this fence carries is a residual measured at
-                    // wherever it ends up standing.  Not gated on the scheduler -- it is the only
-                    // source of barriers now, and the wait pass below anchors on them at every
-                    // opt level.
+                    // wherever it ends up standing. Not gated on the scheduler -- it is the only
+                    // source of workgroup barriers now.
                     innerPM.addPass(createGirFencePlacementPass());
-                    innerPM.addPass(createGirWaitCntInsertionPass());
                 }
                 WaitCntInsertionOptions waitCntOptions;
                 waitCntOptions.enableLoopCarriedTokenDeps =
                     moduleOptions.EnableLoopCarriedTokenDeps;
                 waitCntOptions.disableTensorcntInsertion = moduleOptions.DisableTensorcntInsertion;
                 innerPM.addPass(createStinkyWaitCntInsertionPass(waitCntOptions));
+                // Generic register waits change FIFO ranks. GIR storage waits must run afterwards
+                // so their graded dscnt/tensorcnt values credit the final wait stream rather than
+                // becoming stale when generic insertion adds an earlier, stricter wait.
+                if (insertGirFrameWaits) innerPM.addPass(createGirWaitCntInsertionPass());
                 if (runScheduler && !moduleOptions.EnableGirFramePipeline)
                     innerPM.addPass(createRemoveDscntPass());
             }

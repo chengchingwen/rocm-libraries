@@ -18,9 +18,11 @@ namespace waitcnt {
 /// Compute a finite-frame wait plan directly on `(ST basic block, GIR frame)` states.
 /// `covers` must be the same predicate the caller emits with: a wait planned for a block that is
 /// never written is not merely wasted, it demands a barrier nothing was asked to place.
-WaitInsertionPlan buildGirFrameWaitPlan(Function& function, const GirFrameAnalysis::Result& frames,
-                                        const GirFrameHazardAnalysis::Result& hazards,
-                                        const std::function<bool(const BasicBlock&)>& covers);
+WaitInsertionPlan buildGirFrameWaitPlan(
+    Function& function, const GirFrameAnalysis::Result& frames,
+    const GirFrameHazardAnalysis::Result& hazards,
+    const std::function<bool(const BasicBlock&)>& covers,
+    const std::function<bool(const StinkyInstruction&)>& alsoFences = {});
 
 /// Same-counter issues standing at or after `producerIndex` once control reaches `anchorIndex` in
 /// `anchorNode`, `span` frame-graph steps on; the producer itself counts as 1, so the wait that
