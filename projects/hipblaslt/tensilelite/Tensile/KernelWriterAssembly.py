@@ -27,56 +27,54 @@ from .ExecutionPolicy import isPersistent, isPersistentDataParallel, isStreamK, 
 from rocisa import rocIsa, countInstruction, countGlobalRead, countSMemLoad, findInstCount
 from rocisa.asmpass import getActFuncModuleName, getActFuncBranchModuleName
 from rocisa.code import KernelBody, Label, Macro, Module, RegSet, SrdUpperValue, \
-                        StructuredModule, TextBlock, ValueEndif, ValueIf, ValueSet, SignatureBase
+                        StructuredModule, ValueEndif, ValueIf, ValueSet, SignatureBase
 from rocisa.container import DSModifiers, SDWAModifiers, VOP3PModifiers, \
-                      MUBUFModifiers, SMEMModifiers, EXEC, VCC, RegisterContainer, \
+                      MUBUFModifiers, EXEC, VCC, RegisterContainer, \
                       DPPModifiers, vgpr, sgpr, accvgpr, mgpr, ContinuousRegister, \
                       HWRegContainer, GLOBALModifiers, MemTokenData
-from rocisa.instruction import SGetPositivePCOffset, SLongBranch, SLongBranchPositive, SLongBranchNegative, SCLongBranchScc0, SCLongBranchScc1, SCLongBranchVccnz, \
+from rocisa.instruction import SGetPositivePCOffset, SLongBranch, SLongBranchPositive, SCLongBranchScc0, SCLongBranchScc1, SCLongBranchVccnz, \
                         SMulInt64to32, VCvtBF16toFP32, SBfeU32
 from rocisa.functions import vectorStaticDivide, vectorStaticRemainder, vectorUInt32CeilDivideAndRemainder, \
                         vectorStaticDivideAndRemainder, scalarStaticDivideAndRemainder, scalarStaticCeilDivide, \
                         scalarStaticRemainder, scalarUInt32DivideAndRemainder, sMagicDiv, vectorStaticMultiply, \
-                        vectorStaticMultiplyAdd, scalarStaticMultiply64, BranchIfZero, BranchIfNotZero, DSInit, \
+                        vectorStaticMultiplyAdd, BranchIfZero, BranchIfNotZero, DSInit, \
                         ArgumentLoader, scalarMultiplyBpe, scalarMultiply64Bpe, vectorMultiplyBpe, vectorMultiply64Bpe
 from rocisa.enum import InstType, SelectBit, CacheScope, HighBitSel, TemporalHint, NonVolatile
 from rocisa.macro import MacroVMagicDiv, PseudoRandomGenerator
 from rocisa.instruction import BranchInstruction, BufferLoadB128, BufferLoadB32, \
-  BufferLoadB16, BufferLoadU16, BufferLoadB64, BufferLoadB96, BufferLoadD16B16, BufferLoadD16HIB16, BufferLoadD16HIU8, \
+  BufferLoadU16, BufferLoadB64, BufferLoadB96, BufferLoadD16B16, BufferLoadD16HIB16, BufferLoadD16HIU8, \
   BufferLoadD16U8, BufferStoreB128, BufferStoreB16, BufferStoreB32, BufferStoreB64, \
   BufferStoreB8, BufferStoreD16HIB16, CommonInstruction, DSBPermuteB32, DSLoadB128, \
-  DSLoadB16, DSLoadB32, DSLoadB64, DSLoadU16, DSStoreB128, DSStoreB16, DSStoreB32, \
-  DSStoreB64, DSStoreB8, DSStoreInstruction, FlatLoadB128, FlatLoadB32, FlatLoadB64, \
-  FlatLoadD16B16, FlatLoadD16HIB16, FlatStoreB128, FlatStoreB32, FlatStoreB64, \
-  FlatStoreD16B16, FlatStoreD16HIB16, GlobalReadInstruction, MXMFMAInstruction, MFMAInstruction, MUBUFReadInstruction, \
+  DSLoadB32, DSStoreB32, DSStoreInstruction, \
+  GlobalReadInstruction, MXMFMAInstruction, MFMAInstruction, \
   MacroInstruction, SAShiftRightI32, SAbsI32, SAddCU32, SAddI32, SAddU32, SAddU64, SAndB32, \
-  SAndB64, SAndN2B32, SAtomicDec, SBarrier, SBfmB32, SBitcmp1B32, SBranch, SCBranchSCC0, \
+  SAndB64, SAndN2B32, SBarrier, SBfmB32, SBitcmp1B32, SBranch, SCBranchSCC0, \
   SCBranchSCC1, SCBranchVCCNZ, SCBranchVCCZ, SCMovB32, SCSelectB32, SCSelectB64, SCmpEQI32, \
   SCmpEQU32, SCmpEQU64, SCmpGeI32, SCmpGeU32, SCmpGtI32, SCmpGtU32, SCmpKEQU32, \
   SCmpKGeU32, SCmpKGtU32, SCmpKLGU32, SCmpLeI32, SCmpLeU32, SCmpLgU32, SCmpLtU32, SCmpLtI32, \
-  SEndpgm, SFf1B32, SGetRegB32, SFlbitI32B32, SLShiftLeft2AddU32, SLShiftLeftB32, SLShiftLeftB64, SLShiftRightB32, \
+  SEndpgm, SFf1B32, SGetRegB32, SLShiftLeft2AddU32, SLShiftLeftB32, SLShiftLeftB64, SLShiftRightB32, \
   SLShiftRightB64, SLoadB32, SLoadB64, SMFMAInstruction, SMemLoadInstruction, SMaxI32, SMaxU32, SMinI32, \
   SMinU32, SMovB32, SMovB64, SMulHIU32, SMulI32, SNop, SOrB32, SOrSaveExecB32, \
-  SOrSaveExecB64, SSExtI16toI32, SSetPCB64, SSetRegIMM32B32, SSetPrior, SSubBU32, SSubI32, SSubU32, SSubU64, SSetVgprMsb,\
+  SOrSaveExecB64, SSetPCB64, SSetRegIMM32B32, SSetPrior, SSubBU32, SSubI32, SSubU32, SSubU64,\
   SWaitCnt, SWaitAlu, SXorB32, VAShiftRightI32, VAccvgprReadB32, VAccvgprWrite, VAccvgprWriteB32, \
   VAdd3U32, VAddCCOU32, VAddCOU32, VAddF32, VAddF64, VAddLShiftLeftU32, VAddU32, VAndB32, \
   VBfeU32, VCmpEQI32, VCmpEQU32, VCmpGEI32, VCmpGEU32, VCmpGtU32, VCmpGTI32, VCmpLeI32, VCmpLtI32, \
-  VCmpLtU32, VCmpNeU64, VCmpUF32, VCmpXGeU32, VCmpXLtU32, VCmpXLtU64, VCndMaskB32, VCvtF16toF32, VCvtI32toF32, \
-  VCvtF32toF16, VCvtFP8toF32, VCvtInstruction, VCvtPkF32toBF16, VCvtPkF32toBF8, \
-  VCvtPkF32toFP8, VCvtPkFP8toF32, VCvtSRF32toBF8, VCvtSRF32toFP8, VCvtScaleFP8toF16, \
+  VCmpLtU32, VCmpNeU64, VCmpUF32, VCmpXGeU32, VCmpXLtU32, VCmpXLtU64, VCndMaskB32, VCvtI32toF32, \
+  VCvtFP8toF32, VCvtInstruction, VCvtPkF32toBF16, VCvtPkF32toBF8, \
+  VCvtPkF32toFP8, VCvtSRF32toBF8, VCvtSRF32toFP8, VCvtScaleFP8toF16, \
   VCvtScalePkF16toBF8, VCvtScalePkF16toFP8, VCvtScalePkFP8toF16, VLShiftLeftB32, \
   VLShiftLeftB64, VLShiftRightB32, VLShiftRightB64, VMadU32U24, VMaxF32, VMinI32, VMovB32, VMovB64, VMulF32, \
   VMulHIU32, VMulLOU32, VMulPKF32S, VMulU32U24, VNotB32, VOrB32, VPackF16toB32, \
-  VPrngB32, VReadfirstlaneB32, VReadlaneB32, VSubF32, VSubI32, VSubU32, VXorB32, GlobalLoadTR8B64, GlobalLoadTR16B128, \
+  VPrngB32, VReadfirstlaneB32, VReadlaneB32, VSubI32, VSubU32, VXorB32, GlobalLoadTR8B64, GlobalLoadTR16B128, \
   GlobalLoadB32, GlobalLoadB64, GlobalLoadB96, GlobalLoadB128, GlobalLoadD16B16, GlobalLoadD16HIB16, \
   GlobalLoadD16U8, GlobalLoadD16HIU8, \
   GlobalStoreB8, GlobalStoreB16, GlobalStoreB32, GlobalStoreB64, GlobalStoreB128, GlobalStoreD16HIB16
 
-from .Component import Component, TensorDataMover, GL2Prefetch
+from .Component import Component
 from .Components.TensorDataMover import TensorDataMoverLoad
 from .Components.GL2Prefetch import GL2PrefetchLoad
 from .Components.ClusterLoad import ClusterLoadTDM
-from .Components.TDMFuse import tdmFusedGroups, tdmGroupWaveRanges, tdmScaleSharesDataSet, \
+from .Components.TDMFuse import tdmFusedGroups, tdmGroupWaveRanges, \
                                 tdmSetIncsSgpr, tdmSetOwner, tdmSetOwners, \
                                 tdmSharedScaleSetActive, tdmWaveComponents, \
                                 tdmWaveRangeText, tdmWaveSeparated
@@ -94,7 +92,7 @@ from .Components.TDMFuse import tdmWaveComponents, tdmWavePartition, tdmParityOr
 from .SolutionStructs import isPackedIndex
 from .AsmStoreState import StoreState, VectorDataTypes
 from .Activation import ActivationType
-from .CustomKernels import isCustomKernelConfig, getCustomKernelFilepath, getCustomKernelSource, supportsUserSgprKernargPreload
+from .CustomKernels import isCustomKernelConfig, getCustomKernelSource
 from .Common import roundUp, log2, ceilDivide, choose_multiplier, wmmaV3InputVgprLayout, clusterEnabled, isPow2, persistentSpatialCluster
 from .OccupancyMeasure import compute_occupancy_from_asm_source, _arch_caps_for_kernel
 from rocisa.instruction import ECvtF16toF32, ECvtF32toF16, ECvtPkFP8toF32
@@ -125,14 +123,12 @@ def _enableLdsTr6Rearrange(kernel, tP, tail):
   return (tP["bpe"] == 0.75 and kernel[f"enableLDSTr{tP['tensorChar']}"]
           and (not tail or hasTdm))
 
-from math import ceil, floor, log, prod
+from math import ceil, floor, log
 from contextlib import contextmanager
 from copy import deepcopy
 from dataclasses import dataclass, field
-from functools import lru_cache
 from typing import List, Mapping, NamedTuple, Optional, Tuple, Union
 
-import os
 from Tensile.Components import TDMSplit as _tdm_split
 from .Lowering.lds_geometry import region_row_elems
 from .Components.LoopModel.Program import loopModelGirProgram
@@ -20392,13 +20388,9 @@ class KernelWriterAssembly(KernelWriter):
       assert _tdm_split.split_of(kernel, _tp["tensorChar"])[0] > 1 or not (_lds or _const), \
           "unsplit %s has a nonzero region step (lds=%s global=%s)" % (
               _tp["tensorChar"], _lds, _const)
-    # THE FREE-AXIS STRIDE IS THE UNIT-STRIDE INDEX WHENEVER THE OPERAND IS `tlu`.  This used
-    # to assert `RegisterContainer`, on the reasoning that a split never advances along the
-    # unit-stride dimension — true only for unrolled-major operands, where dim1 (the split
-    # axis) is the free axis and dim0 is the contiguous one.  Under `tlu` the free axis IS
-    # contiguous, so `strideRef` hands back the compile-time `constStride*` symbol, which
-    # assembles to 1.  Substituting the literal 1 keeps the parity select well-formed (SALU
-    # permits one literal operand) and costs nothing when both sides are constant.
+    # For tlu operands the free-axis stride is the unit stride. In that case
+    # strideRef returns the compile-time constStride symbol, which assembles
+    # to 1. Use the literal so the parity select remains encodable.
     strideArgA = 1 if isinstance(strideRefA, str) else strideRefA
     strideArgB = 1 if isinstance(strideRefB, str) else strideRefB
     self._emitTdmWaveParitySCCAuto(module, kernel,
@@ -20566,23 +20558,10 @@ class KernelWriterAssembly(KernelWriter):
     ldsConstOffset: int = kernel[f"LdsOffset{tc}"]
     ldsBlockSizePerPad: int = kernel[f"LdsBlockSizePerPad{tc}"]
     ldsPadSize: int = int(kernel[f"LdsPad{tc}"] * bpe)
-    # THE SPLIT DIVISOR GOES ON THE AXIS `TDMSplitA/B` NAMED; THE WAVE DIVISOR STAYS ON dim1.
-    #
-    # dim0 is always the CONTIGUOUS dimension and dim1 the strided one (`setTensorStride0`
-    # advances dim1), so which of them carries the MacroTile is layout-decided, never chosen —
-    # `geo.splitDim` is that decision.  Putting the divisor on dim1 unconditionally is what made
-    # `TDMSplit: True` perform a DU split on `tlu` operands.
-    #
-    # THE WAVE DIVISOR MUST NOT FOLLOW IT, and that is not conservatism — it is what keeps the
-    # LDS image intact.  On tile-major, LDS is `[unroll][free]`.  Partitioning the waves along
-    # dim1 (= du there) gives each cooperating component a slab of consecutive K rows, which in
-    # that image is a CONTIGUOUS byte range, so the components' dense writes reproduce exactly
-    # the image one wave would have written — the read side needs to know nothing.  Moving the
-    # wave divisor to the free axis instead makes each component a separately packed narrow
-    # block -- the same image change the split makes, but with no read-side handling, which fails
-    # multi-wave NT whether or not the tile is split.  The split
-    # can move because `region_bytes` / `region_row_elems` teach the read side about it; the wave
-    # partition has no such counterpart.
+    # The split divisor follows the axis named by TDMSplitA/B; the wave
+    # divisor remains on dim1. geo.splitDim captures this layout decision.
+    # Moving the wave divisor to the free axis would change the LDS image
+    # without a corresponding read-side region adjustment.
     geo = self.tdmSplitGeometry(kernel, tP)
     dim1Divisor = geo.factor            # kept for the emitted comments and the seg-interleave math
     if geo.splitDim == 0:
@@ -22059,7 +22038,7 @@ class KernelWriterAssembly(KernelWriter):
     #   recalcLocalReadAddressesAB() performs this switch by recomputing the local-read
     #   pointer to buffer 0; (e.g. ds_load_b128 covering 2 MI-K to ds_load_b64 per MI_K).
     #   (needResetLROffsets or isPersistent(kernel)) in KernelWriter, keeping write/read consistent.
-    #   UseLoopModel ALWAYS rebinds: GIR swaps this pointer and the local-read pointer
+    #   UseLoopModel always rebinds: GIR swaps this pointer and the local-read pointer
     #   independently, so at a coalesced count of 1 the loop leaves them on opposite buffers.
     needLdsReset = (isPersistent(kernel) or kernel["UseLoopModel"] or
                     self.states.numReadsIterCoalescedA > 1 or
@@ -22075,7 +22054,8 @@ class KernelWriterAssembly(KernelWriter):
 
     with self.allocTmpSgpr(1, tag="resetTDMDescriptorForTail_tmpSgpr") as tmpSgpr:
       mod.add(SAndB32(sgpr(tmpSgpr.idx), sgpr("SizeL"), (du - 1)))
-      # A DU SPLIT CUTS THE AXIS THE TAIL SHRINKS, so the remainder is APPORTIONED, not shared.
+      # A DU split cuts the axis the tail shrinks, so the remainder is
+      # apportioned rather than shared.
       # Only when one wave owns the tile: the components partition that same K axis, and both the
       # offset below and region 1 subtract from this bound, so clamping first loses their rows.
       _tailN, _tailAxis = _tdm_split.split_of(kernel, tc)
@@ -22104,16 +22084,15 @@ class KernelWriterAssembly(KernelWriter):
     return tdmSetIncsSgpr(kernel, tc)
 
   def tdmTailUndoPeelOverAdvance(self, kernel: Mapping, tc: str) -> Module:
-    """Back the descriptor off the chunks the peel advanced past but never consumed.
+    """Back the descriptor off chunks advanced by an unconsumed peel.
 
-    RELATIVE, not absolute.  Under StaggerU each chunk advance is a runtime choice between the
-    stride and the wrap value, so the descriptor is not `base + n*stride` and cannot be rebuilt
-    from a saved base; only the DIFFERENCE between adjacent chunks is a plain multiple of stride.
+    Under StaggerU each advance chooses between the stride and wrap value at
+    runtime, so only the difference between adjacent chunks is known.
     """
     mod = Module("TDM tail: undo the peel's unconsumed advance")
     if not kernel["UseLoopModel"]:
       return mod
-    # ONE DESCRIPTOR, ONE REWIND: under wave separation B rides A's, so only the owner emits.
+    # Under wave separation B rides A's descriptor, so only the owner rewinds.
     if not self.tdmIssuesOwnLoad(kernel, tc):
       return mod
     peel = int((loopModelGirProgram(self, kernel).meta or {}).get("peel_depth") or 0)

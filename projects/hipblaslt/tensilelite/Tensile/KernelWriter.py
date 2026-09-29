@@ -37,15 +37,15 @@ from rocisa.instruction import BranchInstruction, BufferLoadB128, BufferLoadB192
   DSLoadB64TrB8, DSLoadB64TrB4, DSLoadB96TrB6, DSLoadInstruction, DSLoadU16, \
   DSLoadU8, DSStore2B32, DSStore2B64, DSStoreB128, DSStoreB16, DSStoreB96, DSStoreB256, \
   DSStoreB32, DSStoreB64, DSStoreB8, DSStoreInstruction, FlatLoadB128, FlatLoadB192, FlatLoadB32, \
-  FlatLoadB64, FlatStoreB128, FlatStoreB32, FlatStoreB64, GlobalLoadB128, GlobalLoadB192, GlobalLoadB32, \
-  GlobalLoadB64, GlobalLoadB96, GlobalLoadD16B16, GlobalLoadD16U8, GlobalLoadD16HIU8, \
+  FlatLoadB64, GlobalLoadB128, GlobalLoadB192, GlobalLoadB32, \
+  GlobalLoadB64, GlobalLoadB96, GlobalLoadD16B16, GlobalLoadD16U8, \
   GlobalStoreB128, GlobalStoreB32, GlobalStoreB64, Instruction, MacroInstruction, \
   MFMAInstruction, MXMFMAInstruction, SAddU32, SAndB32, SBarrier, SBranch, SCBranchSCC0, SCBranchSCC1, SCBranchVCCNZ, SCmpEQU32, SCmpEQU64, SCmpGeU32, SCmpLeU32, \
   SCSelectB32, SLShiftLeftB32, SLShiftRightB32, SMFMAInstruction, SMovB32, SMovB64, SNop, SEndpgm, SOrB32, SSetPrior, SSetRegIMM32B32, SSubU32, SWaitCnt, SWaitAlu, \
   SLongBranchPositive, VFmaMixF32, VMadMixF32, VMovB32, VAndB32, VCmpEQU32, VCndMaskB32, VMovB64, VNop, VReadfirstlaneB32, TensorLoadToLds, SCMovB32, SCMovB64, t16
 from rocisa.instruction import SSchedulingFence
 from rocisa.register import RegisterPool
-from rocisa.enum import RegisterType, DataTypeEnum, HighBitSel
+from rocisa.enum import RegisterType, HighBitSel
 
 from .KernelWriterModules import *
 
@@ -93,10 +93,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Dict, List, NamedTuple, Optional,Tuple, Type
 from math import ceil, prod
-import itertools
 
-# TODO: DEBUG ONLY, remove later
-from pprint import pprint
 from Tensile.Components import TDMSplit as _tdm_split
 
 
@@ -2969,10 +2966,8 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       # Wave-separated TDM increment: subtile uses per-wave descriptors and
       # does not need parity-based increment selection.
       if self.isTdmWaveSeparated(kernel) and not kernel["UseSubtileImpl"]:
-        # WHICH OPERANDS SHARE A DESCRIPTOR IS THE ROW'S ANSWER, not this call site's.  It used to
-        # spell out `(A,B)` and `(MXSA,MXSB)`, which is the default row written a fourth time; the
-        # MX rows pair differently (`paired` crosses data and scale) and a one-member set keeps its
-        # own descriptor and all the waves.
+        # Descriptor membership comes from the resolved TDM grouping. This also
+        # handles paired and single-member groups.
         _tp = {"A": tensorParametersA, "B": tensorParametersB}
         if kernel["ProblemType"]["MXBlockA"] and kernel["ProblemType"]["MXBlockB"]:
           _tp["MXSA"] = tensorParametersA["MX"]
@@ -2986,13 +2981,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
           _members = [_tp[m] for m in _g]
           module.add(self.tdmGlobalOffsetWaveSeparatedGroup(
               kernel, _members, tdmGroupWaveRanges(kernel, _g)))
-        # An operand in NO group (e.g. B under `A_MX`) keeps its OWN descriptor with EVERY wave
-        # cooperating on it — which is exactly what the UNFUSED pair already emits.
-        #
-        #
-        #
-        #
-        #
+        # An operand in no group keeps its own descriptor across all waves.
         _soloRange = [(0, 0, kernel["NumWaves"])]
         for _n, _p in _tp.items():
           if not any(_n in _g for _g in _groups):
@@ -3252,10 +3241,8 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
 
       #TODO: TDM wave separated
       if tdmA and tdmB and kernel["NumWaves"] > 1:
-        # SAME GROUPS, SAME RANGES as the descriptor init above — the increment seed picks WHICH
-        # member's `GlobalReadIncs` this wave advances by, so if it disagrees with the selector
-        # that picked the member, a wave moves one tensor and advances by another's stride.  That
-        # is what made every A_MX/B_MX/paired kernel miscompare while assembling cleanly.
+        # Use the same resolved groups as descriptor initialization so the
+        # selected member and its increment have matching strides.
         _tpI = {"A": tensorParametersA, "B": tensorParametersB}
         if kernel["ProblemType"]["MXBlockA"] and kernel["ProblemType"]["MXBlockB"]:
           _tpI["MXSA"] = tensorParametersA["MX"]
@@ -11334,9 +11321,8 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       - Reading -> Write transition: insert barrier, state=Writing
     """
     if kernel["UseLoopModel"]:
-      # GIR OWNS LDS FENCE PLACEMENT — its own reset, at every ScheduleIterAlg.
-      #
-      #
+      # GIR owns LDS fence placement and has already recorded the barriers to
+      # preserve.
       _removed, kept = self._stripBarriers(rootModule, keep=self.states.girOwnedBarriers)
       print2(f"[postMainLoopBarrierCheckAndReset] UseLoopModel: stripped {_removed} scaffold "
              f"barrier(s), kept {kept} GIR fence(s); placement is GIR's")

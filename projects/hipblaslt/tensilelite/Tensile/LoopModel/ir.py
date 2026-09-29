@@ -3,27 +3,28 @@
 """IR vocabulary -- the totally-ordered instruction stream the decoder emits."""
 
 from __future__ import annotations
+
 import operator as _operator
 from dataclasses import dataclass
 
 
-# ===========================================================================
-
-
-#: the three operand roles an `off` entry keys on
+# The three operand roles used by an `off` entry.
 COPY, READ, STORE = "copy", "read", "store"
 
-#: path sense: toward the compute, or away from it (the accumulator)
+# Path direction: toward the compute, or away from it (the accumulator).
 FORWARD, REVERSE = "forward", "reverse"
 
+
 class Space:
-    GLOBAL = "global"; SHARED = "shared"; REGISTER = "register"
+    GLOBAL = "global"
+    SHARED = "shared"
+    REGISTER = "register"
 
 
 class Counter:
     COPY = "C_copy"  # global -> shared (the bulk staging movement)
     READ = "C_read"  # shared -> register (the fragment read)
-    LOAD = "C_load"  # global -> register (a one-hop direct transfer,
+    LOAD = "C_load"  # global -> register (a one-hop direct transfer)
 
 
 HOP_COUNTER = {
@@ -33,9 +34,7 @@ HOP_COUNTER = {
 }
 
 
-# ===========================================================================
-
-#: The logical tile variable used by transfer-coverage expressions.
+# Logical tile variable used by transfer-coverage expressions.
 COVERAGE_VAR = "tile"
 
 
@@ -63,8 +62,6 @@ class TransferCoverage:
 
 CoverageMap = TransferCoverage
 
-
-# ===========================================================================
 
 @dataclass(frozen=True)
 class Load:
@@ -104,8 +101,6 @@ class Mma:
     def semantic(self):
         return ("mma", self.block or tuple(ax for ax, _ in self.coord), bool(self.scales))
 
-
-# ===========================================================================
 
 def _term(term):
     return (term[0], term[1], term[2]) if len(term) > 2 else (term[0], term[1], 1)
@@ -217,7 +212,7 @@ class Pred:
 
     @staticmethod
     def _runtime(e, env):
-        """True iff Expr `e` references a symbol absent from `env` (a runtime problem"""
+        """Return whether an expression references a symbol absent from `env`."""
         if not hasattr(e, "eval"):
             return False  # a plain int is always known
         return any(slot and slot not in env for slot in e.free_vars())
@@ -269,14 +264,14 @@ class Placement:
                          src_slot=(_fix(self.src_slot) if self.src_slot is not None else None))
 
 
-# ------------------------------------------------------------------ obligation kind vocabulary
+# Obligation kind vocabulary.
 RAW_KINDS = frozenset({"RAW-residency", "crossing-RAW"})
 WAR_KINDS = frozenset({"rotation-WAR", "inplace-WAR"})
 OBLIGATION_KINDS = RAW_KINDS | WAR_KINDS
 
 
 def is_war(kind: str) -> bool:
-    """True iff `kind` is an anti-dependency (the writer waits for prior readers,line 99)."""
+    """Return whether `kind` is an anti-dependency."""
     if kind not in OBLIGATION_KINDS:
         raise RuntimeError(
             "unknown obligation kind %r -- the ledger hazard classes are a CLOSED set %s.  Add the "
@@ -292,7 +287,7 @@ def is_raw(kind: str) -> bool:
 
 @dataclass(frozen=True)
 class Await:
-    """A named-dependency discharge point: the value `dep` on completion class `counter` must"""
+    """A named-dependency discharge point for a completion class."""
     dep: str
     counter: str
     scope: str = "wave"
@@ -303,7 +298,7 @@ class Await:
 
 @dataclass
 class Inst:
-    """One operand instance at its the axes it varies over level: a `Load` or `Mma` payload, its logical"""
+    """One operand instance at the axes it varies over."""
     op: object  # Load or Mma payload (operand, coord math)
     placement: object = None  # Placement with symbolic Expr slots
     awaits: tuple = ()
@@ -318,10 +313,10 @@ class Inst:
 class Loop:
     """A real loop node of the rolled nest: `for <mode> in range(extent)`."""
     axis: str  # loop index name (e.g. "iter", "substep", "min")
-    trip: object = ""  # the loop's trip -- the back-edge / continuation control edge, not a
+    trip: object = ""  # loop trip or continuation bound
     bodies: list = None  # list of body-sequences; body = [Loop|Branch|Inst|Peel]
     body_ranges: tuple = ()  # per-body half-open (lo, hi) over the trip; () = each spans it all
-    outer: bool = False  # explicit structural flagline 340, Q19): True = the pipelined,
+    outer: bool = False  # True for the pipelined outer loop.
 
     def __post_init__(self):
         if self.bodies is None:

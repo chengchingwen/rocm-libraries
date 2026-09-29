@@ -1,8 +1,6 @@
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
-"""
-RegionIncrementRegions -- WHERE the TDM descriptor steps between STORAGE REGIONS.
-"""
+"""Analyze TDM descriptor steps between storage regions."""
 
 from __future__ import annotations
 
@@ -12,14 +10,10 @@ from ..analysis import Analysis
 
 
 def region_of(prog, ref):
-    """The region coordinate tuple this shared Ref names, or `` when the tile is unsplit.
-
- Read straight off `Tile.coord` -- a region split IS a coordinate, which is exactly
- why GIR can answer "which half" where the scaffold cannot: its `bothHalves` hatch exists because
- ITS split order and loop order differ, not because the fact is unknowable."""
+    """Return the region coordinate named by a shared reference."""
     rms = (prog.meta.get("region_axes", {}) or {}).get(ref.tile.operand) or ()
-    # OWNING A REGION AXIS IS NOT BEING SPLIT BY IT.  An MX scale is traversed over its parent's
-    # `M_split` while its own storage is one region, so it has no region coordinate to give.
+    # An MX scale follows its parent's M_split but has one storage region, so it
+    # has no region coordinate of its own.
     if not rms or int((prog.meta.get("operand_regions", {}) or {}).get(ref.tile.operand, 1)) <= 1:
         return ()
     coord = dict(ref.tile.coord or ())
@@ -27,18 +21,13 @@ def region_of(prog, ref):
 
 
 def walk_ref(prog, refs):
-    """The ref carrying the unit's region coordinate: the member with the most regions.  A fused
- group may list a shorter member first, and that one has no region to give."""
+    """Return the reference belonging to the member with the most regions."""
     have = prog.meta.get("operand_regions", {}) or {}
     return max(refs, key=lambda r: int(have.get(r.tile.operand, 1)))
 
 
 def _flat(region, prog, operand):
-    """The region tuple as one index, so a walk is arithmetic on integers.
-
- Mixed-radix over the operand's region axes, innermost last -- the same shape the rest of the
- model uses for a multi-axis coordinate.
-    """
+    """Flatten an operand's mixed-radix region coordinate."""
     rms = (prog.meta.get("region_axes", {}) or {}).get(operand) or ()
     ext = prog.meta.get("axis_extents", {}) or {}
     idx = 0

@@ -1,29 +1,20 @@
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
-"""
-LDS tile geometry -- the PURE arithmetic behind an operand's per-tile LDS address.
-
-Split out of `leaves.py` for the same reason `emit_plan.py` is split out of `gir_to_rocisa.py`.
-
-"""
+"""Pure arithmetic for per-tile LDS addresses."""
 
 from __future__ import annotations
 
-from ..Components.TDMSplit import split_packs_lds, AXIS_MT, AXIS_DU   # noqa: F401  (AXIS_DU re-exported)
+from ..Components.TDMSplit import AXIS_MT, split_packs_lds
 
-#: Bytes per register.
+# Bytes per register.
 BPR = 4
 
-#: How many lanes share one range of K positions, so a lane's consecutive local-read chunks sit
-#: this many chunk-widths apart along the unroll axis.  The scaffold spells it as a bare `* 2`.
+# Lanes sharing one range of K positions in the unroll axis.
 LANE_INTERLEAVE = 2
 
 
 def read_fragments(blockWidth, bpeDS, lrvw: int, inputPerThUnroll: int, matrixInstK: int) -> tuple:
-    """The ds_readS ONE (tile, summation-substep) local-read act decomposes into, as
-    `((unrollElems, regOff), ...)` -- both relative to the act's own base, the first in ELEMENTS
-    along the unroll axis, the second in registers.
-    """
+    """Return ``(unroll_elements, register_offset)`` pairs for one local-read act."""
     vwTrLoad = int(blockWidth * BPR / bpeDS)
     nInner = lrvw // vwTrLoad if vwTrLoad else 0
     nOuter = inputPerThUnroll // lrvw if lrvw else 0
@@ -44,13 +35,7 @@ def read_fragments(blockWidth, bpeDS, lrvw: int, inputPerThUnroll: int, matrixIn
 
 
 def region_split_is_packed(unrollMajor: bool, nsplit: int, axis=AXIS_MT) -> bool:
-    """Does TDMSplit make each region a SEPARATELY PACKED LDS block?
-
-    Delegates to `TDMSplit.split_packs_lds`, which states the rule once for the descriptor side
-    and this side together.  The answer is a DIAGONAL over (axis, layout) -- a partition packs
-    blocks exactly when it cuts the LDS image's INNER axis -- not a property of either alone.
-    
-    """
+    """Return whether TDMSplit creates separately packed LDS regions."""
     return nsplit > 1 and split_packs_lds(axis, unrollMajor)
 
 
@@ -75,12 +60,7 @@ def fold_inner_offset(innerElems: int, extent: int, unrollMajor: bool, nsplit: i
 
 
 def addr_coord_on_split_axis(within: int, flat: int, ctx) -> int:
-    """Which coordinate the ADDRESS uses along the axis a TDMSplit cut: the WITHIN-REGION one when
-    the regions are separately packed, the FLAT one when they are a contiguous continuation.
-
-    ONE RULE, and the two halves are not interchangeable.
-    
-    """
+    """Select the within-region or flat coordinate for a split axis."""
     return within if region_split_is_packed(
         ctx.unrollMajor, ctx.nsplit, getattr(ctx, "splitAxis", AXIS_MT)) else flat
 
@@ -117,13 +97,7 @@ def tiles_per_region(ctx) -> int:
 
 
 def region_bytes(ctx, region: int) -> int:
-    """Byte displacement from the operand's LDS base to the start of TDMSplit `region`.
-
-    THIS IS NON-ZERO EXACTLY ON THE PACKED DIAGONAL -- when the split cuts the LDS image's INNER
-    axis (`region_split_is_packed`) -- and the asymmetry is a property of the image, not a
-    heuristic.  Which axis is inner is layout-decided, so each layout packs on a DIFFERENT split.
-    
-    """
+    """Return the byte displacement from the LDS base to a split region."""
     if (not region_split_is_packed(ctx.unrollMajor, ctx.nsplit, getattr(ctx, "splitAxis", AXIS_MT))
             or not ctx.splitBoundaryBytes):
         return 0

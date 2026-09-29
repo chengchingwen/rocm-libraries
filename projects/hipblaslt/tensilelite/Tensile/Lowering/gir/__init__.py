@@ -1,10 +1,6 @@
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
-"""
-GIR -- the GEMM-dataflow IR (layer 2) of the UseLoopModel lowering.
-
-Pure-Python (no rocisa import) so the graph + analyses + passes are unit-testable standalone.
-"""
+"""GEMM dataflow IR and its pure-Python analyses and passes."""
 
 from .nodes import (Tile, Gen, Ref, Move, Mma, Mark, MARK_KINDS,
                     Pred, Bound, Goto, CondGoto, LoopBack, Trips, CondChain, Return, Block,

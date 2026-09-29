@@ -1,11 +1,6 @@
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
-"""
-GIR passes. Each pass is its own class in its own module; the ordered pipeline
-is data in pipeline.py (the "backend" file).
-
- base Pass / StructuralPass base classes (the CFG-edit contract)
-"""
+"""GIR passes and the ordered lowering pipeline."""
 
 from .base import Pass, StructuralPass
 from .fold_short_path import FoldShortPathPass, folded

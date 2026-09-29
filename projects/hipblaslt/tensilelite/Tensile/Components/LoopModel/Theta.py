@@ -1,10 +1,6 @@
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
-"""θ and the target facts it is solved against -- the ULM1 schedule, built once per kernel.
-
-θ is this kernel's schedule, so it is built ONCE and cached on the writer rather than
-re-derived per consumer.  Everything else in this package reads that cache.
-"""
+"""Build the LoopModel theta and target facts once per kernel."""
 
 from ...Component import Component
 from ...LoopModel.adapter import kernel_to_params, params_to_theta
@@ -45,8 +41,8 @@ def mxScaleBlockWidth(writer, kernel, tc, lrvw):
   except Exception:
     return None                                     # unknown scale type -> no map, not a guess
   if bpeDS != 1:
-    # Only E8M0 lands exactly on a representable blockWidth.  A wider element would need the real
-    # pool lookup to know where the width rounds.
+    # Only E8M0 maps directly to a representable block width. A wider element
+    # would require the real pool lookup.
     return None
   caps = getattr(writer.states, "asmCaps", {}) or {}
   if kernel.get("UnrollMajorLDS%s" % tc):
@@ -96,15 +92,15 @@ def loopModelTarget(writer, kernel):
     lrvw = int(kernel.get("LocalReadVectorWidthMXS", 0) or 0)
     if mxUnit <= 0 or lrvw <= 0:
       continue
-    # The instruction's own width, not `lrvw`: an InMemorySwizzle read is `VectorWidth` times
-    # wider, and a slot sized to `lrvw` both overlaps its neighbour and misaligns its b64 pair.
+    # Use the instruction width rather than lrvw. An InMemorySwizzle read is
+    # VectorWidth times wider.
     blockWidth = mxScaleBlockWidth(writer, kernel, tc, lrvw)
     elems[tc] = int(blockWidth * 4) if blockWidth is not None else lrvw
     tiles = mxScaleTilesPerRead(writer, kernel, tc, lrvw, mxUnit)
     span = Component.LocalRead.find(writer).getMxsTileSpanInfo(
         kernel, tc, tile01, writer.states.asmCaps) if hasattr(writer, "states") else None
-    # TileSpan partitions the HALF-WAVE: one `ds_load` holds block 2g and 2g+1, so the carrier
-    # group spans two sub-agents and merges twice as many tiles.
+    # TileSpan partitions the half-wave: one ds_load holds blocks 2g and
+    # 2g+1, so the carrier group spans two sub-agents.
     if span:
       tiles *= 2
     partner = 2 if span else 0

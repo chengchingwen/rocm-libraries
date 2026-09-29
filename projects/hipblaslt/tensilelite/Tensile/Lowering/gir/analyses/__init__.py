@@ -1,10 +1,6 @@
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
-"""
-GIR analyses -- one class per module, each an `Analysis` subclass.
-
- cfg successors (helper), Dominators, BackEdges (+ BackEdge / BackEdgeSet)
-"""
+"""GIR analyses, grouped by the facts they compute."""
 
 from .cfg import successors, reachable, Dominators, BackEdges, BackEdge, BackEdgeSet
 from .lds_buffers import LdsBufferIds, LdsBufferIdSet, Buffer
@@ -32,7 +28,6 @@ __all__ = [
     "GrIncrementRegions", "Gl2PrefetchRegions",
     "RegionIncrementRegions", "walk_violations", "region_of",
     "FrameHazards", "SchedulingFrameHazards", "FrameHazardSet", "Hazard", "SharedTouch",
-    "Unresolved",
     "RAW", "WAR", "WAW",
     "RegHazards", "RegHazardSet", "RegTouch",
     "ShortPathFold", "FoldVerdict", "Break", "FOLD", "SPLIT", "UNSOUND", "NA",

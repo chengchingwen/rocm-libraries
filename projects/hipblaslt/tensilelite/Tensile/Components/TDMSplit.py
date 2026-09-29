@@ -1,34 +1,23 @@
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
-"""
-TDMSplit geometry — ONE derivation of what splitting an operand's tile means, shared by the
-descriptor setup, the region walk, and the read side.
+"""Shared arithmetic for TDMSplit descriptor, LDS, and region geometry.
 
-`TDMSplitA`/`TDMSplitB` name an AXIS and a factor per operand.  Everything else about a split
-follows from that plus the operand's layout, and this module is where it follows.  It replaces
-four separate spellings that each re-derived a piece and disagreed at the edges: `dim1Divisor`
-(assumed dim1 was the free axis), `tdmSplitLdsBoundary` and `tdmSplitGlobalInc` (assumed factor 2
-and one axis), and `tdmSplitCutsFreeAxis` (INFERRED the axis from whether UseLoopModel was on,
-because before `TDMSplitA/B` nothing stated it).
-
-Pure arithmetic over plain values — no rocisa, no Solution — so it is unit-testable in the
-pure-Python environment.  `Components/LraTileAssignment.py` reaches up into `Lowering` for it,
-which is the one place a lower layer does that; `Tensile/Common/` looks like the right home by
-layering but its package `__init__` imports rocisa, which would destroy exactly that testability.
+The per-operand ``TDMSplitA`` and ``TDMSplitB`` parameters identify an axis
+and factor. This module derives the remaining geometry without importing
+rocisa or Solution state.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-#: The two axes a tile can be cut along.  `MT` is the operand's OWN free axis (A on M, B on N);
-#: `DU` is the reduction axis, which both operands share.
+# The two axes along which a tile can be split.
+# MT is the operand's free axis; DU is the shared reduction axis.
 AXIS_MT = "MT"
 AXIS_DU = "DU"
 
-#: `TDMSplitA`/`TDMSplitB` value -> (MT factor, DU factor).  The knob names ONE axis and fixes the
-#: factor at 2; theta's positional `[A_MT, B_MT, A_DU, B_DU]` is deliberately more general (any
-#: factor, both axes at once) so the model can be exercised ahead of L3.
+# TDMSplit parameter value -> (MT factor, DU factor). The public parameter
+# selects one axis with a fixed factor of two.
 TDM_SPLIT_AXIS = {0: (1, 1), 1: (2, 1), 2: (1, 2)}
 
 
@@ -69,9 +58,7 @@ def split_factors(kernel):
 
 
 def any_split(kernel) -> bool:
-    """Is EITHER operand split?  The replacement for the old truthiness test on `TDMSplit`, for
-    the handful of sites that genuinely ask a kernel-wide question (SGPR allocation, whether the
-    split-increment registers exist at all) rather than a per-operand one."""
+    """Return whether either operand is split."""
     return split_factors(kernel) is not None
 
 
@@ -178,9 +165,8 @@ def derive(factor: int, axis, *, tlu: bool, mt: int, du: int, bpe: float,
     splitDim = freeDim if axis == AXIS_MT else (1 - freeDim)
 
     extent = mt if axis == AXIS_MT else du
-    # THE WHOLE TILE, not the per-region block: both layouts put region r at r * tileBytes/factor,
-    # because the split is a partition of one tile however the image is ordered.  Only whether the
-    # READER owes that displacement differs, and that is `packed`, not this.
+    # Both layouts place region r at r * tileBytes / factor. Only the
+    # reader's required displacement depends on whether the layout is packed.
     tileBytes = round(mt * du * bpe)
 
     return TdmSplitGeometry(

@@ -44,13 +44,6 @@ def _project(coord, axes, inner_order, extents):
     return idx
 
 
-def _shared_ref(refs):
-    for r in refs:
-        if r.tile.space == "shared":
-            return r
-    return None
-
-
 def _register_dst(refs):
     for r in refs:
         if r.tile.space == "register":
@@ -267,9 +260,6 @@ def _plan_mark(inst, actions):
         # the L2 warm-up pair, at the point `Gl2PrefetchRegions` chose.  Unlike every other
         # act here it names no operand and no movement -- the position IS the entire content.
         actions.append(EmitAction("gl2_prefetch", dict(inst.at)))
-    elif inst.kind == "waitcnt":
-        # the residual each counter owes at this point.  A TAG only: the wait itself is L3's.
-        actions.append(EmitAction("waitcnt", dict(inst.at)))
     # phase_boundary / gsu_guard: phase_boundary is a no-op for emit (label handled by fork);
     # gsu_guard is realized by the R4 scaffold-anchor path.
     elif inst.kind == "gsu_guard":
