@@ -59,7 +59,7 @@ from ..Components.TDMFuse import tdmBothTensors, tdmFusedGroups, tdmGroupingAcce
 from ..Common.TypeValidationErrors import ConfigTypeError
 from ..CustomKernels import isCustomKernelConfig, supportsUserSgprKernargPreload, validateCustomPersistentArgs
 from ..Components import TDMSplit as _tdm_split
-from ..LoopModel.adapter import canonical_loop_order
+from ..LoopModel.adapter import loop_order_of, wmma_loop_order
 from ..SolutionStructs.LdsPadding import get_fp4_mt_config, get_fp8_mt_config, get_mxs_mt_config, \
                                                get_fp16_mt_config, get_fp32_mt_config, get_metadata_mt_config, \
                                                get_fp4_valid_blocks, get_fp8_valid_blocks, \
@@ -262,7 +262,7 @@ def loopModelReadAheadCap(state) -> int:
   """Most steps a ULM read may run ahead: `PrefetchLocalRead` counts steps along the OUTERMOST
   inner axis, which `LoopOrder` names first, so an axis of `extent` values allows `extent - 1`.
   """
-  order = state.get("LoopOrder") or "KMN"
+  order = wmma_loop_order(state)
   extent = {"K": max(1, state["LoopIters"]),
             "M": max(1, state["MIWaveTile"][0]),
             "N": max(1, state["MIWaveTile"][1])}
@@ -914,35 +914,50 @@ class Solution(collections.abc.Mapping):
       state["_ScheduleIterAlg"] = state["ScheduleIterAlg"]
       state["_StinkyTofuOptLevel"] = 0
 
-    # CANONICALIZE THE SPELLING BEFORE ANYTHING READS IT — the kernel name included.
-    if "LoopOrder" in state:
-      try:
-        state["LoopOrder"] = canonical_loop_order(state["LoopOrder"])
-      except ValueError as e:
-        reject(state, printRejectionReason, str(e))
+    # `TDMSplit` IS A SPELLING, NOT A STATE.  It expands to the per-operand pair and is removed,
+    # so nothing downstream has two places to ask.  One spelling or the other, never both: setting
+    # it beside an explicit `TDMSplitA`/`TDMSplitB` would silently overwrite what was asked for.
+    if state.pop("TDMSplit", 0):
+      if int(state.get("TDMSplitA", 0) or 0) or int(state.get("TDMSplitB", 0) or 0):
+        reject(state, printRejectionReason,
+               "TDMSplit is shorthand for TDMSplitA=1 and TDMSplitB=1, so it cannot be combined "
+               "with an explicit TDMSplitA=%s/TDMSplitB=%s -- set one spelling or the other."
+               % (state.get("TDMSplitA"), state.get("TDMSplitB")))
         return
+      state["TDMSplitA"] = 1
+      state["TDMSplitB"] = 1
 
-    # LoopOrder is only meaningful for the LoopModel path (it names the θ traversal order).  A
-    # non-KMN order on a non-LoopModel kernel is a no-op that would spawn redundant, mis-deduped
-    # baseline kernels (LoopOrder is not a kernel-name param), so reject it: non-KMN requires
-    # UseLoopModel.  (KMN is the default; non-LoopModel kernels keep it and are unaffected.)
-    if state.get("LoopOrder", "KMN") != "KMN" and not state.get("UseLoopModel", False):
+    # THE SOLUTION CARRIES NO LOOP ORDER.  `WmmaInnerOrder`/`WmmaOuterOrder` are the parameters;
+    # the adapter is the one place that turns them into a nest.  Validate them here, and let
+    # `wmma_loop_order` do the reconstruction where `ord` is actually built.
+    try:
+      loop_order_of(state.get("WmmaInnerOrder", 1), state.get("WmmaOuterOrder", 0))
+    except ValueError as e:
+      reject(state, printRejectionReason, str(e))
+      return
+
+    # The traversal order is only meaningful on the LoopModel path.  Naming a non-default one off
+    # that path is a no-op that would spawn redundant, mis-deduped baseline kernels, so reject it.
+    if (int(state.get("WmmaInnerOrder", 1) or 1) != 1
+        or int(state.get("WmmaOuterOrder", 0) or 0) != 0) \
+        and not state.get("UseLoopModel", False):
       reject(state, printRejectionReason,
-             "LoopOrder != KMN requires UseLoopModel (loop order is a LoopModel-only knob)")
+             "WmmaInnerOrder/WmmaOuterOrder require UseLoopModel (the traversal order is a "
+             "LoopModel-only knob)")
       return
 
     # A 6-LETTER LoopOrder NEEDS A LIVE SPLIT AXIS, or it IS its own 3-letter shortcut.
     #
     #
-    if len(str(state.get("LoopOrder", "KMN"))) == 6:
+    if int(state.get("WmmaOuterOrder", 0) or 0):
       if not (int(state.get("TDMSplitA", 0) or 0) or int(state.get("TDMSplitB", 0) or 0)):
         reject(state, printRejectionReason,
-               "LoopOrder=%s is a 6-letter word, which orders the SPLIT modes, but TDMSplitA=0 and "
-               "TDMSplitB=0 leave every split mode at extent 1 so they drop out of ord -- the word "
-               "collapses to the 3-letter order its INNER modes spell and would emit a duplicate "
-               "kernel under a name claiming a different schedule.  Set TDMSplitA/B, or use the "
-               "3-letter form."
-               % (state.get("LoopOrder"),))
+               "WmmaOuterOrder=%s hoists a SPLIT above the tile axes, but TDMSplitA=0 and "
+               "TDMSplitB=0 leave every split at extent 1 so they drop out of ord -- the order "
+               "collapses to the one WmmaInnerOrder alone spells and would emit a duplicate "
+               "kernel under a name claiming a different schedule.  Set TDMSplitA/B, or use "
+               "WmmaOuterOrder=0."
+               % (state.get("WmmaOuterOrder"),))
         return
 
     # UseLoopModel routes the inner-loop body through the LoopModel theta-schedule decoder
@@ -4318,7 +4333,13 @@ class Solution(collections.abc.Mapping):
         numComponents = state["NumWaves"] // 2
         du = state["_DepthU%s" % tc]
         sparse = state["ProblemType"]["Sparse"]
-        dim1Divisor = 2 if state["TDMSplit"] and not sparse else 1
+        # `TDMSplit` is popped before this runs, and the per-operand pair names an AXIS, not a
+        # descriptor dim -- MT is dim1 only when the operand is unrolled-major.  Ask the geometry
+        # which dim the divisor lands on rather than assuming dim1.
+        _geo = _tdm_split.derive(*_tdm_split.split_of(state, tc),
+                                 tlu=bool(state["ProblemType"]["TLU%s" % tc]),
+                                 mt=mt, du=du, bpe=getLdsBpe(tc))
+        dim1Divisor = _geo.factor if (_geo.splitDim == 1 and not sparse) else 1
 
         # _DepthU{tc} is the effective A/B storage depth: it equals DepthU for
         # dense tensors and already accounts for the compressed sparse operand.
@@ -6260,7 +6281,7 @@ class Solution(collections.abc.Mapping):
           and state["enableTDM%s" % tc]
           and state["NumWaves"] > 1
           and not state.get("UseSubtileImpl", False)
-          and not state["TDMSplit"]
+          and not _tdm_split.any_split(state)
           and state["UnrollMajorLDS%s" % tc]
           and pad != 0
           and block != 0)

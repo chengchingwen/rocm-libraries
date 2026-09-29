@@ -32,18 +32,6 @@ AXIS_DU = "DU"
 TDM_SPLIT_AXIS = {0: (1, 1), 1: (2, 1), 2: (1, 2)}
 
 
-def legacy_axis(kernel, side: str) -> str:
-    """Which axis the LEGACY boolean `TDMSplit` cuts for operand `side`.
-
-    That flag divides the DESCRIPTOR's dim1, and dim1 is the free axis only when the operand is
-    unrolled-major -- under `tlu` it is the reduction axis.  Naming it here is what lets the one
-    reading in `split_of` serve both spellings without changing what the boolean has always done;
-    mapping it to `MT` unconditionally would silently move every `tlu` operand's cut.
-    `ProblemType["TLU{A,B}"]` is the same source `tP["tlu"]` is set from.
-    """
-    return AXIS_DU if kernel["ProblemType"].get("TLU%s" % side, False) else AXIS_MT
-
-
 def split_of(kernel, tc) -> tuple:
     """`(factor, axis)` for operand `tc` — the ONE reading of `TDMSplitA`/`TDMSplitB`.
 
@@ -52,19 +40,14 @@ def split_of(kernel, tc) -> tuple:
     module rather than in `Solution.py` so `Components/`, `Lowering/` and `SolutionStructs/` can
     all reach it without importing each other.
 
-    MX-scale and metadata tensors are never split, and sparse is never split BY THE PER-OPERAND
-    parameter — answering that here keeps the `not MXS and not Sparse` guard from being re-spelled
-    at each site — it was, at nine, and they had already drifted (some also excluded metadata,
-    some did not).  The legacy boolean `TDMSplit` is bridged ahead of the sparse test because it
-    has always split sparse; see `legacy_axis`."""
-    if "MXS" in tc or tc == "Metadata":
+    MX-scale, sparse and metadata tensors are never split, and answering that here keeps the
+    `not MXS and not Sparse` guard from being re-spelled at each site — it was, at nine, and they
+    had already drifted (some also excluded metadata, some did not).  The back-compat spelling
+    `TDMSplit` never reaches here: `assignProblemIndependentDerivedParameters` expands it to the
+    per-operand pair and pops it."""
+    if "MXS" in tc or tc == "Metadata" or kernel["ProblemType"]["Sparse"]:
         return (1, None)
-    side = "A" if tc.endswith("A") else "B"
-    v = int(kernel.get("TDMSplit%s" % side, 0) or 0)
-    if not v and kernel.get("TDMSplit"):
-        return (2, legacy_axis(kernel, side))
-    if kernel["ProblemType"]["Sparse"]:
-        return (1, None)
+    v = int(kernel.get("TDMSplit%s" % ("A" if tc.endswith("A") else "B"), 0) or 0)
     mt, du = TDM_SPLIT_AXIS.get(v, (1, 1))
     if mt > 1:
         return (mt, AXIS_MT)
@@ -80,9 +63,6 @@ def split_factors(kernel):
     separate spelling — `TDMSplitA/B` are a restricted way of writing the same tuple."""
     a = TDM_SPLIT_AXIS.get(int(kernel.get("TDMSplitA", 0) or 0), (1, 1))
     b = TDM_SPLIT_AXIS.get(int(kernel.get("TDMSplitB", 0) or 0), (1, 1))
-    if a == (1, 1) and b == (1, 1) and kernel.get("TDMSplit"):
-        a = (1, 2) if legacy_axis(kernel, "A") == AXIS_DU else (2, 1)
-        b = (1, 2) if legacy_axis(kernel, "B") == AXIS_DU else (2, 1)
     if a == (1, 1) and b == (1, 1):
         return None
     return (a[0], b[0], a[1], b[1])

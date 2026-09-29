@@ -96,7 +96,8 @@ BenchmarkProblems:
         - TDMFuse: [3]
         - TDMSplitA: [1]
         - TDMSplitB: [0]
-        - LoopOrder: [NMKNMK]
+        - WmmaInnerOrder: [6]
+        - WmmaOuterOrder: [2]
       BenchmarkForkParameters:
       JoinParameters:
       BenchmarkJoinParameters:

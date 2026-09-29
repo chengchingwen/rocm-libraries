@@ -92,7 +92,8 @@ BenchmarkProblems:
       - TDMFuse: [1, 2, 3]
       - TDMSplitA: [0,1,2]
       - TDMSplitB: [0,1,2]
-      - LoopOrder: ["KMNKMN", "MKNMKN"]
+      - WmmaInnerOrder: [1, 3]  # was KMNKMN, MKNMKN (+2 from the product)
+        WmmaOuterOrder: [1, 3]
       BenchmarkForkParameters: null
       JoinParameters: null
       BenchmarkJoinParameters: null

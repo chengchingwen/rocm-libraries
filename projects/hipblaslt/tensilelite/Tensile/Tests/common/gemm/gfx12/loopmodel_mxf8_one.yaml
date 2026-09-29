@@ -97,7 +97,8 @@ BenchmarkProblems:
         - PrefetchLocalRead: [0]
         - StaggerU: [0]
         - ScheduleIterAlg: [0]
-        - LoopOrder: [KMN]
+        - WmmaInnerOrder: [1]
+        - WmmaOuterOrder: [0]
       BenchmarkForkParameters:
       JoinParameters:
       BenchmarkJoinParameters:

@@ -1174,8 +1174,12 @@ validParameters = { # we need to make sure this matches develop
     # name is built (`adapter.canonical_loop_order`), so the 96 spellings collapse to 90 distinct
     # traversals and no schedule gets two names.  Listing only 90 here would have made `KKMMNN` an
     # invalid parameter for a word the decoder happily accepts.
-    "LoopOrder": ["KMN", "KNM", "MKN", "MNK", "NKM", "NMK"] + sorted(
-        {"".join(p) for p in _permutations("KKMMNN")}),
+    # WmmaInnerOrder indexes WMMA_INNER_ORDERS: the order the TILE axes nest in, innermost last.
+    "WmmaInnerOrder": [1, 2, 3, 4, 5, 6],
+    # Which axis's SPLIT sits outermost, above every tile axis.  0 keeps each split beside the
+    # tile it divides, which is the 3-letter order.  At most two splits are ever live, so naming
+    # the outer one fixes the traversal: the other live split follows it.
+    "WmmaOuterOrder": [0, 1, 2, 3],
     # 0  : Generate original Store blocks: NonEdgeN, ThenN, and Then1 for StoreVectorWidth N
     # 1  : Generate adaptive Store blocks: NonEdgeN, ThenN, ThenN/2, ..., Then1 and select by runtime problem size
     "AdaptiveGemm": [0, 1],
@@ -1215,23 +1219,18 @@ validParameters = { # we need to make sure this matches develop
     # 2: Use TDM for B
     # 3: Use TDM for both A and B
     "TDMInst": [0, 1, 2, 3],
-    # Split each TDM data tensor (A or B) load across two tensor_load_to_lds instructions,
-    # each covering half the macro-tile in the M/N dimension. MX scale tensors (MXSA/MXSB)
-    # are not split regardless of this flag. When True, two extra SGPRs are allocated to
-    # hold the per-iteration LDS and global address increments for the split loads.
-    # Also supported for Sparse (2:4 structured sparsity): the sparse-tracked operand's
-    # LDS footprint holds the compressed (K/2) data, which the split boundary accounts for;
-    # the metadata tensor itself is never split.
+    # Back-compatibility SPELLING for an existing yaml: `TDMSplit: 1` is `TDMSplitA: 1` and
+    # `TDMSplitB: 1`.  `assignProblemIndependentDerivedParameters` expands it and POPS it, so it
+    # never reaches the solution state or the kernel name -- nothing downstream may read it.
+    # A DU split has no shorthand; name `TDMSplitA`/`TDMSplitB` for that.
     "TDMSplit": [False, True],
     # Per operand, because A and B are separate descriptors and nothing requires the same cut:
     #   0 = no split   1 = split MT (the operand's OWN free axis)   2 = split DU (the shared
     #   reduction axis).  Two extra SGPRs per split operand hold the per-iteration increments.
     #
-    # THE AXIS IS NAMED RATHER THAN INFERRED: the boolean `TDMSplit` above divides the
-    # descriptor's dim1, which is the free axis only when the operand is unrolled-major -- under
-    # `tlu` it is the reduction axis, so `TDMSplit: True` performs a DU split on NT while its
-    # name says MT.  At MT32/DU64/bpe2 both readings emit the same numbers, which is why it went
-    # unnoticed.  See `Components/TDMSplit.TdmSplitGeometry`.
+    # See `Components/TDMSplit.TdmSplitGeometry`, which turns (axis, factor) into the
+    # descriptor dim, the tile extent, the global/LDS steps, and whether the regions are
+    # separately PACKED in LDS.
     "TDMSplitA": [0, 1, 2],
     "TDMSplitB": [0, 1, 2],
     # Insert a barrier between an urgent and a deferrable tensor_load_to_lds group
