@@ -4,24 +4,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from math import gcd as _gcd
 
 from . import traversal as geometry
-from ..Components import TDMSplit as _tdm_split
-from ..Lowering.lds_geometry import read_fragments
-from .traversal import readahead_level
-from .ir import Space
+from .ir import READ, Space
 from .theta import (AgentAssignment, AgentAxisAssignment, Fragment, Global,
                     RegionLayout, Shared, Trajectory, Axis, Operand, Theta, group_labels)
-from .ir import COPY, READ
-
-
-# --- fragments -------------------------------------------------------------
-
-#: fixed facts about the target, not about any one kernel
-WAVE32 = 32      # gfx1250 wave width
-REG_BYTES = 4    # gfx1250 register width in bytes
+from .traversal import readahead_level
+from ..Components import TDMSplit as _tdm_split
+from ..Components.TDMFuse import tdmFusedGroups, tdmWavePartition
+WAVE32 = 32  # gfx1250 wave width
+REG_BYTES = 4  # gfx1250 register width in bytes
 
 def _per_operand(kernel, base, operand, preset):
     value = kernel.get("%s%s" % (base, operand))
@@ -52,18 +46,6 @@ def _mx_frag_elems(kernel, free_mi, mxblock):
 
 def _coalesce(kernel):
     return max(1, kernel["LocalReadVectorWidth"] // max(1, kernel["VectorWidthA"]))
-
-
-# --- fuse ------------------------------------------------------------------
-
-# `TDMFuse` is a Solution parameter, so its groupings live beside the other TDM descriptor facts
-# and are read here, not owned here.
-from ..Components.TDMFuse import tdmFusedGroups, tdmWavePartition
-
-
-# --- loop order ------------------------------------------------------------
-
-# ===========================================================================
 
 
 CANON_NAMES = ["K_split", "K_inner",
@@ -147,9 +129,9 @@ def _word_to_modes(word):
 
 def _canonical_ord(substeps, splits, m_inner, n_inner, order):
     """The eight canonical axes with their extents, ordered by the LoopOrder word."""
-    # ONE SHARED K WALK.  `K_inner` is the longest run both operands can take without either
-    # changing storage region; `K_split` counts those runs, so `K_split * K_inner == K` exactly.
-    # `kResA`/`kResB` are REGION INFO on the operand, not axes -- see `Operand.region_div`.
+    # K_inner is the longest run both operands can take without changing
+    # storage region. K_split counts those runs.
+    # kResA and kResB are operand metadata, not loop axes.
     a_regions = max(1, splits.kSplit * splits.kResA)
     b_regions = max(1, splits.kSplit * splits.kResB)
     k_inner = _gcd(max(1, substeps // a_regions), max(1, substeps // b_regions))
@@ -162,14 +144,13 @@ def _canonical_ord(substeps, splits, m_inner, n_inner, order):
     axes = {role: Axis(role, extents[role]) for role in CANON_NAMES}
     roles = _word_to_modes(_loop_order_word(order))
     def _keep(role):
-        # A TILE AXIS NEVER DEGENERATES OUT OF THE NEST.  Its presence is what the loop order
-        # says, not what its extent happens to be, so no derivation keys on whether it survived.
+        # The loop order determines which tile axes exist, regardless of their
+        # extents, so keep every tile axis in the nest.
         if role in INNER_TO_SPLIT:
             return True
         return extents[role] > 1
-    # `ord` CARRIES ONLY THE SHARED LINK.  `kResA`/`kResB` are one operand's own residue: putting
-    # them on the shared nest asks the other operand to have an opinion about an axis that is not
-    # its.  Each side gets its own nest, the shared one with its residue spliced back in.
+    # ord carries only the shared link. Each operand keeps its own residual
+    # region information rather than adding it to the shared nest.
     inner_ord = [axes[role] for role in roles if _keep(role)]
     if not inner_ord:  # fully degenerate: keep K_inner as the 1 loop
         inner_ord = [axes["K_inner"]]
@@ -177,11 +158,6 @@ def _canonical_ord(substeps, splits, m_inner, n_inner, order):
     axes["iter"] = iter_mode
     ord_ = [iter_mode] + inner_ord
     return ord_, axes, extents
-
-
-def inner_ord_of(ord_):
-    """The inner (intra-chunk) modes of an loop order list -- those with a concrete (>0) extent."""
-    return [axis for axis in ord_ if not axis.is_outer]
 
 
 # --- build -----------------------------------------------------------------
@@ -273,7 +249,7 @@ def _read_params(p):
 
 def _read_splits(kernel):
     """TDMSplit as canonical region extents: per-operand MT, shared DU."""
-    # --- TDMSplit: [A_MT, B_MT, A_DU, B_DU] -> canonical region extents --------------
+    # TDMSplit: [A_MT, B_MT, A_DU, B_DU] -> canonical region extents.
     split_factors = kernel["TDMSplit"]
     if isinstance(split_factors, bool):
         split_factors = [2, 2] if split_factors else [1, 1]
@@ -303,8 +279,7 @@ def _build_ord(fanM, fanN, kernel, substeps, splits):
 
     N_BCAST = {"N_split", "N_inner"}  # A is broadcast over N modes
     M_BCAST = {"M_split", "M_inner"}  # B is broadcast over M modes
-    # A REGION AXIS IS THE OPERAND'S OWN: `K_split` is a region for the operand that actually
-    # splits K, and merely a loop axis for the one that does not.
+    # K_split is a region axis only for the operand that actually splits K.
     aK, bK = max(1, splits.kSplit * splits.kResA), max(1, splits.kSplit * splits.kResB)
     aRegions = tuple(role for role in ("M_split", "K_split")
                      if canonical_extents[role] > 1 and (role != "K_split" or aK > 1))
@@ -378,113 +353,12 @@ def _build_agent_assignment(movements, nest):
     return _configure_read, agent_inputs, assignment
 
 
-def _read_width(kernel, tc) -> int:
-    """The LDS read width for `tc`.
-
-    A scale's is kernel-wide and an input's per-operand -- `LraTileAssignment` states the same rule
-    for the read addresses -- and the final default is the one `_shape_params` applies to this very
-    parameter.  One chain, so the count and the addresses cannot disagree about the width.
-
-    A fixture that states no width takes the `4`, which is NOT what the emitter picks; only a
-    Solution-supplied width makes the count match the issued reads.
-    """
-    key = "LocalReadVectorWidthMXS" if "MXS" in tc else "LocalReadVectorWidth%s" % tc
-    return int(kernel.get(key) or kernel.get("LocalReadVectorWidth") or 4)
-
-
-def _mx_block(kernel, tc) -> int:
-    """`MXBlock{A,B}`, which a param dict carries at the top level and a kernel under ProblemType."""
-    name = "MXBlock%s" % tc[-1]
-    return int(kernel.get(name) or (kernel.get("ProblemType") or {}).get(name) or 0)
-
-
-def _fragment_count(kernel, tc, per_thread, lrvw) -> int:
-    """`len(read_fragments(...))` -- the count the EMITTER issues, from the emitter's own function.
-
-    The leaf emits one ds_read per fragment, so asking `read_fragments` is the only way this cannot
-    drift from what is emitted; deriving the same number a second way here is what lets the two
-    disagree the moment a width clamps."""
-    bpe_ds = _elem_bytes(kernel)
-    mi_k = int(kernel.get("MatrixInstK") or 0)
-    if not (bpe_ds and mi_k and per_thread and lrvw):
-        return 0
-    try:
-        return len(read_fragments(lrvw * bpe_ds / 4.0, bpe_ds, lrvw, per_thread, mi_k))
-    except Exception:
-        return 0                      # a shape it cannot tile falls back to the outer factor
-
-
-def _elem_bytes(kernel) -> int:
-    """Bytes per element, or 0 when the kernel carries no type object."""
-    try:
-        return int(kernel["ProblemType"]["DataType"].numBytes())
-    except Exception:
-        return 0
-
-
-def _read_instructions(kernel, tc) -> int:
-    """Read instructions one fill of this operand's register placement issues.
-
-    Taken from `read_fragments` -- the emitter's own decomposition -- so the count the waits charge
-    is the count the leaf issues.  Falls back to the outer factor only for a shape `read_fragments`
-    refuses, which is a shape the emitter cannot read either.
-    """
-    if not tc:
-        return 0
-    # A scale's width is kernel-wide, an input's is per-operand -- `LraTileAssignment` states the
-    # same rule for the read addresses, and a second spelling here is how MXS counted 0.
-    per_thread = int(kernel.get("MIInputPerThread%s" % tc, 0) or 0)
-    lrvw, key = _read_width(kernel, tc), "read width"
-    if per_thread < 1 or lrvw < 1:
-        # Solution did not supply it, so derive from the geometry rather than leave it unknown.
-        derived = _derive_read_instructions(kernel, kernel.get("MatrixInstruction") or (), tc)
-        if derived > 0:
-            return derived
-        raise RuntimeError(
-            "UseLoopModel: cannot count %s's read instructions -- MIInputPerThread%s=%s, %s=%s, "
-            "MatrixInstruction=%s.  The completion counter counts INSTRUCTIONS, so a wait derived "
-            "without this number is a full drain, not a wait."
-            % (tc, tc, per_thread or None, key, lrvw or None, kernel.get("MatrixInstruction")))
-    # The EMITTER's decomposition first; the outer factor only where it cannot tile the registers.
-    return _fragment_count(kernel, tc, per_thread, lrvw) or max(1, -(-per_thread // lrvw))
-
-
-def _derive_read_instructions(kernel, mi, tc) -> int:
-    """The read-instruction count when no Solution supplied one.
-
-    The kernel path gets `MIInputPerThread{tc}` from Solution; the PARAM path has no Solution to
-    ask, so the same formula -- M (or N) x K x B / wavefront, then `// MXBlock * (32 // M)` for a
-    scale -- is applied to the 4-item matrix instruction here.  Deriving beats leaving it unknown:
-    a count of 0 makes every wait over the operand a full drain.
-    """
-    if not tc or len(mi) < 4:
-        return 0
-    wave = int(kernel.get("WavefrontSize") or 32)
-    mn = mi[0] if tc.endswith("A") else mi[1]
-    per_thread = mn * mi[2] * mi[3] // max(1, wave)
-    if "MXS" in tc:
-        block = _mx_block(kernel, tc)
-        if not block:
-            return 0
-        # `max(1, ...)` for the same reason `_mx_frag_elems` has it: a data fill smaller than one
-        # MX block still carries a scale, so the count floors at one rather than vanishing.
-        per_thread = max(1, per_thread // block * max(1, 32 // max(1, mn)))
-    lrvw = _read_width(kernel, tc)
-    if lrvw < 1 or per_thread < 1:
-        return 0
-    return max(1, -(-per_thread // lrvw))   # a fill narrower than the width is still ONE read
-
-
 def _build_fragments(kernel, matrix_instruction, nest, splits):
     """The operands: their paths, fragments, register widths and MX scale rings."""
     # --- register width: DERIVED, not a parameter
     def reg_fragment(bcast, grp_mode, fan_extent, tc=None):
-        supplied = (kernel.get("ReadInstructions") or {}).get(tc, 0)
         return Fragment(broadcast_axes=set(bcast), parts=1, labels=group_labels(1),
-                        grouping_mode=grp_mode, group_policy={"*": "pipeline"},
-                        instructions=int(supplied
-                                         or _derive_read_instructions(kernel, matrix_instruction,
-                                                                      tc)))
+                        grouping_mode=grp_mode, group_policy={"*": "pipeline"})
 
     fragA = reg_fragment(nest.N_BCAST, "M_inner", nest.mInner, "A")
     fragB = reg_fragment(nest.M_BCAST, "N_inner", nest.nInner, "B")
@@ -634,8 +508,7 @@ def _with_copy_shares(assignment, agent_inputs, shares):
                     for name, count in sorted(shares.items())
                     if name in agent_inputs and agent_inputs[name])
     return (AgentAssignment(
-                axis_assignments=assignment.axis_assignments + entries,
-                roles=assignment.roles)
+                axis_assignments=assignment.axis_assignments + entries)
             if entries else assignment)
 
 
@@ -758,13 +631,6 @@ def _shape_params(elem_bytes, kernel, mi, wt0, wt1):
         "VectorWidthA": kernel.get("VectorWidthA", 2) or 2,
         "VectorWidthB": kernel.get("VectorWidthB", 2) or 2,
         "LocalReadVectorWidth": kernel.get("LocalReadVectorWidth", 4) or 4,
-        # per-operand and RESOLVED, unlike the kernel-wide one, which is the AUTO -1
-        # A scale is asked about only when the problem HAS one; a kernel with no MXBlock has no
-        # MXS operand, so there is nothing to count and nothing to refuse.
-        "ReadInstructions": {tc: _read_instructions(kernel, tc)
-                             for tc in ("A", "B", "MXSA", "MXSB")
-                             if tc in ("A", "B")
-                             or (kernel.get("ProblemType") or {}).get("MXBlock%s" % tc[-1])},
         "DirectToVgprA": bool(kernel.get("DirectToVgprA", False)),
         "DirectToVgprB": bool(kernel.get("DirectToVgprB", False)),
         "WaveSeparateGlobalReadA": kernel.get("WaveSeparateGlobalReadA", 0),

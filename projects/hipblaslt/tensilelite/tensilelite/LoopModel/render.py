@@ -24,10 +24,6 @@ _VERB = {(Space.GLOBAL, Space.SHARED): "tdm",  # bulk tile mover (global->shared
 _SPACE = {Space.SHARED: "shared", Space.REGISTER: "vgpr", Space.GLOBAL: "mem"}
 
 
-def _coord_str(coord):
-    return ",".join(f"{axis}{value}" for axis, value in coord)
-
-
 def _loop_header(node) -> str:
     if node.outer:
         pred = node.trip.render() if hasattr(node.trip, "render") else str(node.trip)

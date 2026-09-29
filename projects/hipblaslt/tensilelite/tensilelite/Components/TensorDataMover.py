@@ -4,12 +4,12 @@ from ..Common import INDEX_CHARS
 from .TDMFuse import tdmWaveComponents
 from typing import Mapping, Optional
 from rocisa.code import Module, Label
-from rocisa.instruction import SMovB32, SMovB64, SOrB32, SAndB32, SLShiftLeftB32, SLShiftLeftB64, \
-    SLShiftRightB32, SAddU32, SAddCU32, SSubU32, SMulI32, SBranch, SCBranchSCC1, SCSelectB32, TensorLoadToLds, \
+from rocisa.instruction import SMovB32, SMovB64, SOrB32, SAndB32, SLShiftLeftB32, \
+    SLShiftRightB32, SAddU32, SAddCU32, SMulI32, SBranch, SCBranchSCC1, SCSelectB32, TensorLoadToLds, \
     VReadfirstlaneB32
 from rocisa.container import sgpr, vgpr, RegisterContainer, ContinuousRegister, MemTokenData
 from rocisa.functions import scalarMultiply64Bpe
-from math import log2, ceil, prod
+from math import log2, ceil
 # from ..KernelWriterAssembly import KernelWriterAssembly
 
 class TensorDataMoverLoad(TensorDataMover):
@@ -72,8 +72,8 @@ class TensorDataMoverLoad(TensorDataMover):
         assert bpe > 0, "bpe must > 0"
         tileStride: str | RegisterContainer = writer.strideRef(tc, tIdx)
         unrollSummation = [i for i in tp["ia"] if i in kernel["ProblemType"]["IndicesSummation"]]
-        # THIS IS THE **WAVE** OFFSET, AND THE WAVES KEEP THE DESCRIPTOR'S dim1 AXIS.  Moving it
-        # to the free axis alongside the split fails multi-wave NT, split and unsplit alike.
+        # Waves keep the descriptor's dim1 axis. Moving the offset to the
+        # free axis fails multi-wave NT, both split and unsplit.
         tdmSeparateStride: str | RegisterContainer = (
             writer.strideRef(tc, unrollSummation[-1]) if tlu else tileStride)
         if tp["isM"]:
@@ -85,7 +85,7 @@ class TensorDataMoverLoad(TensorDataMover):
         numWaves: int = kernel["NumWaves"]
         wavelen: int = kernel["WavefrontSize"]
         mt: int = kernel["MacroTile0"] if tIdx == 0 else kernel["MacroTile1"]
-        # THE WAVE OFFSET SHRINKS WITH THE SPLIT ONLY IF THE SPLIT CUTS THE WAVE'S OWN AXIS.
+        # The wave offset shrinks only when the split cuts the wave's axis.
         _geo = writer.tdmSplitGeometry(kernel, tp)
         tdmSplit: int = _geo.factor
         waveSplitDiv: int = 1 if _geo.splitDim == 0 else tdmSplit

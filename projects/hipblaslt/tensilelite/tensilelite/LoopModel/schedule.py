@@ -8,23 +8,18 @@ from dataclasses import dataclass, field, replace
 from itertools import product
 
 from . import traversal as geometry
-from .traversal import (_inner_steps, group_live_peak, group_reuse_floor, group_ring_size,
-                        lds_buffers, readahead_level)
-from .ir import COPY, Expr, Placement, READ, REVERSE, Space
+from .ir import COPY, Expr, Placement, REVERSE, Space
 from .theta import group_labels, path_direction
-from .traversal import (CLOBBER, _divisors, _summation_ring_axis,
+from .traversal import (CLOBBER, _divisors, _inner_steps, _summation_ring_axis,
                         axis_strides, broadcast_width, chunks_crossed,
-                        transfer_extents, is_uniform_over, operand_level,
-                        position_terms, prefetch_axis_name,
-                        prefetch_distance_for, coverage_tile_cap, read_coverage,
-                        requested_read_ahead,
+                        coverage_tile_cap, free_axes, group_live_peak,
+                        group_reuse_floor, group_ring_size, is_uniform_over,
+                        lds_buffers, operand_level, position_terms,
+                        prefetch_axis_name, prefetch_distance_for,
+                        presence_axes, read_coverage, readahead_level,
                         register_reuse_verdict, reload_modes, reload_positions,
-                        reloads_whole_set, ring_axes, ring_slot,
-                        varying_axes)
-from .traversal import free_axes, presence_axes
-
-
-# --- prefetch --------------------------------------------------------------
+                        reloads_whole_set, requested_read_ahead, ring_slot,
+                        transfer_extents)
 
 def readahead_reach(theta, depths, plans) -> int:
     """How many whole reduction chunks the prefetch crosses into, over every group."""
@@ -171,7 +166,7 @@ def peel_depths(theta, depths, plans=None):
 
 @dataclass(frozen=True)
 class BoundaryHoist:
-    """One instance of's cross-level boundary term."""
+    """One cross-level boundary term."""
     op: str
     role: str
     level: str

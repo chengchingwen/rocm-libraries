@@ -112,9 +112,10 @@ class Mma:
 
 # ===========================================================================
 # 4.4  Mark -- a semantic point (+ the region-based insertion model)
-MARK_KINDS = ("phase_boundary", "fence", "swap", "gr_increment", "region_increment",
-              "descriptor_enable", "gsu_guard", "gl2_prefetch", "chunk_pin", "buffer_pin",
-              "waitcnt")
+MARK_KINDS = (
+    "phase_boundary", "fence", "swap", "gr_increment", "region_increment",
+    "descriptor_enable", "gsu_guard", "gl2_prefetch", "chunk_pin", "buffer_pin",
+)
 
 
 @dataclass

@@ -780,8 +780,6 @@ class LocalReadMFMA(LocalRead):
                             kernel["MatrixInstN"] * kernel["MatrixInstBN"] * kernel["MIWaveGroup"][1] * kernel["VectorWidthB"]]
 
         LdsPad           = kernel["LdsPad%s"%tc] if kernel["LdsBlockSizePerPad%s"%tc] == 0 else 0
-        # A PACKED TDMSplit REGION SHORTENS THE ROW HERE TOO.
-        #
         _nsplit, _splitAxis = _tdm_split.split_of(kernel, tc)
         _umlds           = bool(kernel["UnrollMajorLDS%s" % tP["tensorChar"]])
         splitInnerExtent = 0            # the LDS image's INNER extent, whichever axis carries it
@@ -793,8 +791,8 @@ class LocalReadMFMA(LocalRead):
             tileStride   = region_row_elems(splitInnerExtent, LdsPad, True, _nsplit, _splitAxis)
             UnrollStride = 1
         else:
-            # Tile-major LDS is `[unroll][free]`, so the FREE axis is the inner one and the row a
-            # packed region shortens is the one the UNROLL coordinate steps by.
+            # In tile-major LDS, the free axis is the inner one, so a packed
+            # region shortens the row stepped by the unroll coordinate.
             splitInnerExtent = kernel["MacroTile%s" % tP["tensorChar"]]
             UnrollStride = region_row_elems(splitInnerExtent, LdsPad, False, _nsplit, _splitAxis)
         if _nsplit > 1:
@@ -988,7 +986,7 @@ class LocalReadMFMA(LocalRead):
                     vwTrLoad = 8
                     numberLRVWPerMIInput = MIInputPerThUnroll // kernel[f"LocalReadVectorWidth{tc if('MXS' not in tc) else 'MXS'}"]
                     for tIdx in range(numberMTilesPerWave):
-                        # Metadata is never split, so its arm below needs no region jump.
+                        # Metadata is never split, so this arm needs no region jump.
                         tileElems, regionOff = splitRegionOfTile(tP["localReadOffset"] + MIWaveGroupShape[tile01] * tIdx)
                         offset = int(tileElems * tP["bpeDS"])
                         if tP["isM"]:
@@ -1713,8 +1711,8 @@ class LocalReadMFMA(LocalRead):
                                     # degenerates to the pre-existing incOffset=0 behavior.
                                     incOffset = rIdx * numElementPerRead * UnrollStride
                                 elif kernel["UnrollMajorLDS%s" % tP["tensorChar"]]:
-                                    # THE UNROLL COORDINATE IS THE INNER ONE HERE, so it is what a
-                                    # packed region cuts.
+                                    # The unroll coordinate is the inner one in
+                                    # this layout, so it is split by the region.
                                     uElems = (rIdx * numElementPerRead * UnrollStride * 2
                                               + tP["localReadOffset"])
                                     region, uInRow = fold_inner_offset(
@@ -1727,8 +1725,8 @@ class LocalReadMFMA(LocalRead):
                                     vw = kernel[f"LocalReadVectorWidth{tc if('MXS' not in tc) else 'MXS'}"]
                                     incOffset = (rIdx // vw) * UnrollStride * vw
                                     incOffset += rIdx * numElementPerRead * UnrollStride
-                                    # THE FREE COORDINATE IS THE INNER ONE HERE, so it is what a
-                                    # packed region cuts -- the mirror of the unroll-major arm.
+                                    # The free coordinate is the inner one in
+                                    # this layout, mirroring the unroll-major arm.
                                     region, tInRow = fold_inner_offset(
                                         offset_val + tP["localReadOffset"], splitInnerExtent,
                                         False, _nsplit, _splitAxis)

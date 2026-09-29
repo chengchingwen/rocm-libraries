@@ -62,10 +62,6 @@ def derive_transfer_coverage(movement):
         slot = Expr(digits=(((tile, 1),), 0, ((1, 1, merged),)))
     return TransferCoverage(carrier=carrier, slot=slot)
 
-
-derive_coverage = derive_transfer_coverage
-
-
 def coverage_factors(theta, operand, coverage) -> dict:
     if coverage is None:
         return {}
