@@ -169,9 +169,10 @@ def _inner_steps(theta):
 def readahead_level_of(inner, region_names, broadcast_names=(), rotation_regions=()):
     """`(name, extent, span)` of the axis one PLR step advances: the OUTERMOST non-region axis.
 
- A degenerate axis is still the level -- one step of an extent-1 axis moves into the next value of
- whatever encloses it.  `span` counts every axis INSIDE the level, REGION AXES INCLUDED, because
- one step covers them; a split outside the level is not covered, so the read-ahead re-issues there.
+ A step must REACH something, so a degenerate axis is never the level: it is in the nest whatever
+ its extent, and choosing it would make the answer depend on that.  `span` counts every axis INSIDE
+ the level, REGION AXES INCLUDED, because one step covers them; a split outside the level is not
+ covered, so the read-ahead re-issues there.
     """
     bcast = set(broadcast_names or ())
     inner = [axis for axis in inner if axis.name not in bcast]
