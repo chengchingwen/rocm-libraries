@@ -237,8 +237,6 @@ def _getName(state, requiredParameters: frozenset, splitGSU: bool, ignoreInterna
   else:
     requiredParametersTemp.discard("TDMFuse")
 
-  # Same rule for the LoopModel knobs: UseLoopModel=False is every shipped kernel, and the
-  # traversal order only exists on that path, so neither is named off it.
   if state.get("UseLoopModel", False):
     requiredParametersTemp.update(("UseLoopModel", "WmmaInnerOrder", "WmmaOuterOrder"))
   else:

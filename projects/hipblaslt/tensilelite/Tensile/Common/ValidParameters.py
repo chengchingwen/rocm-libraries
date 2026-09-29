@@ -24,7 +24,6 @@
 
 import math
 from functools import lru_cache
-from itertools import permutations as _permutations
 from typing import Any, Union
 
 from .Architectures import SUPPORTED_ISA
@@ -1210,18 +1209,14 @@ validParameters = { # we need to make sure this matches develop
     # 2: Use TDM for B
     # 3: Use TDM for both A and B
     "TDMInst": [0, 1, 2, 3],
-    # Back-compatibility SPELLING for an existing yaml: `TDMSplit: 1` is `TDMSplitA: 1` and
-    # `TDMSplitB: 1`.  `assignProblemIndependentDerivedParameters` expands it and POPS it, so it
-    # never reaches the solution state or the kernel name -- nothing downstream may read it.
-    # A DU split has no shorthand; name `TDMSplitA`/`TDMSplitB` for that.
+    # Short for TDMSA1 TDMSB1
     "TDMSplit": [False, True],
-    # Per operand, because A and B are separate descriptors and nothing requires the same cut:
-    #   0 = no split   1 = split MT (the operand's OWN free axis)   2 = split DU (the shared
-    #   reduction axis).  Two extra SGPRs per split operand hold the per-iteration increments.
-    #
-    # See `Components/TDMSplit.TdmSplitGeometry`, which turns (axis, factor) into the
-    # descriptor dim, the tile extent, the global/LDS steps, and whether the regions are
-    # separately PACKED in LDS.
+    # Split ONE TDM data tensor's load across two tensor_load_to_lds instructions, each covering
+    # half the tile along the NAMED axis.
+    # 0: no split
+    # 1: split MT (A on M, B on N)
+    # 2: split DU
+    # Two extra SGPRs per split operand hold the per-iteration LDS and global address increments.
     "TDMSplitA": [0, 1, 2],
     "TDMSplitB": [0, 1, 2],
     # Insert a barrier between an urgent and a deferrable tensor_load_to_lds group

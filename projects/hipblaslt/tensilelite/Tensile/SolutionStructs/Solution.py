@@ -58,7 +58,7 @@ from ..Components.TDMFuse import tdmBothTensors, tdmFusedGroups, tdmGroupingAcce
                                        tdmGroupingName, tdmPapRejectReason
 from ..Common.TypeValidationErrors import ConfigTypeError
 from ..CustomKernels import isCustomKernelConfig, supportsUserSgprKernargPreload, validateCustomPersistentArgs
-from ..Components import TDMSplit as _tdm_split
+from ..Components import TDMSplit
 from ..LoopModel.adapter import loop_order_of, wmma_loop_order
 from ..Components.DecoupleLocalRead import (AUTO as LOCAL_READ_AUTO,
                                             clusterLevels, collapseEqualPair,
@@ -99,7 +99,7 @@ def _deriveAndValidateMXScaleLayoutAndTransport(state, asmCaps, archCaps, printR
 
   The function:
     * Resolves the ``"Auto"`` sentinels on ``MXLoadInst`` / ``MXScaleFormat``
-      against the current ISA's caps and the problem's MX block the axes it varies over.
+      against the current ISA's caps and the problem's MX block presence.
     * Promotes ``TDMInst`` to ``3`` (A + B) when ``MXLoadInst="TDM"`` is
       paired with the default ``TDMInst=0``, honoring the "both-or-none"
       TDMInst invariant.
@@ -252,13 +252,6 @@ def _validateMXLocalReadWidth(state, asmCaps, printRejectionReason):
       return False
 
   return True
-
-#: THE reading of `TDMSplitA`/`TDMSplitB`, re-exported rather than reimplemented.  It lives in
-#: `Tensile/Components/TDMSplit.py` — a module that imports nothing — so `Components/`, `Lowering/` and this
-#: file can all reach it without importing one another, and so it stays unit-testable without
-#: rocisa.  `tdmSplitFactors` keeps its name because several gates below already call it.
-tdmSplitFactors = _tdm_split.split_factors
-tdmSplitOf      = _tdm_split.split_of
 
 
 #: `-1` on a per-operand local-read key: take the value the operand's position implies.
@@ -1107,51 +1100,26 @@ class Solution(collections.abc.Mapping):
         reject(state, printRejectionReason,
                "UseLoopModel does not yet support LocalSplitU>1 (GIR body is single-split)")
         return
-      # DROPPED-BY-CONSTRUCTION, not merely unmodelled.  GIR owns the mainloop global reads, so
-      # `SIA.noSchedGlobalRead` returns early under UseLoopModel — and that early return discards
-      # everything else that function schedules alongside the copies: the DirectToLds M0 updates
-      # and the sparse metadata read.  That has been true at PGR=2 ever since the fork stopped
-      # draining `perIterGlobalRead` (its whole output landed there), so these are not newly
-      # broken — they have simply never been reachable in a correct kernel, and the only thing
-      # that made it harmless is that each module is EMPTY while the feature is off.  Turn one on
-      # and the kernel loses that scheduling silently, which is a wrong-numerics failure with
-      # nothing to read in the assembly.  Reject loudly instead.
-      #
-      # PrefetchGL2 WAS on this list and is not any more: GIR now PLACES that pair itself,
-      # via `Gl2PrefetchRegions` -> a `gl2_prefetch` Mark -> `GirToRocisa`, so it is owned rather
-      # than dropped.  The rule this list encodes is unchanged — whatever `noSchedGlobalRead`
-      # schedules must be either GIR's or rejected — and one item moved from the second column to
-      # the first.  Keep this comment and that function's early-return comment in step.
-      #
-      # Test the SETTABLE input `DirectToLds`, not the derived `DirectToLdsA/B`: those are derived
-      # ~200 lines BELOW this block, so `state.get("DirectToLdsA")` here would read its default and
-      # the check could never fire — a dead gate that looks live.
+
       if state.get("DirectToLds", 0):
         reject(state, printRejectionReason,
                "UseLoopModel does not support DirectToLds — OUT OF SCOPE, not deferred: TDM "
                "supersedes it on gfx1250.  Do not plan around this being lifted.")
         return
-      # Test the SETTABLE `TDMInst`, not the derived `enableTDMA/B`: those are derived ~2000 lines
-      # BELOW this block, so reading them here would see a default and the gate could never fire —
-      # the same dead-gate trap the DirectToLds check above calls out.  Bits: 0x1=A, 0x2=B.
+
       if (state.get("TDMInst", 0) & 0x3) != 0x3:
-        # GIR models the global->shared copy as ONE hop (`tensor_load_to_lds`).  Without TDM,
-        # `emitCopyTile` -> `globalReadDo` takes the buffer_load + LOCAL WRITE path, which adds a
-        # write step GIR does not model (the write side is unmodelled) — so its fence analysis would be
-        # incomplete, and `postMainLoopBarrierCheckAndReset` now hands LDS fence placement to GIR
-        # whenever UseLoopModel is set.  Reject rather than silently under-fence.
         reject(state, printRejectionReason,
                "UseLoopModel requires TDMInst=3 (TDM on both A and B) — OUT OF SCOPE, not "
                "deferred: the non-TDM local-write path is not a gfx1250 target.  GIR owns "
                "LDS fence placement and does not model that path.")
         return
       # TDMSplit factors either the operand's free axis or its shared-K axis.
-      _split = tdmSplitFactors(state)
+      _split = TDMSplit.split_factors(state)
       if _split is not None:
         _aMT, _bMT, _aDU, _bDU = _split
         for _tc, _wt, _n in (("A", state["MIWaveTile"][0], _aMT), ("B", state["MIWaveTile"][1], _bMT)):
           try:
-            _tdm_split.factor_axis(_wt, _n, "MIWaveTile%s" % _tc)
+            TDMSplit.factor_axis(_wt, _n, "MIWaveTile%s" % _tc)
           except ValueError as exc:
             reject(state, printRejectionReason, "UseLoopModel requires %s" % exc)
             return
@@ -1160,7 +1128,7 @@ class Solution(collections.abc.Mapping):
           # across waves, but never changes the split or inner axis extents.
           _vw = state.get("VectorWidth%s" % _tc) or 1
           try:
-            _span = max(1, min(_n, int(_tdm_split.wave_region_span(state, _tc)) or _n))
+            _span = max(1, min(_n, int(TDMSplit.wave_region_span(state, _tc)) or _n))
           except Exception:
             _span = _n
           _per = _wt // _span if _span else _wt
@@ -1174,6 +1142,8 @@ class Solution(collections.abc.Mapping):
     # SwInstructionPrefetch (single-integer bitmask): explicit Absolute(2) is only supported on
     # gfx1250 non-Stream-K. Auto(-1) already resolves to Relative on Stream-K / non-gfx1250, so it
     # is never rejected; legacy bool aliases (True->Relative, False->Off) never request Absolute.
+    # Only an explicit Absolute request on an unsupported target is rejected here (users should
+    # pick Auto(-1) or Relative(1) instead).
     swpMode = normalizeSwInstructionPrefetch(
         state.get("SwInstructionPrefetch", SW_INSTRUCTION_PREFETCH_AUTO))
     if swpMode == SW_INSTRUCTION_PREFETCH_ABSOLUTE:
@@ -1190,7 +1160,7 @@ class Solution(collections.abc.Mapping):
       if state["ProblemType"]["DataType"].isDouble():
         # f64: OptNLL epilogue routinely exceeds the 64 KiB I-cache (bucket-c fleet-wide) so the
         # abs cover/ladder yields no reliable benefit, and sgprAlpha is a 2-dword pair (the
-        # OptNLL-aware Case-B fp32 predicate does not apply). See design doc /
+        # OptNLL-aware Case-B fp32 predicate does not apply). See design doc §16.8/§16.13.
         reject(state, printRejectionReason,
                "SwInstructionPrefetch=2 (Absolute) is not supported for f64 (double) kernels; "
                "use Auto(-1) or Relative(1)")
@@ -1274,12 +1244,6 @@ class Solution(collections.abc.Mapping):
         reject(state, printRejectionReason, f"size of WorkGroup {state['NumThreads']} should be multiple of WavefrontSize {state['WavefrontSize']}")
 
       state["NumWaves"] = state["NumThreads"] // state['WavefrontSize']
-
-      # Multi-wave MT-split is SUPPORTED: `tdmRegionIncrementGir` has a
-      # wave-parity branch (`_tdmSplitMultiWaveInc`) and `tdmLoadRegionGir` brackets a non-zero
-      # region with its own dim1.  The model was already there — multi-wave makes the copy ONE
-      # fused movement (`TDMFuse`), so GIR emits a single descriptor and a single walk, which is
-      # simpler than the single-wave case with its two interleaved walks.
 
     # macro tile sizes
     if "SubGroup0" in state and "ThreadTile0" in state:
@@ -2412,36 +2376,12 @@ class Solution(collections.abc.Mapping):
     # `assignProblemIndependentDerivedParameters` has not written yet.
 
     Solution.assignProblemIndependentDerivedParameters(state, printRejectionReason, isaInfoMap)
-
-    # A REJECTION IN THE CALL ABOVE MUST STOP US HERE.  `assignProblemIndependentDerivedParameters`
-    # signals a reject by setting `state["Valid"] = False` and returning EARLY -- so on that path it
-    # has not finished assigning, and in particular `state["UseDotInstruction"]` (first written at
-    # :1138) is ABSENT for every one of the 22 reject sites above that line.  Falling through then
-    # reaches the read at :1992 and raises `KeyError: 'UseDotInstruction'`, which
-    # `BenchmarkProblems.py:253` swallows into a one-line "Error processing permutation".
-    #
-    # Every reject above that line becomes an exception instead, so the count of dropped
-    # permutations equals the count of rejects, and the reason never reaches the log.
-    #
-    # THE COST IS NOT SOLUTIONS (a rejected permutation is dropped either way) BUT DIAGNOSIS: the
-    # full-parameter `rejecting solution {...}` dump is lost for 560 permutations, and a GENUINE
-    # derivation crash is disguised as this same one-liner.
-    #
-    # GUARD ON THE CALLEE'S COMPLETION FLAG, NOT ON `Valid`.  `Valid` looks like the right test and
-    # is not: `reject()` short-circuits on `NoReject` (Utilities.py:74) and returns WITHOUT setting
-    # `Valid = False`, while every reject site `return`s unconditionally -- so a `NoReject` solution
-    # leaves the callee early with `Valid` still True and the key still absent, and a `Valid` test
-    # would sail straight into the same KeyError.  `AssignedProblemIndependentDerivedParameters` is
-    # set False on entry (:700) and True only at the callee's END (:1400, past the :1138 write), so
-    # it means exactly "the callee finished", which is the real precondition for reading what it
-    # assigns.
-    #
-    # RESIDUE, STATED RATHER THAN PAPERED OVER: this does NOT make `NoReject=True` work. All 64
-    # `Tensile/CustomKernels/*.s` set it, none pre-populate `UseDotInstruction`, and the reject
-    # sites return regardless of what `reject()` answers -- so a custom kernel tripping a pre-:1138
-    # predicate still stops here, just as a clean early return instead of a swallowed exception.
-    # Honouring `NoReject` needs those sites to become `if reject(...): return`, which is a separate
-    # change across 22 call sites and is not attempted here.
+    # A REJECTION IN THE CALL ABOVE MUST STOP US HERE.  It signals one by returning early, and 49
+    # of its reject sites sit above the `UseDotInstruction` assignment -- falling through then
+    # reads a key that was never written and raises `KeyError: 'UseDotInstruction'`, which
+    # BenchmarkProblems swallows into a one-line "Error processing permutation", losing the reason.
+    # GUARD ON THE CALLEE'S COMPLETION FLAG, not on `Valid`: `Valid` is False for a solution any
+    # earlier stage refused, and those have finished assigning.
     if not state["AssignedProblemIndependentDerivedParameters"]:
       return
 
@@ -3519,15 +3459,6 @@ class Solution(collections.abc.Mapping):
       elif state["ProblemType"]["MXBlockB"]:
         state["LocalReadVectorWidthMXS"] = state["MIInputPerThreadMXSB"]
 
-      # UseLoopModel SUPPORTS THE MX TileSpan HALF-WAVE SCALE LAYOUT.  When
-      # `MIWaveTile / VectorWidth` is even and >= 2 (and the tile-axis instruction is
-      # WavefrontSize/2), LRA packs `2*VW` tiles' scale blocks so ONE ds_load holds two half-waves'
-      # worth: only the lower half is loaded, and the WMMA reaches the partner with
-      # `matrix_{a,b}_scale:1`.  The read leaf models both halves of that — which acts emit, and
-      # the compacted register numbering — and `emitWmmaTile` asks the scaffold's own
-      # `mxsTileSpanScaleSel` for the (register, selector) pair, so the load and consume sides
-      # cannot disagree.  No gate here; the geometry is derived, from `VectorWidth`.
-
     # Some restrictions for half:
     if state["KernelLanguage"] == "Assembly" \
       and state["ProblemType"]["DataType"].isHalf():
@@ -3724,7 +3655,7 @@ class Solution(collections.abc.Mapping):
     # part GIR replaces: under UseLoopModel the region walk, its tokens and its fences are all
     # GIR's, so the disable does not apply there.  `TDMSplit` is per-operand now, so the
     # truthiness test on the old scalar becomes `any_split`.
-    if _tdm_split.any_split(state) and not state["UseLoopModel"]:
+    if TDMSplit.any_split(state) and not state["UseLoopModel"]:
       reject(state, printRejectionReason, "TDMSplit is currently disabled")
       return
 
@@ -5840,9 +5771,6 @@ class Solution(collections.abc.Mapping):
     if state["AssertSummationElementMultiple"] % state["DepthU"] == 0:
       state["NoTailLoop"] = True
 
-    # EVERY OPERAND NEEDS A READ PATH — and this is the first point `UnrollMajorLDS` is known.
-    #
-    #
     if state.get("UseLoopModel", 0):
       _noRead = [tc for tc in ("A", "B")
                  if not (state["LDSTrInst"] or state["UnrollMajorLDS%s" % tc])]
@@ -5854,21 +5782,8 @@ class Solution(collections.abc.Mapping):
                "LDSTrInst=True for it." % ("+".join(_noRead)))
         return
 
-    #
-    #
-    #
-    #
-    #
-    #
-    #
-    #
     if tdmFusedGroups(state):
-      # ONE RULE, ASKED PER GROUP: a fused movement has a SINGLE region count, so every member of
-      # one Φ group must agree on it.  An operand in NO group shares its movement with nobody and
-      # therefore constrains nothing.
-      #
-      #
-      _regions = {"A": tdmSplitOf(state, "A")[0], "B": tdmSplitOf(state, "B")[0]}
+      _regions = {"A": TDMSplit.split_of(state, "A")[0], "B": TDMSplit.split_of(state, "B")[0]}
       _mxBoth = bool(state["ProblemType"]["MXBlockA"] and state["ProblemType"]["MXBlockB"])
       if _mxBoth:
         _regions["MXSA"] = 1        # scales are never split — `TDMSplitA/B` name the data only
@@ -5890,11 +5805,7 @@ class Solution(collections.abc.Mapping):
                     state.get("TDMSplitA"), state.get("TDMSplitB")))
           return
 
-    # A REGION MUST HOLD A WHOLE NUMBER OF MatrixInstK SLABS.  This is the caller obligation that
-    # makes the read side's region arithmetic sufficient, and it applies to BOTH codegen paths.
-    #
-    #
-    _quantumSplit = tdmSplitFactors(state)
+    _quantumSplit = TDMSplit.split_factors(state)
     if _quantumSplit is not None and (_quantumSplit[2] > 1 or _quantumSplit[3] > 1):
       _mik = state["MatrixInstK"]
       for _tc, _n in (("A", _quantumSplit[2]), ("B", _quantumSplit[3])):
@@ -5906,10 +5817,6 @@ class Solution(collections.abc.Mapping):
                  "that neither read path derives."
                  % (_tc, _n, state["DepthU"] // _n, _mik))
           return
-
-      # A DU region holding several substeps needs no rejection: `placement._shifted_rate_slot`
-      # recombines EVERY rate mode's digit of the shifted position, so a group rotating over
-      # `K_split x K_inner` has a slot expression rather than a refusal.
 
     # TailloopInNll optimization check
     if state["TailloopInNll"]:
@@ -6913,10 +6820,6 @@ class Solution(collections.abc.Mapping):
       ldsNumBytesAB = state["LdsOffsetB"] + ldsNumBytesB
     state["NumLdsBlk"] = numLdsBlk
 
-    # THE LDS RING MUST BE AT LEAST AS DEEP AS THE PREFETCH — under UseLoopModel only.
-    #
-    #
-    #
     if state.get("UseLoopModel", False) and state["PrefetchGlobalRead"] > numLdsBlk:
       reject(state, printRejectionReason,
              "UseLoopModel requires the LDS ring to be at least as deep as the prefetch: "
@@ -6979,7 +6882,7 @@ class Solution(collections.abc.Mapping):
     # AFTER both resolution points, so the final value is the one tested.  LDSSI's components
     # partition the FREE axis, so it can only express a free-axis split; a DU split's regions are
     # K-ranges inside a component and the segment stride is not their step.
-    _segSplit = tdmSplitFactors(state)
+    _segSplit = TDMSplit.split_factors(state)
     if state["LDSSegmentInterleave"] == 1 and _segSplit is not None \
        and (_segSplit[2] > 1 or _segSplit[3] > 1):
       reject(state, printRejectionReason,
