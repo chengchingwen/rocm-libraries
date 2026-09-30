@@ -16,9 +16,8 @@ GlobalParameters:
   DataInitTypeBeta: 0
   NumWarmups: 0
   EnqueuesPerSync: 1
-  PrintWinnersOnly: True
+  PrintWinnersOnly: False
   Architecture: gfx1250
-  CpuThreads: 1
   KeepBuildTmp: True
   PrintLevel: 2
   CodeObjectVersion: "4"
@@ -51,15 +50,16 @@ BenchmarkProblems:
         - UseSubtileImpl: [false]
         - TDMInst: [3]
         - TDMIterateMode: [-1]
-        - LDSTrInst: [false]
+        - LDSTrInst: [false, true]
+        - LDSSegmentInterleave: [0, 1]
         - SourceSwap: [false]
         - ExpandPointerSwap: [false]
         - StaggerU: [0]
         - PrefetchGlobalRead: [1, 2]
         - PrefetchLocalRead: [1, 3]
         - ScheduleIterAlg: [4]
-        - VectorWidthA: [-1, 1, 2]
-        - VectorWidthB: [-1, 1, 2]
+        - VectorWidthA: [-1, 1, 2, 4]
+        - VectorWidthB: [-1, 1, 2, 4]
         - TDMSplitA: [0, 1, 2]
         - TDMSplitB: [0, 1, 2]
         - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
@@ -72,9 +72,9 @@ BenchmarkProblems:
           - Exact: [256, 256, 1, 256]
           - Exact: [256, 256, 1, 128]
           - Exact: [256, 256, 1, 64]
-          - Exact: [257, 129, 1, 256]   # edge: M and N off the macro tile
-          - Exact: [256, 256, 1, 97]   # tail: DepthU + MatrixInstK + ASEM(1), the smallest legal partial slab
-          - Exact: [257, 129, 1, 97]   # edge+tail: both forks clamp one descriptor
+          - Exact: [257, 129, 1, 256]
+          - Exact: [256, 256, 1, 97]
+          - Exact: [257, 129, 1, 97]
 
   # bf16 NT
   -
@@ -102,15 +102,16 @@ BenchmarkProblems:
         - UseSubtileImpl: [false]
         - TDMInst: [3]
         - TDMIterateMode: [-1]
-        - LDSTrInst: [true]
+        - LDSTrInst: [false, true]
+        - LDSSegmentInterleave: [0, 1]
         - SourceSwap: [false]
         - ExpandPointerSwap: [false]
         - StaggerU: [0]
         - PrefetchGlobalRead: [1, 2]
         - PrefetchLocalRead: [1, 3]
         - ScheduleIterAlg: [4]
-        - VectorWidthA: [-1, 1, 2]
-        - VectorWidthB: [-1, 1, 2]
+        - VectorWidthA: [-1, 1, 2, 4]
+        - VectorWidthB: [-1, 1, 2, 4]
         - TDMSplitA: [0, 1, 2]
         - TDMSplitB: [0, 1, 2]
         - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
@@ -123,9 +124,9 @@ BenchmarkProblems:
           - Exact: [256, 256, 1, 256]
           - Exact: [256, 256, 1, 128]
           - Exact: [256, 256, 1, 64]
-          - Exact: [257, 129, 1, 256]   # edge: M and N off the macro tile
-          - Exact: [256, 256, 1, 97]   # tail: DepthU + MatrixInstK + ASEM(1), the smallest legal partial slab
-          - Exact: [257, 129, 1, 97]   # edge+tail: both forks clamp one descriptor
+          - Exact: [257, 129, 1, 256]
+          - Exact: [256, 256, 1, 97]
+          - Exact: [257, 129, 1, 97]
 
   # bf16 NN
   -
@@ -153,15 +154,16 @@ BenchmarkProblems:
         - UseSubtileImpl: [false]
         - TDMInst: [3]
         - TDMIterateMode: [-1]
-        - LDSTrInst: [true]
+        - LDSTrInst: [false, true]
+        - LDSSegmentInterleave: [0, 1]
         - SourceSwap: [false]
         - ExpandPointerSwap: [false]
         - StaggerU: [0]
         - PrefetchGlobalRead: [1, 2]
         - PrefetchLocalRead: [1, 3]
         - ScheduleIterAlg: [4]
-        - VectorWidthA: [-1, 1, 2]
-        - VectorWidthB: [-1, 1, 2]
+        - VectorWidthA: [-1, 1, 2, 4]
+        - VectorWidthB: [-1, 1, 2, 4]
         - TDMSplitA: [0, 1, 2]
         - TDMSplitB: [0, 1, 2]
         - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
@@ -174,9 +176,9 @@ BenchmarkProblems:
           - Exact: [256, 256, 1, 256]
           - Exact: [256, 256, 1, 128]
           - Exact: [256, 256, 1, 64]
-          - Exact: [257, 129, 1, 256]   # edge: M and N off the macro tile
-          - Exact: [256, 256, 1, 97]   # tail: DepthU + MatrixInstK + ASEM(1), the smallest legal partial slab
-          - Exact: [257, 129, 1, 97]   # edge+tail: both forks clamp one descriptor
+          - Exact: [257, 129, 1, 256]
+          - Exact: [256, 256, 1, 97]
+          - Exact: [257, 129, 1, 97]
 
   # bf16 TT
   -
@@ -204,15 +206,16 @@ BenchmarkProblems:
         - UseSubtileImpl: [false]
         - TDMInst: [3]
         - TDMIterateMode: [-1]
-        - LDSTrInst: [true]
+        - LDSTrInst: [false, true]
+        - LDSSegmentInterleave: [0, 1]
         - SourceSwap: [false]
         - ExpandPointerSwap: [false]
         - StaggerU: [0]
         - PrefetchGlobalRead: [1, 2]
         - PrefetchLocalRead: [1, 3]
         - ScheduleIterAlg: [4]
-        - VectorWidthA: [-1, 1, 2]
-        - VectorWidthB: [-1, 1, 2]
+        - VectorWidthA: [-1, 1, 2, 4]
+        - VectorWidthB: [-1, 1, 2, 4]
         - TDMSplitA: [0, 1, 2]
         - TDMSplitB: [0, 1, 2]
         - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
@@ -225,9 +228,9 @@ BenchmarkProblems:
           - Exact: [256, 256, 1, 256]
           - Exact: [256, 256, 1, 128]
           - Exact: [256, 256, 1, 64]
-          - Exact: [257, 129, 1, 256]   # edge: M and N off the macro tile
-          - Exact: [256, 256, 1, 97]   # tail: DepthU + MatrixInstK + ASEM(1), the smallest legal partial slab
-          - Exact: [257, 129, 1, 97]   # edge+tail: both forks clamp one descriptor
+          - Exact: [257, 129, 1, 256]
+          - Exact: [256, 256, 1, 97]
+          - Exact: [257, 129, 1, 97]
 
   # f8 TN
   -
@@ -255,15 +258,16 @@ BenchmarkProblems:
         - UseSubtileImpl: [false]
         - TDMInst: [3]
         - TDMIterateMode: [-1]
-        - LDSTrInst: [false]
+        - LDSTrInst: [false, true]
+        - LDSSegmentInterleave: [0, 1]
         - SourceSwap: [false]
         - ExpandPointerSwap: [false]
         - StaggerU: [0]
         - PrefetchGlobalRead: [1, 2]
         - PrefetchLocalRead: [1, 3]
         - ScheduleIterAlg: [4]
-        - VectorWidthA: [-1, 1, 2]
-        - VectorWidthB: [-1, 1, 2]
+        - VectorWidthA: [-1, 1, 2, 4]
+        - VectorWidthB: [-1, 1, 2, 4]
         - TDMSplitA: [0, 1, 2]
         - TDMSplitB: [0, 1, 2]
         - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
@@ -276,9 +280,9 @@ BenchmarkProblems:
           - Exact: [256, 256, 1, 1024]
           - Exact: [256, 256, 1, 512]
           - Exact: [256, 256, 1, 256]
-          - Exact: [257, 129, 1, 1024]   # edge: M and N off the macro tile
-          - Exact: [256, 256, 1, 385]   # tail: DepthU + MatrixInstK + ASEM(1), the smallest legal partial slab
-          - Exact: [257, 129, 1, 385]   # edge+tail: both forks clamp one descriptor
+          - Exact: [257, 129, 1, 1024]
+          - Exact: [256, 256, 1, 385]
+          - Exact: [257, 129, 1, 385]
 
   # f8 NT
   -
@@ -306,15 +310,16 @@ BenchmarkProblems:
         - UseSubtileImpl: [false]
         - TDMInst: [3]
         - TDMIterateMode: [-1]
-        - LDSTrInst: [true]
+        - LDSTrInst: [false, true]
+        - LDSSegmentInterleave: [0, 1]
         - SourceSwap: [false]
         - ExpandPointerSwap: [false]
         - StaggerU: [0]
         - PrefetchGlobalRead: [1, 2]
         - PrefetchLocalRead: [1, 3]
         - ScheduleIterAlg: [4]
-        - VectorWidthA: [-1, 1, 2]
-        - VectorWidthB: [-1, 1, 2]
+        - VectorWidthA: [-1, 1, 2, 4]
+        - VectorWidthB: [-1, 1, 2, 4]
         - TDMSplitA: [0, 1, 2]
         - TDMSplitB: [0, 1, 2]
         - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
@@ -327,9 +332,9 @@ BenchmarkProblems:
           - Exact: [256, 256, 1, 1024]
           - Exact: [256, 256, 1, 512]
           - Exact: [256, 256, 1, 256]
-          - Exact: [257, 129, 1, 1024]   # edge: M and N off the macro tile
-          - Exact: [256, 256, 1, 385]   # tail: DepthU + MatrixInstK + ASEM(1), the smallest legal partial slab
-          - Exact: [257, 129, 1, 385]   # edge+tail: both forks clamp one descriptor
+          - Exact: [257, 129, 1, 1024]
+          - Exact: [256, 256, 1, 385]
+          - Exact: [257, 129, 1, 385]
 
   # f8 NN
   -
@@ -357,15 +362,16 @@ BenchmarkProblems:
         - UseSubtileImpl: [false]
         - TDMInst: [3]
         - TDMIterateMode: [-1]
-        - LDSTrInst: [true]
+        - LDSTrInst: [false, true]
+        - LDSSegmentInterleave: [0, 1]
         - SourceSwap: [false]
         - ExpandPointerSwap: [false]
         - StaggerU: [0]
         - PrefetchGlobalRead: [1, 2]
         - PrefetchLocalRead: [1, 3]
         - ScheduleIterAlg: [4]
-        - VectorWidthA: [-1, 1, 2]
-        - VectorWidthB: [-1, 1, 2]
+        - VectorWidthA: [-1, 1, 2, 4]
+        - VectorWidthB: [-1, 1, 2, 4]
         - TDMSplitA: [0, 1, 2]
         - TDMSplitB: [0, 1, 2]
         - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
@@ -378,9 +384,9 @@ BenchmarkProblems:
           - Exact: [256, 256, 1, 1024]
           - Exact: [256, 256, 1, 512]
           - Exact: [256, 256, 1, 256]
-          - Exact: [257, 129, 1, 1024]   # edge: M and N off the macro tile
-          - Exact: [256, 256, 1, 385]   # tail: DepthU + MatrixInstK + ASEM(1), the smallest legal partial slab
-          - Exact: [257, 129, 1, 385]   # edge+tail: both forks clamp one descriptor
+          - Exact: [257, 129, 1, 1024]
+          - Exact: [256, 256, 1, 385]
+          - Exact: [257, 129, 1, 385]
 
   # f8 TT
   -
@@ -408,15 +414,16 @@ BenchmarkProblems:
         - UseSubtileImpl: [false]
         - TDMInst: [3]
         - TDMIterateMode: [-1]
-        - LDSTrInst: [true]
+        - LDSTrInst: [false, true]
+        - LDSSegmentInterleave: [0, 1]
         - SourceSwap: [false]
         - ExpandPointerSwap: [false]
         - StaggerU: [0]
         - PrefetchGlobalRead: [1, 2]
         - PrefetchLocalRead: [1, 3]
         - ScheduleIterAlg: [4]
-        - VectorWidthA: [-1, 1, 2]
-        - VectorWidthB: [-1, 1, 2]
+        - VectorWidthA: [-1, 1, 2, 4]
+        - VectorWidthB: [-1, 1, 2, 4]
         - TDMSplitA: [0, 1, 2]
         - TDMSplitB: [0, 1, 2]
         - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
@@ -429,9 +436,9 @@ BenchmarkProblems:
           - Exact: [256, 256, 1, 1024]
           - Exact: [256, 256, 1, 512]
           - Exact: [256, 256, 1, 256]
-          - Exact: [257, 129, 1, 1024]   # edge: M and N off the macro tile
-          - Exact: [256, 256, 1, 385]   # tail: DepthU + MatrixInstK + ASEM(1), the smallest legal partial slab
-          - Exact: [257, 129, 1, 385]   # edge+tail: both forks clamp one descriptor
+          - Exact: [257, 129, 1, 1024]
+          - Exact: [256, 256, 1, 385]
+          - Exact: [257, 129, 1, 385]
 
   # mxf8 TN
   -
@@ -463,17 +470,19 @@ BenchmarkProblems:
         - UseSubtileImpl: [false]
         - TDMInst: [3]
         - TDMIterateMode: [-1]
-        - LDSTrInst: [false]
+        - LDSTrInst: [false, true]
+        - LDSSegmentInterleave: [0, 1]
         - SourceSwap: [false]
         - ExpandPointerSwap: [false]
         - StaggerU: [0]
         - PrefetchGlobalRead: [1, 2]
         - PrefetchLocalRead: [1, 3]
         - ScheduleIterAlg: [4]
-        - VectorWidthA: [-1, 1, 2]
-        - VectorWidthB: [-1, 1, 2]
+        - VectorWidthA: [-1, 1, 2, 4]
+        - VectorWidthB: [-1, 1, 2, 4]
         - TDMSplitA: [0, 1, 2]
         - TDMSplitB: [0, 1, 2]
+        - TDMFuse: [0, 1, 2, 3]
         - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
         - WmmaOuterOrder: [-1]
       BenchmarkForkParameters:
@@ -484,171 +493,6 @@ BenchmarkProblems:
           - Exact: [256, 256, 1, 1024]
           - Exact: [256, 256, 1, 512]
           - Exact: [256, 256, 1, 256]
-          - Exact: [257, 129, 1, 1024]   # edge: M and N off the macro tile
-          - Exact: [256, 256, 1, 385]   # tail: DepthU + MatrixInstK + ASEM(1), the smallest legal partial slab
-          - Exact: [257, 129, 1, 385]   # edge+tail: both forks clamp one descriptor
-
-  # mxf8 NT
-  -
-    -
-      OperationType: GEMM
-      DataType: F8
-      DestDataType: s
-      ComputeDataType: s
-      HighPrecisionAccumulate: True
-      MXBlockA: 32
-      MXBlockB: 32
-      DataTypeMXSA: e8
-      DataTypeMXSB: e8
-      TransposeA: False
-      TransposeB: True
-      UseBeta: True
-      Batched: True
-
-    - InitialSolutionParameters:
-      BenchmarkCommonParameters:
-        - KernelLanguage: ["Assembly"]
-      ForkParameters:
-        - MatrixInstruction:
-          - [16, 16, 128, 1,  1,  2, 2,  2, 2]
-          - [16, 16, 128, 1,  1,  4, 4,  2, 2]
-        - DepthU: [256]
-        - WavefrontSize: [32]
-        - UseLoopModel: [true]
-        - UseSubtileImpl: [false]
-        - TDMInst: [3]
-        - TDMIterateMode: [-1]
-        - LDSTrInst: [true]
-        - SourceSwap: [false]
-        - ExpandPointerSwap: [false]
-        - StaggerU: [0]
-        - PrefetchGlobalRead: [1, 2]
-        - PrefetchLocalRead: [1, 3]
-        - ScheduleIterAlg: [4]
-        - VectorWidthA: [-1, 1, 2]
-        - VectorWidthB: [-1, 1, 2]
-        - TDMSplitA: [0, 1, 2]
-        - TDMSplitB: [0, 1, 2]
-        - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
-        - WmmaOuterOrder: [-1]
-      BenchmarkForkParameters:
-      JoinParameters:
-      BenchmarkJoinParameters:
-      BenchmarkFinalParameters:
-        - ProblemSizes:
-          - Exact: [256, 256, 1, 1024]
-          - Exact: [256, 256, 1, 512]
-          - Exact: [256, 256, 1, 256]
-          - Exact: [257, 129, 1, 1024]   # edge: M and N off the macro tile
-          - Exact: [256, 256, 1, 385]   # tail: DepthU + MatrixInstK + ASEM(1), the smallest legal partial slab
-          - Exact: [257, 129, 1, 385]   # edge+tail: both forks clamp one descriptor
-
-  # mxf8 NN
-  -
-    -
-      OperationType: GEMM
-      DataType: F8
-      DestDataType: s
-      ComputeDataType: s
-      HighPrecisionAccumulate: True
-      MXBlockA: 32
-      MXBlockB: 32
-      DataTypeMXSA: e8
-      DataTypeMXSB: e8
-      TransposeA: False
-      TransposeB: False
-      UseBeta: True
-      Batched: True
-
-    - InitialSolutionParameters:
-      BenchmarkCommonParameters:
-        - KernelLanguage: ["Assembly"]
-      ForkParameters:
-        - MatrixInstruction:
-          - [16, 16, 128, 1,  1,  2, 2,  2, 2]
-          - [16, 16, 128, 1,  1,  4, 4,  2, 2]
-        - DepthU: [256]
-        - WavefrontSize: [32]
-        - UseLoopModel: [true]
-        - UseSubtileImpl: [false]
-        - TDMInst: [3]
-        - TDMIterateMode: [-1]
-        - LDSTrInst: [true]
-        - SourceSwap: [false]
-        - ExpandPointerSwap: [false]
-        - StaggerU: [0]
-        - PrefetchGlobalRead: [1, 2]
-        - PrefetchLocalRead: [1, 3]
-        - ScheduleIterAlg: [4]
-        - VectorWidthA: [-1, 1, 2]
-        - VectorWidthB: [-1, 1, 2]
-        - TDMSplitA: [0, 1, 2]
-        - TDMSplitB: [0, 1, 2]
-        - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
-        - WmmaOuterOrder: [-1]
-      BenchmarkForkParameters:
-      JoinParameters:
-      BenchmarkJoinParameters:
-      BenchmarkFinalParameters:
-        - ProblemSizes:
-          - Exact: [256, 256, 1, 1024]
-          - Exact: [256, 256, 1, 512]
-          - Exact: [256, 256, 1, 256]
-          - Exact: [257, 129, 1, 1024]   # edge: M and N off the macro tile
-          - Exact: [256, 256, 1, 385]   # tail: DepthU + MatrixInstK + ASEM(1), the smallest legal partial slab
-          - Exact: [257, 129, 1, 385]   # edge+tail: both forks clamp one descriptor
-
-  # mxf8 TT
-  -
-    -
-      OperationType: GEMM
-      DataType: F8
-      DestDataType: s
-      ComputeDataType: s
-      HighPrecisionAccumulate: True
-      MXBlockA: 32
-      MXBlockB: 32
-      DataTypeMXSA: e8
-      DataTypeMXSB: e8
-      TransposeA: True
-      TransposeB: True
-      UseBeta: True
-      Batched: True
-
-    - InitialSolutionParameters:
-      BenchmarkCommonParameters:
-        - KernelLanguage: ["Assembly"]
-      ForkParameters:
-        - MatrixInstruction:
-          - [16, 16, 128, 1,  1,  2, 2,  2, 2]
-          - [16, 16, 128, 1,  1,  4, 4,  2, 2]
-        - DepthU: [256]
-        - WavefrontSize: [32]
-        - UseLoopModel: [true]
-        - UseSubtileImpl: [false]
-        - TDMInst: [3]
-        - TDMIterateMode: [-1]
-        - LDSTrInst: [true]
-        - SourceSwap: [false]
-        - ExpandPointerSwap: [false]
-        - StaggerU: [0]
-        - PrefetchGlobalRead: [1, 2]
-        - PrefetchLocalRead: [1, 3]
-        - ScheduleIterAlg: [4]
-        - VectorWidthA: [-1, 1, 2]
-        - VectorWidthB: [-1, 1, 2]
-        - TDMSplitA: [0, 1, 2]
-        - TDMSplitB: [0, 1, 2]
-        - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
-        - WmmaOuterOrder: [-1]
-      BenchmarkForkParameters:
-      JoinParameters:
-      BenchmarkJoinParameters:
-      BenchmarkFinalParameters:
-        - ProblemSizes:
-          - Exact: [256, 256, 1, 1024]
-          - Exact: [256, 256, 1, 512]
-          - Exact: [256, 256, 1, 256]
-          - Exact: [257, 129, 1, 1024]   # edge: M and N off the macro tile
-          - Exact: [256, 256, 1, 385]   # tail: DepthU + MatrixInstK + ASEM(1), the smallest legal partial slab
-          - Exact: [257, 129, 1, 385]   # edge+tail: both forks clamp one descriptor
+          - Exact: [257, 129, 1, 1024]
+          - Exact: [256, 256, 1, 416]
+          - Exact: [257, 129, 1, 416]
