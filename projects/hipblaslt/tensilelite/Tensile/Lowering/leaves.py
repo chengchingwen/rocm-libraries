@@ -66,6 +66,8 @@ class LdsReadTileContext:
     substepStrideBytes: int
     maxLDSConstOffset: int
     miWaveTileAxis: int
+    # The operand's free-axis extent, which the tile-major region fold divides.
+    macroTile: int = 0
     unitRegStride: int = 1
     enableLDSTr: bool = True
     tileStrideElems: int = 0
@@ -478,7 +480,11 @@ class LeafEmitters:
             tileStrideElems = region_row_elems(kernel["_DepthU%s" % tc], LdsPad,
                                                unrollMajorLDS, nsplit, splitAxis)
         else:
-            tileStrideElems = MIWaveGroupShape[tile01]
+            # TILE-MAJOR: the free axis is the image's INNER one, so it has stride 1 and
+            # `tile_row` already returns the element position folded into its region.  The old
+            # pair (row = tile index, stride = the group jump) composes to the same address only
+            # while VectorWidth is 1, which is the only value LDSTrInst admits here.
+            tileStrideElems = 1
 
         splitBoundaryBytes = 0
         if nsplit > 1:
@@ -497,6 +503,7 @@ class LeafEmitters:
             wtRegStride=wtRegStride, fragments=fragments,
             substepStrideBytes=int(kernel["MatrixInstK"] * UnrollStride * tP["bpeDS"]),
             maxLDSConstOffset=maxLDSConstOffset, miWaveTileAxis=kernel["MIWaveTile"][tile01],
+            macroTile=kernel["MacroTile%u" % tile01],
             enableLDSTr=enableLDSTr, tileStrideElems=tileStrideElems,
             vectorWidth=max(1, kernel["VectorWidth%s" % tc]), unrollMajor=bool(unrollMajor),
             splitBoundaryBytes=splitBoundaryBytes, nsplit=nsplit, splitAxis=splitAxis)
