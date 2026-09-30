@@ -282,7 +282,7 @@ TEST(CallTargetData, DeserializeParsesEscapedCalleeNames) {
 
 TEST(GirActionData, SerializerRoundTripsStableId) {
     GirActionData original(17, 5, GirActionKind::Copy,
-                          {GirAccessData{true, 0, 2, 0, 1, -1, false}});
+                           {GirAccessData{true, 0, 2, 0, 1, -1, false}});
     std::ostringstream os;
     EXPECT_TRUE(ModifierSerializer::serialize(original, os));
     EXPECT_EQ(os.str(),

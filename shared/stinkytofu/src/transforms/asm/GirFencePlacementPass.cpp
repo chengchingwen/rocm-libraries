@@ -384,18 +384,18 @@ NodesByKey collectNodes(const GirFrameAnalysis::Result& frames) {
 /// What each live hazard already has in flight when this node BEGINS: `base` issues counted over
 /// the frame span from its producer, plus the index its in-block tail resumes from.  A residual is
 /// then `base` plus the same-counter issues in `[from, slot)`, which is the count the wait pass
-/// will measure for a fence at `slot` -- and the part before the block is exactly what a block-local
-/// count cannot see.
+/// will measure for a fence at `slot` -- and the part before the block is exactly what a
+/// block-local count cannot see.
 struct Reach {
     Counter counter = Counter::None;
     int base = 0;
     size_t from = 0;
 };
 
-std::optional<Reach> reachAtBlockStart(const GirFrameAnalysis::Result& frames,
-                                       const NodesByKey& byKey, const Node& node,
-                                       const GirFrameHazard& hazard,
-                                       const std::unordered_map<const StinkyInstruction*, size_t>& index) {
+std::optional<Reach> reachAtBlockStart(
+    const GirFrameAnalysis::Result& frames, const NodesByKey& byKey, const Node& node,
+    const GirFrameHazard& hazard,
+    const std::unordered_map<const StinkyInstruction*, size_t>& index) {
     const Counter counter = counterOfProducer(*hazard.producer);
     if (counter == Counter::None) return std::nullopt;
 
@@ -413,10 +413,10 @@ std::optional<Reach> reachAtBlockStart(const GirFrameAnalysis::Result& frames,
         for (const GirFrameNode& producerNode : producerNodes->second) {
             // The hazard's own gap is the frame's answer wherever it lands in this node; a hazard
             // merely passing through is measured to here instead.
-            const int span = hazard.consumerBlock == node.block &&
-                                     hazard.consumerFrame == node.frame
-                                 ? hazard.gap
-                                 : waitcnt::girFrameDistance(frames, producerNode, anchorNode);
+            const int span =
+                hazard.consumerBlock == node.block && hazard.consumerFrame == node.frame
+                    ? hazard.gap
+                    : waitcnt::girFrameDistance(frames, producerNode, anchorNode);
             if (span < 0) continue;
             const int count = waitcnt::girFrameIssuesAcrossSpan(
                 frames, kindOf(counter), producerNode, hazard.producerIndex, span, anchorNode, 0);
@@ -431,9 +431,9 @@ std::optional<Reach> reachAtBlockStart(const GirFrameAnalysis::Result& frames,
 /// wait is the minimum over everything it discharges.
 size_t chooseSlot(const GirFrameAnalysis::Result& frames, const NodesByKey& byKey, const Node& node,
                   const std::vector<StinkyInstruction*>& body,
-                  const GirFrameHazardAnalysis::Result& hazards,
-                  const std::vector<Live>& live, const std::vector<size_t>& violating,
-                  size_t consumerSlot, const Markers& markers) {
+                  const GirFrameHazardAnalysis::Result& hazards, const std::vector<Live>& live,
+                  const std::vector<size_t>& violating, size_t consumerSlot,
+                  const Markers& markers) {
     std::unordered_map<const StinkyInstruction*, size_t> index;
     for (size_t i = 0; i < body.size(); ++i) index[body[i]] = i;
 

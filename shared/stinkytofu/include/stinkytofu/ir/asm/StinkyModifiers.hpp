@@ -1119,11 +1119,11 @@ enum class GirActionKind : uint8_t { Other, Read, Copy, Fence, Wmma, WaitCnt };
 /// it rather than in a contract table keyed by action id.
 struct GirAccessData {
     bool isWrite = false;
-    int operand = -1;                          // id of the (operand, region) pair this names
+    int operand = -1;  // id of the (operand, region) pair this names
     int ring = 1;
-    int genId = -1;                            // -1 = not bound to a generation
+    int genId = -1;  // -1 = not bound to a generation
     int gdelta = 0;
-    int absolute = -1;                         // -1 = relative, not pinned
+    int absolute = -1;  // -1 = relative, not pinned
     bool crossAgent = false;
 
     bool operator==(const GirAccessData&) const = default;
@@ -1143,8 +1143,11 @@ struct GirActionData : public TypedModifier<GirActionData> {
     explicit GirActionData(uint64_t actionId = 0, uint64_t anchorAction = 0,
                            GirActionKind kind = GirActionKind::Other,
                            std::vector<GirAccessData> accesses = {})
-        : TypedModifier<GirActionData>(), actionId(actionId), anchorAction(anchorAction),
-          kind(kind), accesses(std::move(accesses)) {}
+        : TypedModifier<GirActionData>(),
+          actionId(actionId),
+          anchorAction(anchorAction),
+          kind(kind),
+          accesses(std::move(accesses)) {}
 };
 
 /// Buffer pool index for WMMA instructions in double/triple/N-buffered GEMM kernels.
