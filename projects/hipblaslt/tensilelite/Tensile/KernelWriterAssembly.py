@@ -22115,11 +22115,18 @@ class KernelWriterAssembly(KernelWriter):
     """The K extent region `region` of the tail's descriptor should load.
 
     Only a DU split cuts K, so only it apportions: `clamp(rem - r*span, 0, span)`.  An MT split and
-    an unsplit operand both take the whole remainder -- the advance is already 0 for an unsplit
-    parity, so its extra load repeats region 0 harmlessly.
+    an unsplit operand both take the whole remainder, which the reset already left in place.
 
-    Fused, A and B are one descriptor and the loads are straight-line, so the wave's parity picks
-    which operand's extent the shared registers hold."""
+    WHICH DIM carries K is the layout's: dim0 is the contiguous one, so an unroll-major operand
+    keeps K there and a `tlu` one keeps it on dim1.  Multi-wave, dim1 is NOT this function's --
+    `tdmSplitDim1ForRegion` owns it, and it reads the LIVE descriptor, so its `H1` already carries
+    the region's span AND the wave's K offset, which a remainder computed here does not.  A `tlu`
+    member is therefore owed nothing.  Single-wave that function does not run and dim1 is this
+    one's again.
+
+    Fused, A and B are ONE descriptor -- the even waves hold A's extents, the odd B's -- and the
+    two dims overlap in `Group1+2`, so one write serves the dim and a parity owed nothing on it
+    keeps the extent it already has."""
     mod = Module(f"TDM tail dim for region {region}")
     tc = tP["tensorChar"]
     if not self.states.inTailLoop or region < 1:
@@ -22132,32 +22139,39 @@ class KernelWriterAssembly(KernelWriter):
         return ("null", 0)
       return ("du", du // n) if axis == _tdm_split.AXIS_DU else ("mt", 0)
 
-    kindA, kindB = kind("A"), kind("B")
+    def descIdx(member):
+      """Which descriptor dim carries K: dim0 when the layout is unroll-major, else dim1."""
+      return 1 if not self.tdmTpByChar(member)["tlu"] else 2
+
     # SAME RULE AS `tdmSplitDim1ForRegion`: parity means A-vs-B only while they SHARE this
     # descriptor.  Any other Φ grouping leaves one tensor here, so every wave takes its own span
     # and a parity select would hand half of them an operand that is not in their group.
     _members, _ = self.tdmFuseGroupOf(kernel, tc)
     shared = (int(kernel["NumWaves"]) > 1
               and bool(_members and "A" in _members and "B" in _members))
-    mine = kind(tc) if not shared else None
-    if not shared and mine[0] != "du":
-      return mod                    # the reset already left the whole remainder
-    if shared and kindA == kindB and kindA[0] != "du":
-      return mod
-    # `tdmSplitDim1ForRegion` owns a DU region's dim1 under wave separation -- it subtracts from
-    # region 0's bound, which carries the component's K offset.  ONLY where the split cuts dim1:
-    # elsewhere its `dim1SpanPerRegion` is 0, so it narrows nothing and this form is the one.
-    _duSpans = [self.tdmSplitGeometry(kernel, self.tdmTpByChar(m)).dim1SpanPerRegion
-                for m in (("A", "B") if shared else (tc,)) if kind(m)[0] == "du"]
-    if int(kernel["NumWaves"]) > 1 and _duSpans and all(s > 0 for s in _duSpans):
+    group = ("A", "B") if shared else (tc,)
+    ownsDim1 = int(kernel["NumWaves"]) > 1
+    owed = [m for m in group
+            if kind(m)[0] == "du" and (descIdx(m) == 1 or not ownsDim1)]
+    if not owed:
       return mod
 
     comp: TensorDataMoverLoad = TensorDataMoverLoad.find(self)
-    tdmDescIdx = 1 if not tP["tlu"] else 2
+    group1 = f"tdm{tc}Group1"
+    # Every owed member keeps K on dim0 (or is the lone single-wave member), so one dim is written.
+    onDim = descIdx(owed[0])
+    keepsItsOwn = [m for m in group if m not in owed]
 
-    def extentInto(dst, k, rem, m):
-      """`dst` = the K extent this operand's region `region` wants."""
-      if k[0] != "du":
+    def extentInto(dst, member, rem, scratch, m):
+      """`dst` = the extent `member`'s waves want in dim `onDim` for region `region`."""
+      k = kind(member)
+      if member not in owed:
+        # This parity is owed nothing here, and what it wants is already in the descriptor: read
+        # it back out of the two half-words it straddles so the shared write leaves it alone.
+        m.add(SLShiftRightB32(sgpr(dst), hex(16), sgpr(f"{group1}+{onDim}"), "live extent lo"))
+        m.add(SLShiftLeftB32(sgpr(scratch), hex(16), sgpr(f"{group1}+{onDim + 1}"), "hi << 16"))
+        m.add(SOrB32(sgpr(dst), sgpr(dst), sgpr(scratch), "not this parity's dim: leave it"))
+      elif k[0] != "du":
         # NOT NULL.  `_tdmSplitMultiWaveInc` already selects a 0 advance for the parity whose
         # operand is unsplit, so its second load repeats region 0 at the same address -- harmless.
         # An MT split likewise does not cut K.  Either way the extent is the whole remainder.
@@ -22167,20 +22181,23 @@ class KernelWriterAssembly(KernelWriter):
         m.add(SMaxI32(sgpr(dst), sgpr(dst), 0, "nothing left for this region"))
         m.add(SMinU32(sgpr(dst), sgpr(dst), k[1], "at most this region's own span"))
 
-    with self.allocTmpSgpr(3, tag="tdmSetTailRegionDim") as t:
+    # Both members owed the same split want the same number, so there is nothing to select.
+    uniform = not shared or (not keepsItsOwn and kind("A") == kind("B"))
+
+    # The fourth is the read-back's scratch, and only `keepsItsOwn` reads anything back.
+    with self.allocTmpSgpr(4 if keepsItsOwn else 3, tag="tdmSetTailRegionDim") as t:
       rem, va, vb = t.idx, t.idx + 1, t.idx + 2
+      scratch = t.idx + 3 if keepsItsOwn else None
       mod.add(SAndB32(sgpr(rem), sgpr("SizeL"), (du - 1), "tail K remainder"))
-      if not shared:
-        extentInto(va, mine, rem, mod)
-      elif kindA == kindB:
-        extentInto(va, kindA, rem, mod)
+      if uniform:
+        extentInto(va, owed[0], rem, scratch, mod)
       else:
-        extentInto(va, kindA, rem, mod)
-        extentInto(vb, kindB, rem, mod)
+        extentInto(va, "A", rem, scratch, mod)
+        extentInto(vb, "B", rem, scratch, mod)
         self._emitTdmWaveParitySCCAuto(mod, kernel, comment="wave parity (A=even/B=odd)",
                                        tmpTag="tdmTailRegionParity")
         mod.add(SCSelectB32(sgpr(va), sgpr(vb), sgpr(va), "extent = parity ? B : A"))
-      mod.add(comp.resetTensorDimForTail(f"tdm{tc}Group1", va, tdmDescIdx, self))
+      mod.add(comp.resetTensorDimForTail(group1, va, onDim, self))
     return mod
 
   def resetTDMDescriptorForTailWaveSeparated(self, kernel, tPA, tPB) -> Module:
