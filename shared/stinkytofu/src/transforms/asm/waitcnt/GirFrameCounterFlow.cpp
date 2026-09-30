@@ -92,7 +92,7 @@ struct DynamicSite {
 struct Potential {
     IssueKey producer;
     size_t producerIndex = 0;
-    int gap = 0;
+    int anchorGap = 0;
 };
 
 struct RequirementSummary {
@@ -125,17 +125,25 @@ CounterKind counterFor(const GirFrameHazard& hazard) {
     return CK_Tensor;
 }
 
+struct EnclosingFence {
+    StinkyInstruction* anchor = nullptr;
+    GirFrame frame;
+    int predecessorDistance = -1;
+};
+
 /// The barrier a cross-agent hazard's wait anchors on: the LAST one standing between the two
-/// occurrences on the frame graph.  Resolved by position, not by any fence-to-hazard table handed
-/// down, so a barrier StinkyTofu placed itself anchors exactly like one it inherited.
-/// The barrier this hazard's wait anchors on, via the one shared definition.
-std::pair<StinkyInstruction*, GirFrame> enclosingFence(
-    Function& function, const GirFrameHazard& hazard, const GirFrameAnalysis::Result& frames,
-    const std::function<bool(const StinkyInstruction&)>& alsoFences) {
+/// occurrences on the frame graph. Resolved by position, not by any fence-to-hazard table handed
+/// down, so a barrier StinkyTofu placed itself anchors exactly like one it inherited. The
+/// predecessor distance is part of the answer: a loop-tail fence is one edge earlier than its
+/// next-trip consumer, and its completion wait must execute at that earlier occurrence.
+EnclosingFence enclosingFence(Function& function, const GirFrameHazard& hazard,
+                              const GirFrameAnalysis::Result& frames,
+                              const std::function<bool(const StinkyInstruction&)>& alsoFences) {
     (void)function;
+    int predecessorDistance = -1;
     auto found = lastBarrierBefore(frames, hazard.consumerBlock, hazard.consumerFrame,
-                                   hazard.consumerIndex, alsoFences);
-    if (found.first) return found;
+                                   hazard.consumerIndex, alsoFences, &predecessorDistance);
+    if (found.first) return {found.first, found.second, predecessorDistance};
     std::ostringstream message;
     message << "Cross-agent ST frame hazard is discharged by no barrier"
             << " kind=" << static_cast<int>(hazard.kind) << " gap=" << hazard.gap
@@ -157,7 +165,7 @@ PotentialMap buildPotentials(Function& function, const GirFrameAnalysis::Result&
     PotentialMap result;
     const FeasibleDomainMap feasible = computeFeasibleDomains(function, frames);
     std::set<std::tuple<StinkyInstruction*, GirFrame, CounterKind, StinkyInstruction*, GirFrame,
-                        size_t, int>>
+                        size_t, int, int>>
         seen;
     std::set<const BasicBlock*> modeled;
     for (BasicBlock& block : function) modeled.insert(&block);
@@ -174,12 +182,20 @@ PotentialMap buildPotentials(Function& function, const GirFrameAnalysis::Result&
         // the two ends.
         StinkyInstruction* anchor = hazard.consumer;
         GirFrame anchorFrame = hazard.consumerFrame;
-        if (hazard.crossAgent)
-            std::tie(anchor, anchorFrame) = enclosingFence(function, hazard, frames, alsoFences);
+        int anchorGap = hazard.gap;
+        if (hazard.crossAgent) {
+            EnclosingFence fence = enclosingFence(function, hazard, frames, alsoFences);
+            anchor = fence.anchor;
+            anchorFrame = std::move(fence.frame);
+            if (fence.predecessorDistance < 0 || fence.predecessorDistance > hazard.gap)
+                report_fatal_error("GIR frame fence lies outside its hazard span");
+            anchorGap -= fence.predecessorDistance;
+        }
         // The span is part of the identity: the hazard analysis deliberately keeps one pair at two
         // distances, and folding them together kept whichever the vector happened to hold first.
-        auto key = std::make_tuple(anchor, anchorFrame, counter, hazard.producer,
-                                   hazard.producerFrame, hazard.producerIndex, hazard.gap);
+        auto key =
+            std::make_tuple(anchor, anchorFrame, counter, hazard.producer, hazard.producerFrame,
+                            hazard.producerIndex, hazard.gap, anchorGap);
         if (!seen.insert(key).second) continue;
         PASS_DEBUG(std::cerr << "[gir-haz] fn=" << function.getName()
                              << " counter=" << (counter == CK_DS ? "ds" : "tensor")
@@ -190,9 +206,9 @@ PotentialMap buildPotentials(Function& function, const GirFrameAnalysis::Result&
                              << " cons=" << hazard.consumerBlock->getLabel() << "#"
                              << hazard.consumerIndex << "/act" << hazard.consumerAction
                              << " anchor=" << anchor->getParent()->getLabel() << "#"
-                             << indexInBlock(*anchor) << "\n");
+                             << indexInBlock(*anchor) << " anchorGap=" << anchorGap << "\n");
         result[{anchor, anchorFrame, counter}].push_back(
-            {{hazard.producer, hazard.producerFrame}, hazard.producerIndex, hazard.gap});
+            {{hazard.producer, hazard.producerFrame}, hazard.producerIndex, anchorGap});
     }
     return result;
 }
@@ -417,11 +433,13 @@ struct SpanResult {
 /// How many same-counter issues stand at or after `potential`'s producer when control reaches the
 /// anchor: 1 is the producer alone, so `waitToDrain` retires it at `n - 1`.
 ///
-/// Walked over the hazard's OWN span rather than read out of a per-node state.  A state keyed by
-/// `(instruction, frame)` cannot hold an occurrence a full ring period back -- with ring 2 the read
-/// two trips ago and this trip's read are the same key, and the newer one overwrites the older, so
-/// the lookup answers 1 for a producer that a full loop of issues has since buried.  The walk
-/// crosses those trips and counts them.
+/// Walked over the producer-to-ANCHOR span rather than read out of a per-node state. A
+/// cross-agent anchor may precede its consumer: a loop-tail fence is in the producer trip while
+/// the overwrite it guards is at the next trip's head. A state keyed by `(instruction, frame)`
+/// also cannot hold an occurrence a full ring period back -- with ring 2 the read two trips ago
+/// and this trip's read are the same key, and the newer one overwrites the older, so the lookup
+/// answers 1 for a producer a full loop of issues has since buried. The walk crosses the exact
+/// producer-to-fence distance and counts those issues.
 ///
 /// `count` is -1 when no path reaches the anchor with the producer still outstanding.  That is a
 /// discharge proof ONLY when every path got there by retiring; a path that instead ran out of span
@@ -490,9 +508,9 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
             const size_t here = position++;
             if (here < step.index) continue;
 
-            // `span` ends at the hazard's consumer. GIR fence placement gives each RAW a latest
-            // owning barrier in that endpoint node, so matching an earlier frame step would bind
-            // the RAW to an unrelated publication point and tighten its wait.
+            // Match the chosen dynamic anchor occurrence exactly. The same static fence can occur
+            // more than once within a ring period; accepting another occurrence would either bind
+            // a RAW to an unrelated publication point or let a WAR overwrite before its drain.
             if (inst == anchor && step.steps == span && here == anchorIndex &&
                 step.node == anchorNode) {
                 if (best < 0 || step.count < best) best = step.count;
@@ -558,8 +576,8 @@ SpanResult countAcrossSpan(const GirFrameAnalysis::Result& frames, const Decisio
         return tail != tailDecisions.end() && count > tail->second;
     };
 
-    return walkSpan(frames, counter, producerNode, potential.producerIndex, potential.gap, anchor,
-                    anchorNode, anchorIndex, retireAt, retireAtEnd, perPred, feasible);
+    return walkSpan(frames, counter, producerNode, potential.producerIndex, potential.anchorGap,
+                    anchor, anchorNode, anchorIndex, retireAt, retireAtEnd, perPred, feasible);
 }
 
 RequirementMap simulate(Function& function, const GirFrameAnalysis::Result& frames,
