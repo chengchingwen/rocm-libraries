@@ -132,8 +132,7 @@ namespace {
 struct DumpMemTokenIRStructureRegistrar {
     DumpMemTokenIRStructureRegistrar() {
         PassBuilder::registerNamedPassFactory(
-            "DumpMemTokenIRStructurePass",
-            [](StinkyAsmModule& module) -> std::unique_ptr<Pass> {
+            "DumpMemTokenIRStructurePass", [](StinkyAsmModule& module) -> std::unique_ptr<Pass> {
                 return createDumpMemTokenIRStructurePass(
                     module, {.path = module.getPluginDataStr("DumpMemTokenIRPath")});
             });

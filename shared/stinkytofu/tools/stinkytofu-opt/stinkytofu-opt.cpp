@@ -26,8 +26,8 @@
 #include <cstring>
 #include <fstream>
 #include <iostream>
-#include <map>
 #include <limits>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -35,10 +35,10 @@
 
 #include "stinkytofu/Version.h"
 #include "stinkytofu/analysis/AnalysisRegistration.hpp"
+#include "stinkytofu/analysis/asm/GirFrameAnalysis.hpp"
 #include "stinkytofu/bindings/python/Module.hpp"
 #include "stinkytofu/hardware/ArchHelper.hpp"
 #include "stinkytofu/hardware/ToolchainCaps.hpp"
-#include "stinkytofu/analysis/asm/GirFrameAnalysis.hpp"
 #include "stinkytofu/ir/asm/StinkyAsmIR.hpp"
 #include "stinkytofu/ir/asm/StinkySignature.hpp"
 #include "stinkytofu/pipeline/Backend.hpp"

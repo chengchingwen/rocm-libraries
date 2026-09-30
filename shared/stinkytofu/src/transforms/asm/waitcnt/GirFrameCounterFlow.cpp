@@ -584,18 +584,16 @@ RequirementMap simulate(Function& function, const GirFrameAnalysis::Result& fram
 
     for (const auto& [site, list] : potentials) {
         const size_t anchorIndex = indexInBlock(*site.anchor);
-        for (const GirFrameNode& anchorNode :
-             nodesByKey[{site.anchor->getParent(), site.frame}]) {
+        for (const GirFrameNode& anchorNode : nodesByKey[{site.anchor->getParent(), site.frame}]) {
             for (const Potential& potential : list) {
-                auto producers =
-                    nodesByKey.find({potential.producer.inst->getParent(), potential.producer.frame});
+                auto producers = nodesByKey.find(
+                    {potential.producer.inst->getParent(), potential.producer.frame});
                 if (producers == nodesByKey.end()) continue;
                 for (const GirFrameNode& producerNode : producers->second) {
                     std::map<BasicBlock*, int, std::less<BasicBlock*>> perPred;
-                    const SpanResult span =
-                        countAcrossSpan(frames, decisions, tailDecisions, site.counter, producerNode,
-                                        potential, site.anchor, anchorNode, anchorIndex, &perPred,
-                                        &feasible);
+                    const SpanResult span = countAcrossSpan(
+                        frames, decisions, tailDecisions, site.counter, producerNode, potential,
+                        site.anchor, anchorNode, anchorIndex, &perPred, &feasible);
                     // Only a walk that reached the anchor on NO path and ended some path by
                     // exhaustion is a modelling failure.  In a branching graph most paths simply
                     // lead elsewhere, so counting every one of those measures the graph, not a bug.
