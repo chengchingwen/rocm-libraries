@@ -15,7 +15,6 @@ from dataclasses import dataclass
 
 from ..nodes import Move
 from ..analysis import Analysis
-from .token_liveness import BufferLiveness
 
 
 @dataclass(frozen=True)
@@ -149,17 +148,12 @@ class Geometry:
 class LdsBufferIdSet:
     """Query API over the numbering.  `ids_for(ref)` is every buffer a Ref may touch."""
 
-    def __init__(self, ids, per_ref, rings, geometry, unresolved, writes, reads):
+    def __init__(self, ids, per_ref, rings, geometry, unresolved):
         self._ids = dict(ids)                 # Buffer -> int
         self._per_ref = dict(per_ref)         # id(ref) -> tuple[Buffer], the MAY-set over the ring
         self._depths = dict(rings)            # operand -> rotation depth
         self._unresolved = tuple(unresolved)
-        self._writes = dict(writes)           # {block: {index: frozenset(Buffer)}}
-        self._reads = dict(reads)
         self.geometry = geometry
-
-    def __len__(self):
-        return len(self._ids)
 
     @property
     def buffers(self):
@@ -175,19 +169,8 @@ class LdsBufferIdSet:
         """How many buffers this operand rotates through."""
         return self._depths.get(operand, 1)
 
-    def id_of(self, buf):
-        return self._ids.get(buf)
-
-    def buffers_for(self, ref):
-        """Every Buffer `ref` may touch over the rotation -- `FrameMap` narrows it to one."""
-        return self._per_ref.get(id(ref), ())
-
     def ids_for(self, ref):
         return tuple(self._ids[b] for b in self._per_ref.get(id(ref), ()))
-
-    def at(self, ref, ring):
-        """The ids `ref` touches when its rotation stands at `ring` -- one per region."""
-        return frozenset(self._ids[b] for b in self._per_ref.get(id(ref), ()) if b.ring == ring)
 
     def frame_at(self, ref, phase_of, is_write):
         """Exact storage ids selected by this access in one frame.
@@ -207,10 +190,6 @@ class LdsBufferIdSet:
         return frozenset(
             self._ids[b] for b in _expand(op, regions, self.depth_of(op))
             if b in self._ids and b.ring == phase_of(b.region))
-
-    def liveness(self, prog):
-        """Buffer live ranges over this program."""
-        return BufferLiveness(prog, self._writes, self._reads)
 
 
 def _depth_of_ref(ref) -> int:
@@ -235,7 +214,6 @@ class LdsBufferIds(Analysis):
     def run(self, prog, am):
         geometry = Geometry(prog)
         touches = list(shared_refs(prog))
-        pos = {id(inst): i for blk in prog.blocks.values() for i, inst in enumerate(blk.body)}
 
         rings = {}
         for _blk, _inst, ref, _w in touches:
@@ -243,9 +221,7 @@ class LdsBufferIds(Analysis):
             rings[op] = max(rings.get(op, 1), _depth_of_ref(ref))
 
         per_ref, wanted, unresolved = {}, set(), []
-        writes = {lab: {} for lab in prog.blocks}
-        reads = {lab: {} for lab in prog.blocks}
-        for blk, inst, ref, is_write in touches:
+        for blk, _inst, ref, is_write in touches:
             op = ref.tile.operand
             if getattr(ref, "gen", None) is None and getattr(ref, "abs_gen", None) is None:
                 unresolved.append((op, blk.label))
@@ -254,10 +230,7 @@ class LdsBufferIds(Analysis):
                                 key=buffer_key))
             per_ref[id(ref)] = bufs
             wanted.update(bufs)
-            side = writes if is_write else reads
-            at = pos[id(inst)]
-            side[blk.label][at] = side[blk.label].get(at, frozenset()) | frozenset(bufs)
 
         # DENSE and DETERMINISTIC: sorted key order, so the same Program always numbers the same.
         ids = {b: i for i, b in enumerate(sorted(wanted, key=buffer_key))}
-        return LdsBufferIdSet(ids, per_ref, rings, geometry, unresolved, writes, reads)
+        return LdsBufferIdSet(ids, per_ref, rings, geometry, unresolved)

@@ -23,16 +23,6 @@ class EmitAction:
     source: object = None
 
 
-def _coord_val(tile, axis):
-    """Concrete value of `tile.coord` along `axis`, or 0 if absent/None."""
-    if axis is None:
-        return 0
-    for ax, v in tile.coord:
-        if ax == axis:
-            return int(v) if v is not None else 0
-    return 0
-
-
 def _project(coord, axes, inner_order, extents):
     """Mixed-radix combine of `coord` over `axes` -- an operand's free axes, or the summation
     axes -- into one flat index, in loop order."""

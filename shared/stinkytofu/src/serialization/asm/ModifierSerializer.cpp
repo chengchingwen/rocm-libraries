@@ -721,7 +721,7 @@ void deserializeVisit(StinkyInstruction* inst, const std::string& attrKey,
             access.gdelta = getInt(fields, tag + "gdelta", 0);
             access.absolute = getInt(fields, tag + "abs", -1);
             access.crossAgent = getInt(fields, tag + "cross", 0) != 0;
-            accesses.push_back(std::move(access));
+            accesses.push_back(access);
         }
         inst->addModifier(GirActionData(action, getUInt64(fields, "anchor", action),
                                         parseGirActionKind(getStr(fields, "kind", "other")),

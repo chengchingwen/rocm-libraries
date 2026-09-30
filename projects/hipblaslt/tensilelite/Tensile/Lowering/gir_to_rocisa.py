@@ -17,7 +17,7 @@ from .gir.nodes import Move
 from .gir_tag import gir_tag
 from .leaves import LeafEmitters
 from ..Components.TDMFuse import tdmFusedGroups, tdmSetOwner
-from rocisa.instruction import GirActionKind, SBarrier
+from rocisa.instruction import GirActionKind
 
 
 def _register_depth(prog, band=None):
@@ -252,25 +252,6 @@ class GirToRocisa:
         self._tag(out, phase, "fence", "%s scope=%s covers %s edge(s) %s %s"
                   % ("+".join(buffers) or "?", at.get("scope"), at.get("edges"),
                      ",".join(at.get("kinds", ())), sync))
-
-    def _register_fence(self, code):
-        """Record the `SBarrier` objects in `code` as GIR-owned."""
-        stack = [code]
-        while stack:
-            node = stack.pop()
-            for item in node.items():
-                if isinstance(item, SBarrier):
-                    self.writer.states.girOwnedBarriers.append(item)
-                elif hasattr(item, "items"):
-                    stack.append(item)
-
-    def _fence_tokens(self, at):
-        """The token ids this fence names, or None for a FULL DRAIN.
-
-        A barrier with no token is not inert -- it orders everything, which is the conservative
-        answer when no single name covers what the fence stands between."""
-        ids = tuple(at.get("tokens") or ())
-        return sorted(int(t) for t in ids) if ids else None
 
     def _fused_tp(self, unit, tpByOperand, what):
         """`(tP_even, tP_odd)` for a Phi-fused movement, after checking the scaffold can realize it.

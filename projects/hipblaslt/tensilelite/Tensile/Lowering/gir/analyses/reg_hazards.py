@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from ..nodes import Move, Mma
 from ..analysis import Analysis
 from .cfg import reachable
-from .frame_hazards import Hazard, RAW, WAR, WAW, hazard_kind
+from .frame_hazards import Hazard, hazard_kind
 
 
 def _free_coord(ref):
@@ -62,25 +62,13 @@ def _same_register(a, b):
 
 
 class RegHazardSet:
-    """Query API over the register hazard result.  Mirrors `FrameHazardSet` minus the fence arm:
-    a register is wave-private, so no edge here is ever cross-agent."""
+    """Iterable register hazard result."""
 
     def __init__(self, edges):
         self._edges = tuple(edges)
 
     def __iter__(self):
         return iter(self._edges)
-
-    def __len__(self):
-        return len(self._edges)
-
-    def edges(self, *, kind=None, block=None):
-        out = self._edges
-        if kind is not None:
-            out = [h for h in out if h.kind == kind]
-        if block is not None:
-            out = [h for h in out if block in (h.producer.block, h.consumer.block)]
-        return tuple(out)
 
 
 class RegHazards(Analysis):
