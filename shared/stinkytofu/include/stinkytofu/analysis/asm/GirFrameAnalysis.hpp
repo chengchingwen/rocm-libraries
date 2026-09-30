@@ -208,9 +208,14 @@ struct GirFrameHazard {
 /// stands here", shared by the pass that places them and the pass that anchors waits on them.
 /// `alsoFences` additionally counts an instruction a caller has decided to fence but not yet
 /// materialized, so a placement pass can ask this same question of its own plan.
+/// `predecessorDistance`, when supplied, receives how many frame-graph edges separate the chosen
+/// barrier occurrence from `(block, frame)`: 0 for this block, 1 for an immediate predecessor.
 STINKYTOFU_EXPORT std::pair<StinkyInstruction*, GirFrame> lastBarrierBefore(
     const GirFrameAnalysis::Result& frames, BasicBlock* block, const GirFrame& frame, size_t limit,
     const std::function<bool(const StinkyInstruction&)>& alsoFences = {});
+STINKYTOFU_EXPORT std::pair<StinkyInstruction*, GirFrame> lastBarrierBefore(
+    const GirFrameAnalysis::Result& frames, BasicBlock* block, const GirFrame& frame, size_t limit,
+    const std::function<bool(const StinkyInstruction&)>& alsoFences, int* predecessorDistance);
 
 struct STINKYTOFU_EXPORT GirFrameHazardAnalysis {
     STINKYTOFU_ANALYSIS_KEY("GirFrameHazardAnalysis")

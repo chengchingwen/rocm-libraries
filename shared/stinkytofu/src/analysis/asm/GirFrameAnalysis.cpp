@@ -742,6 +742,13 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
 std::pair<StinkyInstruction*, GirFrame> lastBarrierBefore(
     const GirFrameAnalysis::Result& frames, BasicBlock* block, const GirFrame& frame, size_t limit,
     const std::function<bool(const StinkyInstruction&)>& alsoFences) {
+    return lastBarrierBefore(frames, block, frame, limit, alsoFences, nullptr);
+}
+
+std::pair<StinkyInstruction*, GirFrame> lastBarrierBefore(
+    const GirFrameAnalysis::Result& frames, BasicBlock* block, const GirFrame& frame, size_t limit,
+    const std::function<bool(const StinkyInstruction&)>& alsoFences, int* predecessorDistance) {
+    if (predecessorDistance) *predecessorDistance = -1;
     // `alsoFences` lets a caller that has DECIDED on a fence but not yet materialized it ask this
     // same question of its own plan.  One definition of "a barrier stands here", parameterized by
     // what counts as one, rather than a second walk that can drift from this one.
@@ -774,7 +781,10 @@ std::pair<StinkyInstruction*, GirFrame> lastBarrierBefore(
         }
         return found;
     };
-    if (StinkyInstruction* here = inBlock(block, limit)) return {here, frame};
+    if (StinkyInstruction* here = inBlock(block, limit)) {
+        if (predecessorDistance) *predecessorDistance = 0;
+        return {here, frame};
+    }
 
     using Key = std::pair<BasicBlock*, GirFrame>;
     std::map<Key, std::vector<Key>> preds;
@@ -801,17 +811,20 @@ std::pair<StinkyInstruction*, GirFrame> lastBarrierBefore(
             return lhs.second < rhs.second;
         });
     std::set<Key> seen{{block, frame}};
-    std::deque<Key> work{{block, frame}};
+    std::deque<std::pair<Key, int>> work{{{block, frame}, 0}};
     while (!work.empty()) {
-        const Key node = work.front();
+        const auto [node, distance] = work.front();
         work.pop_front();
         auto incoming = preds.find(node);
         if (incoming == preds.end()) continue;
         for (const Key& pred : incoming->second) {
             if (!seen.insert(pred).second) continue;
-            if (StinkyInstruction* there = inBlock(pred.first, std::numeric_limits<size_t>::max()))
+            if (StinkyInstruction* there =
+                    inBlock(pred.first, std::numeric_limits<size_t>::max())) {
+                if (predecessorDistance) *predecessorDistance = distance + 1;
                 return {there, pred.second};
-            work.push_back(pred);
+            }
+            work.push_back({pred, distance + 1});
         }
     }
     return {nullptr, frame};

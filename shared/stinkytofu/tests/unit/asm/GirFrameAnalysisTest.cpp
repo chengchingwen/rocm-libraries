@@ -893,6 +893,55 @@ TEST(GirFrameAnalysisTest, CrossAgentRingAliasWarDrainsBeforeBarrier) {
     EXPECT_TRUE(allWarSignalsDrained);
 }
 
+// The read is late in one trip and the overwriting copy is at the next trip's head. The enclosing
+// fence is at the predecessor tail, one frame edge before the consumer; reusing the consumer gap
+// for its counter walk skips this occurrence and silently emits no DS drain.
+TEST(GirFrameAnalysisTest, LoopCarriedWarDrainsAtPredecessorTailFence) {
+    Function function("loop_carried_war_tail_fence");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* loop = function.createBasicBlock("loop");
+    function.addEdge(loop, loop);
+
+    StinkyInstruction* copy = createTensorLoadInBlock(loop, GfxArchID::Gfx1250, 0, 8);
+    copy->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 2, 0, 2, -1, true}}});
+    StinkyInstruction* read = createDsReadB128InBlock(loop, GfxArchID::Gfx1250, 0, 20);
+    read->addModifier<GirActionData>(
+        GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 1, -1, true}}});
+    AsmIRBuilder builder(*loop, GfxArchID::Gfx1250);
+    StinkyInstruction* fence = builder.createFence();
+    function.setStringMetaData(kGirFrameContractKey, kRingTwoContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    const auto& frames = analyses.getResult<GirFrameAnalysis>(function);
+    EXPECT_EQ(frames.occurrences.size(), 4u);
+    const auto& hazards = analyses.getResult<GirFrameHazardAnalysis>(function);
+    auto war = std::find_if(
+        hazards.hazards.begin(), hazards.hazards.end(), [&](const GirFrameHazard& hazard) {
+            return hazard.kind == GirHazardKind::WAR && hazard.producer == read &&
+                   hazard.consumer == copy && hazard.crossAgent;
+        });
+    ASSERT_NE(war, hazards.hazards.end());
+    EXPECT_EQ(war->gap, 1);
+
+    createGirWaitCntInsertionPass()->run(function, context, analyses);
+
+    const SWaitCntData* dsWait = nullptr;
+    for (IRBase& node : *loop) {
+        auto* inst = dyn_cast<StinkyInstruction>(&node);
+        if (inst == fence) break;
+        if (inst) {
+            if (const auto* wait = inst->getModifier<SWaitCntData>()) dsWait = wait;
+        }
+    }
+    ASSERT_NE(dsWait, nullptr);
+    EXPECT_EQ(dsWait->dlcnt, 0);
+}
+
 TEST(GirFrameAnalysisTest, LoopWrapStillUsesUnreducedGenerationSpan) {
     Function function("loop_wrap_generation_span");
     setFunctionArch(function, GfxArchID::Gfx1250);
