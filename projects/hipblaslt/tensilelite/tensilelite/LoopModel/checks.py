@@ -656,28 +656,35 @@ def _check_short_loop(errs, ir):
                             f"'{_TRIP_SYMBOL} > {t}' -- it would read an out-of-bounds chunk")
 
 
-def _ring_slots(placement, environments):
-    """`{group: {slot, ...}}` -- every concrete slot a placement resolves to."""
-    out = {}
-    for label, expression in getattr(placement, "slots", ()) or ():
-        seen = out.setdefault(label or "g0", set())
-        for environment in environments:
-            try:
-                seen.add(int(expression.eval(environment)))
-            except Exception:
-                pass  # a slot that will not settle here says nothing about the ring
+def _slot_domain(theta, samples=8):
+    """`{name: count}` -- how many values each name takes when probing a slot expression."""
+    domain = {axis.name: min(samples, max(1, int(axis.extent))) for axis in theta.inner_axes()}
+    chunk = theta.summation_chunk_name()
+    if chunk:
+        domain[chunk] = samples       # a few chunks, whatever the axis itself declares
+    return domain
+
+
+def _slot_values(expression, domain):
+    """Every slot `expression` resolves to, over ITS OWN names.
+
+    A name the expression does not reference cannot change its value, so walking the whole inner
+    product would ask the same question once per combination of names it ignores.
+    """
+    names = [name for name in expression.free_vars() if name in domain]
+    out = set()
+    for point in _iproduct(*[range(domain[name]) for name in names]):
+        try:
+            out.add(int(expression.eval(dict(zip(names, point)))))
+        except Exception:
+            pass  # a slot that will not settle here says nothing about the ring
     return out
 
 
-def _slot_environments(theta, samples=8):
-    """Every inner coordinate, over a few chunks -- enough for each slot to come up."""
-    axes = [(axis.name, min(samples, max(1, int(axis.extent)))) for axis in theta.inner_axes()]
-    chunk = theta.summation_chunk_name()
-    names = [name for name, _extent in axes]
-    for point in _iproduct(*[range(count) for _name, count in axes]):
-        base = dict(zip(names, point))
-        for value in range(samples):
-            yield {**base, **({chunk: value} if chunk else {})}
+def _collect_slots(into, name, placement):
+    """File this placement's slot EXPRESSIONS under `(name, group)`, deduplicated."""
+    for label, expression in getattr(placement, "slots", ()) or ():
+        into.setdefault((name, label or "g0"), set()).add(expression)
 
 
 def _check_dead_slots(_errs, ir, theta):
@@ -688,17 +695,21 @@ def _check_dead_slots(_errs, ir, theta):
     not means the depth and the traversal were derived from different things, which is a defect
     in the model, not a configuration a caller can choose differently.
     """
-    environments = list(_slot_environments(theta))
+    # Gather the EXPRESSIONS first: a tree names a handful of distinct ones over hundreds of
+    # instructions, and resolving per instruction asks each the same question again.
+    domain = _slot_domain(theta)
     written, consumed = {}, {}
     for inst in walk_insts(ir):
         operand = inst.op
         if isinstance(operand, Load) and operand.dst == Space.REGISTER:
-            for label, slots in _ring_slots(inst.placement, environments).items():
-                written.setdefault((operand.tokens[0], label), set()).update(slots)
+            _collect_slots(written, operand.tokens[0], inst.placement)
         elif isinstance(operand, Mma) and isinstance(inst.placement, dict):
             for name, placement in inst.placement.items():
-                for label, slots in _ring_slots(placement, environments).items():
-                    consumed.setdefault((name, label), set()).update(slots)
+                _collect_slots(consumed, name, placement)
+    written = {key: set().union(*(_slot_values(e, domain) for e in exprs)) if exprs else set()
+               for key, exprs in written.items()}
+    consumed = {key: set().union(*(_slot_values(e, domain) for e in exprs)) if exprs else set()
+                for key, exprs in consumed.items()}
     from .traversal import _region_count
     for operand in theta.operands:
         depths = getattr(getattr(operand, "fragment", None), "ring_depths", None) or {}
