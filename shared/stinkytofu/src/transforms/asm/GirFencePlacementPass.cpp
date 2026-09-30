@@ -542,71 +542,80 @@ class GirFencePlacementPass final : public StinkyInstPass {
             return out;
         };
 
-        // Phase 1: cut every violating hazard, greedily, at the slot with the deepest residual.
-        for (;;) {
-            const std::vector<Live> in = solve(cfg, hazards, markers);
-            size_t node = 0, slot = 0;
-            std::vector<size_t> violating;
-            if (!firstViolation(cfg, hazards, in, markers, node, slot, violating)) break;
-            slot =
-                chooseSlot(frames, byKey, cfg.nodes[node], cfg.body[node], hazards,
-                           liveBefore(cfg.nodes[node], cfg.body[node], hazards, in[node], markers),
-                           violating, slot, markers);
-            const StinkyInstruction* marker = cfg.body[node][slot];
-            if (!markers.insert(marker).second)
-                report_fatal_error("GirFencePlacementPass failed to converge");
-            for (size_t h : violating) markerKinds[marker].insert(hazards.hazards[h].kind);
-        }
+        // Close the fence cut after every wait-aware removal. A mandatory RAW marker can also
+        // happen to cut a WAR/WAW path. If its tensor wait later proves redundant, deleting that
+        // marker must expose the other hazard to Phase 1 instead of turning the incomplete
+        // ownership summary into a fatal error.
+        const auto closeFenceCut = [&] {
+            // Phase 1: cut every violating hazard, greedily, at the slot with the deepest
+            // residual.
+            for (;;) {
+                const std::vector<Live> in = solve(cfg, hazards, markers);
+                size_t node = 0, slot = 0;
+                std::vector<size_t> violating;
+                if (!firstViolation(cfg, hazards, in, markers, node, slot, violating)) break;
+                slot = chooseSlot(
+                    frames, byKey, cfg.nodes[node], cfg.body[node], hazards,
+                    liveBefore(cfg.nodes[node], cfg.body[node], hazards, in[node], markers),
+                    violating, slot, markers);
+                const StinkyInstruction* marker = cfg.body[node][slot];
+                if (!markers.insert(marker).second)
+                    report_fatal_error("GirFencePlacementPass failed to converge");
+                for (size_t h : violating) markerKinds[marker].insert(hazards.hazards[h].kind);
+            }
 
-        // Phase 2: the cut fixpoint answers LIVENESS; the wait pass asks POSITION -- does a
-        // barrier stand before this consumer.  Cover what the first question does not imply,
-        // asking `lastBarrierBefore` about the plan so both phases speak of the same fences.
-        for (const GirFrameHazard& hazard : hazards.hazards) {
-            if (!hazard.crossAgent) continue;
-            if (!passCtx.shouldProcessBasicBlock(*hazard.consumerBlock)) continue;
-            if (lastBarrierBefore(frames, hazard.consumerBlock, hazard.consumerFrame,
-                                  hazard.consumerIndex, marked)
-                    .first)
-                continue;
-            size_t index = 0;
-            for (IRBase& node : *hazard.consumerBlock) {
-                auto* inst = dyn_cast<StinkyInstruction>(&node);
-                if (!inst) continue;
-                if (index++ == hazard.consumerIndex) {
-                    markers.insert(inst);
-                    markerKinds[inst].insert(hazard.kind);
-                    break;
+            // Phase 2: the cut fixpoint answers LIVENESS; the wait pass asks POSITION -- does a
+            // barrier stand before this consumer. Cover what the first question does not imply,
+            // asking `lastBarrierBefore` about the plan so both phases speak of the same fences.
+            for (const GirFrameHazard& hazard : hazards.hazards) {
+                if (!hazard.crossAgent) continue;
+                if (!passCtx.shouldProcessBasicBlock(*hazard.consumerBlock)) continue;
+                if (lastBarrierBefore(frames, hazard.consumerBlock, hazard.consumerFrame,
+                                      hazard.consumerIndex, marked)
+                        .first)
+                    continue;
+                size_t index = 0;
+                for (IRBase& node : *hazard.consumerBlock) {
+                    auto* inst = dyn_cast<StinkyInstruction>(&node);
+                    if (!inst) continue;
+                    if (index++ == hazard.consumerIndex) {
+                        markers.insert(inst);
+                        markerKinds[inst].insert(hazard.kind);
+                        break;
+                    }
                 }
             }
-        }
 
-        // Phase 3: greedy can over-place auxiliary WAR/WAW cuts, so drop any the rest cover.
-        // RAW markers are ownership points, not hitting-set candidates: deleting a later one
-        // would bind that RAW's wait to an earlier fence and shorten its in-flight interval.
-        for (bool shrinking = true; shrinking;) {
-            shrinking = false;
-            for (const StinkyInstruction* candidate : inProgramOrder(markers)) {
-                if (mandatoryRawMarkers.count(candidate)) continue;
-                markers.erase(candidate);
-                size_t n = 0, sl = 0;
-                std::vector<size_t> v;
-                if (!firstViolation(cfg, hazards, solve(cfg, hazards, markers), markers, n, sl,
-                                    v)) {
-                    markerKinds.erase(candidate);
-                    shrinking = true;
-                    break;
+            // Phase 3: greedy can over-place auxiliary WAR/WAW cuts, so drop any the rest cover.
+            // RAW markers are ownership points, not hitting-set candidates: deleting a later one
+            // would bind that RAW's wait to an earlier fence and shorten its in-flight interval.
+            for (bool shrinking = true; shrinking;) {
+                shrinking = false;
+                for (const StinkyInstruction* candidate : inProgramOrder(markers)) {
+                    if (mandatoryRawMarkers.count(candidate)) continue;
+                    markers.erase(candidate);
+                    size_t n = 0, sl = 0;
+                    std::vector<size_t> v;
+                    if (!firstViolation(cfg, hazards, solve(cfg, hazards, markers), markers, n, sl,
+                                        v)) {
+                        markerKinds.erase(candidate);
+                        shrinking = true;
+                        break;
+                    }
+                    markers.insert(candidate);
                 }
-                markers.insert(candidate);
             }
-        }
+        };
+        closeFenceCut();
 
         // Phase 3b: plan waits against the still-virtual fence set. Tensor RAW ownership without a
         // tensor wait publishes no new completion, so drop that ownership. If the marker then owns
-        // nothing else, remove it only when the remaining markers still cover every cross-agent
-        // hazard, then re-plan. Fence and wait ownership therefore reach one fixpoint before IR
-        // materialization.
+        // nothing else, retire it and close the fence cut again: another hazard that happened to
+        // rely on this marker then receives its own marker and counter wait. Fence placement and
+        // wait ownership therefore reach one fixpoint before IR materialization.
         bool waitAwareShrinkConverged = false;
-        const size_t markerBound = markers.size();
+        const size_t markerBound = position.size();
+        Markers waitRetiredMarkers;
         waitcnt::WaitInsertionPlan finalVirtualWaits;
         for (size_t round = 0; round <= markerBound; ++round) {
             MarkerOwnershipMap ownership = collectMarkerOwnership(frames, hazards, markers, covers);
@@ -627,19 +636,19 @@ class GirFencePlacementPass final : public StinkyInstPass {
                 if (owned != ownership.end() && !owned->second.kinds.empty()) continue;
 
                 markers.erase(candidate);
-                size_t n = 0, sl = 0;
-                std::vector<size_t> violations;
-                if (firstViolation(cfg, hazards, solve(cfg, hazards, markers), markers, n, sl,
-                                   violations)) {
-                    markers.insert(candidate);
-                    report_fatal_error(
-                        "GirFencePlacementPass cannot remove an unwaited/unowned marker");
-                }
                 markerKinds.erase(candidate);
+                waitRetiredMarkers.insert(candidate);
                 removed = true;
                 break;
             }
-            if (removed) continue;
+            if (removed) {
+                closeFenceCut();
+                for (const StinkyInstruction* retired : waitRetiredMarkers)
+                    if (markers.count(retired))
+                        report_fatal_error(
+                            "GirFencePlacementPass reintroduced an unwaited/unowned marker");
+                continue;
+            }
 
             markerKinds.clear();
             for (const auto& [marker, summary] : ownership) markerKinds[marker] = summary.kinds;
