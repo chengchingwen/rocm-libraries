@@ -65,17 +65,47 @@ def addr_coord_on_split_axis(within: int, flat: int, ctx) -> int:
         ctx.unrollMajor, ctx.nsplit, getattr(ctx, "splitAxis", AXIS_MT)) else flat
 
 
-def tile_row(ctx, t: int) -> int:
-    """The LDS ROW index of this operand's wave-tile `t`, in an unroll-major (DU-major) layout.
+def free_position(ctx, t: int) -> int:
+    """This wave-tile's ELEMENT POSITION on the free axis -- the same in either layout.
 
     The distribution is BY VECTOR GROUP: `vw` adjacent tiles, then the next group starts one
-    wave-group of rows further down.
+    wave-group further along.  Where that position lands in the LDS image is the layout's
+    business (`tile_row`); the position itself is not, which is why `wave_region_span`,
+    `localReadDo` and this module can all ask for it and get one answer.
     """
-    if not ctx.unrollMajor:
-        return t % tiles_per_region(ctx)
     vw = max(1, ctx.vectorWidth)
     group = ctx.MIWaveGroupShape[ctx.tile01] if ctx.MIWaveGroupShape else vw
     return (t // vw) * (getattr(ctx, "segRowShape", 0) or group) + (t % vw)
+
+
+def macro_tile_extent(ctx) -> int:
+    """The operand's free-axis extent, derived so a context need not carry it twice."""
+    mt = getattr(ctx, "macroTile", 0)
+    if mt:
+        return int(mt)
+    vw = max(1, ctx.vectorWidth)
+    group = ctx.MIWaveGroupShape[ctx.tile01] if ctx.MIWaveGroupShape else vw
+    return max(1, int(ctx.miWaveTileAxis) // vw) * int(group)
+
+
+def tile_row(ctx, t: int) -> int:
+    """Where wave-tile `t` sits along the LDS image's OUTER-indexed coordinate.
+
+    unroll-major `[free][unroll]` : the free axis IS the outer one, so the row is the free
+        position and the caller multiplies it by the row length.
+    tile-major   `[unroll][free]` : the free axis is the INNER one and has stride 1, so the
+        position folds into its region and the caller multiplies by 1.  The region term is
+        `region_bytes`, exactly as `localReadDo`'s `splitRegionOfTile` computes it.
+
+    Both arms return the free position; only the split fold differs, because only a packed
+    split shortens the row this coordinate runs along.
+    """
+    pos = free_position(ctx, t)
+    if ctx.unrollMajor:
+        return pos
+    _region, inRow = fold_inner_offset(pos, macro_tile_extent(ctx), False, ctx.nsplit,
+                                       getattr(ctx, "splitAxis", AXIS_MT))
+    return inRow
 
 
 def component_fold(ctx, row: int) -> tuple:
