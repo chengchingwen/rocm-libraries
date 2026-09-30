@@ -341,8 +341,11 @@ not candidates.
 The pass calls `buildGirFrameWaitPlan` against the still-virtual marker set. A
 tensor RAW that produces no tensor wait publishes no new completion, so its RAW
 ownership is removed. If that leaves a marker with no owned hazard kind, the
-marker is removed only when the remaining plan still covers every cross-agent
-hazard; then waits and ownership are recomputed to a fixpoint.
+marker is retired and the cut, positional coverage, auxiliary shrink and wait
+plan are closed again. A WAR/WAW path that merely happened to cross the retired
+RAW marker therefore receives its own marker and counter wait. A retired marker
+may not be selected again; doing so means fence placement and wait ownership
+have no common fixpoint.
 
 The final plan rejects a RAW-stamped marker without a tensor wait. It also
 checks that two pure WAR barriers with no intervening tensor issue were not left
