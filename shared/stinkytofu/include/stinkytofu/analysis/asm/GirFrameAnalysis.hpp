@@ -10,8 +10,8 @@
 #include <map>
 #include <memory>
 #include <optional>
-#include <string_view>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -93,7 +93,6 @@ struct GirFrameContract {
     std::vector<GirFrameIncomingSpec> incomings;
     std::vector<GirFenceRelationSpec> relations;
     std::vector<GirFrameRequiresSpec> requires_;
-
 };
 
 /// A `gir.frame_contract` metadata blob, for hand-written `.stir` tests. `text` is the body

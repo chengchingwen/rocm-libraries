@@ -506,27 +506,31 @@ GirActionKind parseGirActionKind(const std::string& kind) {
 
 const char* girActionKindName(GirActionKind kind) {
     switch (kind) {
-        case GirActionKind::Read: return "read";
-        case GirActionKind::Copy: return "copy";
-        case GirActionKind::Fence: return "fence";
-        case GirActionKind::Wmma: return "wmma";
-        case GirActionKind::WaitCnt: return "waitcnt";
-        default: return "other";
+        case GirActionKind::Read:
+            return "read";
+        case GirActionKind::Copy:
+            return "copy";
+        case GirActionKind::Fence:
+            return "fence";
+        case GirActionKind::Wmma:
+            return "wmma";
+        case GirActionKind::WaitCnt:
+            return "waitcnt";
+        default:
+            return "other";
     }
 }
 
 bool serializeVisit(const GirActionData& mod, std::ostream& os) {
-    os << ", mod.gir_action = { action = " << mod.actionId
-       << ", anchor = " << mod.anchorAction
+    os << ", mod.gir_action = { action = " << mod.actionId << ", anchor = " << mod.anchorAction
        << ", kind = " << girActionKindName(mod.kind);
     // Indexed flat fields: the parsed dict merges repeated keys, so a nested list would not
     // round-trip.  `accessN_` is verbose but symmetric and handles any count.
     for (size_t n = 0; n < mod.accesses.size(); ++n) {
         const GirAccessData& access = mod.accesses[n];
         const std::string tag = "access" + std::to_string(n) + "_";
-        os << ", " << tag << "write = " << (access.isWrite ? 1 : 0)
-           << ", " << tag << "operand = " << access.operand
-           << ", " << tag << "ring = " << access.ring;
+        os << ", " << tag << "write = " << (access.isWrite ? 1 : 0) << ", " << tag
+           << "operand = " << access.operand << ", " << tag << "ring = " << access.ring;
         if (access.genId >= 0) os << ", " << tag << "gen = " << access.genId;
         if (access.gdelta) os << ", " << tag << "gdelta = " << access.gdelta;
         if (access.absolute >= 0) os << ", " << tag << "abs = " << access.absolute;

@@ -773,8 +773,7 @@ static void scheduleInDAG(BasicBlock& bb, ReadyQueue& readyQueue,
             // Non-instruction IR (e.g. AsmDirective): treat as non-movable
             // side-effect boundary so its position is strictly preserved.
             scheduleRegionWithMovableSideEffects(regionStart, it, beginIt, scheduled, readyQueue,
-                                                 wmmaIndex, girHazards, girFrames,
-                                                 fillerCount);
+                                                 wmmaIndex, girHazards, girFrames, fillerCount);
             scheduled.push_back(irNode);
             regionStart = std::next(it);
             continue;
@@ -783,8 +782,7 @@ static void scheduleInDAG(BasicBlock& bb, ReadyQueue& readyQueue,
         StinkyInstruction& inst = *instPtr;
         if (hasSideEffect(inst)) {
             scheduleRegionWithMovableSideEffects(regionStart, it, beginIt, scheduled, readyQueue,
-                                                 wmmaIndex, girHazards, girFrames,
-                                                 fillerCount);
+                                                 wmmaIndex, girHazards, girFrames, fillerCount);
 
             scheduled.push_back(&inst);
 

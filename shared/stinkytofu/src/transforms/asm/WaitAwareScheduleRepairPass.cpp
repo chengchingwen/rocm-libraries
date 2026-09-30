@@ -175,8 +175,8 @@ void emitInstWithWaits(std::vector<IRBase*>& output, StinkyInstruction* inst,
 }
 
 void repairBlock(BasicBlock& bb, const GirFrameHazardAnalysis::Result& girHazards,
-                 const GirFrameAnalysis::Result& girFrames,
-                 const PassContext& passCtx, unsigned slotsToMovePastAnchor) {
+                 const GirFrameAnalysis::Result& girFrames, const PassContext& passCtx,
+                 unsigned slotsToMovePastAnchor) {
     const WaitAnchorMap anchors = discoverWaitAnchors(bb);
     // Without a wait-anchored WMMA there is nothing for this pass to repair.
     if (anchors.empty()) return;

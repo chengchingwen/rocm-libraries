@@ -8,8 +8,8 @@
 #include <algorithm>
 #include <charconv>
 #include <deque>
-#include <limits>
 #include <functional>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -31,12 +31,7 @@ uint64_t edgeKey(const BasicBlock* from, const BasicBlock* to) {
     return a ^ (b + 0x9e3779b97f4a7c15ULL + (a << 6U) + (a >> 2U));
 }
 
-
-
-
 //: One record's `key=value` words. A bare word is a flag, stored with an empty value.
-
-
 
 const Loop* containingLoop(const std::vector<Loop>& loops, const BasicBlock* block) {
     const Loop* best = nullptr;
@@ -160,8 +155,7 @@ HazardState walkHazards(const GirFrameNode& node,
                 for (const auto& [prior, distance] : slot->second.writes) {
                     auto occurrence = registry.find(prior);
                     if (occurrence == registry.end())
-                        report_fatal_error(
-                            "GirFrameHazardAnalysis lost a live writer occurrence");
+                        report_fatal_error("GirFrameHazardAnalysis lost a live writer occurrence");
                     (*emit)(*occurrence->second, *touch, distance);
                 }
             }
@@ -270,7 +264,6 @@ uint64_t actionOf(const StinkyInstruction* inst) {
 
 }  // namespace
 
-
 namespace {
 
 std::string_view trimRecord(std::string_view text) {
@@ -331,8 +324,7 @@ std::shared_ptr<const GirFrameContract> parseGirFrameContract(std::string_view t
     bool marked = false;
     unsigned lineNumber = 0;
     const auto fail = [&](const std::string& what) {
-        if (error)
-            *error = "gir.frame_contract line " + std::to_string(lineNumber) + ": " + what;
+        if (error) *error = "gir.frame_contract line " + std::to_string(lineNumber) + ": " + what;
         return nullptr;
     };
 
@@ -379,7 +371,8 @@ std::shared_ptr<const GirFrameContract> parseGirFrameContract(std::string_view t
             while (!rest.empty()) {
                 const size_t comma = rest.find(',');
                 int value = 0;
-                if (!readInt(rest.substr(0, comma), value)) return fail("requires values= is not a list of integers");
+                if (!readInt(rest.substr(0, comma), value))
+                    return fail("requires values= is not a list of integers");
                 need.values.push_back(value);
                 if (comma == std::string_view::npos) break;
                 rest = rest.substr(comma + 1);
@@ -479,10 +472,9 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
                         if (touch.ring < 1)
                             report_fatal_error("GirFrameAnalysis: access ring must be positive");
                         spec->second.accesses.push_back(result.contract.accesses.size());
-                        result.contract.accesses.push_back(
-                            GirAccessSpec{action->actionId, touch.isWrite, touch.genId, touch.ring,
-                                          touch.gdelta, touch.absolute, touch.crossAgent,
-                                          touch.operand});
+                        result.contract.accesses.push_back(GirAccessSpec{
+                            action->actionId, touch.isWrite, touch.genId, touch.ring, touch.gdelta,
+                            touch.absolute, touch.crossAgent, touch.operand});
                     }
                 }
                 const uint64_t canonical = spec->second.anchorAction;
@@ -512,7 +504,8 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
     std::unordered_map<BasicBlock*, std::map<uint64_t, IncomingValues>> incomingValues;
     // `{destination block: {source action: {guard gen: values that may take this edge}}}` -- the
     // mirror of incomingValues: that one assigns a phase on an edge, this refuses one.
-    std::unordered_map<BasicBlock*, std::map<uint64_t, std::map<int, std::set<int>>>> requiredValues;
+    std::unordered_map<BasicBlock*, std::map<uint64_t, std::map<int, std::set<int>>>>
+        requiredValues;
     std::unordered_map<uint64_t, std::vector<BasicBlock*>> anchorEntries;
     for (const auto& [anchor, blocks] : anchorBlocks) {
         std::vector<BasicBlock*>& entries = anchorEntries[anchor];
@@ -617,8 +610,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
             genLoops[genId] = chosen;
         } else if (!votes.empty()) {
             report_fatal_error("GirFrameAnalysis: generation maps ambiguously to ST loops");
-        } else if (std::any_of(result.contract.incomings.begin(),
-                               result.contract.incomings.end(),
+        } else if (std::any_of(result.contract.incomings.begin(), result.contract.incomings.end(),
                                [genId](const GirFrameIncomingSpec& in) {
                                    return in.genId == genId && in.relative;
                                })) {
@@ -816,8 +808,7 @@ std::pair<StinkyInstruction*, GirFrame> lastBarrierBefore(
         if (incoming == preds.end()) continue;
         for (const Key& pred : incoming->second) {
             if (!seen.insert(pred).second) continue;
-            if (StinkyInstruction* there =
-                    inBlock(pred.first, std::numeric_limits<size_t>::max()))
+            if (StinkyInstruction* there = inBlock(pred.first, std::numeric_limits<size_t>::max()))
                 return {there, pred.second};
             work.push_back(pred);
         }

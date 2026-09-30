@@ -1026,8 +1026,8 @@ GirActionData girActionOf(const rocisa::GirActionData& src) {
     for (const rocisa::GirAccess& a : src.accesses)
         accesses.push_back(GirAccessData{a.isWrite, a.operand, a.ring, a.genId, a.gdelta,
                                          a.absolute, a.crossAgent});
-    return GirActionData{src.actionId, src.anchorAction,
-                         static_cast<GirActionKind>(src.kind), std::move(accesses)};
+    return GirActionData{src.actionId, src.anchorAction, static_cast<GirActionKind>(src.kind),
+                         std::move(accesses)};
 }
 static std::shared_ptr<StinkyAsmModule> toStinkyTofuModule(
     const rocisa::Module& module, std::array<int, 3> arch, const std::string& moduleName,

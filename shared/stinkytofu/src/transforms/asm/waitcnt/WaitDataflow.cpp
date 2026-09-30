@@ -26,8 +26,8 @@
 #include <iostream>
 #include <unordered_set>
 
-#include "stinkytofu/core/BasicBlock.hpp"
 #include "stinkytofu/analysis/asm/GirFrameAnalysis.hpp"
+#include "stinkytofu/core/BasicBlock.hpp"
 #include "stinkytofu/core/Function.hpp"
 #include "stinkytofu/core/PassManager.hpp"
 #include "stinkytofu/ir/asm/StinkyAsmIR.hpp"
