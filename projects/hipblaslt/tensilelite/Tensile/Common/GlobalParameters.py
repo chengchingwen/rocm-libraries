@@ -622,7 +622,7 @@ defaultBenchmarkCommonParameters = [
     {"UseCustomMainLoopSchedule": [-1]},
     {"UseLoopModel": [False]},
     {"WmmaInnerOrder": [1]},
-    {"WmmaOuterOrder": [0]},
+    {"WmmaOuterOrder": [-1]},
     {"SpaceFillingAlgo": [[]]},
     {"SFCWGM": [[[1,1],[1,1]]]},
     {"AdaptiveGemm": [0]},

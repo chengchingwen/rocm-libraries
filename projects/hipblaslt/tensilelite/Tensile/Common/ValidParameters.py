@@ -1163,13 +1163,14 @@ validParameters = { # we need to make sure this matches develop
     # 5 : NMK
     # 6 : NKM
     "WmmaInnerOrder": [1, 2, 3, 4, 5, 6],
-    # Which TDMSplit axis sits outermost, above every tile axis. reject >0 for TDMS0
-    # 0 : no outer order, ordered by inner order
-    # 1 : M as outer most axis
-    # 2 : N as outer most axis
-    # 3 : K as outer most axis
+    # Which TDMSplit axis sits outermost, above every tile axis.  Rejects an axis no TDMSplit
+    # -1 : derive it -- 0 with no split, the split side's own axis when one side splits
+    #  0 : no outer order, ordered by inner order
+    #  1 : M as outer most axis
+    #  2 : N as outer most axis
+    #  3 : K as outer most axis
     # the outer one fixes the traversal: the other live split follows it.
-    "WmmaOuterOrder": [0, 1, 2, 3],
+    "WmmaOuterOrder": [-1, 0, 1, 2, 3],
     # 0  : Generate original Store blocks: NonEdgeN, ThenN, and Then1 for StoreVectorWidth N
     # 1  : Generate adaptive Store blocks: NonEdgeN, ThenN, ThenN/2, ..., Then1 and select by runtime problem size
     "AdaptiveGemm": [0, 1],

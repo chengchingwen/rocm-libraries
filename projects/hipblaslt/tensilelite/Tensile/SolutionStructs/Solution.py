@@ -253,11 +253,6 @@ def _validateMXLocalReadWidth(state, asmCaps, printRejectionReason):
 
   return True
 
-
-#: `-1` on a per-operand local-read key: take the value the operand's position implies.
-LOCAL_READ_AUTO = -1
-
-
 def localReadPair(state, base):
   """`(decoupled, a, b)` for PrefetchLocalRead/ClusterLocalRead, falling back to the scalar."""
   scalar = state.get(base, 0)
@@ -275,11 +270,45 @@ def collapseEqualPair(state, base):
   did set was collapsed away before the cap could refuse it.
   """
   a, b = state.get(base + "A"), state.get(base + "B")
-  if a is None or b is None or a != b or int(a) == LOCAL_READ_AUTO:
+  if a is None or b is None or a != b or int(a) == -1:
     return
   for suffix in ("A", "B"):
     state.pop(base + suffix, None)
   state[base] = a
+
+
+WOO_AXIS = {1: "M", 2: "N", 3: "K"}
+
+def tdmSplitAxis(state, tc):
+  """The axis `TDMSplit<tc>` divides, or None: 1 splits the tile axis, 2 splits DepthU."""
+  split = 1 if state.get("TDMSplit") else int(state.get("TDMSplit" + tc, 0) or 0)
+  if split == 1:
+    return "M" if tc == "A" else "N"
+  return "K" if split == 2 else None
+
+def wmmaOuterOrderOf(state):
+  """Derive `WmmaOuterOrder` from the splits: the one live split axis leads the nest.
+
+  No split leaves the order to `WmmaInnerOrder` alone (0).  One split side hoists its own axis.
+  Two sides hoist the heavier one -- inner extent x element bytes, which is how much data the
+  outer loop keeps live -- so the bigger operand is the one that stops being re-read.
+  """
+  waveTile = state["MIWaveTile"]
+  kIters = max(1, state["DepthU"] // max(1, state["MatrixInstruction"][2]))
+  weight = {}
+  for tc, tile in (("A", waveTile[0]), ("B", waveTile[1])):
+    axis = tdmSplitAxis(state, tc)
+    if axis is None:
+      continue
+    bpe = state["ProblemType"]["DataType%s" % tc].numBytes()
+    extent = kIters if axis == "K" else max(1, tile)
+    weight[axis] = max(weight.get(axis, 0), extent * bpe)
+  if not weight:
+    return 0
+  # A tie keeps the earlier axis, matching the A-then-B, tile-then-DepthU order of everything else.
+  order = ["M", "N", "K"]
+  axis = max(weight, key=lambda a: (weight[a], -order.index(a)))
+  return next(k for k, v in WOO_AXIS.items() if v == axis)
 
 
 #: the axes an operand varies over -- its read-ahead is measured along ITS OWN outermost one
@@ -955,9 +984,6 @@ class Solution(collections.abc.Mapping):
       state["_ScheduleIterAlg"] = state["ScheduleIterAlg"]
       state["_StinkyTofuOptLevel"] = 0
 
-    # `TDMSplit` IS A SPELLING, NOT A STATE.  It expands to the per-operand pair and is removed,
-    # so nothing downstream has two places to ask.  One spelling or the other, never both: setting
-    # it beside an explicit `TDMSplitA`/`TDMSplitB` would silently overwrite what was asked for.
     if state.pop("TDMSplit", 0):
       if int(state.get("TDMSplitA", 0) or 0) or int(state.get("TDMSplitB", 0) or 0):
         reject(state, printRejectionReason,
@@ -968,9 +994,6 @@ class Solution(collections.abc.Mapping):
       state["TDMSplitA"] = 1
       state["TDMSplitB"] = 1
 
-    # THE SOLUTION CARRIES NO LOOP ORDER.  `WmmaInnerOrder`/`WmmaOuterOrder` are the parameters;
-    # the adapter is the one place that turns them into a nest.  Validate them here, and let
-    # `wmma_loop_order` do the reconstruction where `ord` is actually built.
     try:
       loop_order_of(state.get("WmmaInnerOrder", 1), state.get("WmmaOuterOrder", 0))
     except ValueError as e:
@@ -987,50 +1010,16 @@ class Solution(collections.abc.Mapping):
              "LoopModel-only knob)")
       return
 
-    # A 6-LETTER LoopOrder NEEDS A LIVE SPLIT AXIS, or it IS its own 3-letter shortcut.
-    #
-    #
-    if int(state.get("WmmaOuterOrder", 0) or 0):
-      if not (int(state.get("TDMSplitA", 0) or 0) or int(state.get("TDMSplitB", 0) or 0)):
-        reject(state, printRejectionReason,
-               "WmmaOuterOrder=%s hoists a SPLIT above the tile axes, but TDMSplitA=0 and "
-               "TDMSplitB=0 leave every split at extent 1 so they drop out of ord -- the order "
-               "collapses to the one WmmaInnerOrder alone spells and would emit a duplicate "
-               "kernel under a name claiming a different schedule.  Set TDMSplitA/B, or use "
-               "WmmaOuterOrder=0."
-               % (state.get("WmmaOuterOrder"),))
-        return
-
-    # UseLoopModel routes the inner-loop body through the LoopModel theta-schedule decoder
-    # (Tensile/LoopModel).  Phase-limited scope: gfx1250 + matrix-instruction + bf16 or 8-bit float.
-    # It is strictly additive — UseLoopModel=False is the normal path and is never gated.
+    # UseLoopModel routes the inner-loop body through the LoopModel
     if state.get("UseLoopModel", False):
       if state["ISA"] != (12, 5, 0):
-        reject(state, printRejectionReason,
-               f"UseLoopModel is only supported on gfx1250, not {state['ISA']}")
+        reject(state, printRejectionReason, "UseLoopModel is only supported on gfx1250")
         return
-      if not state.get("EnableMatrixInstruction", False):
-        reject(state, printRejectionReason,
-               "UseLoopModel requires EnableMatrixInstruction (WMMA path)")
-        return
-      # HalfPLR splits the read-ahead by a bitmask over operands, which is what
-      # PrefetchLocalReadA/B now say directly -- and it also forces ClusterLocalRead=0 for both,
-      # overriding a per-operand pair.  Two spellings for one thing, one of them lossy.
-      if state.get("HalfPLR", 0):
-        reject(state, printRejectionReason,
-               "UseLoopModel does not support HalfPLR=%s: the per-operand read-ahead it encodes "
-               "is PrefetchLocalReadA/PrefetchLocalReadB, and its ClusterLocalRead=0 would "
-               "override a per-operand pair." % (state.get("HalfPLR"),))
-        return
-      # DTYPE SCOPE — and it is read off the SAME quantities the compute leaf validates
-      # (`MacDataTypeA/B`, not `DataType`), so this gate and `LeafEmitters.buildMfmaContext` cannot
-      # disagree about which kernels are in scope.  `MacDataType*` is what the WMMA actually
-      # consumes: `ConvertAfterDS` and the F32-emulation paths make it differ from the tensor's
-      # `DataType`, and it is the pair the opcode is derived from.
-      #
-      # bf16 and 8-bit float are in; the narrower formats (fp6 = 0.75 bytes, fp4 = 0.5) are not.
-      # They are not "untested bf16" — each has its own scaffold local-read branch with a different
-      # register packing, and the ULM read leaf's fragment table is checked against none of them.
+
+      def _ulm_reject(state, p):
+        reject(state, printRejectionReason, f"UseLoopModel not supported with {p}")
+        return None
+
       _macA = state["ProblemType"]["MacDataTypeA"]
       _macB = state["ProblemType"]["MacDataTypeB"]
       if not all((t.isBFloat16() or t.is8bitFloat()) for t in (_macA, _macB)):
@@ -1038,15 +1027,6 @@ class Solution(collections.abc.Mapping):
                "UseLoopModel supports only bf16 and 8-bit-float inputs (got %s/%s)"
                % (_macA.toChar(), _macB.toChar()))
         return
-      # MX SCALES ARE SUPPORTED: θ gives `MXSA`/`MXSB` their own paths, register
-      # rings, copies and fences; the bridge carries `MXBlockA/B`; the wmma act carries the scale
-      # slots paired to their parents by PRESENCE; and L3 has a scale read leaf plus
-      # `MXMFMAInstruction`.  What is NOT yet supported is the coalesced scale read — see below.
-      #
-      # ASYMMETRIC BLOCK SIZES ARE NOT EXPRESSIBLE.  The instruction carries ONE `block` modifier
-      # for both scale operands, so `MXBlockA != MXBlockB` has no faithful emit and the compute
-      # leaf refuses it.  Reject here so it is counted and printed instead of dropping the solution
-      # during codegen.
       _mxA = int(state["ProblemType"]["MXBlockA"] or 0)
       _mxB = int(state["ProblemType"]["MXBlockB"] or 0)
       if _mxA and _mxB and _mxA != _mxB:
@@ -1060,59 +1040,20 @@ class Solution(collections.abc.Mapping):
                "side needs the scaffold's ValuMXSDummy, whose width follows the present side's "
                "block size" % (_mxA, _mxB))
         return
-      # THE THIRD MX GATE — the TileSpan geometry — IS NOT HERE.  It needs `VectorWidthMXSA/B`
-      # (mirrored from `VectorWidth{A,B}`) and `LocalReadVectorWidthMXS`, both DERIVED ~2100 lines
-      # below this point, so `state.get()` on them here would read a default and the check could
-      # never fire.  See the MX block next to `LocalReadVectorWidthMXS` for it.
-      # Scope: SIA0 and SIA4 only.  SIA4 remaps to _ScheduleIterAlg=0 above (SIA0 scheduling +
-      # StinkyTofu opt level 3), so it uses the SAME schedule the LoopModel fork already handles —
-      # only the downstream StinkyTofu optimization differs.  So gate on the EFFECTIVE schedule
-      # (_ScheduleIterAlg), which is 0 for both SIA0 and SIA4.  SIA3 (the hand-tuned schedule) is
-      # NOT supported by the LoopModel path (we never need it — the theta model IS the schedule).
+
       if state["_ScheduleIterAlg"] != 0:
         reject(state, printRejectionReason,
-               "UseLoopModel supports only ScheduleIterAlg 0 or 4 (both use SIA0 scheduling); "
-               f"SIA3 is not supported (got {state['ScheduleIterAlg']})")
-        return
-      # --- GIR loop-body scope gates (R4 breakage scan) --------------------------------------
-      # GIR OWNS the prologue/steady/drain body emission.
-      #
-      if state.get("UseSubtileImpl", False):
-        reject(state, printRejectionReason,
-               "UseLoopModel does not support UseSubtileImpl (subtile has its own mainloop; "
-               "the two paths are mutually exclusive by design)")
-        return
-      # NOT-YET-supported: these inject into / reshape the GIR body but the leaf emitters
-      # (Tensile/Lowering/leaves.py) don't model them, so they would SILENTLY emit wrong numerics
-      # (wrong register set / dropped WMMAs).  Loud reject until GIR models each (Phase 4/5).
-      if state["InnerUnroll"] != 1:
-        reject(state, printRejectionReason,
-               "UseLoopModel does not yet support InnerUnroll>1 (GIR wmma leaf emits one wmma "
-               f"per (m,n,k) with iui=0; got InnerUnroll={state['InnerUnroll']})")
-        return
-      if state["DirectToVgprA"] or state["DirectToVgprB"]:
-        reject(state, printRejectionReason,
-               "UseLoopModel does not support DirectToVgpr — OUT OF SCOPE, not deferred: the "
-               "one-hop global->register path is a pre-TDM staging route and the gfx1250 "
-               "target does not use it.  Do not plan around this being lifted.")
-        return
-      if state.get("LocalSplitU", 1) > 1:
-        reject(state, printRejectionReason,
-               "UseLoopModel does not yet support LocalSplitU>1 (GIR body is single-split)")
+               "UseLoopModel supports only ScheduleIterAlg 0 or 4 (Stinkytofu)")
         return
 
-      if state.get("DirectToLds", 0):
-        reject(state, printRejectionReason,
-               "UseLoopModel does not support DirectToLds — OUT OF SCOPE, not deferred: TDM "
-               "supersedes it on gfx1250.  Do not plan around this being lifted.")
-        return
+      if (state.get("UseSubtileImpl", False) or
+          state["InnerUnroll"] != 1 or
+          (state.get("TDMInst", 0) & 0x3) != 0x3 or
+          state.get("HalfPLR", 0) or
+          not state.get("EnableMatrixInstruction", False) or
+          state.get("StreamK", 0) != 0):
+        return _ulm_reject(state, "")
 
-      if (state.get("TDMInst", 0) & 0x3) != 0x3:
-        reject(state, printRejectionReason,
-               "UseLoopModel requires TDMInst=3 (TDM on both A and B) — OUT OF SCOPE, not "
-               "deferred: the non-TDM local-write path is not a gfx1250 target.  GIR owns "
-               "LDS fence placement and does not model that path.")
-        return
       # TDMSplit factors either the operand's free axis or its shared-K axis.
       _split = TDMSplit.split_factors(state)
       if _split is not None:
@@ -2337,6 +2278,25 @@ class Solution(collections.abc.Mapping):
           % (state["PrefetchGlobalRead"], dcpPgrA, dcpPgrB, dcpPinned))
       state["PrefetchGlobalRead"] = dcpPinned
 
+    # `WmmaOuterOrder` -1 DERIVES from the splits; any other value is a force that must name an
+    # axis a TDMSplit actually divides.  Hoisting an unsplit axis leaves every split at extent 1,
+    # so the order collapses to the one `WmmaInnerOrder` alone spells and would emit a duplicate
+    # kernel under a name claiming a different schedule.  Off the LoopModel path there is no nest
+    # to order, so -1 is simply 0.
+    if int(state.get("WmmaOuterOrder", -1)) == -1:
+      state["WmmaOuterOrder"] = wmmaOuterOrderOf(state) if state.get("UseLoopModel") else 0
+    elif int(state["WmmaOuterOrder"]):
+      _wooAxis = WOO_AXIS[int(state["WmmaOuterOrder"])]
+      if _wooAxis not in (tdmSplitAxis(state, "A"), tdmSplitAxis(state, "B")):
+        reject(state, printRejectionReason,
+               "WmmaOuterOrder=%d hoists the %s split outermost, but TDMSplitA=%s/TDMSplitB=%s "
+               "do not split %s (A splits %s, B splits %s).  Name the axis that is split, set "
+               "WmmaOuterOrder=-1 to derive it, or use 0."
+               % (int(state["WmmaOuterOrder"]), _wooAxis, state.get("TDMSplitA"),
+                  state.get("TDMSplitB"), _wooAxis,
+                  tdmSplitAxis(state, "A"), tdmSplitAxis(state, "B")))
+        return
+
     # Local read is per operand, the way the global side already is: an equal pair collapses
     # onto the scalar, and AUTO takes the value the operand's position implies.
     for _base in ("PrefetchLocalRead", "ClusterLocalRead"):
@@ -2350,7 +2310,7 @@ class Solution(collections.abc.Mapping):
     for _tc, _walks in (("A", ("M", "K")), ("B", ("N", "K"))) if state.get("UseLoopModel") else ():
       _key = "ClusterLocalRead" + _tc
       _asked = state.get(_key)
-      _asked = _clScalar if _asked is None or int(_asked) == LOCAL_READ_AUTO else int(_asked)
+      _asked = _clScalar if _asked is None or int(_asked) == -1 else int(_asked)
       if _lrOuter not in _walks:                 # all-inner: the whole set is live every trip
         if state.get(_key) is not None and int(state[_key]) == 0:
           reject(state, printRejectionReason,
@@ -7275,18 +7235,6 @@ class Solution(collections.abc.Mapping):
 
     # Since we use PLR >= LoopIters for allocating numberOfIters vgprBuffer for a while
     # we need to support both PLR >= LoopIters and CLR parameter for solutions in rocBLAS
-    #
-    # NOT UNDER UseLoopModel.  This rewrite is SILENT — it zeroes the requested PLR (and CLR) with
-    # no rejection, so a config asking for `PrefetchLocalRead: 2` emits a kernel named `PLR0` and
-    # the run reports a result for a schedule nobody asked for.  It fires on
-    # `PLR >= LoopIters = (DepthU // LocalSplitU) // MatrixInstK`, so at bf16 gfx1250 `MI_K = 32`
-    # a `DepthU` of 64 gives `LoopIters = 2` and ANY `PLR >= 2` is zeroed, while `DepthU` 128 gives
-    # 4 and `PLR = 2` stands — which is why the read-ahead depth appeared to be capped at 1.
-    #
-    # Under ULM the read-ahead is not the scaffold's to size: θ derives the per-operand depth
-    # (`dr_g`) from `PLR` and owns the register ring that the `numberOfIters vgprBuffer` allocation
-    # above is protecting.  Silently rewriting the input underneath that derivation makes `dr_g`
-    # disagree with the requested `PLR` for reasons the decoder cannot see.
     if state["ClusterLocalRead"] and state["PrefetchLocalRead"] >= state["LoopIters"] \
             and not state["_ScheduleIterAlg"] == 2 and not state["ForceUnrollSubIter"] \
             and not state.get("UseLoopModel", False):
@@ -7305,7 +7253,7 @@ class Solution(collections.abc.Mapping):
       for _tc in ("A", "B"):
         _cap = loopModelReadAheadCap(state, _tc)
         _named = state.get("PrefetchLocalRead" + _tc)
-        if _named is None or int(_named) == LOCAL_READ_AUTO:
+        if _named is None or int(_named) == -1:
           _plr[_tc] = min(int(state["PrefetchLocalRead"]), _cap)
           continue
         if int(_named) > _cap:
