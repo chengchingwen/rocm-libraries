@@ -1,16 +1,6 @@
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
-"""The GIR frame facts that belong to NO instruction, and the parser for them.
-
-An action's identity, kind, anchor and the shared buffers it touches ride on the instruction as
-`mod.gir_action`; only the generation table and the phi edges -- facts about the loop, not about
-any one instruction -- travel here.
-
-The format is line-oriented `tag [positional] key=value ...`, readable and writeable by hand.
-An absent optional key means its default, so there are no sentinel values to decode. The grammar
-is in `docs/frame-contract.md`; `parse_contract` is the reference implementation and must stay in
-step with `stinkytofu/src/analysis/asm/GirFrameAnalysis.cpp`.
-"""
+"""Build the GIR frame facts handed to StinkyTofu."""
 
 from __future__ import annotations
 
@@ -22,17 +12,7 @@ from .analyses.lds_buffers import LdsBufferIds
 from .analyses.cfg import reachable
 from .analyses.trip_domains import TripDomains
 from .emit_plan import plan_program
-from .nodes import Mark, Move, successor_labels
-
-
-#: The module metadata slot the contract travels in.
-CONTRACT_KEY = "gir.frame_contract"
-
-#: Identifies the blob; NOT a version. The producer and the consumer ship together, so a contract
-#: that does not match its parser is a build error, never something to negotiate at runtime.
-CONTRACT_MARKER = "gir-frame-contract"
-
-_HAZARD_KINDS = {"RAW": ("copy", "read"), "WAR": ("read", "copy"), "WAW": ("copy", "copy")}
+from .nodes import Move, successor_labels
 
 
 # --- the facts ---------------------------------------------------------------
@@ -83,16 +63,6 @@ class Edge:
 
 
 @dataclass(frozen=True)
-class Relation:
-    """A hazard the fence at `fence` separates, and how many generations lie between its ends."""
-    fence: int
-    kind: str
-    producer: int
-    consumer: int
-    gap: int = 0
-
-
-@dataclass(frozen=True)
 class Requires:
     """An edge is takeable only when `gen` carries one of `values`.
 
@@ -113,12 +83,6 @@ class Contract:
     accesses: list = field(default_factory=list)
     edges: list = field(default_factory=list)
     requires: list = field(default_factory=list)
-    relations: list = field(default_factory=list)
-
-    @property
-    def is_empty(self) -> bool:
-        return not (self.generations or self.actions or self.accesses
-                    or self.edges or self.requires or self.relations)
 
 
 # --- deriving the facts from a program ---------------------------------------
@@ -351,33 +315,6 @@ def _guards_of(prog, plans, domains, first_free_gen):
     return guard_gens, incomings, requires
 
 
-def _relations_of(actions, actions_by_source):
-    """Every hazard a fence action separates, with both ends resolved to action ids."""
-    def endpoint(identity, want_kind):
-        candidates = [a for a in actions_by_source.get(int(identity), ()) if a.kind == want_kind]
-        if len(candidates) != 1:
-            raise RuntimeError("frame contract: relation endpoint %r maps to %d %s actions"
-                               % (identity, len(candidates), want_kind))
-        return candidates[0].action_id
-
-    out = []
-    for action in actions:
-        source = action.source
-        if action.kind != "fence" or not isinstance(source, Mark):
-            continue
-        for relation in source.at.get("relations") or ():
-            kind = str(relation.get("kind"))
-            if kind not in _HAZARD_KINDS:
-                continue
-            producer_kind, consumer_kind = _HAZARD_KINDS[kind]
-            out.append(Relation(
-                fence=action.action_id, kind=kind,
-                producer=endpoint((relation.get("producer") or {}).get("identity"), producer_kind),
-                consumer=endpoint((relation.get("consumer") or {}).get("identity"), consumer_kind),
-                gap=int(relation.get("gap", 0) or 0)))
-    return out
-
-
 def build_contract(prog) -> Contract:
     """The frame facts of `prog`, with no GIR CFG topology in them."""
     analyses = AnalysisManager()
@@ -392,10 +329,6 @@ def build_contract(prog) -> Contract:
     anchors = {action.action_id: block_actions[0].action_id
                for block_actions in plans.values() if block_actions
                for action in block_actions}
-    by_source = {}
-    for action in actions:
-        if action.source is not None:
-            by_source.setdefault(id(action.source), []).append(action)
 
     distributed = prog.meta.get("agent_distributed", {}) or {}
     by_region = _gens_by_region(prog)
@@ -413,109 +346,6 @@ def build_contract(prog) -> Contract:
     contract.generations.update(guard_gens)
     contract.edges = list(contract.edges) + guard_incomings
     contract.requires = guard_requires
-    contract.relations = _relations_of(actions, by_source)
-    return contract
-
-
-# --- text --------------------------------------------------------------------
-
-
-def render_contract(contract) -> str:
-    """The contract as text: deterministic, and the same thing `parse_contract` reads."""
-    lines = [CONTRACT_MARKER, ""]
-    for generation in sorted(contract.generations.values(), key=lambda g: g.id):
-        lines.append("gen %d  ring=%d entry=%d advance=%d"
-                     % (generation.id, generation.ring, generation.entry, generation.advance))
-
-    if contract.edges:
-        lines.append("")
-    for edge in contract.edges:
-        lines.append("%s  dst=%d src=%d gen=%d %s=%d"
-                     % ("transfer" if edge.relative else "incoming",
-                        edge.dst, edge.src, edge.gen,
-                        "delta" if edge.relative else "value", edge.value))
-
-    if contract.requires:
-        lines.append("")
-    for need in contract.requires:
-        lines.append("requires  dst=%d src=%d gen=%d values=%s"
-                     % (need.dst, need.src, need.gen,
-                        ",".join(str(v) for v in need.values)))
-
-    if contract.relations:
-        lines.append("")
-    for relation in contract.relations:
-        text = ("rel %d  %s  producer=%d consumer=%d"
-                % (relation.fence, relation.kind, relation.producer, relation.consumer))
-        lines.append(text + ("  gap=%d" % relation.gap if relation.gap else ""))
-    return "\n".join(lines) + "\n"
-
-
-def _fields(words, line):
-    """The `key=value` words of a record, as a dict; bare words become `True` flags."""
-    out = {}
-    for word in words:
-        key, sep, value = word.partition("=")
-        if key in out:
-            raise RuntimeError("frame contract: duplicate field %r in %r" % (key, line))
-        out[key] = value if sep else True
-    return out
-
-
-def _int(fields, key, line, default=None):
-    if key not in fields:
-        if default is None:
-            raise RuntimeError("frame contract: %r needs a %s=" % (line, key))
-        return default
-    try:
-        return int(fields[key])
-    except (TypeError, ValueError):
-        raise RuntimeError("frame contract: %s= is not an integer in %r" % (key, line)) from None
-
-
-def parse_contract(text: str) -> Contract:
-    """Read a contract back. The reference for the C++ parser, and what makes the format testable."""
-    contract = Contract()
-    lines = [line.split("#", 1)[0].strip() for line in (text or "").splitlines()]
-    lines = [line for line in lines if line]
-    if not lines:
-        return contract
-    if lines[0] != CONTRACT_MARKER:
-        raise RuntimeError("frame contract: expected %r, got %r" % (CONTRACT_MARKER, lines[0]))
-
-    for line in lines[1:]:
-        words = line.split()
-        tag = words[0]
-        if tag == "gen":
-            fields = _fields(words[2:], line)
-            gid = int(words[1])
-            contract.generations[gid] = Generation(
-                gid, _int(fields, "ring", line), _int(fields, "entry", line, 0),
-                _int(fields, "advance", line, 0))
-        elif tag in ("incoming", "transfer"):
-            fields = _fields(words[1:], line)
-            relative = tag == "transfer"
-            contract.edges.append(Edge(
-                _int(fields, "dst", line), _int(fields, "src", line), _int(fields, "gen", line),
-                _int(fields, "delta" if relative else "value", line), relative))
-        elif tag == "requires":
-            fields = _fields(words[1:], line)
-            raw = fields.get("values")
-            if not isinstance(raw, str):
-                raise RuntimeError("frame contract: %r needs a values=" % (line,))
-            contract.requires.append(Requires(
-                _int(fields, "dst", line), _int(fields, "src", line), _int(fields, "gen", line),
-                tuple(sorted(int(v) for v in raw.split(",") if v != ""))))
-        elif tag == "rel":
-            kind = words[2]
-            if kind not in _HAZARD_KINDS:
-                raise RuntimeError("frame contract: unknown hazard %r in %r" % (kind, line))
-            fields = _fields(words[3:], line)
-            contract.relations.append(Relation(
-                int(words[1]), kind, _int(fields, "producer", line),
-                _int(fields, "consumer", line), _int(fields, "gap", line, 0)))
-        else:
-            raise RuntimeError("frame contract: unknown record %r in %r" % (tag, line))
     return contract
 
 
@@ -539,8 +369,3 @@ def install_frame_contract(prog, st_module):
         out.addRequires(dst=need.dst, src=need.src, gen=need.gen, values=list(need.values))
     st_module.setGirFrameContract(out)
     return contract
-
-
-def encode_frame_contract(prog) -> str:
-    """The contract as text -- a DUMP for reading, never parsed back."""
-    return render_contract(build_contract(prog))

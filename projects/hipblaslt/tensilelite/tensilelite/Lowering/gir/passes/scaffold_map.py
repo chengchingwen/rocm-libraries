@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from ..nodes import CondGoto, CondChain, LoopBack, Pred
+from ..nodes import CondGoto, CondChain, LoopBack
 from .early_exit import _drain_chain
 from ..analyses.cfg import BackEdges
 from .base import Pass
@@ -87,8 +87,5 @@ class ScaffoldMapPass(Pass):
     def run(self, prog, am):
         back = am.get(BackEdges(), prog)
         back_headers = {be.src for be in back}          # blocks whose terminator is the back-edge
-        changed = False
-        changed = _label_guard_arms(prog, back_headers)
-        if changed:
+        if _label_guard_arms(prog, back_headers):
             prog.bump()
-        return ()

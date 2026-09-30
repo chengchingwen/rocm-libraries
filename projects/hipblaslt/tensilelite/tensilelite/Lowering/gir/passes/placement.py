@@ -19,7 +19,6 @@ class PlacementPass(Pass):
     def run(self, prog, am):
         for pm in prog.pending:
             pm.anchor = self._resolve(prog, pm.region)
-        return ()                        # no IR mutation
 
     @classmethod
     def _resolve(cls, prog, region):

@@ -14,9 +14,6 @@ class RegBand:
     def __init__(self, widths):
         self._widths = widths     # (operand, group) -> W
 
-    def width(self, operand, group):
-        return self._widths.get((operand, group))
-
     def items(self):
         return dict(self._widths)
 

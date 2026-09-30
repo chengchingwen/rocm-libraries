@@ -253,14 +253,6 @@ class GirToRocisa:
                   % ("+".join(buffers) or "?", at.get("scope"), at.get("edges"),
                      ",".join(at.get("kinds", ())), sync))
 
-    def _fence_tokens(self, at):
-        """The token ids this fence names, or None for a FULL DRAIN.
-
-        A barrier with no token is not inert -- it orders everything, which is the conservative
-        answer when no single name covers what the fence stands between."""
-        ids = tuple(at.get("tokens") or ())
-        return sorted(int(t) for t in ids) if ids else None
-
     def _fused_tp(self, unit, tpByOperand, what):
         """`(tP_even, tP_odd)` for a Phi-fused movement, after checking the scaffold can realize it.
 

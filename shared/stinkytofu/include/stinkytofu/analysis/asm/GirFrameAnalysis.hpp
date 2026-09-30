@@ -51,14 +51,6 @@ struct GirAccessSpec {
     int operand = -1;
 };
 
-struct GirFenceRelationSpec {
-    uint64_t fenceAction = 0;
-    GirHazardKind kind = GirHazardKind::RAW;
-    uint64_t producerAction = 0;
-    uint64_t consumerAction = 0;
-    int gap = 0;
-};
-
 struct GirFrameIncomingSpec {
     uint64_t destinationAction = 0;
     uint64_t sourceAction = 0;
@@ -91,7 +83,6 @@ struct GirFrameContract {
     std::map<uint64_t, GirActionSpec> actions;
     std::vector<GirAccessSpec> accesses;
     std::vector<GirFrameIncomingSpec> incomings;
-    std::vector<GirFenceRelationSpec> relations;
     std::vector<GirFrameRequiresSpec> requires_;
 };
 

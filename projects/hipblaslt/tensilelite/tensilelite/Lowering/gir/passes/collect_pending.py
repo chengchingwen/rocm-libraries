@@ -28,4 +28,3 @@ class CollectPendingMarksPass(Pass):
         for analysis in self._analyses:
             pending.extend(am.get(analysis, prog))
         prog.pending = pending
-        return ()                        # no IR mutation -> nothing invalidated

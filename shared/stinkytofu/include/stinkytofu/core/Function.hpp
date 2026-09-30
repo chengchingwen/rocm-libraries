@@ -174,9 +174,6 @@ class STINKYTOFU_EXPORT Function {
         if (it == stringMetadata_.end()) return std::nullopt;
         return it->second;
     }
-    bool hasStringMetaData(const std::string& key) const {
-        return stringMetadata_.find(key) != stringMetadata_.end();
-    }
 
     /// Structured metadata: a producer hands over the object it already built instead of a text
     /// encoding two hand-written parsers have to agree on.  Ownership is shared, the payload is

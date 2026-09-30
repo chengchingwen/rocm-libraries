@@ -37,7 +37,6 @@ class ApplyMarksPass(Pass):
 
         prog.pending = []
         prog.bump()
-        return ("body",)
 
     @staticmethod
     def _anchor_index(body, anchor):

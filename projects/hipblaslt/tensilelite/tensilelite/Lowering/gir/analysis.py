@@ -42,8 +42,6 @@ class AnalysisManager:
             self._cache[key] = analysis.run(prog, self)
         return self._cache[key]
 
-    def invalidate(self, names=None):
-        """Drop cached results.  Coarse (clear all) -- a mutating Pass bumps
-        prog.version anyway, so stale entries are never re-hit; this just keeps the cache small.
-        Finer per-name invalidation can key on `names` later if a pass needs partial reuse."""
+    def invalidate(self):
+        """Drop cached results."""
         self._cache.clear()

@@ -568,8 +568,8 @@ bool observedWaitDrains(const StinkyInstruction& inst, int counts[CK_Count]) {
 
 // Apply a wait already present in the stream: it drains the queues exactly like
 // one we plan, and seeds the elision state so we do not emit a duplicate.
-void creditObservedWait(DataflowState& state, CounterEmitState emit[CK_Count], CounterKind c,
-                        int w) {
+static void creditObservedWait(DataflowState& state, CounterEmitState emit[CK_Count], CounterKind c,
+                               int w) {
     if (w < 0) return;
     // On an out-of-order counter a nonzero immediate proves nothing about any
     // particular op (see waitToDrain), so only a full drain is creditable.
