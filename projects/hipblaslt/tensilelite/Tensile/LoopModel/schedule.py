@@ -464,10 +464,13 @@ class Schedule:
                                 else requested_depth)
         self._plans = {}
         self._steps = {}   # a plan needs EVERY group's steps, so this layer resolves first
+        #: `(theta, depths)` are fixed here, so the request is one number per operand
+        self._want = {operand.name: requested_read_ahead(theta, operand, depths)
+                      for operand in theta.operands}
 
     def want(self, operand) -> int:
         """The selected scheme's one realized internal PLR for this operand."""
-        return requested_read_ahead(self.theta, operand, self.depths)
+        return self._want[operand.name]
 
     def steps(self, operand, group, want) -> int:
         """How far ahead this group actually reads, at the depth `want` asks for.

@@ -33,7 +33,7 @@ def pipeline():
     return [
         ScaffoldShapePass(),
         EntranceFramePhisPass(),
-        HoistCopiesPass(reads=True),
+        HoistCopiesPass(),
         CollectPendingMarksPass(),
         PlacementPass(),
         ApplyMarksPass(),
@@ -46,8 +46,12 @@ def run_pipeline(prog, passes=None, verify=True):
     passes = passes if passes is not None else pipeline()
     am = AnalysisManager()
     for p in passes:
+        before = prog.version
         p.run(prog, am)
-        am.invalidate()               # coarse: a mutating pass bumped prog.version anyway
+        # ONLY a mutation drops the cache, and `bump()` is what declares one.  Clearing
+        # unconditionally discarded results a later pass in this same run still wanted.
+        if prog.version != before:
+            am.invalidate()
     if verify:
         verify_gir(prog)
     return prog
