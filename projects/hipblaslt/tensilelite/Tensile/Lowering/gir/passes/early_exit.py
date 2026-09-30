@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from ..nodes import CondGoto, CondChain, Pred, Bound
 from ..nodes import terminator_targets
-from .base import StructuralPass
+from .base import Pass
 
 
 def _drain_chain(prog):
@@ -25,14 +25,14 @@ def _drain_chain(prog):
     return tuple(steps[k] for k in sorted(steps))
 
 
-class EarlyExitPass(StructuralPass):
+class EarlyExitPass(Pass):
     """See module docstring.  Adds the `T < M` entry edges; touches no body."""
 
     def run(self, prog, am):
         drains = _drain_chain(prog)
         M = len(drains)
         if M < 2:
-            return ()                       # no partially-drained variant to enter
+            return                          # no partially-drained variant to enter
         changed = False
         for lab, blk in list(prog.blocks.items()):
             t = blk.term
@@ -54,7 +54,7 @@ class EarlyExitPass(StructuralPass):
                 prog.blocks[drains[M - k]].path_chunk_base[lab] = base
             changed = True
         if not changed:
-            return ()
+            return
         # preds are a DECLARED fact (G-TERM): recompute from the rewritten terminators.
         computed = {l: set() for l in prog.blocks}
         for l, b in prog.blocks.items():
@@ -65,6 +65,5 @@ class EarlyExitPass(StructuralPass):
             if b.preds or computed[l]:
                 b.preds = tuple(sorted(computed[l]))
         prog.bump()
-        return ()
 
 

@@ -310,7 +310,7 @@ static void printKernelConfigHelp(std::ostream& os) {
 
 //: `st.metadata "key" { ... }` at column 0 carries raw text -- a frame contract is line-oriented
 //: and hand-written, so escaping it into a quoted string would defeat the point of the format.
-std::map<std::string, std::string> extractStirMetadata(std::string& source) {
+static std::map<std::string, std::string> extractStirMetadata(std::string& source) {
     std::map<std::string, std::string> out;
     std::istringstream in(source);
     std::ostringstream kept;

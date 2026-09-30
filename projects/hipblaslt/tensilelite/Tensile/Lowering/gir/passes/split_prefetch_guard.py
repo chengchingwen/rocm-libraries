@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from ..nodes import (Block, Bound, CondGoto, Goto, Mark, Move, Pred, copy_unit,
                      descriptor_unit)
-from .base import StructuralPass
+from .base import Pass
 from .fold_short_path import folded
 from .scaffold_map import _SCAFFOLD_LABEL
 
@@ -39,7 +39,7 @@ def _guarded_generation(blk):
     return max(gens) if len(gens) == 2 else None
 
 
-class SplitPrefetchGuardPass(StructuralPass):
+class SplitPrefetchGuardPass(Pass):
     """See module docstring.  Moves the last generation's copies -- and ONLY those -- into a
     guarded block; their `gr_increment` and copy-hop swaps stay on the path both arms take, so
     the two predecessors of the join leave the descriptor on the same chunk.
@@ -50,13 +50,13 @@ class SplitPrefetchGuardPass(StructuralPass):
         # edges leave the placement solver free to route a value out and back through the guarded
         # block.  Only a folded program has the single peel exit this split assumes.
         if not folded(prog):
-            return ()
+            return
         entry = prog.blocks.get(prog.entry)
         if entry is None or entry.phase != "prologue":
-            return ()
+            return
         gen = _guarded_generation(entry)
         if gen is None:
-            return ()
+            return
 
         guarded = [i for i in entry.body if peel_generation(i) == gen]
         first = next(n for n, i in enumerate(entry.body) if peel_generation(i) == gen)
@@ -110,4 +110,3 @@ class SplitPrefetchGuardPass(StructuralPass):
             "gen": gen, "block": pgr_lab, "skip": skip_lab,
             "join": join_lab, "copies": len(guarded)}
         prog.bump()
-        return ()

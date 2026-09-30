@@ -16,9 +16,3 @@ GIR_TAG_RE = re.compile(r"<GIR: ([^<\n]+?)>(?=\s|$)")
 
 def gir_tag(body):
     return "<GIR: %s>" % body
-
-
-def sync_comment(tokens):
-    """A memory-token set as `Components/TensorDataMover.issueLoad` spells it."""
-    toks = sorted(tokens)
-    return "sync LDS%u" % toks[0] if len(toks) == 1 else "sync LDS %s" % toks

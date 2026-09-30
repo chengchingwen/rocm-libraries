@@ -154,10 +154,7 @@ class HoistCopiesPass(Pass):
         self.copies = copies
 
     def run(self, prog, am):
-        changed = False
-
         def apply(*, copies, reads):
-            nonlocal changed
             lds, reg = am.get(SchedulingFrameHazards(), prog), am.get(RegHazards(), prog)
             moved = False
             for blk in prog.blocks.values():
@@ -168,7 +165,6 @@ class HoistCopiesPass(Pass):
             if moved:
                 prog.bump()
                 am.invalidate()
-                changed = True
             return moved
 
         if self.reads:
@@ -181,7 +177,5 @@ class HoistCopiesPass(Pass):
                         prog.block(label).body[:] = body
                     prog.bump()
                     am.invalidate()
-                    changed = False
         if self.copies:
             apply(copies=True, reads=False)
-        return ("body",) if changed else ()

@@ -584,12 +584,14 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         const Loop* chosen = nullptr;
         size_t best = 0;
         bool tied = false;
-        for (const auto& [loop, count] : votes) {
-            if (count > best) {
-                chosen = loop;
-                best = count;
+        for (const Loop& candidate : loops) {
+            auto vote = votes.find(&candidate);
+            if (vote == votes.end()) continue;
+            if (vote->second > best) {
+                chosen = &candidate;
+                best = vote->second;
                 tied = false;
-            } else if (count == best) {
+            } else if (vote->second == best) {
                 tied = true;
             }
         }
@@ -688,15 +690,14 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         }
     }
 
-    for (const auto& [block, states] : frameSets) {
-        std::set<GirFrame> frames;
-        for (const auto& [frame, _incomingAction] : states) frames.insert(frame);
-        result.blockFrames[block] = std::vector<GirFrame>(frames.begin(), frames.end());
-    }
-    // Program order, not `frameSets` order: the edge map keeps what it is given.
+    // Program order, not `frameSets` order: a pointer-keyed hash map iterates differently
+    // between runs, and the edge map keeps what it is given.
     for (BasicBlock& block : function) {
         auto states = frameSets.find(&block);
         if (states == frameSets.end()) continue;
+        std::set<GirFrame> frames;
+        for (const auto& [frame, _incomingAction] : states->second) frames.insert(frame);
+        result.blockFrames[&block] = std::vector<GirFrame>(frames.begin(), frames.end());
         for (const auto& [frame, incomingAction] : states->second) {
             GirFrameNode node{&block, frame, incomingAction};
             auto& successors = result.edges[node];

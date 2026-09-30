@@ -2,6 +2,6 @@
 # SPDX-License-Identifier: MIT
 """UseLoopModel lowering: LoopIR to GIR and the associated analyses."""
 
-from .loopir_to_gir import lower_to_gir, build_gir, gir_text
+from .loopir_to_gir import build_gir, gir_text
 
-__all__ = ["lower_to_gir", "build_gir", "gir_text"]
+__all__ = ["build_gir", "gir_text"]

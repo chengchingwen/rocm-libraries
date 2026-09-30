@@ -10,7 +10,6 @@ collapsed onto an invented base.
 
 from __future__ import annotations
 
-from ..nodes import Move, Mma
 from ..analysis import Analysis
 from .cfg import BackEdges, successors
 from .lds_buffers import LdsBufferIds
@@ -43,7 +42,6 @@ class Frame:
         return self.phases < other.phases
 
     def __repr__(self):
-        """Ring ids, not operand names -- `FrameMapping.render` is the readable one."""
         return ("entry" if not self.phases
                 else "phase(" + ", ".join(f"ring{g}={p}" for g, p in self.phases) + ")")
 
@@ -112,38 +110,18 @@ def _advance(frame, table, rings):
 class FrameMapping:
     """Query API: the frames a block runs under, and the storage an access touches in each."""
 
-    def __init__(self, frames, entrances, edges, ref_block, storage, unresolved, ring_names=(),
-                 gen_by_region=()):
+    def __init__(self, frames, entrances, edges, storage, gen_by_region=()):
         self._frames = {b: tuple(sorted(fs)) for b, fs in frames.items()}
         self._entrances = {b: _classes(fs) for b, fs in entrances.items() if fs}
-        self._cut = {}
         self._edges = dict(edges)            # node -> tuple[node]
-        self._ref_block = dict(ref_block)    # id(ref) -> block label
         self._storage = storage
-        self._unresolved = tuple(unresolved)
-        self._names = dict(ring_names)       # gen id -> the operand that rotates through it
         self._gen_by_region = dict(gen_by_region)   # (operand, region) -> gen id
-        self._reach = _closure(self._edges)
-        self._touch_cache = {}
         self._frame_touch_cache = {}
         self._workgroup_touch_cache = {}
-
-    def render(self, frame):
-        """`frame` with each ring named by its operand: `A=0 B=1`, or `entry` for the empty one."""
-        if not frame.phases:
-            return "entry"
-        return " ".join("%s=%d" % (self._names.get(g, "ring%d" % g), p) for g, p in frame.phases)
 
     def frames(self, block):
         """EVERY phase this block is entered on -- not a representative."""
         return self._frames.get(block, ())
-
-    def cut(self, block):
-        """The one frame this block's accesses are NAMED in.
-
-        Propagated forward from the predecessor that carries generations, so both ends of every
-        cross-block edge are named in frames one step apart -- which is what the edge itself is."""
-        return self._cut.get(block, self.entrances(block)[0])
 
     def entrances(self, block):
         """One frame per DISTINCT entrance picture.
@@ -154,16 +132,9 @@ class FrameMapping:
         is a second picture."""
         return self._entrances.get(block, (Frame(),))
 
-    def block_of(self, ref):
-        return self._ref_block.get(id(ref))
-
     def nodes(self):
         """Every `(block, frame)` the program can execute."""
         return tuple((b, f) for b in self._frames for f in self._frames[b])
-
-    def reaches(self, node):
-        """The nodes reachable from `node` in ONE OR MORE steps (so a loop reaches itself)."""
-        return self._reach.get(node, frozenset())
 
     def successors(self, node):
         """The `(block, frame)` nodes one edge on from `node`."""
@@ -186,16 +157,6 @@ class FrameMapping:
         abs_gen = getattr(ref, "abs_gen", None)
         return None if abs_gen is None else int(abs_gen) % ring
 
-    def touches(self, ref, frame):
-        """The CONCRETE storage ids `ref` works on in `frame` -- one per region combination."""
-        key = (id(ref), frame)
-        hit = self._touch_cache.get(key)
-        if hit is None:
-            phase = self.generation(ref, frame)
-            hit = frozenset() if phase is None else self._storage.at(ref, phase)
-            self._touch_cache[key] = hit
-        return hit
-
     def frame_touches(self, ref, frame, is_write):
         """Concrete storage selected by this access's frame and agent-relative address."""
         key = (id(ref), frame, bool(is_write))
@@ -216,50 +177,6 @@ class FrameMapping:
             self._workgroup_touch_cache[key] = hit
         return hit
 
-    def may_touch(self, ref):
-        """The union over every frame this ref's block runs under."""
-        seen = [self.touches(ref, f) for f in self.frames(self.block_of(ref))]
-        return frozenset().union(*seen) if seen else frozenset()
-
-    @property
-    def unresolved(self):
-        """Refs carrying no generation at all -- a hole, reported rather than defaulted."""
-        return self._unresolved
-
-
-def _carries_generations(blk):
-    """Does this block hold a loop-carried shared access?  A peel block names absolutely and so
-    constrains nothing about which frame its successors are named in."""
-    for inst in blk.body:
-        for ref in tuple(getattr(inst, "srcs", ())) + tuple(getattr(inst, "dsts", ())):
-            if ref.tile.space == "shared" and getattr(ref, "gen", None) is not None:
-                return True
-    return False
-
-
-def _cut(prog, succ, back, base, order, values, rings):
-    """One naming frame per block: the entry's, advanced along each forward edge.
-
-    Where several forward predecessors reach a block, the one that CARRIES GENERATIONS wins: a
-    peel names absolutely, so it has no opinion, and letting it set the cut leaves every edge from
-    the loop off by the rotation the exit performed."""
-    cut, claimed = {prog.entry: base}, set()
-    for lab in order:
-        if lab not in cut:
-            continue
-        src = prog.blocks[lab]
-        for s in succ.get(lab, ()):
-            if back.is_back_edge(lab, s):
-                continue
-            better = _carries_generations(src)
-            if s in cut and (s in claimed or not better):
-                continue
-            cut[s] = _advance(cut[lab], values.get((lab, s), {}), rings)
-            if better:
-                claimed.add(s)
-    return cut
-
-
 def _classes(frames):
     """`frames` with those differing by one uniform rotation of every ring collapsed to one."""
     keep = []
@@ -269,21 +186,6 @@ def _classes(frames):
             continue
         keep.append(f)
     return tuple(keep)
-
-
-def _closure(edges):
-    """Transitive closure over the frame graph, one BFS per node (the graph is tiny)."""
-    out = {}
-    for start in edges:
-        seen, stack = set(), list(edges.get(start, ()))
-        while stack:
-            n = stack.pop()
-            if n in seen:
-                continue
-            seen.add(n)
-            stack.extend(edges.get(n, ()))
-        out[start] = frozenset(seen)
-    return out
 
 
 class FrameMap(Analysis):
@@ -332,25 +234,7 @@ class FrameMap(Analysis):
                 edges[(lab, f)] = tuple((s, _advance(f, values.get((lab, s), {}), rings))
                                         for s in succ.get(lab, ()))
 
-        ref_block, unresolved, names = {}, [], {}
         generation_regions = (prog.meta or {}).get("generation_regions", {}) or {}
-        for blk in prog.blocks.values():
-            for inst in blk.body:
-                if not isinstance(inst, (Move, Mma)):
-                    continue
-                for ref in tuple(inst.srcs) + tuple(inst.dsts):
-                    ref_block[id(ref)] = blk.label
-                    gen = getattr(ref, "gen", None)
-                    if gen is not None:
-                        fact = generation_regions.get(gen.id, {})
-                        operand = fact.get("operand", ref.tile.operand)
-                        region = int(fact.get("region", 0))
-                        names.setdefault(gen.id, f"{operand}/r{region}")
-                    elif ref.tile.space == "shared" and getattr(ref, "abs_gen", None) is None:
-                        unresolved.append((ref.tile.operand, blk.label))
         gen_by_region = {(str(fact.get("operand")), int(fact.get("region", 0))): int(gen_id)
                          for gen_id, fact in generation_regions.items()}
-        out = FrameMapping(frames, entrances, edges, ref_block, storage, unresolved, names,
-                           gen_by_region)
-        out._cut = _cut(prog, succ, back, base, order, values, rings)
-        return out
+        return FrameMapping(frames, entrances, edges, storage, gen_by_region)

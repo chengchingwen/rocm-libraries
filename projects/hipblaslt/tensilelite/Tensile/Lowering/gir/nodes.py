@@ -27,12 +27,6 @@ class Tile:
     coord:   tuple = ()          # ((axis, val|None), ...) -- hashable form of the coord dict
     shape:   tuple = ()          # (("regs", n), ("bytes", n), ...) -- hashable size record
 
-    def coord_map(self) -> dict:
-        return dict(self.coord)
-
-    def shape_map(self) -> dict:
-        return dict(self.shape)
-
 
 @dataclass(frozen=True)
 class Gen:

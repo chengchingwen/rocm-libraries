@@ -69,26 +69,13 @@ def _holds(pred, symbol, trip):
 class TripDomainSet:
     """`{(src, dst): frozenset(trips)}`, plus the universe every domain is a subset of."""
 
-    def __init__(self, symbol, universe, edges):
-        self.symbol = symbol
+    def __init__(self, universe, edges):
         self.universe = frozenset(universe)
         self._edges = dict(edges)
-
-    def __len__(self):
-        return len(self._edges)
 
     def admits(self, src, dst):
         """The trips that can take this edge; the universe when nothing narrows it."""
         return self._edges.get((src, dst), self.universe)
-
-    def narrowed(self):
-        """Only the edges that actually narrow -- what the contract needs to carry."""
-        return {edge: domain for edge, domain in sorted(self._edges.items())
-                if domain != self.universe}
-
-    def feasible(self, carried, src, dst):
-        """The domain surviving this edge, or an empty set when the path cannot be taken."""
-        return frozenset(carried) & self.admits(src, dst)
 
 
 class TripDomains(Analysis):
@@ -99,7 +86,7 @@ class TripDomains(Analysis):
         universe = frozenset(range(1, trip_limit(prog) + 1))
         edges = {}
         if not symbol:
-            return TripDomainSet(symbol, universe, edges)
+            return TripDomainSet(universe, edges)
 
         for lab, blk in prog.blocks.items():
             arms, default = _preds_of(blk)
@@ -128,7 +115,7 @@ class TripDomains(Analysis):
                 _narrow(edges, lab, default, unmatched)
             elif isinstance(blk.term, CondGoto):
                 _narrow(edges, lab, blk.term.f_target, unmatched)
-        return TripDomainSet(symbol, universe, edges)
+        return TripDomainSet(universe, edges)
 
 
 def _narrow(edges, src, dst, domain):

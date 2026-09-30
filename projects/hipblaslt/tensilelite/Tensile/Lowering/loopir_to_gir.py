@@ -324,21 +324,6 @@ def _gen_of(gens, theta, op, coord):
     return gens.get((op.name, _storage_region(theta, op, coord))) if op is not None else None
 
 
-def _quantum_coords(coord, quantum):
-    """The coordinates ONE transfer fills: `coord` alone, or its product with the coverage axes."""
-    if not quantum:
-        return (coord,)
-    out = [coord]
-    for axis, n in quantum:
-        n = max(1, int(n))
-        if any(a == axis for a, _v in coord):
-            out = [tuple((a, v + j) if a == axis else (a, v) for a, v in c)
-                   for c in out for j in range(n)]
-        else:
-            out = [c + ((axis, v),) for c in out for v in range(n)]
-    return tuple(out)
-
-
 def _convert_load(theta, inst, env, rel, gens):
     """A LoopIR Load -> a GIR Move. dst=SHARED => a copy (global->shared); dst=REGISTER => a read
  (shared/global->register).
@@ -616,7 +601,6 @@ def _short_arm_facts(M, short_steps):
         "model_only": {
             "blocks": tuple("short%d" % i for i in range(len(short_steps))),
             "marks_dropped": 0,
-            "kinds_dropped": (),
             "reason": "the T < M arm is scaffold-owned (TensileLite's toPGR1 path); GIR keeps "
                       "it for the analyses but no backend emits it",
         }}}

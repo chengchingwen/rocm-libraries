@@ -10,7 +10,7 @@ from __future__ import annotations
 from ..nodes import CondGoto, Goto, LoopBack
 from ..nodes import terminator_targets
 from ..analyses.short_path import ShortPathFold, FOLD, SPLIT, UNSOUND, NA, VACUOUS
-from .base import StructuralPass
+from .base import Pass
 
 
 def folded(prog) -> bool:
@@ -22,7 +22,7 @@ def folded(prog) -> bool:
     return sl is None or sl.get("verdict") == "folded"
 
 
-class FoldShortPathPass(StructuralPass):
+class FoldShortPathPass(Pass):
     """See module docstring.  The short arm is the value-order authority; this pass first transfers
     any ordering constraints exposed by the def-use proof, then deletes its blocks and retargets
     the CFG to the physical scaffold."""
@@ -31,7 +31,7 @@ class FoldShortPathPass(StructuralPass):
         v = am.get(ShortPathFold(), prog)
         sl = prog.meta.get("short_loop")
         if v.verdict == NA:
-            return ()
+            return
 
         # A SPLIT is not a kernel rejection: it is the proof identifying an early folded-path write
         # and every old-value consumer that write crossed. Transfer those exact constraints into
@@ -67,7 +67,7 @@ class FoldShortPathPass(StructuralPass):
         record = dict(sl, fold=v.verdict, reason=v.reason, obligations=v.obligations,
                       extras=v.extras)
 
-        return self._fold_arm(prog, record, v)
+        self._fold_arm(prog, record, v)
 
     @staticmethod
     def _merge_short_ordering(prog, verdict):
@@ -175,6 +175,5 @@ class FoldShortPathPass(StructuralPass):
         record.pop("model_only", None)
         prog.meta["short_loop"] = record
         prog.bump()
-        return ("ShortPathFold",)
 
 

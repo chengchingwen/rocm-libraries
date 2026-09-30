@@ -16,7 +16,7 @@ class RecordUnemittedPass(Pass):
     def run(self, prog, am):
         model_only = [b for b in prog.blocks.values() if b.model_only]
         if not model_only:
-            return ()
+            return
         dropped = sum(1 for b in model_only for n in b.body
                       if isinstance(n, Mark) and n.kind != "phase_boundary")
         rec = (prog.meta.get("short_loop") or {}).get("model_only")
@@ -25,7 +25,3 @@ class RecordUnemittedPass(Pass):
                 f"blocks {sorted(b.label for b in model_only)} are flagged model_only but no pass "
                 f"recorded why -- an unemitted block must be a stated decision, not a flag")
         rec["marks_dropped"] = dropped
-        rec["kinds_dropped"] = tuple(sorted({n.kind for b in model_only for n in b.body
-                                             if isinstance(n, Mark)
-                                             and n.kind != "phase_boundary"}))
-        return ()

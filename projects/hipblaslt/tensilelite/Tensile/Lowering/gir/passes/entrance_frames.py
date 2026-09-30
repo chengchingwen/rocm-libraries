@@ -94,5 +94,3 @@ class EntranceFramePhisPass(Pass):
                 changed = True
         if changed:
             prog.bump()
-            return ("phis",)
-        return ()

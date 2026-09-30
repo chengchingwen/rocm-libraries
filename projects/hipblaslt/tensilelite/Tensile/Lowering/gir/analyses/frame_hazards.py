@@ -34,10 +34,6 @@ class SharedTouch:
     regions:  tuple = ()   # per region axis, the SET of region values this access MAY touch
 
     @property
-    def gdelta(self):
-        return getattr(self.ref, "gdelta", 0)
-
-    @property
     def storage(self):
         """What LDS storage this access names: `(operand, regions)`."""
         return (self.operand, self.regions)
@@ -55,11 +51,6 @@ class Hazard:
     cross_block: bool = False
 
     @property
-    def distance(self):
-        """The trip gap.  Named for the field every consumer already reads."""
-        return self.gap
-
-    @property
     def same_trip(self) -> bool:
         return self.gap == 0
 
@@ -74,18 +65,13 @@ class Hazard:
 
 
 class FrameHazardSet:
-    """Query API over the hazard result, plus the per-frame instances the verifier needs."""
+    """Query API over the hazard result."""
 
-    def __init__(self, edges, instances, unresolved):
+    def __init__(self, edges):
         self._edges = tuple(edges)
-        self._instances = tuple(instances)   # (producer frame, consumer frame, edge index)
-        self._unresolved = tuple(unresolved)
 
     def __iter__(self):
         return iter(self._edges)
-
-    def __len__(self):
-        return len(self._edges)
 
     def edges(self, *, kind=None, block=None, cross_agent=None):
         """Hazards, optionally filtered.  `block` matches either endpoint's block."""
@@ -104,17 +90,6 @@ class FrameHazardSet:
         A same-wave edge is discharged by program order plus the completion counter, so fencing it
         would be pure cost.  This is the ONLY place the fence/no-fence decision is made."""
         return self.edges(cross_agent=True)
-
-    def instances(self):
-        """`(producer frame, consumer frame, hazard)` for every frame the edge is live in."""
-        return tuple((fp, fc, self._edges[i]) for fp, fc, i in self._instances)
-
-    def at(self, frame):
-        """The hazards whose PRODUCER runs in `frame`."""
-        return tuple(self._edges[i] for fp, _fc, i in self._instances if fp == frame)
-
-    def unresolved(self):
-        return self._unresolved
 
 
 def hazard_kind(producer: SharedTouch, consumer: SharedTouch):
@@ -177,13 +152,13 @@ def _walk(node, here, fm, state, reg, emit=None, scheduling=False):
                 for per in st.values():
                     w, r = per.get(s, ({}, {}))
                     # `r` are the readers OF `w` -- this record's own, not a slot-wide union.
-                    for (f, t), d in (r.items() if touch.is_write else ()):
-                        emit(reg[t], touch, f, frame, d)
+                    for (_frame, t), d in (r.items() if touch.is_write else ()):
+                        emit(reg[t], touch, d)
                     # EVERY read owes the write its own RAW, not just the first.  An earlier read
                     # being ISSUED does not retire a completion counter, so the copy can still be
                     # in flight -- read-after-read discharges a register dependence, never this.
-                    for (f, t), d in w.items():
-                        emit(reg[t], touch, f, frame, d)
+                    for (_frame, t), d in w.items():
+                        emit(reg[t], touch, d)
             if touch.is_write:
                 for per in st.values():
                     per.pop(s, None)
@@ -252,7 +227,7 @@ class _FrameHazards(Analysis):
         distributed = prog.meta.get("agent_distributed", {}) or {}
         acc = _accesses(prog, storage.geometry, self.scheduling)
 
-        edges, index, instances, instance_index = [], {}, [], set()
+        edges, index = [], set()
         #: Every read of shared storage.
         reads = tuple(t for touches in acc.values() for t in touches if not t.is_write)
 
@@ -267,30 +242,25 @@ class _FrameHazards(Analysis):
             return ring > 1 and any(not _disjoint_storage(a, r) and not _disjoint_storage(x, r)
                                     for r in reads)
 
-        def emit(a, x, fp, fc, gap):
+        def emit(a, x, gap):
             kind = hazard_kind(a, x)
             ring = max(1, storage.depth_of(a.operand))
             if kind is None or (kind == WAW and _already_ordered(a, x, ring)):
                 return
             key = (kind, id(a.ref), id(x.ref), gap > 0)
-            i = index.get(key)
-            if i is None:
-                i = index[key] = len(edges)
+            if key not in index:
+                index.add(key)
                 edges.append(Hazard(
                     kind=kind, producer=a, consumer=x, ring=ring, gap=gap,
                     cross_agent=bool(distributed.get(a.operand) or distributed.get(x.operand)),
                     cross_block=a.block != x.block))
-            instance = (fp, fc, i)
-            if instance not in instance_index:
-                instance_index.add(instance)
-                instances.append(instance)
 
         reg = {id(t): t for touches in acc.values() for t in touches}
         live = _reaching(prog, fm, acc, reg, self.scheduling)
         for node in fm.nodes():
             _walk(node, acc.get(node[0], ()), fm, live[node], reg, emit,
                   scheduling=self.scheduling)
-        return FrameHazardSet(edges, instances, fm.unresolved)
+        return FrameHazardSet(edges)
 
 
 class FrameHazards(_FrameHazards):

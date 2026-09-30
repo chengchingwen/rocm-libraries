@@ -82,23 +82,12 @@ class BackEdge:
 
 
 class BackEdgeSet:
-    """The back-edges of one program, queryable from either end."""
+    """The back-edges of one program."""
     def __init__(self, edges):
         self._edges = list(edges)
 
     def __iter__(self):
         return iter(self._edges)
-
-    def leaving(self, label):
-        """Back-edges whose SOURCE block is `label` (its terminator carries them) -- the transfers
- frame_map applies when leaving `label`. Single-tile: at most one; persistent :
- one per loop with no code change.
-        """
-        return [be for be in self._edges if be.src == label]
-
-    def entering(self, label):
-        """Back-edges whose TARGET (loop header) is `label` -- the edges that re-enter the loop."""
-        return [be for be in self._edges if be.header == label]
 
     def is_back_edge(self, src, target):
         return any(be.src == src and be.header == target for be in self._edges)

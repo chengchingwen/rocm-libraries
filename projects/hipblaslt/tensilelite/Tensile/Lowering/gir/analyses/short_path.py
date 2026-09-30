@@ -237,12 +237,6 @@ class FoldVerdict:
     short_blocks:  tuple = ()
     ordering: tuple = ()                           # body ordering needed to realize this fold
 
-    @property
-    def foldable(self) -> bool:
-        """May the short blocks be deleted?  VACUOUS counts: the arm is unreachable, so keeping it
-        is pure code growth for a trip count no summation has."""
-        return self.verdict in (FOLD, VACUOUS)
-
     def causes(self) -> dict:
         out = {}
         for b in self.breaks:
