@@ -11,7 +11,7 @@ from itertools import product as _iproduct
 from math import ceil
 
 from .ir import COPY, Expr, READ, Space, TransferCoverage, COVERAGE_VAR, cst
-from .theta import Axis
+from .theta import Axis, mode_role, readahead_level_of
 
 
 # --- tile and register arithmetic ------------------------------------------------------------
@@ -29,14 +29,12 @@ def _inner_axes(theta):
 
 
 def broadcast_axes(theta, operand) -> set:
-    """The intra-iteration loop axes this operand is constant over (does NOT depend on)."""
-    inner = {name for name, _ext in _inner_axes(theta)}
-    # An operand's OWN region axes are axes it varies over -- a scale carries its parent's split
-    # axis and changes with it, so riding a fused walk does not make it constant over that axis.
-    unsplit_regions = set()
-    return ({name for name in operand.fragment.group_broadcast() if name in inner}
-            | {name for name in theta.wave_served_axes() if name in inner}
-            | unsplit_regions)
+    """The intra-iteration loop axes this operand is constant over (does NOT depend on).
+
+    An operand's OWN region axes are axes it varies over -- a scale carries its parent's split
+    axis and changes with it, so riding a fused walk does not make it constant over that axis.
+    """
+    return set(theta.geometry(operand).broadcast)
 
 
 def _coverage_candidate_axes(theta, operand):
@@ -162,41 +160,12 @@ def _inner_steps(theta):
     return [dict(c) for c in _iproduct(*ranges)] if ranges else [dict()]
 
 
-def readahead_level_of(inner, region_names, broadcast_names=(), rotation_regions=()):
-    """`(name, extent, span)` of the axis one PLR step advances: the OUTERMOST non-region axis.
-
- A step must REACH something, so a degenerate axis is never the level: it is in the nest whatever
- its extent, and choosing it would make the answer depend on that.  `span` counts every axis INSIDE
- the level, REGION AXES INCLUDED, because one step covers them; a split outside the level is not
- covered, so the read-ahead re-issues there.
-    """
-    bcast = set(broadcast_names or ())
-    inner = [axis for axis in inner if axis.name not in bcast]
-    regions = set(region_names or ())
-    at = next((i for i, axis in enumerate(inner) if axis.name not in regions), None)
-    if at is None:
-        return None
-    span = 1
-    for axis in inner[at + 1:]:
-        span *= max(1, int(axis.extent))
-    return inner[at].name, max(1, int(inner[at].extent)), span
-
-
 def readahead_level(theta, op=None):
     """The level is a property of `ord`, not of an operand: every read walks the same nest.
 
  `op` is accepted so call sites read the same either way, and ignored: an operand INVARIANT over
  the level is the whole-set case, which `reloads_whole_set` answers, not a different level."""
-    regions = set()
-    for operand in theta.operands:
-        regions |= set(getattr(operand, "region_axes", ()) or ())
-    return readahead_level_of(theta.inner_axes(), regions)
-
-
-def mode_role(name) -> str:
-    """Logical K/M/N role of a factorized mode name, or ``None``."""
-    role = str(name).split("_", 1)[0]
-    return role if role in ("K", "M", "N") else None
+    return theta.readahead_level()
 
 
 def _varying_modes(theta, operand):
@@ -206,76 +175,52 @@ def _varying_modes(theta, operand):
     prefetch or rotation unit that owns them.  Keep the physical extents here and apply the
     coverage only when naming a covered register position.
     """
-    names = set(presence(theta, operand))
-    return [(axis.name, max(1, int(axis.extent)))
-            for axis in theta.inner_axes() if axis.name in names]
+    return list(theta.geometry(operand).varying)
 
 
 def global_outer_role(theta):
     """Outermost logical role in ``ord``: a TDMSplit region factor selects storage, not order."""
-    regions = {axis for operand in theta.operands
-               for axis in (getattr(operand, "region_axes", ()) or ())}
-    names = [axis.name for axis in theta.inner_axes() if axis.name not in regions] \
-        or [axis.name for axis in theta.inner_axes()]
-    return next((mode_role(name) for name in names if mode_role(name) is not None), None)
+    return theta.global_outer_role()
 
 
 def _role_modes(theta, operand):
     """The operand's varying modes that order its rotation: a split axis selects storage."""
-    regions = set(getattr(operand, "region_axes", ()) or ())
-    modes = [(name, extent) for name, extent in _varying_modes(theta, operand)
-             if name not in regions]
-    return modes or _varying_modes(theta, operand)
+    return list(theta.geometry(operand).role_modes)
 
 
 def operand_outer_role(theta, operand):
     """Outermost logical role this operand varies on."""
-    return next((mode_role(name) for name, _extent in _role_modes(theta, operand)
-                 if mode_role(name) is not None), None)
+    return theta.geometry(operand).outer_role
 
 
 def operand_inner_role(theta, operand):
     """Innermost logical role this operand varies on: the prefetch-unit axis."""
-    roles = [mode_role(name) for name, _extent in _role_modes(theta, operand)
-             if mode_role(name) is not None]
-    return roles[-1] if roles else None
+    return theta.geometry(operand).inner_role
 
 
 def unit_enumerator_modes(theta, operand):
     """Factor modes of the logical axis that enumerates successive units."""
-    role = operand_outer_role(theta, operand)
-    return [(name, extent) for name, extent in _varying_modes(theta, operand)
-            if mode_role(name) == role]
+    return list(theta.geometry(operand).unit_enumerator)
 
 
 def original_prefetch_unit_modes(theta, operand):
     """All factors of the operand's innermost logical axis, including region factors."""
-    role = operand_inner_role(theta, operand)
-    return [(name, extent) for name, extent in _varying_modes(theta, operand)
-            if mode_role(name) == role]
+    return list(theta.geometry(operand).original_prefetch)
 
 
 def prefetch_unit_modes(theta, operand):
     """The per-region prefetch unit before register grouping."""
-    regions = set(getattr(operand, "region_axes", ()) or ())
-    return [(name, extent) for name, extent in original_prefetch_unit_modes(theta, operand)
-            if name not in regions]
+    return list(theta.geometry(operand).prefetch_unit)
 
 
 def rotation_unit_modes(theta, operand):
     """Modes whose tile product is one rotation unit before register grouping."""
-    modes = _varying_modes(theta, operand)
-    if reloads_whole_set(theta, operand):
-        return modes
-    outer = operand_outer_role(theta, operand)
-    return [(name, extent) for name, extent in modes if mode_role(name) != outer]
+    return list(theta.geometry(operand).rotation)
 
 
 def grouping_modes(theta, operand):
     """The first non-region rotation mode: the one contiguous groups partition."""
-    regions = set(getattr(operand, "region_axes", ()) or ())
-    return [(name, extent) for name, extent in rotation_unit_modes(theta, operand)
-            if name not in regions][:1]
+    return list(theta.geometry(operand).grouping)
 
 
 def grouping_mode_name(theta, operand):
@@ -385,10 +330,8 @@ def _rotation_block_digits(theta, operand):
     groups = max(1, len(operand.fragment.groups()))
     grouping = grouping_mode_name(theta, operand)
     group_extent = max(1, grouping_extent(theta, operand) // groups)
-    inner = {axis.name: axis.extent for axis in theta.inner_axes()}
     region_axes = getattr(operand, "region_axes", ()) or ()
     rotation = rotation_unit_modes(theta, operand)
-    rotation_names = {name for name, _extent in rotation}
 
     digits = [(name, group_extent if name == grouping else extent, 1, name == grouping)
               for name, extent in rotation if name not in region_axes]
@@ -567,8 +510,7 @@ def grouping_preserves_coverage(theta, operand, groups) -> bool:
 
 def reloads_whole_set(theta, operand) -> bool:
     """Whether this operand is invariant over the global outermost logical role."""
-    outer = operand_outer_role(theta, operand)
-    return outer is not None and outer != global_outer_role(theta)
+    return theta.geometry(operand).reloads_whole_set
 
 
 def group_unit_tile_count(theta, operand) -> int:
@@ -1016,7 +958,7 @@ def summation_axes(theta):
 
 
 def summation_names(theta):
-    return {axis.name for axis in summation_axes(theta)}
+    return set(theta._summation_names)
 
 
 def free_axes(theta, operand):
@@ -1035,9 +977,10 @@ def presence(theta, operand):
 
 def presence_axes(theta, operand, hop=None):
     """The axes this operand's data changes over on one transfer, or over all of them."""
-    constant_over = (broadcast_axes(theta, operand) if hop is None
-                     else transfer_broadcast(theta, operand, hop))
-    coverage = {} if hop is None else transfer_coverage(theta, operand, hop)
+    if hop is None:                                   # settled at construction; no coverage
+        return list(theta.geometry(operand).presence)
+    constant_over = transfer_broadcast(theta, operand, hop)
+    coverage = transfer_coverage(theta, operand, hop)
     return [axis if axis.name not in coverage
             else Axis(axis.name, max(1, axis.extent // coverage[axis.name]))
             for axis in theta.inner_axes() if axis.name not in constant_over]
@@ -1082,34 +1025,24 @@ def reload_modes(theta, operand):
 
 def _reduction_prefetch_ring_modes(theta, operand):
     """Reduction ring used when a free prefetch-unit factor is packed into each slot."""
-    level = readahead_level(theta, operand)
-    summation = set(summation_names(theta))
-    rotation = rotation_unit_modes(theta, operand)
-    rotation_names = {name for name, _extent in rotation}
-    regions = set(getattr(operand, "region_axes", ()) or ())
-    missing = [(name, extent) for name, extent in prefetch_unit_modes(theta, operand)
-               if name not in rotation_names and name not in regions]
-    if (level and level[0] in summation
-            and product(extent for _name, extent in missing) > 1):
-        return [(name, extent) for name, extent in rotation if name in summation]
-    return []
+    return list(theta.geometry(operand).reduction_ring)
 
 
 def ring_axes(theta, operand, group):
-    """Modes enumerating rotation units for a streamed operand."""
+    """Modes enumerating rotation units for a streamed operand.
+
+    The group is the operand's, not this argument's: every group of one fragment enumerates the
+    same modes, so `group` says which ring, never which axes.
+    """
+    geometry = theta.geometry(operand)
     hop = operand.trajectory.shared_read
     if operand.name.startswith("MXS") and hop is not None and hop.coverage is not None:
-        summation = set(summation_names(theta))
-        return [(name, extent) for name, extent in _varying_modes(theta, operand)
-                if name in summation]
-    reduction_ring = _reduction_prefetch_ring_modes(theta, operand)
-    if reduction_ring:
-        return reduction_ring
-    if reloads_whole_set(theta, operand):
+        return list(geometry.summation_modes)
+    if geometry.reduction_ring:
+        return list(geometry.reduction_ring)
+    if geometry.reloads_whole_set:
         if len(operand.fragment.groups()) == 1:
-            summation = set(summation_names(theta))
-            return [(name, extent) for name, extent in _varying_modes(theta, operand)
-                    if name in summation]
+            return list(geometry.summation_modes)
         return []
     return unit_enumerator_modes(theta, operand)
 

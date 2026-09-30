@@ -26,5 +26,7 @@ class ScaffoldShapePass(Pass):
 
     def run(self, prog, am):
         for step in self._steps:
+            before = prog.version
             step.run(prog, am)
-            am.invalidate()
+            if prog.version != before:        # a mutation, and only a mutation, drops the cache
+                am.invalidate()

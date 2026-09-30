@@ -184,36 +184,57 @@ class Trajectory:
         self.placements = list(placements)
         if not self.placements:
             raise RuntimeError("a trajectory needs at least one placement")
+        self._derive()
+
+    def _derive(self):
+        """Settle what the placement list implies.  Every mutator below ends by calling this.
+
+        A hop is a PAIR of neighbours, so the movements and the four lookups are all restated
+        whenever `placements` changes -- and only then.
+        """
+        self._movements = tuple(Movement(a, b)
+                                for a, b in zip(self.placements, self.placements[1:]))
+        self._shared = next((p for p in self.placements if isinstance(p, Shared)), None)
+        self._fragment = next((p for p in reversed(self.placements)
+                               if isinstance(p, Fragment)), None)
+        self._shared_fill = next((m for m in self._movements
+                                  if isinstance(m.destination, Shared)), None)
+        self._fragment_fill = next((m for m in self._movements
+                                    if isinstance(m.destination, Fragment)), None)
+        fill = self._fragment_fill
+        self._shared_read = fill if fill is not None and isinstance(fill.source, Shared) else None
 
     @property
     def movements(self) -> tuple:
-        return tuple(Movement(a, b) for a, b in zip(self.placements, self.placements[1:]))
+        return self._movements
 
     @property
     def shared(self):
-        return next((p for p in self.placements if isinstance(p, Shared)), None)
+        return self._shared
 
     @property
     def fragment(self):
-        return next((p for p in reversed(self.placements) if isinstance(p, Fragment)), None)
+        return self._fragment
 
     @property
     def shared_fill(self):
-        return next((movement for movement in self.movements
-                     if isinstance(movement.destination, Shared)), None)
+        return self._shared_fill
 
     @property
     def fragment_fill(self):
-        return next((movement for movement in self.movements
-                     if isinstance(movement.destination, Fragment)), None)
+        return self._fragment_fill
 
     @property
     def shared_read(self):
-        movement = self.fragment_fill
-        return movement if movement is not None and isinstance(movement.source, Shared) else None
+        return self._shared_read
+
+    def add(self, placement):
+        self.placements.append(placement)
+        self._derive()
 
     def replace(self, old, new):
         self.placements[self.placements.index(old)] = new
+        self._derive()
 
 
 # --------------------------------------------------------------------------- The OP-CLASS role
@@ -274,7 +295,7 @@ class Operand:
     def fragment(self, value):
         old = self.trajectory.fragment
         if old is None:
-            self.trajectory.placements.append(value)
+            self.trajectory.add(value)
         else:
             self.trajectory.replace(old, value)
 
@@ -391,6 +412,56 @@ class AgentAssignment:
                 % (len(hits), level, ", ".join(sorted(item.axis for item in hits))))
         return int(hits[0].extent)
 
+def mode_role(name) -> str:
+    """Logical K/M/N role of a factorized mode name, or ``None``."""
+    role = str(name).split("_", 1)[0]
+    return role if role in ("K", "M", "N") else None
+
+
+def readahead_level_of(inner, region_names, broadcast_names=(), rotation_regions=()):
+    """`(name, extent, span)` of the axis one PLR step advances: the OUTERMOST non-region axis.
+
+ A step must REACH something, so a degenerate axis is never the level: it is in the nest whatever
+ its extent, and choosing it would make the answer depend on that.  `span` counts every axis INSIDE
+ the level, REGION AXES INCLUDED, because one step covers them; a split outside the level is not
+ covered, so the read-ahead re-issues there.
+    """
+    bcast = set(broadcast_names or ())
+    inner = [axis for axis in inner if axis.name not in bcast]
+    regions = set(region_names or ())
+    at = next((i for i, axis in enumerate(inner) if axis.name not in regions), None)
+    if at is None:
+        return None
+    span = 1
+    for axis in inner[at + 1:]:
+        span *= max(1, int(axis.extent))
+    return inner[at].name, max(1, int(inner[at].extent)), span
+
+
+@dataclass(frozen=True)
+class OperandGeometry:
+    """What one operand's traversal is, given the nest -- derived once, at `Theta` construction.
+
+    Every field below is a function of `ord`, the operand's own `region_axes`, and the axes its
+    fragment declares it constant over.  None of the three moves after the theta is built: the
+    register-depth search re-partitions `parts`/`labels`/`ring_depths`, which nothing here reads.
+    """
+    broadcast: frozenset            #: intra-iteration axes the operand does NOT depend on
+    presence: tuple                 #: the walked axes it does vary over, outer -> inner
+    varying: tuple                  #: `presence` as (name, extent), its physical tile modes
+    role_modes: tuple               #: `varying` minus the region axes that select storage
+    outer_role: str                 #: outermost logical role it varies on
+    inner_role: str                 #: innermost -- the prefetch-unit axis
+    reloads_whole_set: bool         #: invariant over the global outermost role
+    rotation: tuple                 #: modes whose tile product is one rotation unit
+    grouping: tuple                 #: the one contiguous mode register groups partition
+    original_prefetch: tuple        #: every factor of the inner role, region factors included
+    prefetch_unit: tuple            #: `original_prefetch` per region
+    unit_enumerator: tuple          #: factors of the axis that enumerates successive units
+    summation_modes: tuple          #: `varying` restricted to the reduction axes
+    reduction_ring: tuple           #: the reduction ring when a free prefetch factor is packed
+
+
 @dataclass
 class Theta:
     operands: list
@@ -411,6 +482,18 @@ class Theta:
         self.ord = tuple(self.ord)
         self.inner = tuple(axis for axis in self.ord if not axis.is_outer)
         self.outer = tuple(axis for axis in self.ord if axis.is_outer)
+        extents = {axis.name: max(1, int(axis.extent)) for axis in self.inner}
+        self._inner_axes = tuple(axis for axis in self.inner
+                                 if extents[axis.name] > 1
+                                 or extents.get(self._TILE_REGION.get(axis.name, ""), 1) > 1)
+        self._readahead_level = readahead_level_of(self._inner_axes, self.region_axis_names())
+        base = {operand.name: self._derive_presence(operand) for operand in self.operands}
+        self._summation_names = self._derive_summation_names(
+            {name: presence for name, (_b, presence, _v) in base.items()})
+        #: the per-operand traversal, keyed by name because `replace(theta, ord=...)` reuses the
+        #: SAME Operand objects -- a field on the operand would be the second theta's, not this one's
+        self._geometry = {operand.name: self._derive_geometry(operand, base[operand.name])
+                          for operand in self.operands}
 
     # --- convenience lookups ------------------------------------------------
     def op(self, name):
@@ -461,18 +544,96 @@ class Theta:
     #: tile axis -> the storage-region axis whose liveness keeps it in the walk
     _TILE_REGION = {"K_inner": "K_split", "M_inner": "M_split", "N_inner": "N_split"}
 
-    def inner_axes(self):
-        """The inner axes a traversal WALKS.
+    def inner_axes(self) -> tuple:
+        """The inner axes a traversal WALKS, fixed in `__post_init__` beside `inner`/`outer`.
 
         `ord` carries every tile axis whatever its extent, so presence there no longer says
         whether anything moves along one.  Something does when the axis itself steps, or when
         the region axis it pairs with does: one tile of a split operand is still visited once
         per region.  `levels()` is the full nest for anyone who needs the declaration.
         """
-        extents = {axis.name: max(1, int(axis.extent)) for axis in self.inner}
-        return [axis for axis in self.inner
-                if extents[axis.name] > 1
-                or extents.get(self._TILE_REGION.get(axis.name, ""), 1) > 1]
+        return self._inner_axes
+
+    def geometry(self, operand) -> OperandGeometry:
+        """This operand's traversal under this nest, derived once in `__post_init__`."""
+        return self._geometry[operand.name]
+
+    def region_axis_names(self) -> frozenset:
+        """Every axis some operand splits storage on."""
+        return frozenset(axis for operand in self.operands
+                         for axis in (operand.region_axes or ()))
+
+    def global_outer_role(self) -> str:
+        """Outermost logical role in `ord`: a TDMSplit region factor selects storage, not order."""
+        regions = self.region_axis_names()
+        names = [axis.name for axis in self._inner_axes if axis.name not in regions] \
+            or [axis.name for axis in self._inner_axes]
+        return next((role for role in map(mode_role, names) if role is not None), None)
+
+    def readahead_level(self):
+        """The read-ahead level: a property of `ord`, shared by every operand that walks it."""
+        return self._readahead_level
+
+    def _derive_presence(self, operand):
+        """`(broadcast, presence, varying)` -- the first pass, which the reduction axes need."""
+        walked = {axis.name for axis in self._inner_axes}
+        fragment = operand.fragment
+        declared = set(fragment.broadcast_axes) if fragment is not None else set()
+        broadcast = frozenset({name for name in declared if name in walked}
+                              | {name for name in self.wave_served_axes() if name in walked})
+        presence = tuple(axis for axis in self._inner_axes if axis.name not in broadcast)
+        return broadcast, presence, tuple((axis.name, max(1, int(axis.extent)))
+                                          for axis in presence)
+
+    def _derive_summation_names(self, presence) -> frozenset:
+        """The axes the output is NOT present on: the reduction axes."""
+        on_output = {axis.name for operand in self.operands if operand.is_output
+                     for axis in presence[operand.name]}
+        served = self.wave_served_axes()
+        return frozenset(axis.name for axis in self._inner_axes
+                         if axis.name not in on_output and axis.name not in served)
+
+    def _derive_geometry(self, operand, base) -> OperandGeometry:
+        """Build one `OperandGeometry`.  See its docstring for why this is settled here."""
+        broadcast, presence, varying = base
+        regions = set(operand.region_axes or ())
+        role_modes = tuple((name, extent) for name, extent in varying
+                           if name not in regions) or varying
+        roles = [mode_role(name) for name, _extent in role_modes if mode_role(name) is not None]
+        outer_role = roles[0] if roles else None
+        inner_role = roles[-1] if roles else None
+
+        reloads = outer_role is not None and outer_role != self.global_outer_role()
+        rotation = varying if reloads else tuple(
+            (name, extent) for name, extent in varying if mode_role(name) != outer_role)
+        grouping = tuple((name, extent) for name, extent in rotation
+                         if name not in regions)[:1]
+
+        original = tuple((name, extent) for name, extent in varying
+                         if mode_role(name) == inner_role)
+        prefetch = tuple((name, extent) for name, extent in original if name not in regions)
+        enumerator = tuple((name, extent) for name, extent in varying
+                           if mode_role(name) == outer_role)
+        summation = tuple((name, extent) for name, extent in varying
+                          if name in self._summation_names)
+        # The reduction ring only stands in when a free prefetch factor is packed into each slot.
+        rotation_names = {name for name, _extent in rotation}
+        unpacked = 1
+        for name, extent in prefetch:
+            if name not in rotation_names and name not in regions:
+                unpacked *= max(1, int(extent))
+        level = self._readahead_level
+        reduction = tuple((name, extent) for name, extent in rotation
+                          if name in self._summation_names) \
+            if (level and level[0] in self._summation_names and unpacked > 1) else ()
+
+        return OperandGeometry(broadcast=broadcast, presence=presence, varying=varying,
+                               role_modes=role_modes, outer_role=outer_role,
+                               inner_role=inner_role, reloads_whole_set=reloads,
+                               rotation=rotation, grouping=grouping,
+                               original_prefetch=original, prefetch_unit=prefetch,
+                               unit_enumerator=enumerator, summation_modes=summation,
+                               reduction_ring=reduction)
 
     def free_extent(self, mode_name):
         for axis in self.ord:
