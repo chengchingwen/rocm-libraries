@@ -18,7 +18,7 @@ GlobalParameters:
   EnqueuesPerSync: 1
   PrintWinnersOnly: False
   Architecture: gfx1250
-  KeepBuildTmp: True
+  KeepBuildTmp: False
   PrintLevel: 2
   CodeObjectVersion: "4"
 
@@ -462,7 +462,6 @@ BenchmarkProblems:
         - KernelLanguage: ["Assembly"]
       ForkParameters:
         - MatrixInstruction:
-          - [16, 16, 128, 1,  1,  2, 2,  2, 2]
           - [16, 16, 128, 1,  1,  4, 4,  2, 2]
         - DepthU: [256]
         - WavefrontSize: [32]
