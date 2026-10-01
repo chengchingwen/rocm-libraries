@@ -11,6 +11,7 @@ collapsed onto an invented base.
 from __future__ import annotations
 
 from ..analysis import Analysis
+from ..nodes import LoopBack
 from .cfg import BackEdges, successors
 from .lds_buffers import LdsBufferIds
 
@@ -66,8 +67,9 @@ def _edge_values(prog, back):
     """Per edge, `{gen id: (value, relative)}` -- the table `GirFrameAnalysis` applies: an edge
     either ASSIGNS a phase or ADVANCES one.
 
-    Transfers are stated on the back edge that closes the trip.  An edge leaving the loop is not
-    another trip: advancing there aliased a ring-2 drain's two reads onto one buffer."""
+    A LoopBack terminator closes one executed trip on BOTH outcomes: another iteration takes its
+    back edge, while the final iteration takes its exit. The direct prologue-to-drain entrance is
+    not a LoopBack edge and therefore keeps its explicitly assigned entrance phase."""
     out = {}
     for lab, blk in prog.blocks.items():
         for succ_lab in (blk.succs or ()):
@@ -75,11 +77,13 @@ def _edge_values(prog, back):
             if dst is None:
                 continue
             table = {}
-            if back.is_back_edge(lab, succ_lab):
+            closes_trip = (
+                back.is_back_edge(lab, succ_lab)
+                or (isinstance(blk.term, LoopBack) and succ_lab == blk.term.exit_target)
+            )
+            if closes_trip:
                 for xf in blk.xfers:
                     table[xf.gen.id] = (int(xf.adv) % max(1, int(xf.ring)), True)
-                out[(lab, succ_lab)] = table
-                continue                  # a trip closes by TRANSFER; no phi assigns on it
             for phi in dst.phis:
                 incoming = dict(phi.incomings)
                 if incoming:
