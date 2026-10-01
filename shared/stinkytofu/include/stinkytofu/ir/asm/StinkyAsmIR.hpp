@@ -838,11 +838,11 @@ inline bool hasLdsPseudoRegs(const StinkyInstruction& inst) {
     return false;
 }
 
-/// Returns true if the GIR frame model names this ds_read/ds_write's storage, so
-/// GirFrameHazardAnalysis supplies its ordering as DAG edges.  tensor_load is excluded: its
-/// tensorcnt rank is a FIFO position that only the region cut keeps when the chain is off.
-inline bool hasGirFrameOrdering(const StinkyInstruction& inst) {
-    if (!isDSRead(inst) && !isDSWrite(inst)) return false;
+/// Returns true if GIR models this memory operation's storage hazards, so the operation may
+/// enter the scheduler DAG and GirFrameHazardAnalysis can add only the ordering edges it needs.
+/// GIR does not choose the schedule.  Untagged memory operations remain conservative region cuts.
+inline bool hasGirMemoryHazardModel(const StinkyInstruction& inst) {
+    if (!isTensorLoad(inst) && !isDSRead(inst)) return false;
     const GirActionData* action = inst.getModifier<GirActionData>();
     return action != nullptr && !action->accesses.empty();
 }
@@ -876,7 +876,7 @@ inline bool hasSideEffect(const StinkyInstruction& inst) {
         return true;
     if ((isBarrier(inst) || isTensorLoad(inst) || isDSRead(inst) || isDSWrite(inst) ||
          isGlobalStoreAsyncFromLds(inst)) &&
-        !hasLdsPseudoRegs(inst) && !hasGirFrameOrdering(inst))
+        !hasLdsPseudoRegs(inst) && !hasGirMemoryHazardModel(inst))
         return true;
     if (isExecMaskGroup(inst)) {
         if (const auto* groupData = inst.getModifier<ExecGroupData>()) {
