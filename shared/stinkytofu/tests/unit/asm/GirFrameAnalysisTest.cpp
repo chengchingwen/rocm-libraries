@@ -942,6 +942,54 @@ TEST(GirFrameAnalysisTest, LoopCarriedWarDrainsAtPredecessorTailFence) {
     EXPECT_EQ(dsWait->dlcnt, 0);
 }
 
+TEST(GirFrameAnalysisTest, EntryAndBackedgeWarUseDifferentFences) {
+    Function function("entry_and_backedge_war");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* entry = function.createBasicBlock("entry");
+    BasicBlock* loop = function.createBasicBlock("loop");
+    function.addEdge(entry, loop);
+    function.addEdge(loop, loop);
+
+    StinkyInstruction* entryRead = createDsReadB128InBlock(entry, GfxArchID::Gfx1250, 0, 20);
+    entryRead->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 0, -1, true}}});
+    AsmIRBuilder entryBuilder(*entry, GfxArchID::Gfx1250);
+    StinkyInstruction* entryFence = entryBuilder.createFence();
+
+    StinkyInstruction* copy = createTensorLoadInBlock(loop, GfxArchID::Gfx1250, 0, 8);
+    copy->addModifier<GirActionData>(
+        GirActionData{1, 1, GirActionKind::Copy, {GirAccessData{true, 0, 2, 0, 0, -1, true}}});
+    StinkyInstruction* loopRead = createDsReadB128InBlock(loop, GfxArchID::Gfx1250, 4, 24);
+    loopRead->addModifier<GirActionData>(
+        GirActionData{2, 1, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 1, -1, true}}});
+    AsmIRBuilder loopBuilder(*loop, GfxArchID::Gfx1250);
+    StinkyInstruction* tailFence = loopBuilder.createFence();
+    function.setStringMetaData(kGirFrameContractKey, kRingTwoContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    createGirWaitCntInsertionPass()->run(function, context, analyses);
+    const auto drainBefore = [](BasicBlock* block, const StinkyInstruction* anchor) {
+        const SWaitCntData* result = nullptr;
+        for (IRBase& node : *block) {
+            auto* inst = dyn_cast<StinkyInstruction>(&node);
+            if (inst == anchor) break;
+            if (inst && inst->getModifier<SWaitCntData>())
+                result = inst->getModifier<SWaitCntData>();
+        }
+        return result;
+    };
+    const SWaitCntData* entryDrain = drainBefore(entry, entryFence);
+    const SWaitCntData* tailDrain = drainBefore(loop, tailFence);
+    ASSERT_NE(entryDrain, nullptr);
+    ASSERT_NE(tailDrain, nullptr);
+    EXPECT_EQ(entryDrain->dlcnt, 0);
+    EXPECT_EQ(tailDrain->dlcnt, 0);
+}
+
 TEST(GirFrameAnalysisTest, LoopWrapStillUsesUnreducedGenerationSpan) {
     Function function("loop_wrap_generation_span");
     setFunctionArch(function, GfxArchID::Gfx1250);

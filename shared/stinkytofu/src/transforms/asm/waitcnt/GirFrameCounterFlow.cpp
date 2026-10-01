@@ -16,7 +16,6 @@
 #include <map>
 #include <optional>
 #include <set>
-#include <sstream>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -125,33 +124,6 @@ CounterKind counterFor(const GirFrameHazard& hazard) {
     return CK_Tensor;
 }
 
-struct EnclosingFence {
-    StinkyInstruction* anchor = nullptr;
-    GirFrame frame;
-    int predecessorDistance = -1;
-};
-
-/// The barrier a cross-agent hazard's wait anchors on: the LAST one standing between the two
-/// occurrences on the frame graph. Resolved by position, not by any fence-to-hazard table handed
-/// down, so a barrier StinkyTofu placed itself anchors exactly like one it inherited. The
-/// predecessor distance is part of the answer: a loop-tail fence is one edge earlier than its
-/// next-trip consumer, and its completion wait must execute at that earlier occurrence.
-EnclosingFence enclosingFence(Function& function, const GirFrameHazard& hazard,
-                              const GirFrameAnalysis::Result& frames,
-                              const std::function<bool(const StinkyInstruction&)>& alsoFences) {
-    (void)function;
-    int predecessorDistance = -1;
-    auto found = lastBarrierBefore(frames, hazard.consumerBlock, hazard.consumerFrame,
-                                   hazard.consumerIndex, alsoFences, &predecessorDistance);
-    if (found.first) return {found.first, found.second, predecessorDistance};
-    std::ostringstream message;
-    message << "Cross-agent ST frame hazard is discharged by no barrier"
-            << " kind=" << static_cast<int>(hazard.kind) << " gap=" << hazard.gap
-            << " producerBlock=" << hazard.producerBlock->getLabel()
-            << " consumerBlock=" << hazard.consumerBlock->getLabel();
-    report_fatal_error(message.str());
-}
-
 size_t indexInBlock(StinkyInstruction& inst);
 FeasibleDomainMap computeFeasibleDomains(Function& function,
                                          const GirFrameAnalysis::Result& frames);
@@ -177,38 +149,38 @@ PotentialMap buildPotentials(Function& function, const GirFrameAnalysis::Result&
         if (!hazardFeasible(function, frames, feasible, hazard)) continue;
         CounterKind counter = counterFor(hazard);
         if (counter != CK_DS && counter != CK_Tensor) continue;
-        // The frame comes from the match, not from guessing which side the fence sits on: a
-        // barrier discharges the hazard wherever on the path it stands, including a block between
-        // the two ends.
-        StinkyInstruction* anchor = hazard.consumer;
-        GirFrame anchorFrame = hazard.consumerFrame;
-        int anchorGap = hazard.gap;
-        if (hazard.crossAgent) {
-            EnclosingFence fence = enclosingFence(function, hazard, frames, alsoFences);
-            anchor = fence.anchor;
-            anchorFrame = std::move(fence.frame);
-            if (fence.predecessorDistance < 0 || fence.predecessorDistance > hazard.gap)
-                report_fatal_error("GIR frame fence lies outside its hazard span");
-            anchorGap -= fence.predecessorDistance;
+        const auto addPotential = [&](StinkyInstruction* anchor, const GirFrame& anchorFrame,
+                                      int anchorGap) {
+            auto key =
+                std::make_tuple(anchor, anchorFrame, counter, hazard.producer, hazard.producerFrame,
+                                hazard.producerIndex, hazard.gap, anchorGap);
+            if (!seen.insert(key).second) return;
+            PASS_DEBUG(std::cerr << "[gir-haz] fn=" << function.getName()
+                                 << " counter=" << (counter == CK_DS ? "ds" : "tensor")
+                                 << " kind=" << static_cast<int>(hazard.kind)
+                                 << " crossAgent=" << hazard.crossAgent << " gap=" << hazard.gap
+                                 << " prod=" << hazard.producerBlock->getLabel() << "#"
+                                 << hazard.producerIndex << "/act" << hazard.producerAction
+                                 << " cons=" << hazard.consumerBlock->getLabel() << "#"
+                                 << hazard.consumerIndex << "/act" << hazard.consumerAction
+                                 << " anchor=" << anchor->getParent()->getLabel() << "#"
+                                 << indexInBlock(*anchor) << " anchorGap=" << anchorGap << "\n");
+            result[{anchor, anchorFrame, counter}].push_back(
+                {{hazard.producer, hazard.producerFrame}, hazard.producerIndex, anchorGap});
+        };
+
+        if (!hazard.crossAgent) {
+            addPotential(hazard.consumer, hazard.consumerFrame, hazard.gap);
+            continue;
         }
-        // The span is part of the identity: the hazard analysis deliberately keeps one pair at two
-        // distances, and folding them together kept whichever the vector happened to hold first.
-        auto key =
-            std::make_tuple(anchor, anchorFrame, counter, hazard.producer, hazard.producerFrame,
-                            hazard.producerIndex, hazard.gap, anchorGap);
-        if (!seen.insert(key).second) continue;
-        PASS_DEBUG(std::cerr << "[gir-haz] fn=" << function.getName()
-                             << " counter=" << (counter == CK_DS ? "ds" : "tensor")
-                             << " kind=" << static_cast<int>(hazard.kind)
-                             << " crossAgent=" << hazard.crossAgent << " gap=" << hazard.gap
-                             << " prod=" << hazard.producerBlock->getLabel() << "#"
-                             << hazard.producerIndex << "/act" << hazard.producerAction
-                             << " cons=" << hazard.consumerBlock->getLabel() << "#"
-                             << hazard.consumerIndex << "/act" << hazard.consumerAction
-                             << " anchor=" << anchor->getParent()->getLabel() << "#"
-                             << indexInBlock(*anchor) << " anchorGap=" << anchorGap << "\n");
-        result[{anchor, anchorFrame, counter}].push_back(
-            {{hazard.producer, hazard.producerFrame}, hazard.producerIndex, anchorGap});
+
+        const GirHazardFenceCover cover = enclosingFences(frames, hazard, alsoFences);
+        if (!cover.hasHazardPath)
+            report_fatal_error("Cross-agent GIR hazard has no exact frame-graph path");
+        if (cover.hasUnfencedPath)
+            report_fatal_error("Cross-agent GIR hazard has an unfenced exact frame-graph path");
+        for (const GirHazardFenceOwner& owner : cover.owners)
+            addPotential(owner.anchor, owner.anchorNode.frame, owner.producerToAnchorGap);
     }
     return result;
 }
