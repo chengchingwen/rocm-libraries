@@ -133,11 +133,11 @@ namespace rocisa
     struct GirAccess
     {
         bool isWrite    = false;
-        int  operand    = -1;   // id of the (operand, region) pair this touch names
+        int  operand    = -1; // id of the (operand, region) pair this touch names
         int  ring       = 1;
-        int  genId      = -1;   // -1 = not bound to a generation
+        int  genId      = -1; // -1 = not bound to a generation
         int  gdelta     = 0;
-        int  absolute   = -1;   // -1 = relative, not pinned
+        int  absolute   = -1; // -1 = relative, not pinned
         bool crossAgent = false;
     };
 
@@ -147,6 +147,7 @@ namespace rocisa
         uint64_t               anchorAction = 0;
         GirActionKind          kind         = GirActionKind::Other;
         std::vector<GirAccess> accesses;
+        bool                   softBoundary = false;
     };
 
     struct Instruction : public Item
@@ -193,10 +194,11 @@ namespace rocisa
         void setGirActionData(uint64_t                      actionId,
                               uint64_t                      anchorAction,
                               GirActionKind                 kind,
-                              const std::vector<GirAccess>& accesses)
+                              const std::vector<GirAccess>& accesses,
+                              bool                          softBoundary = false)
         {
             m_girAction = std::make_shared<GirActionData>(
-                GirActionData{actionId, anchorAction, kind, accesses});
+                GirActionData{actionId, anchorAction, kind, accesses, softBoundary});
         }
 
         std::shared_ptr<GirActionData> getGirActionData() const
