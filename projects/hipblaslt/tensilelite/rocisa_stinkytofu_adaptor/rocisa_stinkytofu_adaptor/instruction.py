@@ -105,7 +105,7 @@ class Instruction:
     def getMemToken(self) -> Any:
         return self.m_memToken
 
-    def setGirActionData(self, action_id: int) -> None:
+    def setGirActionData(self, action_id: int, *_args: Any, **_kwargs: Any) -> None:
         self.m_girAction = int(action_id)
 
     def getGirActionData(self) -> Any:

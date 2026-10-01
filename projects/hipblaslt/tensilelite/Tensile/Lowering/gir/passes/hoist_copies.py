@@ -7,7 +7,7 @@ HoistCopiesPass -- issue each movement at its earliest hazard-legal slot.
 from __future__ import annotations
 
 from ..nodes import Move
-from ..analyses.frame_hazards import FrameHazards, SchedulingFrameHazards
+from ..analyses.frame_hazards import FrameHazards, SchedulingFrameHazards, RAW
 from ..analyses.reg_hazards import RegHazards
 from .base import Pass
 
@@ -51,6 +51,43 @@ def _earliest(inst, label, *hazard_sets):
                default=0)
 
 
+def _copy_placement(inst, label, lds, reg):
+    """Return a copy's earliest slot and whether a register consumer defines that floor.
+
+    Every shared refill follows the same-trip LDS readers it overwrites. When one of those reads
+    also produces registers consumed later in this block, keeping the refill behind its first
+    consumer lets that consumer's completion wait discharge the WAR as well. This is derived only
+    from hazards; operand names and prefetch policy are irrelevant.
+    """
+    ordinary_floors = []
+    consumer_floors = []
+    for hazard in lds:
+        if (hazard.consumer.inst is not inst or hazard.consumer.block != label
+                or hazard.cross_block or not hazard.same_trip or not hazard.in_program_order):
+            continue
+        ordinary = hazard.producer.pos + 1
+        consumers = [
+            edge.consumer.pos + 1
+            for edge in reg
+            if edge.kind == RAW
+            and edge.producer.inst is hazard.producer.inst
+            and edge.consumer.block == label
+            and not edge.cross_block
+            and edge.same_trip
+            and edge.in_program_order
+        ]
+        ordinary_floors.append(ordinary)
+        consumer_floors.append(max(ordinary, min(consumers)) if consumers else ordinary)
+
+    ordinary = max(ordinary_floors, default=0)
+    floor = max(consumer_floors, default=0)
+    return floor, floor > ordinary
+
+
+def _copy_earliest(inst, label, lds, reg):
+    return _copy_placement(inst, label, lds, reg)[0]
+
+
 def _raw_fence_profile(prog, am):
     """Per RAW edge needing a fence, semantic work preceding the last point one may stand.
 
@@ -83,9 +120,12 @@ def hoisted(blk, lds, reg=(), group=True, reads=False, copies=True):
     follows the WMMA traversal instead of being batched across regions. `reads` lifts register
     reads too."""
     body = blk.body
-    at = ({i: _earliest(inst, blk.label, lds)
-           for i, inst in enumerate(body) if _is_copy(inst)}
-          if copies else {})
+    placements = ({i: _copy_placement(inst, blk.label, lds, reg)
+                   for i, inst in enumerate(body) if _is_copy(inst)}
+                  if copies else {})
+    for i, (_, soft_boundary) in placements.items():
+        body[i].soft_boundary = soft_boundary
+    at = {i: placement[0] for i, placement in placements.items()}
     if group and at:
         grouped = {i: slot for i, slot in at.items() if not _is_split_copy(body[i])}
         if grouped:

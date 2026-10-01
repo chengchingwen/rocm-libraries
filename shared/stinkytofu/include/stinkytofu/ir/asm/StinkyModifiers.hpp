@@ -1118,15 +1118,19 @@ struct GirActionData : public TypedModifier<GirActionData> {
     uint64_t anchorAction = 0;
     GirActionKind kind = GirActionKind::Other;
     std::vector<GirAccessData> accesses;
+    // GIR deliberately placed this copy behind an existing register consumer drain.
+    // Scheduling may move unrelated work across it, but preserves that matrix -> tensor edge.
+    bool softBoundary = false;
 
     explicit GirActionData(uint64_t actionId = 0, uint64_t anchorAction = 0,
                            GirActionKind kind = GirActionKind::Other,
-                           std::vector<GirAccessData> accesses = {})
+                           std::vector<GirAccessData> accesses = {}, bool softBoundary = false)
         : TypedModifier<GirActionData>(),
           actionId(actionId),
           anchorAction(anchorAction),
           kind(kind),
-          accesses(std::move(accesses)) {}
+          accesses(std::move(accesses)),
+          softBoundary(softBoundary) {}
 };
 
 /// Buffer pool index for WMMA instructions in double/triple/N-buffered GEMM kernels.

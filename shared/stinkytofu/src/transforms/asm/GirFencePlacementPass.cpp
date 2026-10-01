@@ -463,6 +463,15 @@ size_t chooseSlot(const GirFrameAnalysis::Result& frames, const NodesByKey& byKe
 
     size_t chosen = consumerSlot;
     int best = -1;
+    const bool pureWar = std::all_of(violating.begin(), violating.end(), [&](size_t hazardIndex) {
+        return hazards.hazards[hazardIndex].kind == GirHazardKind::WAR;
+    });
+    const bool hasSoftBoundary =
+        std::any_of(violating.begin(), violating.end(), [&](size_t hazardIndex) {
+            const GirActionData* action =
+                hazards.hazards[hazardIndex].consumer->getModifier<GirActionData>();
+            return action && action->softBoundary;
+        });
     for (size_t slot = low; slot <= consumerSlot; ++slot) {
         int worst = INT_MAX;
         for (size_t h : live[slot]) {
@@ -473,7 +482,10 @@ size_t chooseSlot(const GirFrameAnalysis::Result& frames, const NodesByKey& byKe
                 if (countsFor(*body[k], here->counter)) ++residual;
             worst = std::min(worst, residual);
         }
-        if (worst != INT_MAX && worst > best) {
+        // A provider-marked pure WAR fence publishes no value a later consumer is awaiting. On
+        // an equal rank, keep it next to the overwrite so the provider's intervening consumer
+        // wait can retire the vacating read instead of forcing a second, earlier dscnt.
+        if (worst != INT_MAX && (worst > best || (pureWar && hasSoftBoundary && worst == best))) {
             best = worst;
             chosen = slot;
         }

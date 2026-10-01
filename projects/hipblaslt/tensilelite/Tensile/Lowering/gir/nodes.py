@@ -87,6 +87,9 @@ class Move:
     # this region, but it is still one movement; readers key on identity, so it is stated here
     # rather than re-derived from whichever refs survived.
     unit: tuple = ()
+    # Set by movement placement when this copy deliberately remains behind a register consumer.
+    # The backend preserves only that consumer -> copy relation; unrelated work may cross.
+    soft_boundary: bool = False
 
 
 @dataclass
