@@ -9,7 +9,6 @@ GlobalParameters:
   BoundsCheck: 0
   PrintSolutionRejectionReason: True
   Architecture: gfx1250
-  CpuThreads: 1
   KeepBuildTmp: True
   OutputLoopIR: True
   PrintLevel: 2
