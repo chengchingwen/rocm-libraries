@@ -269,7 +269,8 @@ def _guards_of(prog, plans, domains, first_free_gen):
 
     A branch whose arms all reach every consumer carries no information, so it gets no generation;
     allocating one per correlated branch is what lets the passes that build them stay ignorant of
-    each other -- they agree on a generation id, never on a predicate.
+    each other -- they agree on a generation id, never on a predicate. Counted-loop edge domains
+    let an earlier branch choice constrain later back and exit edges by the same general rule.
     """
     def arms_of(label):
         out = []
@@ -304,6 +305,12 @@ def _guards_of(prog, plans, domains, first_free_gen):
             for source in _anchor_actions(prog, plans, label, False):
                 for destination in _anchor_actions(prog, plans, target, True):
                     incomings.append(Edge(int(destination), int(source), gen_id, index, False))
+                    # The source is undecided before its first branch. If this edge is revisited
+                    # after an arm value has propagated around the CFG, only that same arm may
+                    # take it. This is a general guard rule; scaffold labels play no role here.
+                    requires.append(Requires(
+                        int(destination), int(source), gen_id,
+                        (GUARD_UNDECIDED, index)))
         for src, dst, edge in refusers:
             allowed = tuple(sorted(
                 [GUARD_UNDECIDED] + [i for i, (_t, d) in enumerate(arms, start=1) if d & edge]))
