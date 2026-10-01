@@ -191,8 +191,6 @@ bool isTensorAnchor(const StinkyInstruction& inst) {
     return isBarrier(inst) || isDSRead(inst) || isDSWrite(inst) || isDSAtomic(inst);
 }
 
-/// A barrier that orders execution but takes no conservative wait: it is deliberately untagged,
-/// so the MemTokenData fallbacks must not read its missing token as "cannot prove disjoint".
 /// True when the GIR frame pipeline owns this function's LDS and tensor ordering.
 ///
 /// The conservative fallbacks below read a missing `MemTokenData` as "cannot prove disjoint" and
@@ -208,10 +206,7 @@ bool girOwnsOrdering(const StinkyInstruction& inst) {
 }
 
 bool takesNoWait(const StinkyInstruction& inst) {
-    // A GIR-owned fence is the second shape of the same fact: the frame counter flow states its
-    // wait exactly, so the token-absence fallback would only drain what the frame model graded.
-    return inst.getModifier<NoWaitCntData>() != nullptr || isGirOwnedFence(inst) ||
-           girOwnsOrdering(inst);
+    return isGirOwnedFence(inst) || girOwnsOrdering(inst);
 }
 
 bool hasUntaggedTensorAnchor(BasicBlock& bb) {

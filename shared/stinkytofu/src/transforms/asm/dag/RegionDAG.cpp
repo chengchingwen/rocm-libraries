@@ -39,8 +39,7 @@ namespace {
 
 using namespace stinkytofu;
 
-RegionDAG buildRegisterDependencyDAGImpl(const std::vector<StinkyInstruction*>& instructions,
-                                         bool useMemoryTokenOrdering) {
+RegionDAG buildRegisterDependencyDAGImpl(const std::vector<StinkyInstruction*>& instructions) {
     RegionDAG result;
     const unsigned n = static_cast<unsigned>(instructions.size());
     if (n == 0) return result;
@@ -56,33 +55,10 @@ RegionDAG buildRegisterDependencyDAGImpl(const std::vector<StinkyInstruction*>& 
 
     std::map<StinkyRegister, std::unordered_set<DAGNode*>> lastRead;
     std::map<StinkyRegister, DAGNode*> lastWrite;
-    // A barrier's ORDER tokens are a wall: every access naming one stays on the side it started.
-    // The register arms below cannot express this -- the conflicting access is a whole trip away.
-    std::map<int, DAGNode*> orderWall;
-    std::map<int, std::unordered_set<DAGNode*>> namedBy;
 
     for (unsigned i = 0; i < n; ++i) {
         DAGNode& dagNode = result.nodes[i];
         StinkyInstruction& inst = *dagNode.inst;
-
-        if (useMemoryTokenOrdering) {
-            std::set<int> mine;
-            if (const MemTokenData* mem = inst.getModifier<MemTokenData>())
-                mine.insert(mem->tokens.begin(), mem->tokens.end());
-            if (const OrderTokenData* ord = inst.getModifier<OrderTokenData>()) {
-                for (int t : ord->tokens) {
-                    for (DAGNode* earlier : namedBy[t])
-                        addEdgeById(earlier, &dagNode, result.graph);
-                    orderWall[t] = &dagNode;
-                }
-            }
-            for (int t : mine) {
-                auto wall = orderWall.find(t);
-                if (wall != orderWall.end() && wall->second != &dagNode)
-                    addEdgeById(wall->second, &dagNode, result.graph);
-                namedBy[t].insert(&dagNode);
-            }
-        }
 
         for (const StinkyRegister& srcReg : inst.getSrcRegs()) {
             if (!srcReg.isRegister()) continue;
@@ -118,18 +94,16 @@ RegionDAG buildRegisterDependencyDAGImpl(const std::vector<StinkyInstruction*>& 
 
 }  // namespace
 
-RegionDAG buildRegisterDependencyDAG(const std::vector<StinkyInstruction*>& instructions,
-                                     bool useMemoryTokenOrdering) {
-    return buildRegisterDependencyDAGImpl(instructions, useMemoryTokenOrdering);
+RegionDAG buildRegisterDependencyDAG(const std::vector<StinkyInstruction*>& instructions) {
+    return buildRegisterDependencyDAGImpl(instructions);
 }
 
-RegionDAG buildRegisterDependencyDAG(IRList::iterator regionStart, IRList::iterator regionEnd,
-                                     bool useMemoryTokenOrdering) {
+RegionDAG buildRegisterDependencyDAG(IRList::iterator regionStart, IRList::iterator regionEnd) {
     std::vector<StinkyInstruction*> instructions;
     instructions.reserve(static_cast<size_t>(std::distance(regionStart, regionEnd)));
     for (IRList::iterator it = regionStart; it != regionEnd; ++it)
         instructions.push_back(&getStinkyInst(it));
-    return buildRegisterDependencyDAGImpl(instructions, useMemoryTokenOrdering);
+    return buildRegisterDependencyDAGImpl(instructions);
 }
 
 /// Order two instructions when both are in this region; a pair split across regions is already

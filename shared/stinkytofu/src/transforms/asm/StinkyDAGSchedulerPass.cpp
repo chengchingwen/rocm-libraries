@@ -379,9 +379,7 @@ static void scheduleRegionWithMovableSideEffects(
     PASS_DEBUG(std::cerr << "\n");
 
     // Map each instruction to an unique id [0..n-1] and build register deps.
-    dag::RegionDAG regionDag = dag::buildRegisterDependencyDAG(
-        regionStart, regionEnd,
-        readyQueue.getPassContext().getPassFeatureConfig().dagFeatures.useMemoryTokenOrdering);
+    dag::RegionDAG regionDag = dag::buildRegisterDependencyDAG(regionStart, regionEnd);
     dag::addGirFrameHazardEdges(regionDag, girHazards, girFrames);
     dag::DAGNodeList& dagNodes = regionDag.nodes;
     std::vector<std::unordered_set<unsigned>>& dagGraph = regionDag.graph;

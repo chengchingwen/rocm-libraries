@@ -717,12 +717,6 @@ class GirFencePlacementPass final : public StinkyInstPass {
             if (kinds == markerKinds.end() || kinds->second.empty())
                 report_fatal_error("GirFencePlacementPass: barrier has no hazard-kind stamp");
             wait->addModifier<CommentData>(CommentData{fenceStamp(kinds->second)});
-            // The frame counter flow supplies this barrier's waits, so the token-absence fallback
-            // must not also drain it.  `NoWaitCntData` says exactly that and nothing more --
-            // marking it a GIR fence would also clear `hasSideEffect` and let it be moved away
-            // from the signal it pairs with.
-            signal->addModifier<NoWaitCntData>(NoWaitCntData{});
-            wait->addModifier<NoWaitCntData>(NoWaitCntData{});
         }
 
         if (placed == 0 && erased == 0) return PreservedAnalyses::all();
