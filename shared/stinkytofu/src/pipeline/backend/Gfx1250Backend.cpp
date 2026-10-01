@@ -219,12 +219,8 @@ bool buildGfx1250Pipeline(ModulePassManager& mpm, StinkyAsmModule& module, const
                     moduleOptions.PrefetchLeadMinStageWmmas;
                 passFeatureConfig.dagFeatures.warGateWmmas = moduleOptions.WarGateWmmas;
                 applyResolvedSchedulingKnobs(passFeatureConfig, resolvedKnobs);
-                // A precomputed numeric wait owns a FIFO rank, so its tensor issues stay ordered.
-                // ST-frame mode recomputes ranks after scheduling and needs no such chain.
                 passFeatureConfig.dagFeatures.preserveTensorLoadOrder =
-                    moduleOptions.DisableTensorcntInsertion &&
-                    (!moduleOptions.EnableGirFramePipeline ||
-                     !moduleOptions.EnableGirFrameWaitCntInsertion);
+                    moduleOptions.EnableGirFramePipeline;
                 if (moduleOptions.DsReadOrder >= 0)
                     passFeatureConfig.dagFeatures.dsReadOrder =
                         static_cast<PassFeatureConfig::DsReadOrder>(moduleOptions.DsReadOrder);
