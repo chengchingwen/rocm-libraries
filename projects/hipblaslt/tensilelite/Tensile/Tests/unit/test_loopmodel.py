@@ -355,6 +355,74 @@ def test_emitted_vgpr_allocation_respects_distributed_mxs_coverage():
             for name in ("MXSA", "MXSB")} == {"MXSA": 2, "MXSB": 2}
 
 
+def test_copy_hoist_reuses_the_war_read_register_consumers_drain():
+    """A copy may pass unrelated work, but not the first consumer that already drains its reader."""
+    from Tensile.Lowering.gir.analyses.frame_hazards import Hazard, SharedTouch, RAW, WAR
+    from Tensile.Lowering.gir.analyses.reg_hazards import RegTouch
+    from Tensile.Lowering.gir.passes.hoist_copies import _copy_earliest
+
+    read, copy, matrix = object(), object(), object()
+    lds = (Hazard(
+        kind=WAR,
+        producer=SharedTouch("steady", 6, read, None, False, "MXSA"),
+        consumer=SharedTouch("steady", 7, copy, None, True, "MXSA"),
+        ring=2,
+        gap=0,
+        cross_agent=True,
+    ),)
+    reg = (Hazard(
+        kind=RAW,
+        producer=RegTouch("steady", 6, read, None, True, "MXSA", (0, 1, 0), ()),
+        consumer=RegTouch("steady", 20, matrix, None, False, "MXSA", (0, 1, 0), ()),
+        ring=2,
+        gap=0,
+        cross_agent=False,
+    ),)
+
+    assert _copy_earliest(copy, "steady", lds, ()) == 7
+    assert _copy_earliest(copy, "steady", lds, reg) == 21
+    wide_lds = (Hazard(
+        kind=WAR,
+        producer=SharedTouch("steady", 6, read, None, False, "A"),
+        consumer=SharedTouch("steady", 7, copy, None, True, "A"),
+        ring=2,
+        gap=0,
+        cross_agent=True,
+    ),)
+    assert _copy_earliest(copy, "steady", wide_lds, reg) == 7
+
+
+def test_counted_loop_exit_advances_the_frame_before_drain():
+    """The final loop iteration closes on the exit edge just as every repeated iteration does."""
+    from Tensile.Lowering import build_gir
+    from Tensile.Lowering.gir.analysis import AnalysisManager
+    from Tensile.Lowering.gir.analyses.frame_map import FrameMap
+
+    program = build_gir(_theta(BF16_NT_KMN))
+    frames = AnalysisManager().get(FrameMap(), program)
+    rings = {phi.gen.id: phi.gen.ring for phi in program.block("steady").phis}
+
+    exits = 0
+    for frame in frames.frames("steady"):
+        for label, successor in frames.successors(("steady", frame)):
+            if label != "drain0":
+                continue
+            exits += 1
+            for gen_id, ring in rings.items():
+                assert successor.of(gen_id) == (frame.of(gen_id) + 1) % ring
+    assert exits == len(frames.frames("steady"))
+
+    # The T==2 direct entrance executes no steady trip and retains its explicit phase.
+    direct = [
+        successor
+        for frame in frames.frames("prologue_join")
+        for label, successor in frames.successors(("prologue_join", frame))
+        if label == "drain0"
+    ]
+    assert len(direct) == 1
+    assert all(direct[0].of(gen_id) == 0 for gen_id in rings)
+
+
 def test_split_axes_do_not_multiply_the_prefetch_unit():
     """PLR1 on M_split(2).M_inner(4) advances one M_inner unit, not both regions."""
     from Tensile.LoopModel import traversal as geometry
