@@ -545,9 +545,11 @@ def _set_register_depths(theta, kernel):
       all-inner  -- it rereads the same set every trip, so nothing rotates and the ring is 1
       has-outer  -- it advances along its outer axis, so a full buffer is one slot per value
 
-    Without clustering the ring is the read-ahead depth plus the value in use.  Every arm is
-    measured on the operand's OWN axis, which is why the depth is per operand at all.  This
-    replaces the depth SEARCH and nothing else -- the grouping is left exactly as it was.
+    Without clustering the ring is the read-ahead depth plus the value in use, raised to the
+    reuse floor: a value consumed again after an axis the operand is invariant over has to
+    survive that pass, and a ring that does not divide its positions aliases two live values.
+    Every arm is measured on the operand's OWN axis, which is why the depth is per operand at
+    all.  This replaces the depth SEARCH and nothing else -- the grouping is left as it was.
     """
     for operand in theta.operands:
         if not (operand.movements and operand.fragment):
@@ -576,7 +578,10 @@ def _set_register_depths(theta, kernel):
         else:
             # A scale takes its tensor's read-ahead but enumerates its own ring, and one scale
             # read can cover every free tile -- so the depth it asks for is bounded by the ring.
-            depth = min(max(1, int(prefetch) + 1), positions)
+            want = max(max(1, int(prefetch) + 1),
+                       geometry.group_reuse_floor(theta, operand, group))
+            depth = next((width for width in range(want, positions + 1)
+                          if positions % width == 0), positions)
         operand.fragment.ring_depths = {
             label: depth for label in operand.fragment.groups()}
 
