@@ -739,95 +739,132 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
     return result;
 }
 
-std::pair<StinkyInstruction*, GirFrame> lastBarrierBefore(
-    const GirFrameAnalysis::Result& frames, BasicBlock* block, const GirFrame& frame, size_t limit,
+GirHazardFenceCover enclosingFences(
+    const GirFrameAnalysis::Result& frames, const GirFrameHazard& hazard,
     const std::function<bool(const StinkyInstruction&)>& alsoFences) {
-    return lastBarrierBefore(frames, block, frame, limit, alsoFences, nullptr);
-}
+    GirHazardFenceCover cover;
 
-std::pair<StinkyInstruction*, GirFrame> lastBarrierBefore(
-    const GirFrameAnalysis::Result& frames, BasicBlock* block, const GirFrame& frame, size_t limit,
-    const std::function<bool(const StinkyInstruction&)>& alsoFences, int* predecessorDistance) {
-    if (predecessorDistance) *predecessorDistance = -1;
-    // `alsoFences` lets a caller that has DECIDED on a fence but not yet materialized it ask this
-    // same question of its own plan.  One definition of "a barrier stands here", parameterized by
-    // what counts as one, rather than a second walk that can drift from this one.
-    // A split all-wave barrier is ONE barrier, named by its signal: a drain between the two halves
-    // lets the wave announce completion before its own writes have landed.
+    std::vector<GirFrameNode> producerNodes;
+    const auto rememberProducer = [&](const GirFrameNode& node) {
+        if (node.block != hazard.producerBlock || !(node.frame == hazard.producerFrame)) return;
+        if (std::find(producerNodes.begin(), producerNodes.end(), node) == producerNodes.end())
+            producerNodes.push_back(node);
+    };
+    for (const auto& [node, successors] : frames.edges) {
+        rememberProducer(node);
+        for (const GirFrameNode& successor : successors) rememberProducer(successor);
+    }
+
+    struct Step {
+        GirFrameNode producerNode;
+        GirFrameNode node;
+        size_t begin = 0;
+        int gap = 0;
+        StinkyInstruction* anchor = nullptr;
+        GirFrameNode anchorNode;
+        int anchorGap = 0;
+    };
+
     const auto opensPair = [](const StinkyInstruction& inst) {
         return isBarrierSignal(inst) && isSplitBarrierAllWave(inst);
     };
     const auto closesPair = [](const StinkyInstruction& inst) {
         return isBarrierWait(inst) && isSplitBarrierAllWave(inst);
     };
-    const auto inBlock = [&](BasicBlock* bb, size_t upTo) -> StinkyInstruction* {
-        StinkyInstruction* found = nullptr;
+    const auto scan = [&](Step& step, size_t end, bool includeVirtualAtEnd) {
         size_t index = 0;
-        for (IRBase& node : *bb) {
-            auto* inst = dyn_cast<StinkyInstruction>(&node);
+        for (IRBase& ir : *step.node.block) {
+            auto* inst = dyn_cast<StinkyInstruction>(&ir);
             if (!inst) continue;
             const size_t here = index++;
-            // A virtual marker on instruction `upTo` materializes immediately BEFORE it, so it
-            // is a valid barrier before that instruction. An already-materialized barrier at the
-            // same index is not.
-            if (here >= upTo) {
-                if (here == upTo && alsoFences && alsoFences(*inst)) found = inst;
+            if (here < step.begin) continue;
+            if (here > end || (here == end && !includeVirtualAtEnd)) break;
+            if (here == end) {
+                if (alsoFences && alsoFences(*inst)) {
+                    step.anchor = inst;
+                    step.anchorNode = step.node;
+                    step.anchorGap = step.gap;
+                }
                 break;
             }
             if (!(isFence(*inst) || isBarrier(*inst) || (alsoFences && alsoFences(*inst))))
                 continue;
-            if (closesPair(*inst) && found && opensPair(*found)) continue;
-            found = inst;
+            if (closesPair(*inst) && step.anchor && step.anchorNode == step.node &&
+                opensPair(*step.anchor))
+                continue;
+            step.anchor = inst;
+            step.anchorNode = step.node;
+            step.anchorGap = step.gap;
         }
-        return found;
     };
-    if (StinkyInstruction* here = inBlock(block, limit)) {
-        if (predecessorDistance) *predecessorDistance = 0;
-        return {here, frame};
+
+    std::deque<Step> work;
+    for (const GirFrameNode& producerNode : producerNodes)
+        work.push_back(
+            {producerNode, producerNode, hazard.producerIndex + 1, 0, nullptr, GirFrameNode{}, 0});
+
+    using StateKey =
+        std::tuple<BasicBlock*, GirFrame, uint64_t, BasicBlock*, GirFrame, uint64_t, size_t, int,
+                   StinkyInstruction*, BasicBlock*, GirFrame, uint64_t, int>;
+    std::set<StateKey> seen;
+    const auto keyOf = [](const Step& step) {
+        return StateKey{step.producerNode.block,
+                        step.producerNode.frame,
+                        step.producerNode.incomingAction,
+                        step.node.block,
+                        step.node.frame,
+                        step.node.incomingAction,
+                        step.begin,
+                        step.gap,
+                        step.anchor,
+                        step.anchorNode.block,
+                        step.anchorNode.frame,
+                        step.anchorNode.incomingAction,
+                        step.anchorGap};
+    };
+    for (const Step& step : work) seen.insert(keyOf(step));
+
+    while (!work.empty()) {
+        Step step = std::move(work.front());
+        work.pop_front();
+        const bool atConsumer =
+            step.node.block == hazard.consumerBlock && step.node.frame == hazard.consumerFrame;
+
+        if (step.gap == hazard.gap) {
+            if (!atConsumer || hazard.consumerIndex < step.begin) continue;
+            scan(step, hazard.consumerIndex, true);
+            cover.hasHazardPath = true;
+            if (!step.anchor) {
+                cover.hasUnfencedPath = true;
+                continue;
+            }
+            GirHazardFenceOwner owner{step.anchor, step.producerNode, step.anchorNode, step.node,
+                                      step.anchorGap};
+            const bool duplicate = std::any_of(
+                cover.owners.begin(), cover.owners.end(), [&](const GirHazardFenceOwner& prior) {
+                    return prior.anchor == owner.anchor &&
+                           prior.producerNode == owner.producerNode &&
+                           prior.anchorNode == owner.anchorNode &&
+                           prior.consumerNode == owner.consumerNode &&
+                           prior.producerToAnchorGap == owner.producerToAnchorGap;
+                });
+            if (!duplicate) cover.owners.push_back(std::move(owner));
+            continue;
+        }
+
+        if (atConsumer && hazard.consumerIndex >= step.begin) continue;
+
+        scan(step, std::numeric_limits<size_t>::max(), false);
+        auto successors = frames.edges.find(step.node);
+        if (successors == frames.edges.end()) continue;
+        for (const GirFrameNode& successor : successors->second) {
+            Step next{step.producerNode, successor,     0, step.gap + 1, step.anchor,
+                      step.anchorNode,   step.anchorGap};
+            if (seen.insert(keyOf(next)).second) work.push_back(std::move(next));
+        }
     }
 
-    using Key = std::pair<BasicBlock*, GirFrame>;
-    std::map<Key, std::vector<Key>> preds;
-    for (const auto& [from, tos] : frames.edges)
-        for (const GirFrameNode& to : tos)
-            preds[{to.block, to.frame}].push_back({from.block, from.frame});
-    // `frames.edges` is hashed on the block ADDRESS, so the push_back order above follows the
-    // heap -- and this walk returns the FIRST predecessor holding a barrier.  Where two both hold
-    // one, the same kernel anchored its wait on a different fence from run to run.  Program order
-    // fixes that AND answers the question being asked: LAST barrier before, so the nearest
-    // predecessor must be examined first.
-    std::unordered_map<const BasicBlock*, size_t> position;
-    if (const Function* owner = block->getParent())
-        for (const BasicBlock& each : *const_cast<Function*>(owner))
-            position[&each] = position.size();
-    const auto positionOf = [&position](const BasicBlock* bb) {
-        auto found = position.find(bb);
-        return found == position.end() ? size_t{0} : found->second;
-    };
-    for (auto& [_node, list] : preds)
-        std::sort(list.begin(), list.end(), [&](const Key& lhs, const Key& rhs) {
-            const size_t left = positionOf(lhs.first), right = positionOf(rhs.first);
-            if (left != right) return left > right;
-            return lhs.second < rhs.second;
-        });
-    std::set<Key> seen{{block, frame}};
-    std::deque<std::pair<Key, int>> work{{{block, frame}, 0}};
-    while (!work.empty()) {
-        const auto [node, distance] = work.front();
-        work.pop_front();
-        auto incoming = preds.find(node);
-        if (incoming == preds.end()) continue;
-        for (const Key& pred : incoming->second) {
-            if (!seen.insert(pred).second) continue;
-            if (StinkyInstruction* there =
-                    inBlock(pred.first, std::numeric_limits<size_t>::max())) {
-                if (predecessorDistance) *predecessorDistance = distance + 1;
-                return {there, pred.second};
-            }
-            work.push_back({pred, distance + 1});
-        }
-    }
-    return {nullptr, frame};
+    return cover;
 }
 
 GirFrameHazardAnalysis::Result GirFrameHazardAnalysis::run(Function& function,
