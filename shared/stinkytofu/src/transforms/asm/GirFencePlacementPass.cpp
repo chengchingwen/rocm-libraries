@@ -323,16 +323,15 @@ MarkerOwnershipMap collectMarkerOwnership(const GirFrameAnalysis::Result& frames
     MarkerOwnershipMap result;
     for (const GirFrameHazard& hazard : hazards.hazards) {
         if (!hazard.crossAgent || !covers(*hazard.consumerBlock)) continue;
-        StinkyInstruction* owner =
-            lastBarrierBefore(frames, hazard.consumerBlock, hazard.consumerFrame,
-                              hazard.consumerIndex, marked)
-                .first;
-        if (!owner || !markers.count(owner)) continue;
-        MarkerOwnership& summary = result[owner];
-        summary.kinds.insert(hazard.kind);
-        if (hazard.kind == GirHazardKind::RAW)
-            summary.allRawAreTensor &=
-                waitcnt::classifyMemOp(*hazard.producer) == waitcnt::CK_Tensor;
+        const GirHazardFenceCover cover = enclosingFences(frames, hazard, marked);
+        for (const GirHazardFenceOwner& owner : cover.owners) {
+            if (!owner.anchor || !markers.count(owner.anchor)) continue;
+            MarkerOwnership& summary = result[owner.anchor];
+            summary.kinds.insert(hazard.kind);
+            if (hazard.kind == GirHazardKind::RAW)
+                summary.allRawAreTensor &=
+                    waitcnt::classifyMemOp(*hazard.producer) == waitcnt::CK_Tensor;
+        }
     }
     return result;
 }
@@ -570,10 +569,11 @@ class GirFencePlacementPass final : public StinkyInstPass {
             for (const GirFrameHazard& hazard : hazards.hazards) {
                 if (!hazard.crossAgent) continue;
                 if (!passCtx.shouldProcessBasicBlock(*hazard.consumerBlock)) continue;
-                if (lastBarrierBefore(frames, hazard.consumerBlock, hazard.consumerFrame,
-                                      hazard.consumerIndex, marked)
-                        .first)
-                    continue;
+                const GirHazardFenceCover cover = enclosingFences(frames, hazard, marked);
+                if (!cover.hasHazardPath)
+                    report_fatal_error(
+                        "GirFencePlacementPass found no exact frame path for a GIR hazard");
+                if (!cover.hasUnfencedPath) continue;
                 size_t index = 0;
                 for (IRBase& node : *hazard.consumerBlock) {
                     auto* inst = dyn_cast<StinkyInstruction>(&node);
@@ -631,9 +631,14 @@ class GirFencePlacementPass final : public StinkyInstPass {
                     wait != virtualWaits.anchorWaits.end() &&
                     wait->second.tensorCount != waitcnt::WaitCountSpec::kUnused;
 
-                if (owned != ownership.end() && !hasTensorWait && owned->second.allRawAreTensor)
-                    owned->second.kinds.erase(GirHazardKind::RAW);
-                if (owned != ownership.end() && !owned->second.kinds.empty()) continue;
+                const bool dropsUnwaitedRaw = owned != ownership.end() && !hasTensorWait &&
+                                              owned->second.kinds.contains(GirHazardKind::RAW) &&
+                                              owned->second.allRawAreTensor;
+                if (dropsUnwaitedRaw) owned->second.kinds.erase(GirHazardKind::RAW);
+                const bool retiresUnwaitedRaw =
+                    dropsUnwaitedRaw && !waitRetiredMarkers.count(candidate);
+                if (!retiresUnwaitedRaw && owned != ownership.end() && !owned->second.kinds.empty())
+                    continue;
 
                 markers.erase(candidate);
                 markerKinds.erase(candidate);
@@ -643,10 +648,17 @@ class GirFencePlacementPass final : public StinkyInstPass {
             }
             if (removed) {
                 closeFenceCut();
-                for (const StinkyInstruction* retired : waitRetiredMarkers)
-                    if (markers.count(retired))
+                for (const StinkyInstruction* retired : waitRetiredMarkers) {
+                    if (!markers.count(retired)) continue;
+                    auto kinds = markerKinds.find(retired);
+                    const bool reintroducedForNonRaw =
+                        kinds != markerKinds.end() &&
+                        std::any_of(kinds->second.begin(), kinds->second.end(),
+                                    [](GirHazardKind kind) { return kind != GirHazardKind::RAW; });
+                    if (!reintroducedForNonRaw)
                         report_fatal_error(
                             "GirFencePlacementPass reintroduced an unwaited/unowned marker");
+                }
                 continue;
             }
 
