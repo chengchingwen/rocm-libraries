@@ -356,40 +356,32 @@ def test_emitted_vgpr_allocation_respects_distributed_mxs_coverage():
 
 
 def test_copy_hoist_reuses_the_war_read_register_consumers_drain():
-    """A copy may pass unrelated work, but not the first consumer that already drains its reader."""
+    """The consumer floor is hazard-derived and independent of the operand name."""
     from Tensile.Lowering.gir.analyses.frame_hazards import Hazard, SharedTouch, RAW, WAR
     from Tensile.Lowering.gir.analyses.reg_hazards import RegTouch
-    from Tensile.Lowering.gir.passes.hoist_copies import _copy_earliest
+    from Tensile.Lowering.gir.passes.hoist_copies import _copy_placement
 
     read, copy, matrix = object(), object(), object()
-    lds = (Hazard(
-        kind=WAR,
-        producer=SharedTouch("steady", 6, read, None, False, "MXSA"),
-        consumer=SharedTouch("steady", 7, copy, None, True, "MXSA"),
-        ring=2,
-        gap=0,
-        cross_agent=True,
-    ),)
-    reg = (Hazard(
-        kind=RAW,
-        producer=RegTouch("steady", 6, read, None, True, "MXSA", (0, 1, 0), ()),
-        consumer=RegTouch("steady", 20, matrix, None, False, "MXSA", (0, 1, 0), ()),
-        ring=2,
-        gap=0,
-        cross_agent=False,
-    ),)
+    for operand in ("MXSA", "A"):
+        lds = (Hazard(
+            kind=WAR,
+            producer=SharedTouch("steady", 6, read, None, False, operand),
+            consumer=SharedTouch("steady", 7, copy, None, True, operand),
+            ring=2,
+            gap=0,
+            cross_agent=True,
+        ),)
+        reg = (Hazard(
+            kind=RAW,
+            producer=RegTouch("steady", 6, read, None, True, operand, (0, 1, 0), ()),
+            consumer=RegTouch("steady", 20, matrix, None, False, operand, (0, 1, 0), ()),
+            ring=2,
+            gap=0,
+            cross_agent=False,
+        ),)
 
-    assert _copy_earliest(copy, "steady", lds, ()) == 7
-    assert _copy_earliest(copy, "steady", lds, reg) == 21
-    wide_lds = (Hazard(
-        kind=WAR,
-        producer=SharedTouch("steady", 6, read, None, False, "A"),
-        consumer=SharedTouch("steady", 7, copy, None, True, "A"),
-        ring=2,
-        gap=0,
-        cross_agent=True,
-    ),)
-    assert _copy_earliest(copy, "steady", wide_lds, reg) == 7
+        assert _copy_placement(copy, "steady", lds, ()) == (7, False)
+        assert _copy_placement(copy, "steady", lds, reg) == (21, True)
 
 
 def test_counted_loop_exit_advances_the_frame_before_drain():

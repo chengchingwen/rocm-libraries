@@ -596,6 +596,47 @@ TEST(GirFrameAnalysisTest, WarBarriersMergeAtLaterSlotWithoutTensorIssue) {
     EXPECT_EQ(stamp->comment, "GIR fence (WAR)");
 }
 
+TEST(GirFrameAnalysisTest, SoftBoundaryWarFenceUsesLatestEqualRankSlot) {
+    Function function("late_equal_rank_war");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* block = function.createBasicBlock("entry");
+
+    StinkyInstruction* read = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
+    read->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+    AsmIRBuilder builder(*block, GfxArchID::Gfx1250);
+    StinkyInstruction* filler = builder.create(getMCIDByUOp(GFX::s_nop, GfxArchID::Gfx1250));
+    StinkyInstruction* copy = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
+    copy->addModifier<GirActionData>(GirActionData{
+        1, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}, true});
+    function.setStringMetaData(kGirFrameContractKey, kWarContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    createGirFencePlacementPass()->run(function, context, analyses);
+
+    std::vector<StinkyInstruction*> instructions;
+    for (IRBase& node : *block)
+        if (auto* inst = dyn_cast<StinkyInstruction>(&node)) instructions.push_back(inst);
+    const auto position = [&](StinkyInstruction* target) {
+        auto found = std::find(instructions.begin(), instructions.end(), target);
+        return static_cast<int>(std::distance(instructions.begin(), found));
+    };
+    auto signal = std::find_if(instructions.begin(), instructions.end(),
+                               [](StinkyInstruction* inst) { return isBarrierSignal(*inst); });
+    auto wait = std::find_if(instructions.begin(), instructions.end(),
+                             [](StinkyInstruction* inst) { return isBarrierWait(*inst); });
+    ASSERT_NE(signal, instructions.end());
+    ASSERT_NE(wait, instructions.end());
+    EXPECT_LT(position(read), position(filler));
+    EXPECT_LT(position(filler), position(*signal));
+    EXPECT_LT(position(*signal), position(*wait));
+    EXPECT_LT(position(*wait), position(copy));
+}
+
 TEST(GirFrameAnalysisTest, TensorIssueKeepsWarBarriersSeparate) {
     Function function("split_war_fences");
     setFunctionArch(function, GfxArchID::Gfx1250);

@@ -524,6 +524,7 @@ const char* girActionKindName(GirActionKind kind) {
 bool serializeVisit(const GirActionData& mod, std::ostream& os) {
     os << ", mod.gir_action = { action = " << mod.actionId << ", anchor = " << mod.anchorAction
        << ", kind = " << girActionKindName(mod.kind);
+    if (mod.softBoundary) os << ", soft_boundary = 1";
     // Indexed flat fields: the parsed dict merges repeated keys, so a nested list would not
     // round-trip.  `accessN_` is verbose but symmetric and handles any count.
     for (size_t n = 0; n < mod.accesses.size(); ++n) {
@@ -725,7 +726,8 @@ void deserializeVisit(StinkyInstruction* inst, const std::string& attrKey,
         }
         inst->addModifier(GirActionData(action, getUInt64(fields, "anchor", action),
                                         parseGirActionKind(getStr(fields, "kind", "other")),
-                                        std::move(accesses)));
+                                        std::move(accesses),
+                                        getInt(fields, "soft_boundary", 0) != 0));
     } else if (attrKey == "mod.label") {
         inst->addModifier(LabelData(getStr(fields, "label", ""),
                                     static_cast<uint16_t>(getInt(fields, "alignment", 1))));
