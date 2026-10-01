@@ -280,7 +280,7 @@ The same integration chains all physical pieces of one GIR fence action in
 their emitted order. `validateGirFrameHazardOrder` checks the incoming order and
 the scheduled order, and the pass invalidates and rebuilds the hazard analysis
 after scheduling. In GIR frame mode the scheduler does not use the legacy LDS
-memory-token walls; the frame hazards are the ordering authority.
+memory-token dependencies; the frame hazards are the ordering authority.
 
 ---
 
@@ -361,11 +361,8 @@ inserted before it:
     s_barrier_wait -1        // GIR fence
 ```
 
-Both halves carry `NoWaitCntData` so the token-absence fallback in
-`StinkyWaitCntInsertionPass` does not also drain them — the frame counter flow
-supplies this barrier's waits. `NoWaitCntData` says exactly that and nothing
-more; marking them as GIR fences would also clear `hasSideEffect` and let the
-wait drift away from the signal it pairs with.
+The loaded frame contract disables the legacy token-absence fallback;
+the frame counter flow supplies this barrier's waits.
 
 The wait half also carries a diagnostic comment listing every kind the barrier
 owns, for example:

@@ -675,28 +675,6 @@ TEST(GirFrameAnalysisTest, FrameSchedulingDoesNotMaterializeLegacyMemoryTokenReg
     EXPECT_FALSE(hasLdsRegister(read->getDestRegs()));
 }
 
-TEST(GirFrameAnalysisTest, FrameSchedulingDoesNotAddLegacyTokenWalls) {
-    Function function("frame_without_token_walls");
-    setFunctionArch(function, GfxArchID::Gfx1250);
-    BasicBlock* block = function.createBasicBlock("entry");
-    AsmIRBuilder builder(*block, GfxArchID::Gfx1250);
-    StinkyInstruction* first = builder.create(getMCIDByUOp(GFX::s_nop, GfxArchID::Gfx1250));
-    StinkyInstruction* fence = builder.createFence();
-    StinkyInstruction* last = builder.create(getMCIDByUOp(GFX::s_nop, GfxArchID::Gfx1250));
-    first->addModifier<MemTokenData>(MemTokenData{std::vector<int>{7}});
-    fence->addModifier<OrderTokenData>(OrderTokenData{std::vector<int>{7}});
-    last->addModifier<MemTokenData>(MemTokenData{std::vector<int>{7}});
-
-    dag::RegionDAG legacy = dag::buildRegisterDependencyDAG({first, fence, last}, true);
-    EXPECT_TRUE(legacy.graph[0].contains(1));
-    EXPECT_TRUE(legacy.graph[1].contains(2));
-
-    dag::RegionDAG frame = dag::buildRegisterDependencyDAG({first, fence, last}, false);
-    EXPECT_TRUE(frame.graph[0].empty());
-    EXPECT_TRUE(frame.graph[1].empty());
-    EXPECT_TRUE(frame.graph[2].empty());
-}
-
 TEST(GirFrameAnalysisTest, FrameWaitPassInsertsTensorWaitAtTaggedConsumer) {
     Function function("wait");
     setFunctionArch(function, GfxArchID::Gfx1250);

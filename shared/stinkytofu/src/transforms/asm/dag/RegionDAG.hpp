@@ -80,12 +80,10 @@ inline void addEdgeById(DAGNode* from, DAGNode* to,
 
 /// Build RAW/WAR/WAW edges for physical and pseudo registers over \p instructions
 /// in program order. Dense node ids match instruction indices.
-RegionDAG buildRegisterDependencyDAG(const std::vector<StinkyInstruction*>& instructions,
-                                     bool useMemoryTokenOrdering = true);
+RegionDAG buildRegisterDependencyDAG(const std::vector<StinkyInstruction*>& instructions);
 
 /// Same as above for an IRList region iterator pair.
-RegionDAG buildRegisterDependencyDAG(IRList::iterator regionStart, IRList::iterator regionEnd,
-                                     bool useMemoryTokenOrdering = true);
+RegionDAG buildRegisterDependencyDAG(IRList::iterator regionStart, IRList::iterator regionEnd);
 
 /// Merge required same-trip frame-hazard edges whose endpoints are both in this region, and pin
 /// each GIR fence between the ends of the cross-agent hazards it owns.

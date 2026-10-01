@@ -69,33 +69,6 @@ def _forward_true16(rocisa_item: Any, logical: Any) -> None:
     )
 
 
-def _forward_barrier_modifiers(rocisa_item: Any, logical: Any) -> None:
-    """Copy the ordering-only barrier modifiers onto lowered logical instruction(s).
-
-    ``NoWaitCntData`` marks a barrier that orders execution but takes no conservative wait;
-    ``OrderTokenData`` names the LDS tokens it orders without waiting on. Without these a fence
-    lowered through this backend would drain where it should only order.
-    """
-    targets = logical if isinstance(logical, list) else (logical,)
-    noWait = getattr(rocisa_item, "getNoWaitCnt", None)
-    if callable(noWait) and noWait():
-        for inst in targets:
-            setter = getattr(inst, "set_nowaitcnt", None)
-            if callable(setter):
-                setter(True)
-    getOrder = getattr(rocisa_item, "getOrderToken", None)
-    if not callable(getOrder):
-        return
-    ot = getOrder()
-    tokens = getattr(ot, "tokens", None) if ot is not None else None
-    if not tokens:
-        return
-    for inst in targets:
-        setter = getattr(inst, "set_ordertoken", None)
-        if callable(setter):
-            setter(tokens)
-
-
 def _forward_gir_action(rocisa_item: Any, logical: Any) -> None:
     """Copy stable GIR action identity onto logical instructions."""
     getter = getattr(rocisa_item, "getGirActionData", None)
@@ -1601,7 +1574,6 @@ class Module(Item):
         # and may reorder tensor_load_to_lds, corrupting the tensor descriptor.
         _forward_memtoken(it, logical)
         _forward_true16(it, logical)
-        _forward_barrier_modifiers(it, logical)
         _forward_gir_action(it, logical)
         if isinstance(logical, list):
             for inst in logical:
@@ -1628,7 +1600,6 @@ class Module(Item):
                 continue
             _forward_memtoken(it, logical)
             _forward_true16(it, logical)
-            _forward_barrier_modifiers(it, logical)
             _forward_gir_action(it, logical)
             if isinstance(logical, list):
                 out.extend(logical)

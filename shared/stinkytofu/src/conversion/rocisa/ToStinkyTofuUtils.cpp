@@ -1200,12 +1200,6 @@ static std::shared_ptr<StinkyAsmModule> toStinkyTofuModule(
         if (auto memToken = inst->getMemToken()) {
             stinkyInst->addModifier<MemTokenData>(MemTokenData{memToken->tokens});
         }
-        if (inst->getNoWaitCnt()) {
-            stinkyInst->addModifier<NoWaitCntData>(NoWaitCntData{});
-        }
-        if (auto orderToken = inst->getOrderToken()) {
-            stinkyInst->addModifier<OrderTokenData>(OrderTokenData{orderToken->tokens});
-        }
         auto girAction = inst->getGirActionData();
         if (girAction) {
             stinkyAsmModule.setPluginDataI64(

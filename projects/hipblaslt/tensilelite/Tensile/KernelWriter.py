@@ -11254,10 +11254,9 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
   ##############################################################################
   # SyncThreads
   ##############################################################################
-  def _syncThreads(self, kernel, comment="", skipForceWaitcnt0=False, memoryToken=None,
-                   noWaitCnt=False, orderToken=None):
+  def _syncThreads(self, kernel, comment="", skipForceWaitcnt0=False, memoryToken=None):
     if self.do["Sync"]:
-      return syncThreads(kernel, self.states.archCaps, self.states.asmCaps, comment, skipForceWaitcnt0=skipForceWaitcnt0, memoryToken=memoryToken, noWaitCnt=noWaitCnt, orderToken=orderToken)
+      return syncThreads(kernel, self.states.archCaps, self.states.asmCaps, comment, skipForceWaitcnt0=skipForceWaitcnt0, memoryToken=memoryToken)
     return Module("SyncThreads (Empty)")
 
   def _tailLoopBarrierTokens(self, kernel):
