@@ -44,7 +44,7 @@ const Loop* containingLoop(const std::vector<Loop>& loops, const BasicBlock* blo
 
 bool instructionRealizes(GirActionKind kind, const StinkyInstruction& inst) {
     if (kind == GirActionKind::Read) return isDSRead(inst);
-    if (kind == GirActionKind::Copy) return isTensorLoad(inst) || isDSWrite(inst);
+    if (kind == GirActionKind::Copy) return isTensorLoad(inst);
     return false;
 }
 
