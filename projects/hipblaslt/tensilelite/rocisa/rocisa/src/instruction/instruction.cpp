@@ -102,10 +102,6 @@ void init_inst(nb::module_ m)
         // wants no token must be able to say so.
         .def("setMemToken", &rocisa::Instruction::setMemToken, nb::arg("token").none())
         .def("getMemToken", &rocisa::Instruction::getMemToken)
-        .def("setNoWaitCnt", &rocisa::Instruction::setNoWaitCnt)
-        .def("getNoWaitCnt", &rocisa::Instruction::getNoWaitCnt)
-        .def("setOrderToken", &rocisa::Instruction::setOrderToken)
-        .def("getOrderToken", &rocisa::Instruction::getOrderToken)
         .def(
             "setGirActionData",
             [](rocisa::Instruction&  self,

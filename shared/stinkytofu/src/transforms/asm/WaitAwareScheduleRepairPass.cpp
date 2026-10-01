@@ -151,10 +151,7 @@ std::vector<StinkyInstruction*> repairSegment(const std::vector<StinkyInstructio
                                               unsigned slotsToMovePastAnchor, bool pinPrefetches) {
     if (instructions.empty()) return {};
 
-    // Same policy as StinkyDAGSchedulerPass: defaulting this to true made the repair pass
-    // enforce order-token walls the scheduler ignores.
-    RegionDAG dag = buildRegisterDependencyDAG(
-        instructions, passCtx.getPassFeatureConfig().dagFeatures.useMemoryTokenOrdering);
+    RegionDAG dag = buildRegisterDependencyDAG(instructions);
     addGirFrameHazardEdges(dag, girHazards, girFrames);
     addCounterOrderEdges(dag, instructions, anchors);
     // Prefetches placed by the DAG's prefetch lead stay where it put them.
