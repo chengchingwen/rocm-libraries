@@ -40,7 +40,7 @@ def _label_guard_arms(prog, back_headers):
     for lab, blk in prog.blocks.items():
         t = blk.term
         if isinstance(t, CondChain):
-            if any(p.label for p, _tgt in t.arms):
+            if any(p.label for p, _tgt in t.arms) or t.default_label:
                 continue                            # already labelled
             drains = _drain_chain(prog)
             deepest = drains[-1] if drains else None
@@ -54,7 +54,13 @@ def _label_guard_arms(prog, back_headers):
                 else:
                     lbl = ""                        # fall-through into the loop body
                 arms.append((replace(p, label=lbl) if lbl else p, tgt))
-            blk.term = CondChain(tuple(arms), t.default)
+            # The chain's default is the T == M direct entrance into the first drain stage.
+            # TensileLite spells that branch to the same LoopEndL scaffold label used by the
+            # steady loop's eventual exit; it is a distinct incoming edge even though both land
+            # on the same physical block.
+            default_label = (_SCAFFOLD_LABEL["back_edge"]
+                             if drains and t.default == drains[0] else "")
+            blk.term = CondChain(tuple(arms), t.default, default_label)
             changed = True
             continue
         if isinstance(t, LoopBack):

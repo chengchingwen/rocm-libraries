@@ -49,6 +49,10 @@ def trip_limit(prog):
     """The enumeration bound: every literal a terminator tests, plus headroom."""
     limit = TRIP_FLOOR
     for blk in prog.blocks.values():
+        term = blk.term
+        if isinstance(term, LoopBack) and term.trips.var:
+            # Include one-trip and repeated-trip cases after the loop's subtraction/division.
+            limit = max(limit, int(term.trips.sub) + 2 * int(term.trips.div) + TRIP_HEADROOM)
         for pred, _t in _preds_of(blk)[0]:
             if not pred.rhs.var:
                 limit = max(limit, int(pred.rhs.const) + TRIP_HEADROOM)
@@ -89,6 +93,19 @@ class TripDomains(Analysis):
             return TripDomainSet(universe, edges)
 
         for lab, blk in prog.blocks.items():
+            if isinstance(blk.term, LoopBack) and blk.term.trips.var == symbol:
+                trips = blk.term.trips
+                counts = {
+                    trip: (trip - int(trips.sub)) // max(1, int(trips.div))
+                    for trip in universe
+                }
+                # One trip reaches only the exit. Two or more trips take the back edge before
+                # eventually taking that same exit, so these domains intentionally overlap.
+                _narrow(edges, lab, blk.term.body,
+                        {trip for trip, count in counts.items() if count > 1})
+                _narrow(edges, lab, blk.term.exit_target,
+                        {trip for trip, count in counts.items() if count > 0})
+                continue
             arms, default = _preds_of(blk)
             if not arms:
                 continue

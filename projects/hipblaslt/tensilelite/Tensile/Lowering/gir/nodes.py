@@ -212,6 +212,7 @@ class CondChain:
     """Multi-exit terminator -- an ORDERED chain of guarded exits, then a default."""
     arms:    tuple               # ((Pred, target), ...) -- ORDERED; first satisfied arm is taken
     default: str                 # fall-through when no arm matches
+    default_label: str = ""      # scaffold label for the default edge, when it is a real branch
 
     def __post_init__(self):
         if not self.arms:
