@@ -235,7 +235,7 @@ def test_read_fragments_REFUSES_a_shape_it_cannot_tile(blockWidth, bpeDS, lrvw, 
 
 
 # ------------------------------------------------------------------- wave region span
-def _wrs_kernel(wt, wg, vw=None, bytesPerElem=0.25, split=1, mi=16):
+def _wrs_kernel(wt, wg, vw=None, bytesPerElem=0.25, split=1, mi=16, seg=None):
     """A kernel dict with just the keys `wave_region_span` reads."""
     class _DT:
         def __init__(self, r): self._r = r
@@ -247,6 +247,9 @@ def _wrs_kernel(wt, wg, vw=None, bytesPerElem=0.25, split=1, mi=16):
                          "Sparse": 0}}
     if vw:
         k["VectorWidthA"] = k["VectorWidthB"] = vw
+    if seg:
+        k["LDSSegmentInterleave"] = 1
+        k["LDSSegInterleaveOffsets"] = seg
     return k
 
 
@@ -277,6 +280,24 @@ def test_the_wave_span_agrees_with_the_region_derivation_ORACLE():
         mislabelled = bool(check_tiles(ctx))
         assert (wave_region_span(k, "A") < n) == mislabelled, \
             f"WT{wt} WG{wg} VW{vw}: span={wave_region_span(k,'A')} n={n} oracle={mislabelled}"
+
+
+def test_port_split_shortens_the_region_extent_with_the_row_stride():
+    """The target: MIWT[8,8], VW[4,4], WG[2,2], TDMSplitA/B=1, LDSSI=1.
+
+    `portSplitA` drops A's per-vIdx row stride from the whole wave-group shape to one wave shape.
+    The write side makes the matching change: `tdmSplitLdsBoundary` divides the baseline region
+    footprint by `numVectorsPerTile` and stacks A's two TDMSplit regions inside each segment.
+    Applying only the row-stride half made A span one region while baseline B spanned two, so the
+    model widened A and forced both region loads to complete.  Both operands physically span both
+    regions across their two vIdx instructions and are coordinate-selected.
+    """
+    from Tensile.Components.TDMSplit import wave_region_span
+    seg = {"portSplitA": True, "footprintPacked": True, "writeStrideBytes": 1 << 16}
+    baseline = _wrs_kernel(8, 2, vw=4)
+    interleaved = _wrs_kernel(8, 2, vw=4, seg=seg)
+    assert wave_region_span(baseline, "A") == wave_region_span(baseline, "B") == 2
+    assert wave_region_span(interleaved, "A") == wave_region_span(interleaved, "B") == 2
 
 
 def test_TDMFuse_admits_a_mixed_AXIS_pair_and_still_rejects_a_mixed_COUNT_pair():

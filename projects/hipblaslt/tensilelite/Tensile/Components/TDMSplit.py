@@ -262,8 +262,20 @@ def wave_region_span(kernel, tc: str) -> int:
         while vw > 1 and wt % vw:
             vw //= 2
     macroTile = wt * wg * miDim * max(1, miBlk)
-    rowsPerRegion = max(1, macroTile // mt)
     groupShape = miDim * max(1, miBlk) * wg * vw
-    groupShape = seg_interleave_row_shape(kernel, tc, t01, groupShape) or groupShape
+    segShape = seg_interleave_row_shape(kernel, tc, t01, groupShape)
+    if segShape:
+        # portSplit/componentSplit move the component jump onto the wave base and stack the
+        # TDMSplit regions inside each segment.  `tdmSplitLdsBoundary` divides the baseline
+        # per-region footprint by numVectorsPerTile in exactly this arm, so the row classifier must
+        # shorten BOTH its stride and its region extent.  Shortening only `groupShape` made
+        # MIWT[8,8], VW[4,4], WG[2,2], TDMSplitA/B=1, LDSSI=1 look wave-relative for A (which carries
+        # portSplitA) and coordinate-relative for B, even though both emitted read layouts are
+        # coordinate-relative.
+        numVectorsPerTile = max(1, wt // vw)
+        groupShape = segShape
+        rowsPerRegion = max(1, macroTile // mt // numVectorsPerTile)
+    else:
+        rowsPerRegion = max(1, macroTile // mt)
     rows = {((t // vw) * groupShape + (t % vw)) // rowsPerRegion for t in range(max(1, wt))}
     return max(1, min(mt, len(rows)))
