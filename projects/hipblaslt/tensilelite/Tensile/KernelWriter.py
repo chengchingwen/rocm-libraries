@@ -56,7 +56,6 @@ from .Components.StreamK import StreamKKernelState
 from .Components.CustomSchedule import customMainLoopSchedule
 from .Components.ClusterLoad import ClusterLoadTDM
 from .Components.TDMFuse import tdmFusedGroups, tdmGroupWaveRanges
-from .Components.StreamK import streamKVariantClass
 from .Components.Subtile.Kernel import *
 from .Components.Subtile.SubtileLdsLayout import applyLdsLayout
 from .Components.DecouplePGR import decouplePGRBlocks, decoupledSingleBuffered, dcpLdsSide
