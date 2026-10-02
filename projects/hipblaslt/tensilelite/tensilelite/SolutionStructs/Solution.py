@@ -60,9 +60,6 @@ from ..Common.TypeValidationErrors import ConfigTypeError
 from ..CustomKernels import isCustomKernelConfig, supportsUserSgprKernargPreload, validateCustomPersistentArgs
 from ..Components import TDMSplit
 from ..LoopModel.adapter import loop_order_of, wmma_loop_order
-from ..Components.DecoupleLocalRead import (AUTO as LOCAL_READ_AUTO,
-                                            clusterLevels, collapseEqualPair,
-                                            localReadLevels)
 from ..SolutionStructs.LdsPadding import get_fp4_mt_config, get_fp8_mt_config, get_mxs_mt_config, \
                                                get_fp16_mt_config, get_fp32_mt_config, get_metadata_mt_config, \
                                                get_fp4_valid_blocks, get_fp8_valid_blocks, \
