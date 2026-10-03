@@ -4303,9 +4303,9 @@ buffer* also opened a *separate barrier* per buffer, even where one slot dischar
 still intersect; `_cover_slot` puts the merged barrier at the latest slot discharging every edge.
 The cover stays per buffer; what merges is the **barrier**, of which a block needs one per slot.
 
-`FenceRegions(merge=True)` is the switch, mirroring `HoistCopiesPass(group=True)`, and folds into
-`cache_key` so the two settings cache separately. It is meaningful **only for tier 1**: a tier-2
-edge already rides a RAW barrier rather than opening its own.
+`FenceRegions(merge=True)` is the switch and folds into `cache_key` so the settings cache
+separately. It is meaningful **only for tier 1**: a tier-2 edge already rides a RAW barrier rather
+than opening its own.
 
 #### 9.4 `dep_tokens.py` — the name comes from the FENCED BLOCK's frame
 

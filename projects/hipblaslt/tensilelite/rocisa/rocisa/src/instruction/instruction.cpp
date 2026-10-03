@@ -108,8 +108,7 @@ void init_inst(nb::module_ m)
                uint64_t              actionId,
                uint64_t              anchorAction,
                rocisa::GirActionKind kind,
-               const nb::sequence&   accesses,
-               bool                  softBoundary) {
+               const nb::sequence&   accesses) {
                 std::vector<rocisa::GirAccess> out;
                 for(auto item : accesses)
                 {
@@ -124,13 +123,12 @@ void init_inst(nb::module_ m)
                     a.crossAgent = nb::cast<bool>(d["cross_agent"]);
                     out.push_back(std::move(a));
                 }
-                self.setGirActionData(actionId, anchorAction, kind, out, softBoundary);
+                self.setGirActionData(actionId, anchorAction, kind, out);
             },
             nb::arg("action_id"),
             nb::arg("anchor_action"),
             nb::arg("kind"),
-            nb::arg("accesses"),
-            nb::arg("soft_boundary") = false)
+            nb::arg("accesses"))
         .def("getGirActionData",
              [](const rocisa::Instruction& self) -> nb::object {
                  auto data = self.getGirActionData();
