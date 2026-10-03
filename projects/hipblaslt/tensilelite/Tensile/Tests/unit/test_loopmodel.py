@@ -355,35 +355,6 @@ def test_emitted_vgpr_allocation_respects_distributed_mxs_coverage():
             for name in ("MXSA", "MXSB")} == {"MXSA": 2, "MXSB": 2}
 
 
-def test_copy_hoist_reuses_the_war_read_register_consumers_drain():
-    """The consumer floor is hazard-derived and independent of the operand name."""
-    from Tensile.Lowering.gir.analyses.frame_hazards import Hazard, SharedTouch, RAW, WAR
-    from Tensile.Lowering.gir.analyses.reg_hazards import RegTouch
-    from Tensile.Lowering.gir.passes.hoist_copies import _copy_placement
-
-    read, copy, matrix = object(), object(), object()
-    for operand in ("MXSA", "A"):
-        lds = (Hazard(
-            kind=WAR,
-            producer=SharedTouch("steady", 6, read, None, False, operand),
-            consumer=SharedTouch("steady", 7, copy, None, True, operand),
-            ring=2,
-            gap=0,
-            cross_agent=True,
-        ),)
-        reg = (Hazard(
-            kind=RAW,
-            producer=RegTouch("steady", 6, read, None, True, operand, (0, 1, 0), ()),
-            consumer=RegTouch("steady", 20, matrix, None, False, operand, (0, 1, 0), ()),
-            ring=2,
-            gap=0,
-            cross_agent=False,
-        ),)
-
-        assert _copy_placement(copy, "steady", lds, ()) == (7, False)
-        assert _copy_placement(copy, "steady", lds, reg) == (21, True)
-
-
 @pytest.mark.parametrize("pgr", [1, 2, 3])
 def test_counted_loop_exit_translates_the_drain_frame_once(pgr):
     """The exit converts each T-relative drain frame without losing its final steady copy."""
@@ -441,7 +412,6 @@ def test_split_axes_do_not_multiply_the_prefetch_unit():
     from Tensile.LoopModel.schedule import Schedule, _readahead_shift, build_S, preloaded_tiles
     from Tensile.Lowering import build_gir
     from Tensile.Lowering.gir.emit_plan import plan_block
-    from Tensile.Lowering.gir.passes import HoistCopiesPass, pipeline
 
     target = {
         "ReadVectorElems": {"MXSA": 32, "MXSB": 32},
@@ -485,8 +455,7 @@ def test_split_axes_do_not_multiply_the_prefetch_unit():
                for name in geometry.varying_axes(th, a)}
         assert got == next_unit
         if order == "KKMNMN":
-            canonical_pipeline = [p for p in pipeline() if not isinstance(p, HoistCopiesPass)]
-            actions = plan_block(build_gir(th, pipeline=canonical_pipeline), "steady")
+            actions = plan_block(build_gir(th), "steady")
             for tile in range(4):
                 prior_uses = [i for i, action in enumerate(actions)
                               if action.kind == "wmma" and action.at["idx0"] == tile
@@ -499,15 +468,6 @@ def test_split_axes_do_not_multiply_the_prefetch_unit():
                                 if action.kind == "wmma" and action.at["idx0"] == tile + 4
                                 and action.at["u"] == 0)
                 assert max(prior_uses) < refill < next_use
-            optimized = plan_block(build_gir(th), "steady")
-            first_region1_a = next(i for i, action in enumerate(optimized)
-                                   if action.kind == "read" and action.at["tc"] == "A"
-                                   and action.at["tile_flat"] == 4 and action.at["k_flat"] == 0)
-            preceding_n_reads = [i for i, action in enumerate(optimized)
-                                 if action.kind == "read" and action.at["tc"] == "B"
-                                 and 4 <= action.at["tile_flat"] < 8
-                                 and action.at["k_flat"] == 0]
-            assert preceding_n_reads and max(preceding_n_reads) < first_region1_a
 
 
 def test_readahead_prologue_per_group_dr(name="mxfp8_derive"):

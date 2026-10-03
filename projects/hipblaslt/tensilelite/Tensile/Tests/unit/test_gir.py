@@ -1930,134 +1930,14 @@ def test_same_agent_kernels_emit_NO_war_boundary():
 # FrameHazards -- the LDS hazard edges and their TRIP DISTANCE
 # ---------------------------------------------------------------------------------------------
 
-def _without_hoist():
-    """The pipeline with HoistCopiesPass removed -- the copies-last order it is measured against."""
-    from Tensile.Lowering.gir.passes import HoistCopiesPass, pipeline
-    return [p for p in pipeline() if not isinstance(p, HoistCopiesPass)]
-
-
-def _hazards(params, hoist=True):
+def _hazards(params):
     from Tensile.Lowering.gir import FrameHazards
-    prog = build_gir(_theta(params), pipeline=None if hoist else _without_hoist())
+    prog = build_gir(_theta(params))
     return AnalysisManager().get(FrameHazards(), prog)
 
 
 def _steady(hz):
     return [h for h in hz if h.producer.block == "steady" and h.consumer.block == "steady"]
-
-
-def _hoist_pipeline(group, reads=False):
-    from Tensile.Lowering.gir.passes import HoistCopiesPass
-    out = _without_hoist()
-    return out[:1] + [HoistCopiesPass(group=group, reads=reads)] + out[1:]
-
-
-def _in_flight(params, pl):
-    """Per LDS buffer, instructions from the copy that fills it to the next trip's first read.
-
-    The window the load has to land in, so the number the copy's issue point exists to grow."""
-    from Tensile.Lowering.gir.analyses.lds_buffers import LdsBufferIds
-    prog = build_gir(_theta(params), pipeline=pl)
-    tokens = AnalysisManager().get(LdsBufferIds(), prog)
-    body = prog.block("steady").body
-    first = {}
-    for i, node in enumerate(body):
-        for ref in (node.srcs if isinstance(node, Move) else ()):
-            if ref.tile.space == "shared":
-                for t in tokens.ids_for(ref):
-                    first.setdefault(t, i)
-    return {t: (len(body) - i) + first[t]
-            for i, node in enumerate(body) if isinstance(node, Move)
-            for ref in node.dsts if ref.tile.space == "shared"
-            for t in tokens.ids_for(ref) if t in first}
-
-
-def _steady_shape(params, pl):
-    """`(copy positions, fence positions)` in the steady body."""
-    body = build_gir(_theta(params), pipeline=pl).block("steady").body
-    return ([i for i, n in enumerate(body) if isinstance(n, Move)
-             and any(r.tile.space == "shared" for r in n.dsts)],
-            [i for i, n in enumerate(body) if isinstance(n, Mark) and n.kind == "fence"])
-
-
-def test_the_copies_are_hoisted_as_a_GROUP_so_they_keep_sharing_one_barrier():
-    """Each copy alone would go earlier still, but they then straddle another operand's last read
-    and a second proc-scoped sync has to go between them.  A barrier per trip costs more than the
-    slots one copy gains, so the group form is the default and this is what it buys."""
-    # No mover: the default row would fuse A and B at two waves, and the group hoist needs two
-    # separate copies to group.
-    params = dict(BF16_NT_KMN_PLR0, NumWaves=2, TDMInst=0, PrefetchGlobalRead=2, DepthU=64)
-    plain_c, plain_f = _steady_shape(params, _without_hoist())
-    group_c, group_f = _steady_shape(params, _hoist_pipeline(True))
-    solo_c, solo_f = _steady_shape(params, _hoist_pipeline(False))
-    assert len(group_c) == len(plain_c) > 1, "the fixture must emit several separate copies"
-    assert group_c < plain_c, "the group hoist must move the copies earlier"
-    assert len(group_f) <= len(solo_f), "the per-copy form is what pays the extra barrier"
-
-
-def test_split_tdm_copies_follow_their_individual_wmma_hazard_floors():
-    """Grouping must not collapse region copies back to one loop-order-blind issue point."""
-    from Tensile.Lowering.gir import check_plan
-
-    base = {
-        "MIWaveTile": [4, 4],
-        "MatrixInstruction": [16, 16, 128, 1, 1, 4, 4, 2, 2],
-        "DepthU": 256, "ElemBytes": 1,
-        "PrefetchGlobalRead": 2, "PrefetchLocalRead": 1,
-        "TDMSplit": [2, 2, 1, 1], "TDMSplitWaveRegions": [2, 2],
-        "NumWaves": 4, "TDMFuse": 0,
-    }
-
-    def positions(prog):
-        return [(i, dict(next(ref for ref in inst.dsts
-                             if ref.tile.space == "shared").tile.coord))
-                for i, inst in enumerate(prog.block("steady").body)
-                if isinstance(inst, Move) and any(ref.tile.space == "shared"
-                                                  for ref in inst.dsts)]
-
-    for order in ("KKMNMN", "KMNKMN"):
-        theta = adapter.params_to_theta({**base, "LoopOrder": order})
-        grouped = build_gir(theta)
-        individual = build_gir(theta, pipeline=_hoist_pipeline(False, reads=True))
-        assert check_plan(grouped) == []
-        assert positions(grouped) == positions(individual)
-        assert positions(grouped)[0][0] < positions(grouped)[1][0]
-
-
-def test_copy_hoist_never_crosses_a_stationary_copy():
-    """A split copy may hoist to its own floor, but never ahead of an earlier stationary issue."""
-    from Tensile.Lowering.gir.nodes import Block, Ref, Tile
-    from Tensile.Lowering.gir.passes.hoist_copies import hoisted
-
-    def copy(name, split=False):
-        coord = (("M_split", 0),) if split else ()
-        return Move(
-            (Ref(Tile(name, "global", coord=coord)),),
-            (Ref(Tile(name, "shared", coord=coord), abs_gen=0),))
-
-    body = [
-        copy("MX0"), copy("A0", split=True), copy("A1", split=True),
-        copy("MX1"), copy("A2", split=True), copy("A3", split=True),
-    ]
-    block = Block("prologue", body=list(body))
-    moved = hoisted(block, (), group=True)
-    result = block.body if moved is None else moved
-    assert result == body
-
-
-def test_read_hoist_is_rejected_when_it_moves_a_raw_fence_earlier():
-    """Future reads must not force an entry drain; copies still move to their recomputed WAR floor."""
-    from Tensile.Lowering.gir.nodes import Mma as GirMma
-
-    params = dict(BF16_NT_KMN_FUSED_XAGENT, PrefetchLocalRead=1)
-    prog = build_gir(_theta(params))
-    body = prog.block("steady").body
-    first_mma = next(i for i, node in enumerate(body) if isinstance(node, GirMma))
-    reads = [i for i, node in enumerate(body) if isinstance(node, Move)
-             and any(ref.tile.space == "register" for ref in node.dsts)]
-    assert any(pos > first_mma for pos in reads), "all reads were pulled ahead of WMMA usage"
-    # The entry drain this would have cost, and the fence that separates each copy, are both
-    # StinkyTofu's now; what GIR owes is the read that stays behind its WMMA.
 
 
 _FOLDED = {"MIWaveTile": [8, 8], "DepthU": 256, "PrefetchLocalRead": 1, "PrefetchGlobalRead": 2,
@@ -2080,55 +1960,11 @@ def test_a_FOLDED_read_hazards_with_every_coordinate_it_covers():
     assert len(folded) >= len(plain) // 2 > 0, (len(plain), len(folded))
 
 
-def test_the_read_hoist_keeps_the_plan_valid_on_a_FOLDED_read():
-    """`check_plan` is the independent judge: it reads the emitted acts, not the hazard set."""
-    from Tensile.Lowering.gir import check_plan
-    for q in (1, 2, 4):
-        params = _FOLDED if q == 1 else dict(_FOLDED, ReadPhi={"A": q, "B": q})
-        prog = build_gir(_theta(params), pipeline=_hoist_pipeline(True, reads=True))
-        assert check_plan(prog) == [], (q, check_plan(prog)[:2])
-
-
-def test_read_hoist_preserves_hazards_when_split_coordinates_alias_one_register():
-    """A split coordinate is logical; compact (group, slot, unit) is physical register identity."""
-    from collections import Counter
-    from test_loopmodel import _mxf8_kernel
-    from Tensile.Lowering.gir import check_plan
-    from Tensile.Lowering.gir.analyses.reg_hazards import RegHazards
-
-    kernel = dict(_mxf8_kernel("KMNKMN", 1))
-    kernel.update(MatrixInstruction=[16, 16, 128, 1, 1, 4, 4, 2, 2],
-                  MIWaveTileA=4, MIWaveTileB=4, PrefetchGlobalRead=2,
-                  VectorWidthA=4, VectorWidthB=4)
-    target = {
-        "ReadVectorElems": {"MXSA": 16, "MXSB": 16},
-        "ReadPhi": {"MXSA": 4, "MXSB": 4},
-        "ReadRho": {"MXSA": 0, "MXSB": 0},
-    }
-    theta = adapter.params_to_theta(adapter.kernel_to_params(kernel, target))
-    canonical = build_gir(theta, pipeline=_without_hoist())
-    optimized = build_gir(theta)
-    assert check_plan(canonical) == []
-    assert check_plan(optimized) == []
-
-    def signature(prog):
-        hazards = AnalysisManager().get(RegHazards(), prog)
-        return Counter((h.kind, h.producer.block, h.consumer.block, h.producer.operand,
-                        h.producer.ring_pos, h.consumer.ring_pos, h.gap, h.cross_block)
-                       for h in hazards)
-
-    assert signature(canonical) == signature(optimized)
-
-
-
-
 def test_loopir_orders_smaller_prefetch_ring_reads_and_their_copies_first():
     """MX has W=1 while A/B have W=2, so MX owns the first same-site issue slots."""
     from test_loopmodel import _mxf8_kernel
 
     from Tensile.Lowering.gir.nodes import copy_unit
-    from Tensile.Lowering.gir.passes import ScaffoldShapePass
-    from Tensile.Lowering.gir.passes.hoist_copies import HoistCopiesPass, _read_generation
 
     kernel = dict(_mxf8_kernel("MNK", 0))
     kernel.update(PrefetchGlobalRead=2, PrefetchLocalRead=1)
@@ -2155,42 +1991,6 @@ def test_loopir_orders_smaller_prefetch_ring_reads_and_their_copies_first():
     assert prologue_copies == [
         ("MXSA", "MXSB"), ("A", "B"), ("MXSA", "MXSB"), ("A", "B")]
 
-    before = [copy_unit(node)[0] for node in prog.block("steady").body
-              if copy_unit(node)[0] is not None]
-    first_generation = next(_read_generation(node) for node in prog.block("steady").body
-                            if _read_generation(node) is not None)
-    reads_before = [node.dsts[0].tile.operand for node in prog.block("steady").body
-                    if _read_generation(node) == first_generation]
-    am = AnalysisManager()
-    ScaffoldShapePass().run(prog, am)
-    am.invalidate()
-    HoistCopiesPass(reads=True).run(prog, am)
-    after = [copy_unit(node)[0] for node in prog.block("steady").body
-             if copy_unit(node)[0] is not None]
-    reads_after = [node.dsts[0].tile.operand for node in prog.block("steady").body
-                   if _read_generation(node) == first_generation]
-    assert before == after
-    assert reads_before == reads_after
-    assert after[0] == ("MXSA", "MXSB")
-    assert all(unit == ("A", "B") for unit in after[1:])
-
-
-def test_hoisting_the_copies_grows_the_window_the_load_has_to_land_in():
-    """The point of the issue point: in-flight time, not position."""
-    params = dict(BF16_NT_KMN_PLR0, NumWaves=2, PrefetchGlobalRead=2, DepthU=64)
-    plain = _in_flight(params, _without_hoist())
-    group = _in_flight(params, _hoist_pipeline(True))
-    assert plain and set(plain) == set(group)
-    assert all(group[t] > plain[t] for t in plain), (plain, group)
-
-
-def test_hoisting_reads_does_not_shorten_the_window_by_advancing_a_tensor_wait():
-    """A read hoist is rejected when its RAW fence would force tensor completion earlier."""
-    params = dict(BF16_NT_KMN, NumWaves=2, PrefetchLocalRead=1, PrefetchGlobalRead=2, DepthU=64)
-    copies_only = _in_flight(params, _hoist_pipeline(True))
-    with_reads = _in_flight(params, _hoist_pipeline(True, reads=True))
-    assert with_reads == copies_only
-
 
 def test_distance_separates_the_cell_that_FAILED_from_the_ones_that_did_not():
     """The one number the backend's phase machine cannot compute, and the whole bug in one assert.
@@ -2213,7 +2013,7 @@ def test_the_loop_carried_RAW_and_WAR_are_both_found_at_the_failing_cell():
     """Both directions, because they are different obligations.  Copies last, so the read precedes
     the refill in the text; the edges themselves are the same either way."""
     from Tensile.Lowering.gir.analyses.frame_hazards import RAW, WAR
-    hz = _steady(_hazards(dict(BF16_NT_KMN_PLR0, PrefetchGlobalRead=1), hoist=False))
+    hz = _steady(_hazards(dict(BF16_NT_KMN_PLR0, PrefetchGlobalRead=1)))
     # No WAW: a read always sits between two writes of a buffer, so the RAW into it and the WAR
     # out of it already order them.
     assert {h.kind for h in hz} == {RAW, WAR}

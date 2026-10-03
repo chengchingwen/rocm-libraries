@@ -147,7 +147,6 @@ namespace rocisa
         uint64_t               anchorAction = 0;
         GirActionKind          kind         = GirActionKind::Other;
         std::vector<GirAccess> accesses;
-        bool                   softBoundary = false;
     };
 
     struct Instruction : public Item
@@ -194,11 +193,10 @@ namespace rocisa
         void setGirActionData(uint64_t                      actionId,
                               uint64_t                      anchorAction,
                               GirActionKind                 kind,
-                              const std::vector<GirAccess>& accesses,
-                              bool                          softBoundary = false)
+                              const std::vector<GirAccess>& accesses)
         {
             m_girAction = std::make_shared<GirActionData>(
-                GirActionData{actionId, anchorAction, kind, accesses, softBoundary});
+                GirActionData{actionId, anchorAction, kind, accesses});
         }
 
         std::shared_ptr<GirActionData> getGirActionData() const

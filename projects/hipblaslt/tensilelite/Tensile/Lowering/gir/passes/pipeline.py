@@ -13,7 +13,6 @@ from ..analysis import AnalysisManager
 from ..verify import verify_gir
 from .scaffold_shape import ScaffoldShapePass
 from .entrance_frames import EntranceFramePhisPass
-from .hoist_copies import HoistCopiesPass
 from .collect_pending import CollectPendingMarksPass
 from .placement import PlacementPass
 from .apply_marks import ApplyMarksPass
@@ -33,7 +32,6 @@ def pipeline():
     return [
         ScaffoldShapePass(),
         EntranceFramePhisPass(),
-        HoistCopiesPass(),
         CollectPendingMarksPass(),
         PlacementPass(),
         ApplyMarksPass(),

@@ -202,16 +202,12 @@ class GirToRocisa:
              "gen": access.gen, "gdelta": access.gdelta, "absolute": access.absolute,
              "cross_agent": access.cross_agent}
             for access in self._actionAccesses.get(act.action_id, ())]
-        soft_boundary = (
-            act.kind == "copy"
-            and bool(getattr(act.source, "soft_boundary", False))
-        )
         anchor = self._actionAnchors.get(act.action_id, act.action_id)
         for item in items:
             setter = getattr(item, "setGirActionData", None)
             if not callable(setter):
                 continue
-            setter(int(act.action_id), int(anchor), kind, accesses, soft_boundary)
+            setter(int(act.action_id), int(anchor), kind, accesses)
 
     def _reg_base(self, operand, group, slot):
         if operand not in self._regLayout or group is None or slot is None:
