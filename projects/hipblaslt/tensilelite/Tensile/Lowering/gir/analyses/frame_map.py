@@ -67,9 +67,10 @@ def _edge_values(prog, back):
     """Per edge, `{gen id: (value, relative)}` -- the table `GirFrameAnalysis` applies: an edge
     either ASSIGNS a phase or ADVANCES one.
 
-    A LoopBack terminator closes one executed trip on BOTH outcomes: another iteration takes its
-    back edge, while the final iteration takes its exit. The direct prologue-to-drain entrance is
-    not a LoopBack edge and therefore keeps its explicitly assigned entrance phase."""
+    A back edge advances by the steady trip's transfer. On the exit, drain references are stated
+    in the T-relative frame `gdelta = i - M`; convert that frame exactly once by adding `M`
+    (`-dst.gen_rel`) to the trip transfer. Using the trip transfer alone is correct accidentally
+    when M is a multiple of the ring (PGR2/ring2), but loses the final copy at PGR1/ring2."""
     out = {}
     for lab, blk in prog.blocks.items():
         for succ_lab in (blk.succs or ()):
@@ -77,13 +78,14 @@ def _edge_values(prog, back):
             if dst is None:
                 continue
             table = {}
-            closes_trip = (
-                back.is_back_edge(lab, succ_lab)
-                or (isinstance(blk.term, LoopBack) and succ_lab == blk.term.exit_target)
-            )
-            if closes_trip:
+            is_back = back.is_back_edge(lab, succ_lab)
+            is_loop_exit = isinstance(blk.term, LoopBack) and succ_lab == blk.term.exit_target
+            if is_back or is_loop_exit:
                 for xf in blk.xfers:
-                    table[xf.gen.id] = (int(xf.adv) % max(1, int(xf.ring)), True)
+                    advance = int(xf.adv)
+                    if is_loop_exit:
+                        advance -= int(dst.gen_rel or 0)
+                    table[xf.gen.id] = (advance % max(1, int(xf.ring)), True)
             for phi in dst.phis:
                 incoming = dict(phi.incomings)
                 if incoming:
