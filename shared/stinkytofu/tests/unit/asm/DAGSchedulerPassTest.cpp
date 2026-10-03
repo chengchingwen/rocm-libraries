@@ -1248,51 +1248,6 @@ TEST_F(DAGSchedulerPassTest, GirModeledTensorLoadDoesNotCutSchedulingRegion) {
     EXPECT_LT(positionOf(*bb, tensorLoad), positionOf(*bb, dependentRead)) << order;
 }
 
-TEST_F(DAGSchedulerPassTest, TensorSoftBoundaryPreservesProviderCleanupConsumer) {
-    struct ScheduledPositions {
-        int read = -1;
-        int matrix = -1;
-        int tensor = -1;
-        std::string order;
-    };
-    const auto schedule = [&](uint32_t numWaves, bool softBoundary) {
-        SetUp();
-        config.NumWaves = numWaves;
-        GemmTileConfig functionConfig = func->getGemmTileConfig();
-        functionConfig.NumWaves = numWaves;
-        func->setGemmTileConfig(functionConfig);
-
-        StinkyInstruction* read = createDsReadB128InBlock(bb, arch, 0, 80);
-        read->addModifier<GirActionData>(
-            GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
-        StinkyInstruction* matrix = createWmmaF32_16x16x16_bf16(100, 0);
-        StinkyInstruction* tensorLoad = createTensorLoadInBlock(bb, arch, 300, 308);
-        tensorLoad->addModifier<GirActionData>(GirActionData{
-            1, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}, softBoundary});
-        func->setStringMetaData(kGirFrameContractKey, "gir-frame-contract\n");
-
-        runPassWithGlobalReadThrottle(/*depth=*/8, /*drainLatency=*/8);
-        return ScheduledPositions{positionOf(*bb, read), positionOf(*bb, matrix),
-                                  positionOf(*bb, tensorLoad), scheduleOrder(*bb)};
-    };
-
-    const ScheduledPositions marked = schedule(/*numWaves=*/2, /*softBoundary=*/true);
-    EXPECT_LT(marked.read, marked.matrix) << marked.order;
-    EXPECT_LT(marked.matrix, marked.tensor)
-        << "The provider-selected consumer defines the tensor soft boundary.\n"
-        << marked.order;
-
-    const ScheduledPositions sameAgent = schedule(/*numWaves=*/1, /*softBoundary=*/true);
-    EXPECT_LT(sameAgent.tensor, sameAgent.matrix)
-        << "A same-agent copy does not receive the cross-agent WAR policy edge.\n"
-        << sameAgent.order;
-
-    const ScheduledPositions unmarked = schedule(/*numWaves=*/2, /*softBoundary=*/false);
-    EXPECT_LT(unmarked.tensor, unmarked.matrix)
-        << "An unmarked copy retains ordinary tensor-load scheduling.\n"
-        << unmarked.order;
-}
-
 // ---------------------------------------------------------------------------
 // Co-execution hazard (regression test for destOverlapsActiveWmmaSrc):
 // a ds_load whose dest VGPRs overlap the in-flight WMMA's src VGPRs must NOT be

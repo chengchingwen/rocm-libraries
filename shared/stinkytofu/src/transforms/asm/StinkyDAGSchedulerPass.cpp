@@ -80,72 +80,6 @@ static bool readsScc(const StinkyInstruction& inst) {
     return false;
 }
 
-// Follow PHIs to the earliest matrix consumer inside this scheduling region.
-static StinkyInstruction* earliestMatrixUserInRegion(
-    StinkyInstruction& producer, const std::unordered_map<StinkyInstruction*, unsigned>& instToId) {
-    StinkyInstruction* earliest = nullptr;
-    unsigned earliestOrder = UINT_MAX;
-    std::vector<StinkyInstruction*> pending(producer.getUsers().begin(), producer.getUsers().end());
-    std::unordered_set<StinkyInstruction*> seen;
-    while (!pending.empty()) {
-        StinkyInstruction* user = pending.back();
-        pending.pop_back();
-        if (!seen.insert(user).second) continue;
-        if (user->getUnifiedOpcode() == GFX::PHI) {
-            for (StinkyInstruction* phiUser : user->getUsers()) pending.push_back(phiUser);
-            continue;
-        }
-        if (!isMatrixInstruction(*user)) continue;
-        auto position = instToId.find(user);
-        if (position == instToId.end() || position->second >= earliestOrder) continue;
-        earliest = user;
-        earliestOrder = position->second;
-    }
-    return earliest;
-}
-
-// Preserve a provider-selected copy floor as a soft boundary. The relation is considered only
-// when the provider already placed a same-trip cross-agent WAR overwrite after the matrix consumer
-// that drains its reader. Unrelated work remains free to cross, unlike a scheduling-region cut.
-static void requestTensorLoadSoftBoundaries(
-    const GirFrameHazardAnalysis::Result& hazards, const dag::RegionDAG& regionDag,
-    std::vector<HardSchedulingConstraint>& requestedConstraints) {
-    struct Boundary {
-        unsigned matrixId = 0;
-        StinkyInstruction* matrix = nullptr;
-        StinkyInstruction* tensorLoad = nullptr;
-    };
-    std::map<unsigned, Boundary> byTensorId;
-    for (const GirFrameHazard& hazard : hazards.hazards) {
-        if (hazard.kind != GirHazardKind::WAR || hazard.gap != 0 || !hazard.crossAgent ||
-            !isDSRead(*hazard.producer) || !isTensorLoad(*hazard.consumer))
-            continue;
-        const GirActionData* tensorAction = hazard.consumer->getModifier<GirActionData>();
-        if (!tensorAction || !tensorAction->softBoundary) continue;
-        auto producer = regionDag.instToId.find(hazard.producer);
-        auto tensorLoad = regionDag.instToId.find(hazard.consumer);
-        if (producer == regionDag.instToId.end() || tensorLoad == regionDag.instToId.end())
-            continue;
-
-        StinkyInstruction* matrix =
-            earliestMatrixUserInRegion(*hazard.producer, regionDag.instToId);
-        if (!matrix) continue;
-        const unsigned matrixId = regionDag.instToId.at(matrix);
-        if (matrixId <= producer->second || matrixId >= tensorLoad->second) continue;
-
-        Boundary& boundary = byTensorId[tensorLoad->second];
-        if (!boundary.matrix || matrixId > boundary.matrixId)
-            boundary = {matrixId, matrix, hazard.consumer};
-    }
-
-    for (const auto& [tensorId, boundary] : byTensorId) {
-        requestedConstraints.emplace_back(boundary.matrix, boundary.tensorLoad);
-        PASS_DEBUG(std::cerr << "[DAG tensor soft boundary] request matrix dagId="
-                             << boundary.matrixId << " before tensor_load dagId=" << tensorId
-                             << "\n");
-    }
-}
-
 // A workgroup barrier, i.e. a place InsertClusterBarrierPass may expand an SCC-clobbering
 // handshake. `signal` and `wait` are the same node for a legacy single-instruction
 // s_barrier, and for a half pair whose other end lies in another region.
@@ -710,7 +644,6 @@ static void scheduleRegionWithMovableSideEffects(
     // (these orderings are heuristic, not derived from real data dependencies, so
     // contradictory requests across barrier groups are possible).
     std::vector<HardSchedulingConstraint> requestedConstraints;
-    requestTensorLoadSoftBoundaries(girHazards, regionDag, requestedConstraints);
     const dag::RegionDependencies regionDeps{.dag = regionDag,
                                              .requestedConstraints = requestedConstraints};
     readyQueue.onInitRegion(regionStart, regionEnd, blockBegin, regionDeps);
