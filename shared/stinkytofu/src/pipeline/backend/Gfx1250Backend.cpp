@@ -219,8 +219,6 @@ bool buildGfx1250Pipeline(ModulePassManager& mpm, StinkyAsmModule& module, const
                     moduleOptions.PrefetchLeadMinStageWmmas;
                 passFeatureConfig.dagFeatures.warGateWmmas = moduleOptions.WarGateWmmas;
                 applyResolvedSchedulingKnobs(passFeatureConfig, resolvedKnobs);
-                passFeatureConfig.dagFeatures.preserveTensorLoadOrder =
-                    moduleOptions.EnableGirFramePipeline;
                 if (moduleOptions.DsReadOrder >= 0)
                     passFeatureConfig.dagFeatures.dsReadOrder =
                         static_cast<PassFeatureConfig::DsReadOrder>(moduleOptions.DsReadOrder);
