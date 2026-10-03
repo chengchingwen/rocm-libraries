@@ -384,15 +384,25 @@ def test_copy_hoist_reuses_the_war_read_register_consumers_drain():
         assert _copy_placement(copy, "steady", lds, reg) == (21, True)
 
 
-def test_counted_loop_exit_advances_the_frame_before_drain():
-    """The final loop iteration closes on the exit edge just as every repeated iteration does."""
+@pytest.mark.parametrize("pgr", [1, 2, 3])
+def test_counted_loop_exit_translates_the_drain_frame_once(pgr):
+    """The exit converts each T-relative drain frame without losing its final steady copy."""
     from Tensile.Lowering import build_gir
     from Tensile.Lowering.gir.analysis import AnalysisManager
+    from Tensile.Lowering.gir.analyses.frame_hazards import FrameHazards, RAW
     from Tensile.Lowering.gir.analyses.frame_map import FrameMap
+    from Tensile.Lowering.gir.emit_plan import plan_program
+    from Tensile.Lowering.gir.frame_contract import build_contract
 
-    program = build_gir(_theta(BF16_NT_KMN))
+    program = build_gir(_theta(dict(BF16_NT_KMN, PrefetchGlobalRead=pgr)))
     frames = AnalysisManager().get(FrameMap(), program)
     rings = {phi.gen.id: phi.gen.ring for phi in program.block("steady").phis}
+    advances = {xfer.gen.id: xfer.adv for xfer in program.block("steady").xfers}
+    drain_rel = program.block("drain0").gen_rel
+    exit_delta = {
+        gen_id: (advances[gen_id] - drain_rel) % ring
+        for gen_id, ring in rings.items()
+    }
 
     exits = 0
     for frame in frames.frames("steady"):
@@ -401,18 +411,28 @@ def test_counted_loop_exit_advances_the_frame_before_drain():
                 continue
             exits += 1
             for gen_id, ring in rings.items():
-                assert successor.of(gen_id) == (frame.of(gen_id) + 1) % ring
+                assert successor.of(gen_id) == (frame.of(gen_id) + exit_delta[gen_id]) % ring
     assert exits == len(frames.frames("steady"))
 
-    # The T==2 direct entrance executes no steady trip and retains its explicit phase.
-    direct = [
-        successor
-        for frame in frames.frames("prologue_join")
-        for label, successor in frames.successors(("prologue_join", frame))
-        if label == "drain0"
+    plans = plan_program(program)
+    steady = plans["steady"][0].action_id
+    drain = plans["drain0"][0].action_id
+    transfers = {(edge.dst, edge.src, edge.gen, edge.value)
+                 for edge in build_contract(program).edges if edge.relative}
+    assert {(steady, steady, gen_id, advances[gen_id] % ring)
+            for gen_id, ring in rings.items()} <= transfers
+    assert {(drain, steady, gen_id, exit_delta[gen_id])
+            for gen_id in rings} <= transfers
+
+    drain_raw = [
+        hazard for hazard in AnalysisManager().get(FrameHazards(), program)
+        if hazard.kind == RAW
+        and hazard.producer.block == "steady"
+        and hazard.consumer.block == "drain0"
     ]
-    assert len(direct) == 1
-    assert all(direct[0].of(gen_id) == 0 for gen_id in rings)
+    assert drain_raw
+    nearest = [hazard for hazard in drain_raw if hazard.gap == 1]
+    assert {hazard.producer.operand for hazard in nearest} == {"A", "B"}
 
 
 def test_split_axes_do_not_multiply_the_prefetch_unit():
