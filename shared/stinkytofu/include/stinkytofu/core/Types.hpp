@@ -115,8 +115,6 @@ struct PassFeatureConfig {
         /// (CDNA5Config::dsIssueCapSpanCycles) where no matrix op sets one.
         int dsIssueCapSpanCycles = 0;
         int tensorLoadWmmaSpace = 0;
-        /// Keep `tensor_load_to_lds` in program order, so the tensorcnt FIFO is not permuted.
-        bool preserveTensorLoadOrder = false;
         /// Max cycle-distance between two adjacent barrier groups for
         /// StinkyMergeBarrierPass to merge them into a single multi-token
         /// barrier group. 0 = use the CDNA5 default (kCdna5MergeBarrierThreshold).
