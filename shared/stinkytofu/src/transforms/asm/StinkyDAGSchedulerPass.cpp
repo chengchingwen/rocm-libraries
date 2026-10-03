@@ -452,19 +452,6 @@ static void scheduleRegionWithMovableSideEffects(
     std::unordered_map<StinkyInstruction*, unsigned>& instToId = regionDag.instToId;
     const unsigned regionSize = static_cast<unsigned>(dagNodes.size());
 
-    // Loads to different LDS tokens share no edge, so the tensorcnt FIFO could be permuted; a
-    // producer-owned wait retires by age, so chain them to keep the order its rank assumes.
-    // The WAIT joins the chain: it carries neither a register operand nor a memory token, so it
-    // is otherwise free to float, and how many loads precede it is what decides its count.
-    if (readyQueue.getPassContext().getPassFeatureConfig().dagFeatures.preserveTensorLoadOrder) {
-        dag::DAGNode* prev = nullptr;
-        for (dag::DAGNode& node : dagNodes) {
-            if (!isTensorLoad(*node.inst) && !node.inst->is(InstFlag::IF_WaitTensorCnt)) continue;
-            if (prev != nullptr) dag::addEdgeById(prev, &node, dagGraph);
-            prev = &node;
-        }
-    }
-
     std::string regionBbLabel;
     if (regionStart != regionEnd) {
         if (BasicBlock* pbb = getStinkyInst(regionStart).getParent())
