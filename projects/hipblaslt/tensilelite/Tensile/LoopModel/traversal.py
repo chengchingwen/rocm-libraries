@@ -8,7 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from fractions import Fraction
 from itertools import product as _iproduct
-from math import ceil
+from math import ceil, gcd
 
 from .ir import COPY, Expr, READ, Space, TransferCoverage, COVERAGE_VAR, cst
 from .theta import Axis, mode_role, readahead_level_of
@@ -311,10 +311,10 @@ def _region_span_of(operand, name) -> int:
 def _flatten_digits(digits, at, group_wrap) -> tuple:
     """Mixed-radix value of `digits` under the coordinate `at`, and the extent they span."""
     value, total = 0, 1
-    for name, extent, divisor, is_grouping in digits:
+    for name, extent, divisor, wrap in digits:
         raw = int(at.get(name, 0) or 0)
-        if is_grouping:
-            raw %= max(1, group_wrap)
+        if wrap:
+            raw %= max(1, group_wrap if wrap is True else int(wrap))
         radix = max(1, -(-extent // divisor))
         value = value * radix + raw // divisor
         total *= radix
@@ -344,6 +344,14 @@ def _rotation_block_digits(theta, operand):
             continue
         digits.append((name, group_extent if name == grouping else extent, 1, name == grouping))
         named.add(name)
+    # VG MOVED THE AXIS'S TOP FACTOR INTO THE SLOT, so the block keeps only what is left of it
+    # and wraps there -- the same digit in two places would address past the allocation.
+    split = vgpr_group_axis(theta, operand)
+    if split is not None:
+        name, radix = split
+        digits = [(dname, max(1, dextent // radix) if dname == name else dextent, divisor,
+                   max(1, dextent // radix) if dname == name else wrap)
+                  for dname, dextent, divisor, wrap in digits]
     return digits, grouping, group_extent
 
 
@@ -579,14 +587,16 @@ def group_live_peak(theta, operand, group, steps, post_war=True, off=None) -> in
     return (1 + -(-int(off) // max(1, stride))) * concurrent_regions(theta, operand)
 
 
-def group_reuse_floor(theta, operand, group) -> int:
+def group_reuse_floor(theta, operand, group, shared_regions=False, charge_lead=True,
+                      lead=None) -> int:
     """Smallest ring that retains one read across every invariant-axis consumer pass."""
     cache = getattr(theta, "_group_reuse_floor_cache", None)
     if cache is None:
         cache = {}
         setattr(theta, "_group_reuse_floor_cache", cache)
     cache_key = (operand.name, tuple(operand.fragment.groups()),
-                 getattr(operand.fragment, "grouping_mode", None), group)
+                 getattr(operand.fragment, "grouping_mode", None), group, shared_regions,
+                 charge_lead, lead)
     if cache_key in cache:
         return cache[cache_key]
     hop = operand.trajectory.shared_read
@@ -602,31 +612,79 @@ def group_reuse_floor(theta, operand, group) -> int:
         first, _last = intervals.get(source, (time, time))
         intervals[source] = (first, time)
 
-    maximum = max(1, group_ring_size(theta, operand, group))
-    regions = max(1, _region_count(theta, operand))
+    # THE SEARCH CEILING IS IN BUFFERS, so VG raises it: a unit cut `extra` ways offers that
+    # many more widths, and stopping at the unit count would report a floor the ring cannot
+    # actually honour -- silently, because the loop falls through to `maximum`.
+    # THE PROBE WALKS THE WHOLE RING, REGIONS INCLUDED.  It used to walk a PER-REGION width and
+    # scale the answer by `regions`, which was right while `ring_block_width` shrank the
+    # enumerator to the regions' share of the depth.  It no longer does -- the period spans the
+    # regions by construction -- so scaling here counts them twice and refuses widths that
+    # verify clean.
+    split = vgpr_group_axis(theta, operand)
+    regions = 1 if shared_regions else max(1, _region_count(theta, operand))
+    maximum = max(1, group_ring_size(theta, operand, group)
+                  * (split[1] if split is not None else 1) * regions)
+    # WHEN THE REFILL LANDS, counted in the operand's own read order: a read-ahead issues the
+    # load `lead` sources before the value is wanted, so the slot must be free that early.  The
+    # consumption windows alone are disjoint either way; what separates a shape that fits from
+    # one that does not is whether the refill falls inside the previous value's window.
+    read_order = sorted(intervals, key=lambda source: intervals[source][0])
+    at = {source: index for index, source in enumerate(read_order)}
+    # THE CALLER MAY NAME THE LEAD.  A refusal has to judge the read-ahead that will actually be
+    # SCHEDULED, and `_placeable_read_ahead` lowers the request when the refill has no legal
+    # position -- charging the raw request refused kernels for a pipeline depth they never get,
+    # including their own DERIVED depth.
+    if lead is None:
+        lead = prefetch_distance_for(
+            theta, operand, requested_read_ahead(theta, operand), (group,))
+    # A LEAD OF `L` KEEPS `L + 1` VALUES LIVE -- the one in use and the ones in flight -- so no
+    # ring shorter than that can hold them, whatever the reuse windows say.  It is also what the
+    # window probe cannot see once the lead runs off the front of the read order: `at - lead`
+    # clamps at zero, every width then fails, and the loop would fall through to its ceiling.
+    # AND `lead` IS ALREADY IN RING POSITIONS.  Scaling this by a region count charges the same
+    # traversal twice -- an all-outer split operand with completely DISJOINT windows ([0,1] [2,3]
+    # [4,5] [6,7], the probe passes at width 1) was charged 6 and refused its own DERIVED depth.
+    # The two kernels that are numerically wrong on hardware are a SCHEDULING defect, not an
+    # under-allocation: raising this to refuse them would hide it.  See #556.
+    in_flight = max(1, int(lead) + 1)
     for width in range(1, maximum + 1):
-        slot = ring_slot(theta, operand, group, width * regions)
+        slot = ring_slot(theta, operand, group, width)
         by_register = {}
         for source, live in intervals.items():
             coord = dict(zip(axes, source))
             register_key = (slot.eval(coord), unit_tile_index(theta, operand, coord))
-            by_register.setdefault(register_key, []).append(live)
-        if all(previous[1] < current[0]
+            # CHARGING THE LEAD HERE ASSUMES AN UNANCHORED REFILL.  `reload_anchor` defers the
+            # reload past the last reader of the value it overwrites, so the early landing this
+            # models does not happen.  The SCHEDULER still wants the charged number -- dropping
+            # it globally plans a worse pipeline -- but a REFUSAL must not use it: `VG=2, VA=3,
+            # PLR=2` is charged 4 and verifies clean at 3, measured.
+            refill = intervals[read_order[max(0, at[source] - lead)]][0] \
+                if charge_lead else live[0]
+            by_register.setdefault(register_key, []).append((live[0], live[1], refill))
+        if all(previous[1] < current[2]
                for lives in by_register.values()
                for previous, current in zip(sorted(lives), sorted(lives)[1:])):
-            cache[cache_key] = width
-            return width
-    cache[cache_key] = maximum
-    return maximum
+            cache[cache_key] = max(width, in_flight)
+            return cache[cache_key]
+    cache[cache_key] = max(maximum, in_flight)
+    return cache[cache_key]
 
 
 def _raw_read_ahead(theta, operand) -> int:
+    """PLR as the model counts it: whole prefetch units, however many BUFFERS were asked for.
+
+    PLR names buffers, and VG cuts a unit into several, so `VG=2, PLR=2` is the one unit of lead
+    that `PLR=1` means at `VG=1` -- which is why HalfPLR's `PLR==1` reject cannot carry over.
+    At the derived VG the divisor is 1 and the request is the number that was written down.
+    """
     if not operand.movements:
         return 0
     axis = prefetch_axis_name(theta, operand)
     if axis is None:
         return 0
-    return max(0, int(theta.off_at(operand.name, READ, axis) or 0))
+    split = vgpr_group_axis(theta, operand)
+    buffers = max(0, int(theta.off_at(operand.name, READ, axis) or 0))
+    return buffers // (split[1] if split is not None else 1)
 
 
 def _side(operand):
@@ -795,7 +853,12 @@ def group_register_positions(theta, operand) -> int:
 
     Regions are extra rotation, so their multiplicity is slot COUNT, not block size.
     """
+    # VG CUTS THE BLOCK, and only by what it divides BEYOND the split: the split's own share is
+    # already taken out of `group_unit_tiles`, so at the derived VG this is the per-region unit
+    # it always was, and `VG=2` with no split halves a unit nothing else divided.
+    split = vgpr_group_axis(theta, operand)
     tiles = group_unit_tiles(theta, operand, operand.fragment.groups()[0])
+    tiles = max(1, tiles // (split[1] if split is not None else 1))
     rotation = {name for name, _extent in rotation_unit_modes(theta, operand)}
     regions = set(getattr(operand, "region_axes", ()) or ())
     ring_names = {name for name, _extent in ring_axes(
@@ -846,9 +909,43 @@ def operand_emitted_regs(theta, operand, depths) -> int:
                max(1, free_tiles(theta, operand) * frag_regs(theta, operand)))
 
 
+def vgpr_group(theta, operand) -> int:
+    """VG -- the factor this operand's prefetch unit is DIVIDED by.
+
+    Not a group count and not a region count: it is the divisor itself.  A TDMSplit operand
+    already has its unit cut by the split, which IS its VG; stating a larger one cuts further,
+    and stating VG=2 with no split cuts a unit nothing else divides.
+    """
+    return max(1, int(getattr(operand.fragment, "vgpr_group", 1) or 1))
+
+
+def split_unit_divisor(theta, operand) -> int:
+    """The factor the SPLIT already divides the prefetch unit by -- VG's derived value."""
+    return max(1, original_prefetch_unit_tiles(theta, operand)
+               // max(1, prefetch_unit_tiles(theta, operand)))
+
+
+def region_positions(theta, operand) -> int:
+    """Ring positions this operand's regions contribute -- they are loop coordinates like any
+    other, so they are POSITIONS, never a factor applied to a depth after the fact.
+
+    EXEMPTING THE ALL-INNER OPERAND IS WRONG, measured: "it rereads the whole set so the regions
+    are inside one position" sounds right and breaks 60 of 384 baseline cells.  Rereading the
+    set does not make two regions' values share a slot; they are still live together.
+    """
+    return max(1, _region_count(theta, operand))
+
+
 def group_ring_depth(theta, operand, group, depths) -> int:
-    """Slots one group rotates through: its own buffers once per storage region."""
-    return max(1, int(depths.get(operand.name, group))) * max(1, _region_count(theta, operand))
+    """VA -- the buffers one group rotates through, outright.
+
+    VA IS THE COUNT, with nothing added on top of it here.  The regions used to be multiplied in
+    at this point, which made VA mean "buffers per region" to the adapter and "buffers" to every
+    reader, and left no way to say that the regions SHARE a ring -- which is exactly what
+    `ClusterLocalRead=1` over a split asks for.  The region positions are `region_positions`,
+    counted into the ring where the question is answered.
+    """
+    return max(1, int(depths.get(operand.name, group)))
 
 
 def register_layout(theta, depths) -> dict:
@@ -859,8 +956,8 @@ def register_layout(theta, depths) -> dict:
             continue
         offset, slots = 0, {}
         fragment_regs = frag_regs(theta, operand)
+        unit_regs = group_register_positions(theta, operand) * fragment_regs
         for group_index, group in enumerate(operand.fragment.groups()):
-            unit_regs = group_register_positions(theta, operand) * fragment_regs
             for slot in range(group_ring_depth(theta, operand, group, depths)):
                 slots[(group_index, slot)] = offset
                 offset += unit_regs
@@ -1148,21 +1245,73 @@ def _regions_ride_the_ring(theta, operand, group) -> bool:
                for name in (getattr(operand, "region_axes", ()) or ()))
 
 
+def regions_lead_the_ring(theta, operand, group) -> bool:
+    """Is a region axis visited OUTSIDE every axis the ring rotates on?
+
+    Then a region does not revisit the ring: the outer loop finishes one region before the next
+    begins, so two regions may share a slot but two GENERATIONS may not.
+    """
+    order = [axis.name for axis in theta.ord]
+    regions = [name for name in (getattr(operand, "region_axes", ()) or ()) if name in order]
+    ring = [name for name, _extent in ring_axes(theta, operand, group) if name in order]
+    if not regions or not ring:
+        return False
+    return min(order.index(name) for name in regions) < min(order.index(name) for name in ring)
+
+
+def vgpr_group_axis(theta, operand):
+    """The axis VG subdivides and by how much -- ``(name, radix)`` -- or ``None``.
+
+    VG divides the unit, so a unit the enumerator counts once is now VG buffers; the factor that
+    tells them apart is the TOP factor of the innermost prefetch-unit axis.  A split already cut
+    the unit by its own factor and spends a region digit saying so, so only the part VG divides
+    BEYOND the split is taken here.
+    """
+    radix = max(1, vgpr_group(theta, operand) // max(1, split_unit_divisor(theta, operand)))
+    modes = [(name, extent) for name, extent in prefetch_unit_modes(theta, operand)
+             if max(1, extent) % radix == 0]
+    return (modes[-1][0], radix) if radix > 1 and modes else None
+
+
+def vgpr_group_digit(theta, operand, strides):
+    """`vgpr_group_axis` as a ring digit: the position stride that advances per VG-th unit."""
+    split = vgpr_group_axis(theta, operand)
+    if split is None or split[0] not in strides:
+        return None
+    name, radix = split
+    extent = dict(prefetch_unit_modes(theta, operand)).get(name, 1)
+    return (max(1, strides[name]) * max(1, max(1, extent) // radix), radix)
+
+
 def ring_block_width(theta, operand, group, buffers) -> int:
     """Slots the enumerator owns before the region digits begin -- its own span, normally.
+
+    THE PERIOD DEPENDS ON `buffers` HERE, AND THAT IS A DEFECT (#557).  Reserving the regions a
+    share of the DEPTH makes the ring's period a function of how many registers were allocated:
+    the same traversal walks 2 positions at VA<4 and 4 at VA>=4, so correctness is NON-MONOTONIC
+    -- measured on MKMN/TDMSplitA, VA 1 and 4+ verify while VA 2 and 3 alias two generations.
+    An allocation cannot change how many places a traversal visits.  Returning `span`
+    unconditionally fixes that cell and breaks 20 others (8 -> 28 in the baseline sweep), so the
+    reservation is load-bearing for the partitioned shapes the paragraph below describes and the
+    real fix has to separate the two.
 
     A region owns a block, so the enumerator wraps inside its share of the depth rather than
     spanning it whole, which would land the region digit where the modulus is 0.  Its share is
     reserved whenever there IS more than one region -- `group_ring_depth` counts them
     unconditionally, so gating the reservation on a read-ahead erased the digit at PLR=0.
+
+    One group of SEVERAL is the exception, and only when its share falls to a single slot: a share
+    of one leaves the enumerator no digit, so the group stops telling its generations apart.  An
+    unpartitioned operand owns the read order and can afford that -- it consumes a region's
+    generations before reading the next.  Partitioned, the groups share ONE read order at
+    DIFFERENT depths, so the deeper group's read-ahead drags the shallow one's refill on top of a
+    value still in use.  Where the region leads the ring the region digit cannot separate those two
+    generations, so the ring keeps its own span and the regions share slots instead.
     """
     span = 1
     for _name, extent in ring_axes(theta, operand, group):
         span *= max(1, extent)
-    regions = max(1, _region_count(theta, operand))
-    if regions <= 1:
-        return max(1, span)
-    return max(1, min(span, max(1, int(buffers)) // regions))
+    return max(1, span)
 
 
 def regions_time_share(theta, operand, group, buffers) -> bool:
@@ -1176,26 +1325,109 @@ def regions_time_share(theta, operand, group, buffers) -> bool:
     return ring_block_width(theta, operand, group, buffers) % max(1, buffers) == 0
 
 
-def _shifted_ring_slot(theta, operand, group, shift, strides, buffers, fold=None):
-    """The rotation slot the prefetched read writes, as an Expr."""
+def _ring_digits(theta, operand, group, strides, buffers):
+    """The ring's mixed-radix digits, innermost first, and the PERIOD they span.
+
+    The one place the rotation's digit layout is decided; `_shifted_ring_slot` renders it and
+    `ring_positions` reports its period, so the two can never drift apart.
+    """
     ring = [(name, extent) for name, extent in ring_axes(theta, operand, group)
             if name in strides]
-    width = ring_block_width(theta, operand, group, buffers)
     digits, place = [], 1
-    terms = position_terms(strides, fold)
+    # VG SUBDIVIDES THE UNIT, so its digit is the FASTEST: two buffers of one unit are adjacent
+    # in read order, closer than the enumerator's next unit.
+    group_digit = vgpr_group_digit(theta, operand, strides)
+    if group_digit is not None:
+        digits.append((place, group_digit[0], group_digit[1]))
+        place *= group_digit[1]
+    width = place * ring_block_width(theta, operand, group, buffers)
+    # WHAT VG ALREADY TOOK OFF ITS AXIS.  VG subdivides one of these very axes, so re-adding the
+    # whole extent here builds a SECOND digit over the same bits -- both read the low part of the
+    # position and the ring enumerates half as many places as it claims.  The enumerator gets the
+    # remainder above the VG cut, and divides past the part VG spent.
+    cut = dict([vgpr_group_axis(theta, operand)]) if vgpr_group_axis(theta, operand) else {}
     for name, extent in reversed(ring):  # the innermost axis is the fastest radix
         if place >= width:
             break                        # the rest of the enumerator wraps inside the ring
-        radix = min(max(1, extent), width // place)
+        taken = max(1, cut.get(name, 1))
+        radix = min(max(1, max(1, extent) // taken), width // place)
         if radix <= 1:
             continue                     # an extent-1 axis enumerates nothing, it does not end the ring
-        digits.append((place, max(1, strides[name]), radix))
+        digits.append((place, max(1, strides[name]) * taken, radix))
         place *= radix
     # A region is extra rotation, so it can carry the ring alone when the enumerator is empty.
-    digits.extend(_region_digits(theta, operand, strides, width))
+    # IT STARTS WHERE THE DIGITS REACHED, not at the nominal width: a gap between them is a place
+    # the modulus folds away, and the region then shares a slot with position 0.
+    digits.extend(_region_digits(theta, operand, strides, max(place, 1)))
+    period = digits[-1][0] * digits[-1][2] if digits else 1
+    return digits, max(1, period)
+
+
+def ring_positions(theta, operand, group, buffers) -> int:
+    """Rotation positions one trip walks -- the PERIOD of the slot expression.
+
+    Where it is a multiple of the depth the ring closes every trip; where it is not -- four
+    positions over three buffers -- the slot carries into the next one.
+    """
+    extents = transfer_extents(theta, operand)
+    strides, _span = axis_strides(theta, varying_axes(theta, operand), extents)
+    _digits, period = _ring_digits(theta, operand, group, strides, buffers)
+    return period
+
+
+def ring_reached_positions(theta, operand, group, buffers) -> int:
+    """Rotation places the reads actually WRITE, which is at most the period.
+
+    The period is what the digits could say; this is what the coordinates reach.  An operand
+    whose digit sits on an axis it barely varies over turns through fewer places than the radices
+    suggest, and a depth above THAT count declares slots nothing ever writes -- the shape
+    `_check_dead_slots` reports, caught here where the request can still be named.
+    """
+    extents = transfer_extents(theta, operand)
+    strides, _span = axis_strides(theta, varying_axes(theta, operand), extents)
+    digits, _period = _ring_digits(theta, operand, group, strides, buffers)
+    if not digits:
+        return 1
+    place = Expr(digits=(position_terms(strides, read_coverage(theta, operand)), 0,
+                         tuple(reversed(digits))))
+    walked = [(name, max(1, int(extents.get(name, 1)))) for name in strides]
+    names = [name for name, _count in walked]
+    return max(1, len({place.eval(dict(zip(names, point)))
+                       for point in _iproduct(*[range(count) for _name, count in walked])}))
+
+
+def ring_trip_copies(theta, depths) -> int:
+    """Trips before EVERY ring is back where it started -- the steady body's copy count.
+
+    A ring of `VA` buffers walked `P` positions a trip returns after `VA/gcd(VA, P)` of them, so
+    the body is one fixed piece of code only when replicated that many times.  `VA=3` over four
+    positions is the 1.5-buffer rotation and asks for three; everything that divides asks for one.
+    """
+    copies = 1
+    for operand in theta.operands:
+        if operand.is_output or not (operand.movements and operand.fragment):
+            continue
+        for group in operand.fragment.groups():
+            buffers = group_ring_depth(theta, operand, group, depths)
+            period = ring_positions(theta, operand, group, buffers)
+            turns = max(1, buffers // gcd(buffers, max(1, period)))
+            copies = copies * turns // gcd(copies, turns)
+    return max(1, copies)
+
+
+def _shifted_ring_slot(theta, operand, group, shift, strides, buffers, fold=None):
+    """The rotation slot the prefetched read writes, as an Expr."""
+    digits, _period = _ring_digits(theta, operand, group, strides, buffers)
     if not digits:
         return None
-    return Expr(digits=(terms, shift, tuple(reversed(digits))), mod=max(1, buffers))
+    # THE TOP DIGIT DOES NOT WRAP.  Wrapping it folds the ring's last position onto its first
+    # BEFORE the depth modulus, so a depth the ring does not divide -- 3 buffers over 4 positions
+    # -- refills a slot still in use.  Where it does divide, the modulus absorbs the carry and
+    # the slot is the one it always was.
+    place, div, _radix = digits[-1]
+    digits[-1] = (place, div, 0)
+    return Expr(digits=(position_terms(strides, fold), shift, tuple(reversed(digits))),
+                mod=max(1, buffers))
 
 
 def _region_digits(theta, operand, strides, place):
@@ -1466,9 +1698,12 @@ def reload_positions(theta, operand, group, buffers, distance):
 
     None means no such position exists, so this width cannot carry this read-ahead.
     """
-    if buffers > 1 and not (reloads_whole_set(theta, operand)
-                            and len(operand.fragment.groups()) == 1):
-        return {}
+    # NO EARLY-OUT ON `buffers > 1`.  Returning `{}` here says "a rotating ring places its own
+    # refills", and a rotating ring usually does -- but not when one value has consumers either
+    # side of the refill.  The constraint was being COMPUTED below and thrown away: the refill
+    # then landed between two readers of the generation it overwrites, and the second read took
+    # the next one.  Two kernels reached hardware computing wrong answers this way.  Where there
+    # is no conflict `_overwrites_live_register` is empty and this still returns `{}`.
     timeline = _register_timeline(theta, operand, group, buffers, distance)
     if timeline is None:
         return {}

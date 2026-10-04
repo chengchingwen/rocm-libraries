@@ -513,13 +513,18 @@ def _check_pipelined_root(errs, root):
         errs.append("P1: root Cond has no `els` short-loop arm")
 
 
-def _check_root_shape(errs, ir):
+def _check_root_shape(errs, ir, no_drain=False):
     """P1/P2: the root is the pipelined skeleton, and nothing runs outside its arms."""
     steady = _find(ir, _is_steady)
     if len(ir) == 1 and isinstance(ir[0], Cond):
         _check_pipelined_root(errs, ir[0])
     elif steady is not None and not any(isinstance(node, Cond) for node in ir):
-        if any(_is_prologue(node) or _is_drain(node) for node in ir):
+        # A suppressed drain leaves prologue+steady unguarded ON PURPOSE: the guard exists to
+        # choose between the pipelined arms and the `T < M` arm, and neither survives.
+        if no_drain and _find(ir, _is_drain) is not None:
+            errs.append("P1: a drain Peel was emitted although the scaffold suppresses the "
+                        "no-load loop -- its chunks would run twice")
+        elif not no_drain and any(_is_prologue(node) or _is_drain(node) for node in ir):
             errs.append("P1: prologue/drain at top level -- the pipeline must be wrapped in a "
                         "peel-validity Cond (nothing runs before the guard)")
     else:
@@ -657,8 +662,15 @@ def _check_short_loop(errs, ir):
 
 
 def _slot_domain(theta, samples=8):
-    """`{name: count}` -- how many values each name takes when probing a slot expression."""
-    domain = {axis.name: min(samples, max(1, int(axis.extent))) for axis in theta.inner_axes()}
+    """`{name: count}` -- how many values each name takes when probing a slot expression.
+
+    A REAL AXIS IS WALKED WHOLE.  Sampling it capped the probe at `samples` values, so a ring
+    deeper than that reported every slot above the cap as unwritten -- a tile count of 10 on an
+    8-sample axis accused slots 8 and 9, whatever the kernel actually did.  `_slot_values` only
+    ever walks the names one expression references, so the full extent is a handful of points.
+    The summation chunk is the exception: it has no finite extent to walk.
+    """
+    domain = {axis.name: max(1, int(axis.extent)) for axis in theta.inner_axes()}
     chunk = theta.summation_chunk_name()
     if chunk:
         domain[chunk] = samples       # a few chunks, whatever the axis itself declares
@@ -710,17 +722,22 @@ def _check_dead_slots(_errs, ir, theta):
                for key, exprs in written.items()}
     consumed = {key: set().union(*(_slot_values(e, domain) for e in exprs)) if exprs else set()
                 for key, exprs in consumed.items()}
-    from .traversal import _region_count
     for operand in theta.operands:
         depths = getattr(getattr(operand, "fragment", None), "ring_depths", None) or {}
-        # Slots the emitter addresses: `group_ring_depth` gives each region its own turn.
-        regions = max(1, int(_region_count(theta, operand)))
         for label, depth in depths.items():
-            declared = set(range(int(depth) * regions))
+            # VA is the slot count outright -- the region turns are already inside it.
             key = (operand.name, label)
-            for what, seen in (("written by a read", written.get(key, set())),
-                               ("read by a wmma", consumed.get(key, set()))):
-                missing = sorted(declared - seen)
+            # AN UNUSED SLOT IS WASTED REGISTERS, NOT A DEFECT.  `VgprAlloc` is the caller's to
+            # spend, and a ring deeper than the reads reach simply leaves the tail idle --
+            # measured: VA 5..12 over a 4-position ring all verify clean.  What IS a defect is a
+            # slot a wmma SOURCES that no read ever filled, so the declared set is the consumed
+            # one, not the whole depth.
+            # ONE DIRECTION IS A DEFECT: a slot a wmma SOURCES that no read ever filled.  The
+            # other two are waste -- a slot nothing touches, or one a read fills and nothing
+            # consumes -- and `VgprAlloc` is the caller's to spend.  Measured on a 4-position
+            # ring: VA 5..12 write 0..5, consume 0..3, and `consumed - written` is EMPTY.
+            for what, seen in (("written by a read", written.get(key, set())),):
+                missing = sorted(set(consumed.get(key, set())) - seen)
                 if missing:
                     from . import traversal as _g
                     def _safe(fn, *a):
@@ -749,7 +766,7 @@ def _check_dead_slots(_errs, ir, theta):
 def validate_loopir(theta, ir, depths=None, undischarged=None):
     errs = []
     iter_name = theta.summation_chunk_name("iter")
-    steady = _check_root_shape(errs, ir)
+    steady = _check_root_shape(errs, ir, no_drain=bool(theta.suppress_no_load_loop))
     _check_drain(errs, ir, iter_name)
     _check_slots(errs, ir)
     _check_readahead_order(errs, steady)

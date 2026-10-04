@@ -118,14 +118,14 @@ def _check_phase_counts(phases):
     # never approximated as PGR-1.  This half of G-CFG was documented but unchecked; a lowering
 
 
-def _check_drain_count(phases, M):
-    """The drain has exactly M blocks, one per peeled chunk."""
-    if M is not None:
+def _check_drain_count(phases, steps):
+    """The drain has exactly one block per chunk the lowering says ramps out."""
+    if steps is not None:
         n_drain = sum(1 for p in phases if isinstance(p, str) and p.startswith("drain"))
-        if n_drain != M:
+        if n_drain != steps:
             raise RuntimeError(
-                f"G-CFG: {n_drain} drain blocks but the lowering's peel depth M is {M} -- the "
-                f"drain must be exactly M straight-line steps ")
+                f"G-CFG: {n_drain} drain blocks but the lowering records {steps} drain step(s) "
+                f"-- the drain must be exactly that many straight-line steps ")
 
 
 def _check_short_arm_count(prog, phases, M):
@@ -166,7 +166,7 @@ def _check_cfg(prog, am, expect_steady_loops="one"):
     phases = [blk.phase for blk in prog.blocks.values()]
     M = prog.meta.get("peel_depth")
     _check_phase_counts(phases)
-    _check_drain_count(phases, M)
+    _check_drain_count(phases, prog.meta.get("drain_steps", M))
     _check_short_arm_count(prog, phases, M)
     _check_loop_headers(prog, am, expect_steady_loops)
 

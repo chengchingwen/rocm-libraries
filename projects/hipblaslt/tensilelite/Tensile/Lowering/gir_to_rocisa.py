@@ -16,6 +16,7 @@ from .gir.frame_contract import build_contract
 from .gir.nodes import Move
 from .gir_tag import gir_tag
 from .leaves import LeafEmitters
+from .loopir_to_gir import steady_chain
 from ..Components.TDMFuse import tdmFusedGroups, tdmSetOwner
 from rocisa.instruction import GirActionKind
 
@@ -85,13 +86,21 @@ class GirToRocisa:
                 self._ctxRd[_tc] = self._leaf.buildMxScaleReadContext(kernel, _mx)
 
     # Scaffold metadata consumed by the tags handed in for each stage.
-    def emit_block(self, prog, phase, *, tpByOperand=None, internalPointerSwap=False) -> Module:
-        """Realize the finalized GIR block `phase` into a rocisa Module."""
+    def emit_block(self, prog, phase, *, tpByOperand=None, internalPointerSwap=False,
+                   kinds=None) -> Module:
+        """Realize the finalized GIR block `phase` into a rocisa Module.
+
+        `kinds` keeps only those act kinds, so one block can be emitted at two points in the
+        scaffold -- the prologue's copies go where legacy issues its global prefetch, its
+        register fill where legacy fills.  The acts keep their relative order either way.
+        """
         tpByOperand = tpByOperand or self._tp
         w = self._leaf                      # reg_depth already set at construction (a GIR fact)
         out = Module("GIR %s body" % phase)
 
         acts = plan_block(prog, phase)
+        if kinds is not None:
+            acts = [a for a in acts if a.kind in kinds]
         cplan = plan_coverage(
             acts, lambda op: (prog.meta.get("read_coverage", {}) or {}).get(op),
             # A folded read axis makes a lone leader act a complete carrier
@@ -103,7 +112,12 @@ class GirToRocisa:
                 "GIR %s: %s\n  theta's merge and the acts in this block disagree; the emitted "
                 "instruction would write a register whose act lives elsewhere." % (phase, _v))
 
+        # The scaffold's loop body carries two masks GIR does not model; this block IS that body.
+        in_loop = phase in steady_chain(prog)
+        self._maskedCopy = self._maskedInc = not in_loop
+
         for _i, act in enumerate(acts):
+            self._emit_loop_masks(out, act.kind)
             before = len(out.flatitems())
             kind, at = act.kind, act.at
             if kind == "wmma":
@@ -178,6 +192,26 @@ class GirToRocisa:
             self._stamp_action(out.flatitems()[before:], act)
         self._drop_mem_tokens(out)
         return out
+
+    def _emit_loop_masks(self, out, kind):
+        """SuppressNoLoadLoop's two in-loop masks, each once per block, ahead of what it silences.
+
+        The scaffold emits both from inside `globalReadDo`/`globalReadIncrementAB`, which the GIR
+        path does not call: the copy mask zeroes the descriptor enable word for every tensor at
+        once, so like the scaffold's `tP["isA"]` arm it belongs to the FIRST copy, not each one.
+        Emitted outside the action-stamping window -- the masks are scaffold state, not GIR acts.
+        """
+        if kind == "copy" and not self._maskedCopy:
+            self._maskedCopy = True
+            mask = Module("GIR prefetch silence")
+            self.writer.graPrefetchSilenceMask(self.kernel, mask)
+            if mask.count():
+                out.add(mask)
+        elif kind == "gr_inc" and not self._maskedInc:
+            self._maskedInc = True
+            mask = self.writer.graIncrementMask(self.kernel, self.tPA, self.tPB)
+            if mask is not None and mask.count():
+                out.add(mask)
 
     _ACTION_KINDS = {"read": GirActionKind.Read, "copy": GirActionKind.Copy,
                      "fence": GirActionKind.Fence, "wmma": GirActionKind.Wmma}
