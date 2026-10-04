@@ -38,7 +38,8 @@ class Fragment:
     agent_group_size: int = 0
     kind: str = "load"
     offsets: dict = field(default_factory=dict)
-    ring_depths: dict = None
+    ring_depths: dict = None          #: VA -- buffers of one unit, per group
+    vgpr_group: int = 1               #: VG -- the factor the prefetch unit is DIVIDED by
 
     space = Space.REGISTER
 
@@ -472,6 +473,9 @@ class Theta:
     agent_assignment: AgentAssignment = field(default_factory=AgentAssignment)
     wave_count: int = 1
     per_region_completion: bool = False
+    # The scaffold folds the drain into the steady loop and clamps the overrun loads, so the
+    # model must say the same: all T chunks in the loop, no peeled ramp-out.
+    suppress_no_load_loop: bool = False
 
     def __post_init__(self):
         """The axis nest is fixed at construction, so split it here rather than on every read.

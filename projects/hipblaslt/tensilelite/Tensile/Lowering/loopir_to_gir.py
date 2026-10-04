@@ -22,6 +22,9 @@ from ..LoopModel.traversal import free_names, presence, summation_names
 
 # ===========================================================================
 # small Expr helpers
+_UNSET = object()   #: `reg_copy` not supplied -- the copy index IS the chunk offset
+
+
 def _gir_bound(e) -> Bound:
     """One side of a control-flow test, LoopIR `Expr` (or plain int) -> GIR `Bound`, by field."""
     if not hasattr(e, "var"):
@@ -231,14 +234,19 @@ def _slot_of(theta, op, coord, pl):
     return pl.slots[0]
 
 
-def _reg_residence(theta, op, coord, pl, env):
+def _reg_residence(theta, op, coord, pl, env, copy=None):
     """`(group index, concrete slot, rotation width W)` for `op`'s register fragment AT `coord`."""
     label, gexpr = _slot_of(theta, op, coord, pl)
     if gexpr is None:
         return None, None, None
     groups = op.fragment.groups() if op is not None else ("",)
     grp_idx = list(groups).index(label) if label in groups else 0
-    return grp_idx, gexpr.eval(env), (getattr(gexpr, "mod", 0) or 1)
+    width = getattr(gexpr, "mod", 0) or 1
+    # A RING THE TRIP DOES NOT CLOSE carries: `VA=3` over four positions is 1.5 buffers, so it
+    # comes back round only after three trips, and each one starts a period further along.  Where
+    # the period is a multiple of the depth the term vanishes and the slot is unchanged.
+    period = _geometry.ring_positions(theta, op, label, width) if copy else 0
+    return grp_idx, (gexpr.eval(env) + int(copy or 0) * period) % width, width
 
 
 def _concrete_coord(op_coord, env):
@@ -324,13 +332,16 @@ def _gen_of(gens, theta, op, coord):
     return gens.get((op.name, _storage_region(theta, op, coord))) if op is not None else None
 
 
-def _convert_load(theta, inst, env, rel, gens):
+def _convert_load(theta, inst, env, rel, gens, reg_copy=_UNSET):
     """A LoopIR Load -> a GIR Move. dst=SHARED => a copy (global->shared); dst=REGISTER => a read
  (shared/global->register).
 
  `rel` is the steady-relative summation-chunk offset (see `_flatten`): not-None => the ref
  joins the loop-carried generation timeline as `gen` + `gdelta` evaluated at that offset;
- None => the chunk is concrete, so the generation is absolute (`abs_gen`, fact)."""
+ None => the chunk is concrete, so the generation is absolute (`abs_gen`, fact).
+
+ `reg_copy` is the ring's copy index, which a drain resumes rather than inherits; it defaults
+ to `rel` because for every other block the chunk offset and the copy ARE the same number."""
     ld = inst.op
     pl = inst.placement
     chunk = theta.summation_chunk_name("iter")     # the level the generation timeline runs on
@@ -376,7 +387,8 @@ def _convert_load(theta, inst, env, rel, gens):
                         (("regs", ld.size_regs),))
         # register residence: (group index, concrete slot, rotation width W) for THIS COORDINATE's
         # group. W is the slot Expr's modulus (a LoopIR fact GIR consumes, B3): mod>1 -> W
-        grp_idx, slot_val, reg_ring = _reg_residence(theta, op, coord, pl, env)
+        grp_idx, slot_val, reg_ring = _reg_residence(
+            theta, op, coord, pl, env, copy=(rel if reg_copy is _UNSET else reg_copy))
         # source shared generation
         src_ref_kw = {}
         if src_space == Space.SHARED and pl is not None and pl.src_slot is not None:
@@ -412,7 +424,7 @@ def _convert_load(theta, inst, env, rel, gens):
                     advance=int(getattr(ld, "advance", 0) or 0), issue=issue)
 
 
-def _convert_mma(theta, inst, env, reads):
+def _convert_mma(theta, inst, env, reads, copy=None):
     """A LoopIR Mma -> a GIR Mma. srcs = one register Ref per read operand (+ scales);
  dst = the accumulator. Operand identity is on each Ref.tile.operand.
     """
@@ -422,7 +434,7 @@ def _convert_mma(theta, inst, env, reads):
     srcs = []
     for op in reads:
         pl = pls.get(op.name)
-        grp_idx, slot_val, reg_ring = _reg_residence(theta, op, coord, pl, env)
+        grp_idx, slot_val, reg_ring = _reg_residence(theta, op, coord, pl, env, copy=copy)
         size_regs = _geometry.frag_regs(theta, op)
         # THE SOURCE NAMES THE OPERAND'S OWN COORDINATE, NOT THE WMMA'S.
         #
@@ -493,14 +505,18 @@ def _scan_regions(ir, M):
 
 
 def _program_meta(theta, mainloop, M, red_names, free_axes, mma_inputs, mma_scales,
-                  short_steps):
+                  short_steps, drain_steps=None):
     """Everything the GIR passes need to know about the theta this program came from.
 
     A read-only bag: the lowering fills it once and each analysis takes the few keys it
     needs. Separate from `lower_to_gir` because it translates theta; it does not build
     the CFG.
     """
-    meta = {"buffer_depths": mainloop.depths, "peel_depth": M}
+    # `peel_depth` is the prologue's LEAD; `drain_steps` is how many chunks ramp back out.  They
+    # are equal unless the scaffold suppresses the no-load loop, which keeps the lead and drops
+    # the ramp.
+    meta = {"buffer_depths": mainloop.depths, "peel_depth": M,
+            "drain_steps": M if drain_steps is None else int(drain_steps)}
     meta["register_layout"] = _geometry.register_layout(theta, mainloop.depths)
     meta.update(_axis_facts(theta, red_names, free_axes, mma_inputs, mma_scales))
     meta.update(_region_facts(theta))
@@ -618,19 +634,39 @@ def _add_prologue_blocks(prog, theta, gens, reads, pro_body, guard_pred, short_e
                 if _mv is not None:
                     body.append(_mv)
             else:
-                body.append(_convert_mma(theta, inst, env, reads))
+                body.append(_convert_mma(theta, inst, env, reads, copy=rel))
         steady_exists = steady_loop is not None
-        if steady_exists and guard_pred is None:
+        # The guard picks between the steady loop and the peeled `T < M` path, so it is required
+        # exactly when that second target exists -- with the drain suppressed, `end` is not one.
+        forks = short_entry != "end"
+        if steady_exists and forks and guard_pred is None:
             raise RuntimeError(
                 "lowering: a prologue block exists but the LoopIR carries no peel-validity Cond -- "
                 "the guard predicate must be CARRIED from the LoopIR, not re-derived here")
-        term = (CondGoto(_gir_pred(guard_pred), "steady", short_entry)
-                if steady_exists else Goto(short_entry))
-        succs = (("steady", short_entry) if steady_exists else (short_entry,))
+        if not steady_exists:
+            term, succs = Goto(short_entry), (short_entry,)
+        elif forks:
+            term = CondGoto(_gir_pred(guard_pred), "steady", short_entry)
+            succs = ("steady", short_entry)
+        else:
+            term, succs = Goto("steady"), ("steady",)
         # frame (Block.gen_rel/chunk_base): the prologue's Refs carry ABSOLUTE generations, and its
         # read-ahead fills the chunk the first steady trip consumes -- chunk-timeline slot 0.
         prog.add_block(Block(phase="prologue", preds=(), succs=succs, body=body, term=term,
                              gen_rel=None, chunk_base=0))
+
+
+def steady_chain(prog) -> list:
+    """The steady blocks in program order -- the labels `_add_steady_blocks` wrote, read back.
+
+    The emitter walks this rather than re-spelling the convention, so one place names the copies.
+    """
+    if "steady" not in prog.blocks:
+        return []
+    chain = ["steady"]
+    while "steady%d" % len(chain) in prog.blocks:
+        chain.append("steady%d" % len(chain))
+    return chain
 
 
 def _add_steady_blocks(prog, theta, gens, reads, steady_loop, pro_body, first_drain, loop_copies):
@@ -648,7 +684,7 @@ def _add_steady_blocks(prog, theta, gens, reads, steady_loop, pro_body, first_dr
                     if _mv is not None:
                         body.append(_mv)
                 else:
-                    body.append(_convert_mma(theta, inst, env, reads))
+                    body.append(_convert_mma(theta, inst, env, reads, copy=rel))
             last = (i == n_copies - 1)
             # phis on the HEADER only (the join of entry- and back-edge); xfers on the LAST copy
             # only (the back-edge transfer), advancing by the number of chunks a trip now consumes.
@@ -679,17 +715,22 @@ def _add_drain_blocks(prog, theta, gens, reads, drain_peel, M, drain_labels, fir
     """The drain blocks: one per chunk still in flight when the steady loop stops."""
     if drain_peel is not None and M > 0:
         steps = _drain_steps(drain_peel.body)
+        n_copies = max(1, int(loop_copies)) if steady_loop is not None else 1
         for i, step_nodes in enumerate(steps):
             flat = []
             _flatten(step_nodes, {}, flat)
             body = [Mark("phase_boundary", {"phase": f"drain{i}"})]
+            # THE REGISTER RING RESUMES THE CHAIN.  `rel` is a T-relative chunk offset, which the
+            # loads and the frame want; the ring wants the copy the loop would have run NEXT.  The
+            # two agree only when the peel depth happens to be -1 mod the chain length.
             for inst, env, rel in flat:
+                _copy = (i + 1) if n_copies > 1 else rel
                 if isinstance(inst.op, Load):
-                    _mv = _convert_load(theta, inst, env, rel, gens)
+                    _mv = _convert_load(theta, inst, env, rel, gens, reg_copy=_copy)
                     if _mv is not None:
                         body.append(_mv)
                 else:
-                    body.append(_convert_mma(theta, inst, env, reads))
+                    body.append(_convert_mma(theta, inst, env, reads, copy=_copy))
             nxt = drain_labels[i + 1] if i + 1 < len(drain_labels) else "end"
             last_steady = (f"steady{loop_copies-1}" if (steady_loop is not None
                                                         and loop_copies > 1) else "steady")
@@ -716,7 +757,7 @@ def _add_short_blocks(prog, theta, gens, reads, short_steps, short_labels):
                 if _mv is not None:
                     body.append(_mv)
             else:
-                body.append(_convert_mma(theta, inst, env, reads))
+                body.append(_convert_mma(theta, inst, env, reads, copy=rel))
         nxt_guard = short_steps[i + 1][0] if i + 1 < len(short_steps) else None
         if nxt_guard is not None:
             term = CondGoto(nxt_guard, short_labels[i + 1], "end")
@@ -762,15 +803,16 @@ def lower_to_gir(theta, mainloop=None, loop_copies=1) -> Program:
 
     # the entry names a block that ACTUALLY EXISTS.  A one-hop path (direct-to-register,
     #) stages nothing through shared, so there is no prefetch to peel and NO prologue block;
+    drain_labels = [f"drain{i}" for i in range(M)] if (drain_peel and M > 0) else []
     prog = Program(entry=("prologue" if pro_body is not None else "steady"),
                    meta=_program_meta(theta, mainloop, M, red_names, free_axes,
-                                      mma_inputs, mma_scales, short_steps))
+                                      mma_inputs, mma_scales, short_steps,
+                                      drain_steps=len(drain_labels)))
     prog.meta["generation_regions"] = {
         gen.id: {"operand": operand, "region": region}
         for (operand, region), gen in gens.items()
     }
 
-    drain_labels = [f"drain{i}" for i in range(M)] if (drain_peel and M > 0) else []
     first_drain = drain_labels[0] if drain_labels else "end"
     short_labels = [f"short{i}" for i in range(len(short_steps))]
     short_entry = short_labels[0] if short_labels else first_drain
@@ -806,11 +848,14 @@ def gir_text(prog) -> str:
         return f"# GIR render failed: {e}\n"
 
 
-def build_gir(theta, mainloop=None, params=None, pipeline=None):
+def build_gir(theta, mainloop=None, params=None, pipeline=None, loop_copies=1):
     """R-ONCE: build the theta model, lower to GIR, and run the pass pipeline EXACTLY ONCE, returning
     the finalized Program the phase forks emit from.
+
+    `loop_copies` unrolls the steady body into that many chained blocks; the emitter walks the
+    chain, so a count it is not told about would be built and silently dropped.
     """
-    prog = lower_to_gir(theta, mainloop)
+    prog = lower_to_gir(theta, mainloop, loop_copies)
     if params:
         prog.params.update(params)
     run_pipeline(prog, passes=(pipeline if pipeline is not None else default_pipeline()))

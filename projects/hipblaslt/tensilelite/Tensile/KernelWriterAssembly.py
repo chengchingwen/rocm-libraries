@@ -8134,7 +8134,14 @@ class KernelWriterAssembly(KernelWriter):
         loopCounterName = self.loopCounterName(kernel, loopIdx)
         module.addSpaceLine()
         if kernel["SuppressNoLoadLoop"]:
-          if kernel["HalfPLR"]:
+          # The arms are TDM vs BUFFER-LOAD, and `HalfPLR` is only the legacy path's way of
+          # saying TDM.  A UseLoopModel kernel reaches here moving data with TDM and `HalfPLR`
+          # at 0 -- VgprGroup/VgprAlloc say that shape now -- so it needs this arm too, and the
+          # `else` would rewind an SrdA it never allocated.  Added rather than substituted:
+          # `UseLoopModel` is False off that path, so no legacy kernel changes branch.
+          if kernel["HalfPLR"] or (kernel["UseLoopModel"]
+                                   and kernel.get("enableTDMA", False)
+                                   and kernel.get("enableTDMB", False)):
             # In HalfPLR case, TDM will be disabled in the last unroll loop iterations. Also LDS buffer
             # is not aligned for TDM & local read address. So we need to re-enable TDM & align LDS buffer
             SkipHalfPLRAdjustLabel = Label("Skip_HPLR_Adjust", "")
@@ -22040,9 +22047,11 @@ class KernelWriterAssembly(KernelWriter):
     #   (needResetLROffsets or isPersistent(kernel)) in KernelWriter, keeping write/read consistent.
     #   UseLoopModel always rebinds: GIR swaps this pointer and the local-read pointer
     #   independently, so at a coalesced count of 1 the loop leaves them on opposite buffers.
-    needLdsReset = (isPersistent(kernel) or kernel["UseLoopModel"] or
-                    self.states.numReadsIterCoalescedA > 1 or
-                    self.states.numReadsIterCoalescedB > 1)
+    #   HalfPLR is the exception: its own tail arm moves the READS to meet these writes.
+    needLdsReset = (isPersistent(kernel)
+                    or (kernel["UseLoopModel"] and not self.halfPlrOwnsTailAlignment(kernel))
+                    or self.states.numReadsIterCoalescedA > 1
+                    or self.states.numReadsIterCoalescedB > 1)
     if not kernel["1LDSBuffer"] and needLdsReset:
       mod.addComment("TDM tail: reset LDS write addr to buffer 0 (matches recalculated local-read ptr)")
       mod.add(self.tdmResetTailLdsBuffer(kernel, comp.getLdsAddrSgprName(descSgprName(0))))
@@ -22095,15 +22104,22 @@ class KernelWriterAssembly(KernelWriter):
     # Under wave separation B rides A's descriptor, so only the owner rewinds.
     if not self.tdmIssuesOwnLoad(kernel, tc):
       return mod
-    peel = int((loopModelGirProgram(self, kernel).meta or {}).get("peel_depth") or 0)
+    _meta = loopModelGirProgram(self, kernel).meta or {}
+    peel = int(_meta.get("peel_depth") or 0)
     du = int(kernel["DepthU"])
     if peel < 1 or du & (du - 1):
       return mod
+    # The loop runs `T - drain` trips and the prologue advanced `M`, so the descriptor sits
+    # `M - drain` chunks past T whenever the drain does not absorb the whole lead -- which is the
+    # whole lead when the no-load loop is suppressed. `M - T` still covers a loop cut short.
+    floor = peel - int(_meta.get("drain_steps", peel))
     inc = self._tdmChunkStrideSgpr(kernel, tc)
     with self.allocTmpSgpr(1, tag="tdmTailUndoPeel") as t:
       mod.add(SLShiftRightB32(sgpr(t.idx), hex(int(log2(du))), sgpr("SizeL"), "T = SizeL / DepthU"))
       mod.add(SSubI32(sgpr(t.idx), peel, sgpr(t.idx), f"M({peel}) - T"))
-      mod.add(SMaxI32(sgpr(t.idx), sgpr(t.idx), 0, "0 when the loop ran its full peel"))
+      mod.add(SMaxI32(sgpr(t.idx), sgpr(t.idx), floor,
+                      "0 when the loop ran its full peel" if not floor
+                      else f"at least the {floor} chunk(s) no drain consumed"))
       mod.add(SMulI32(sgpr(t.idx), sgpr(t.idx), sgpr(inc), "chunks -> bytes"))
       mod.add(SSubU32(sgpr(f"tdm{tc}Group0+2"), sgpr(f"tdm{tc}Group0+2"), sgpr(t.idx),
                       "rewind to the chunk the tail actually wants"))
@@ -22498,6 +22514,64 @@ class KernelWriterAssembly(KernelWriter):
     newOffset = offset % numVgprPerGroup
     valuStr = "Valu%s_G%u+%u"%(tc, vgprGroups[gIdx], newOffset)
     return valuStr
+
+  def graPrefetchSilenceMask(self, kernel, mod) -> None:
+    """Silence the in-loop prefetch over the last PGR iterations, appended to `mod`.
+
+    SuppressNoLoadLoop folds the ramp-out into the loop, so there is no drain to stop the
+    prefetch: past that point the loads would reach beyond the K this tile covers. A kernel that
+    moves data with TDM zeroes the descriptor's enable word; a buffer-load kernel zeroes the SRD
+    limit instead. Branchless on purpose -- the load is issued in the densest part of the
+    interleaved schedule, and a branch there would split the scheduler's block.
+
+    WHICH MOVER, NOT WHICH FEATURE.  The legacy arm asks `HalfPLR or ReuseAcrossPersistent`
+    because on that path those are the only two ways to arrive here with TDM.  Here they are a
+    false proxy: a solution saying the same shape as `VgprGroup=2, VgprAlloc=3` reaches this with
+    `HalfPLR` at 0 and would take the buffer-load arm, writing `SrdA+2` -- a register a TDM
+    kernel never allocates, so the assembler rejects it.
+    """
+    # The last PrefetchGlobalRead sections of the resident block have their TDM
+    # silenced on every path, so neither the transfer nor the descriptor zeroing
+    # that silences it needs to be there. Every A-side load below is skipped
+    # together, TDMSplit's included, so dropping the zeroing cannot leave one
+    # behind that would reach past the K this tile covers.
+    if not kernel["SuppressNoLoadLoop"] or self.rapTdmPrefetchIsDead(kernel):
+      return
+    loopIdx = self.states.unrollIdx
+    if kernel.get("enableTDMA", False) and kernel.get("enableTDMB", False):
+      if kernel["PrefetchGlobalRead"] > 0:
+        # Wave-separated TDM aliases one descriptor set, with even waves
+        # carrying A/MXSA and odd waves B/MXSB, so zeroing A's enable word
+        # silences whichever this wave holds and two writes cover all four
+        # tensors. Re-applied on every load because the descriptor is rebuilt
+        # each persistent iteration.
+        mod.addComment0("disable TDM in last %u loop(s)" % kernel["PrefetchGlobalRead"])
+        mod.add(SCmpLeI32(
+          src0=self.loopCounter(kernel, loopIdx), \
+          src1=kernel["PrefetchGlobalRead"], \
+          comment="%s"%"is this the last iters"))
+        if kernel["NumWaves"] > 1:
+          mod.add(SCMovB32(dst=sgpr("tdmAGroup0+0"), src=0, comment=""))
+          if kernel["ProblemType"]["MXBlockA"]:
+            mod.add(SCMovB32(dst=sgpr("tdmMXSAGroup0+0"), src=0, comment=""))
+        else:
+          mod.add(SCMovB32(dst=sgpr("tdmAGroup0+0"), src=0, comment=""))
+          mod.add(SCMovB32(dst=sgpr("tdmBGroup0+0"), src=0, comment=""))
+          if kernel["ProblemType"]["MXBlockA"]:
+            mod.add(SCMovB32(dst=sgpr("tdmMXSAGroup0+0"), src=0, comment=""))
+          if kernel["ProblemType"]["MXBlockB"]:
+            mod.add(SCMovB32(dst=sgpr("tdmMXSBGroup0+0"), src=0, comment=""))
+    else:
+      mod.add(SCmpLeI32(
+            src0=self.loopCounter(kernel, loopIdx), \
+            src1=kernel["PrefetchGlobalRead"], \
+            comment="is this one of the last %u iteration(s)"%kernel["PrefetchGlobalRead"]))
+      mod.add(SCMovB32(
+            dst=sgpr("SrdA+2"), src=0,
+            comment="Set limit to 0 for last PGR iteration(s)"))
+      mod.add(SCMovB32(
+            dst=sgpr("SrdB+2"), src=0,
+            comment="Set limit to 0 for last iteration"))
 
   def graIncrementMask(self, kernel, tPA, tPB) -> Module:
     mod = Module("graIncrementMask")

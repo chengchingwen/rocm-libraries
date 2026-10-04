@@ -339,6 +339,7 @@ class _Emitter:
         self.off = self.peel.copy_off()          # per operand: how many chunks ahead it loads
         self.dr = self.peel.requested_steps      # register read-ahead depth
         self.M = self.peel.chunk_depth           # pipeline depth, in K-chunks
+        self.no_drain = bool(theta.suppress_no_load_loop)
         self.outer_var = theta.summation_chunk_name("iter")
         self.reads_ahead = readahead_level(theta) is not None
         self._copy_first = copy_first_operands(theta, depths, self.plans)
@@ -429,7 +430,9 @@ class _Emitter:
 
     def build(self):
         loop = self._steady_loop()
-        if self.M == 0:
+        # No drain means no `T < M` arm either: the loop itself runs every chunk, and the M
+        # overrun copies the prologue's lead keeps in flight are the ones the scaffold clamps.
+        if self.M == 0 or self.no_drain:
             return self._prologue() + [loop]
         return [Cond(pred=Pred(Expr(var="T"), ">", self.M),
                      then=self._prologue() + [loop] + self._drain(),
@@ -450,8 +453,11 @@ class _Emitter:
     def _steady_loop(self):
         """The rolled body: one copy per operand group, one read per operand, one wmma."""
         body = _split_touch_loops(self._defer_reloads(self.copy_insts(STEADY) + self.nest()))
+        # The drain is what takes the last M chunks off the loop's count; without one the loop
+        # owns all T.
+        reach = 0 if self.no_drain else -self.M
         return Loop(axis=self.outer_var,
-                    trip=Pred(Expr(var=self.outer_var), "<", Expr(var="T", add=-self.M)),
+                    trip=Pred(Expr(var=self.outer_var), "<", Expr(var="T", add=reach)),
                     outer=True, bodies=[body])
 
     def _drain(self):
@@ -626,6 +632,9 @@ class _Emitter:
     def _read_groups(self, operand):
         """Split the register groups into those that prefetch and those that load in place."""
         groups = operand.fragment.groups()
+        # Each HalfPLR half is its own read -- that is what puts the second after the first's MACs.
+        if len(groups) > 1 and operand.fragment.policy_of(groups[0]) == "pipeline":
+            return tuple((group,) for group in groups)
         if not self.dr or len(groups) < 2:
             return (None,)
         depth = {g: self.plans.plan(operand, g).prefetch_steps for g in groups}
@@ -634,6 +643,19 @@ class _Emitter:
         if not ahead or not in_place:
             return (None,)  # one shape for the whole fragment -- one instruction
         return (ahead, in_place)
+
+    @staticmethod
+    def _half_plr_trailing(operand, groups):
+        """Is this the SECOND half of a HalfPLR pair -- the one issued after the first's MACs?
+
+        1.5 buffers means consecutive sub-iterations share a half, so the half being refilled is
+        only free once the MACs that read it have issued. Placing both reads ahead of the MACs is
+        what `check_plan` reports as OVERWRITE-BEFORE-USE.
+        """
+        labels = operand.fragment.groups()
+        return bool(groups and len(labels) > 1
+                    and operand.fragment.policy_of(labels[0]) == "pipeline"
+                    and tuple(groups) == (labels[-1],))
 
     def _read_depth(self, operand, groups, ceiling):
         selected = tuple(groups or operand.fragment.groups())
@@ -754,7 +776,8 @@ class _Emitter:
             item[0], item[1], distance))
         for operand, groups in candidates:
             node, runs_ahead = self._guarded_read(operand, groups, distance, suppress_ahead)
-            (deferred if runs_ahead else body).append(node)
+            trailing = runs_ahead or self._half_plr_trailing(operand, groups)
+            (deferred if trailing else body).append(node)
         if with_wmma and axis == self.leaf_axis:
             body.append(self.wmma_inst())
         if depth + 1 < len(self.inner):

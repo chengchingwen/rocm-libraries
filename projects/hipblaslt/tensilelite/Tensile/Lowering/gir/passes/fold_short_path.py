@@ -7,8 +7,24 @@ then remove the arm.
 
 from __future__ import annotations
 
-from ..nodes import CondGoto, Goto, LoopBack
+from ..nodes import CondGoto, Goto, LoopBack, Mma, Move
 from ..nodes import terminator_targets
+
+
+def _register_slots(refs):
+    return {(r.tile.operand, getattr(r, "group", None), r.slot)
+            for r in (refs or ()) if r.tile.space == "register"}
+
+
+def _reads_own_value(body, producer, producer_pos, consumer_pos):
+    """Does a wmma between `producer` and its WAR consumer read what `producer` delivers?"""
+    if not isinstance(producer, Move):
+        return False
+    delivered = _register_slots(producer.dsts)
+    if not delivered:
+        return False
+    return any(isinstance(node, Mma) and _register_slots(node.srcs) & delivered
+               for node in body[producer_pos + 1:consumer_pos + 1])
 from ..analyses.short_path import ShortPathFold, FOLD, SPLIT, UNSOUND, NA, VACUOUS
 from .base import Pass
 
@@ -96,7 +112,11 @@ class FoldShortPathPass(Pass):
             block = prog.blocks[label]
             positions = {id(node): pos for pos, node in enumerate(block.body)}
             latest = {}
-            for _producer_pos, consumer_pos, producer, consumer in constraints:
+            for producer_pos, consumer_pos, producer, consumer in constraints:
+                # WAR DEFERRAL MUST NOT BREAK RAW.  Moving the refill past a wmma that reads the
+                # value this very read delivers leaves that wmma on the previous generation.
+                if _reads_own_value(block.body, producer, producer_pos, consumer_pos):
+                    continue
                 prior = latest.get(id(producer))
                 if prior is None or positions[id(prior)] < consumer_pos:
                     latest[id(producer)] = consumer

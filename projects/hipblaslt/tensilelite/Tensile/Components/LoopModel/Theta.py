@@ -2,9 +2,56 @@
 # SPDX-License-Identifier: MIT
 """Build the LoopModel theta and target facts once per kernel."""
 
+from contextlib import contextmanager
+
 from ...Component import Component
 from ...LoopModel.adapter import kernel_to_params, params_to_theta
 from ...LoopModel.schedule import build_S
+
+
+def loopModelSolutionName(writer) -> str:
+  """The solution this writer is building, for a failure to name itself with."""
+  return getattr(writer.states, "kernelName", None) or "<unnamed solution>"
+
+
+def statedVgprDials(kernel) -> list:
+  """The VgprGroup/VgprAlloc dials this solution states outright, rather than deriving."""
+  dials = []
+  for side in ("A", "B"):
+    for name in ("VgprGroup" + side, "VgprAlloc" + side):
+      value = (kernel or {}).get(name)
+      try:
+        if value is not None and int(value) != -1:
+          dials.append(name)
+      except (TypeError, ValueError):
+        pass
+  return dials
+
+
+@contextmanager
+def namingSolution(writer, kernel=None):
+  """Re-raise anything the model refuses with the SOLUTION it came from.
+
+  θ and GIR are pure in the Solution and never learn its name, so a bare refusal costs a bisect
+  to place.  Naming it at the two writer-facing entry points keeps the model ignorant and the
+  message useful.  The flag makes it idempotent: the inner builder names it, the outer passes it
+  through rather than saying it twice.
+
+  NAMING ONLY -- THE CLASS IS THE RAISER'S.  A `ValueError` means the decoder and the traversal
+  disagree, and it stops the run so the disagreement gets repaired; stating VgprGroup/VgprAlloc
+  does not make it any less of a defect, so this must not downgrade one to a skip.  A site that
+  genuinely refuses a request raises `RuntimeError` itself, where the reason is known.
+  """
+  try:
+    yield
+  except (ValueError, RuntimeError) as error:
+    if getattr(error, "_ulmNamedSolution", False):
+      raise
+    # No dial list appended: the refusals already name the operand and the dial that could not
+    # be met, and a kernel-wide roll-call next to a per-operand message reads as a contradiction.
+    named = type(error)("%s\n  solution: %s" % (error, loopModelSolutionName(writer)))
+    named._ulmNamedSolution = True
+    raise named from error
 
 
 def loopModelTheta(writer, kernel):
@@ -18,8 +65,9 @@ def loopModelTheta(writer, kernel):
   cache = getattr(writer, "_loopModelThetaCache", None)
   if cache is not None and cache[0] == key:
     return cache[1]
-  theta = params_to_theta(kernel_to_params(kernel, target=loopModelTarget(writer, kernel)))
-  S, _floor = build_S(theta)
+  with namingSolution(writer, kernel):
+    theta = params_to_theta(kernel_to_params(kernel, target=loopModelTarget(writer, kernel)))
+    S, _floor = build_S(theta)
   writer._loopModelThetaCache = (key, (theta, S))
   return theta, S
 

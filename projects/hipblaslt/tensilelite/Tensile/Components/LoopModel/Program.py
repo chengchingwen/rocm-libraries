@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Build and cache the finalized GIR program for a LoopModel kernel."""
 
+from ...LoopModel import traversal as geometry
 from ...LoopModel.emit import emit_mainloop
 from ...LoopModel.render import render_theta
 from ...Lowering import build_gir, gir_text
@@ -10,7 +11,17 @@ from ...Lowering.gir.analyses import Gl2PrefetchRegions
 from ...Lowering.gir.frame_contract import install_frame_contract
 from ...Lowering.gir.passes import pipeline as gir_pipeline
 
-from .Theta import loopModelTheta
+from .Theta import loopModelTheta, namingSolution
+
+
+def loopModelLoopCopies(theta, depths) -> int:
+    """Steady blocks one trip unrolls into -- read off the rings, not off a parameter name.
+
+    A ring the trip does not close keeps turning into the next one, so the body is one fixed
+    piece of code only once it is replicated through a whole turn.  `VG=2, VA=3` -- the 1.5
+    buffers HalfPLR used to name -- asks for three; a ring that divides asks for one.
+    """
+    return geometry.ring_trip_copies(theta, depths)
 
 
 def loopModelGirProgram(writer, kernel):
@@ -21,23 +32,26 @@ def loopModelGirProgram(writer, kernel):
         return cache[1]
 
     theta, _S = loopModelTheta(writer, kernel)
-    # PrefetchGL2 is placed by an analysis but is not modeled in theta. GIR only
-    # chooses where its existing issue/increment pair is emitted.
-    mainloop = emit_mainloop(theta)
-    prog = build_gir(
-        theta,
-        mainloop=mainloop,
-        params={Gl2PrefetchRegions.PARAM: kernel["PrefetchGL2"]},
-        pipeline=gir_pipeline(),
-    )
-    violations = check_plan(prog)
-    if violations:
-        raise ValueError(
-            "UseLoopModel: the GIR plan fails its own semantic check (%d violation(s)) "
-            "for kernel %s.  This is a decoder/lowering defect to repair — do NOT gate "
-            "the configuration off.\n  %s"
-            % (len(violations), key, "\n  ".join(violations[:8]))
+    with namingSolution(writer, kernel):
+        # PrefetchGL2 is placed by an analysis but is not modeled in theta. GIR only
+        # chooses where its existing issue/increment pair is emitted.
+        mainloop = emit_mainloop(theta)
+        prog = build_gir(
+            theta,
+            mainloop=mainloop,
+            params={Gl2PrefetchRegions.PARAM: kernel["PrefetchGL2"]},
+            pipeline=gir_pipeline(),
+            loop_copies=loopModelLoopCopies(theta, _S),
         )
+        violations = check_plan(prog)
+        if violations:
+            # EVERY semantic violation is a LOWERING DEFECT and stops the build.  A stated
+            # (VgprGroup, VgprAlloc) does not downgrade one to a per-kernel skip: a dial can ask
+            # for a ring this shape cannot carry, but it cannot ask for the wrong answer.
+            raise ValueError(
+                "UseLoopModel: the GIR plan fails its own semantic check (%d violation(s)) — "
+                "a decoder/lowering defect to repair, do NOT gate it off.\n  %s"
+                % (len(violations), "\n  ".join(violations[:8])))
     writer._loopModelMainloopCache = (key, mainloop)
     writer._loopModelGirCache = (key, prog)
     return prog

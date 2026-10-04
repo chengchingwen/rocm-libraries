@@ -344,3 +344,32 @@ def test_halfplr_rejects_tdmfuse1_at_a_divergent_pair(
     )
     assert sol.get("Valid") is False
     assert "TDMFuse=1 requires HalfPLR=0 at a divergent decoupled pair" in out
+
+
+# ---------------------------------------------------------------------------
+# ClusterLocalRead follows the HalfPLR BITMASK, not the scalar. HalfPLR=1 is A
+# alone, so B keeps the cluster it was given instead of being un-clustered.
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "half_plr, expectA, expectB",
+    [(1, 0, 1), (2, 1, 0), (3, 0, 0)],
+)
+def test_halfplr_clusters_per_operand(
+    _gp_gfx1250, gfx1250_iim, assembler, capsys, half_plr, expectA, expectB
+):
+    sol, out = _derive(
+        gfx1250_iim, assembler, capsys, HalfPLR=half_plr, ClusterLocalRead=1
+    )
+    assert sol.get("Valid") is True, f"expected accept, rejected with: {out!r}"
+    scalar = sol.get("ClusterLocalRead")
+    got = (sol.get("ClusterLocalReadA", scalar), sol.get("ClusterLocalReadB", scalar))
+    assert got == (expectA, expectB), f"HalfPLR={half_plr} gave {got}"
+
+
+def test_halfplr_both_operands_collapses_onto_the_scalar(
+    _gp_gfx1250, gfx1250_iim, assembler, capsys
+):
+    """HalfPLR=3 un-clusters both, so the pair says nothing the scalar does not."""
+    sol, out = _derive(gfx1250_iim, assembler, capsys, HalfPLR=3, ClusterLocalRead=1)
+    assert sol.get("Valid") is True, f"expected accept, rejected with: {out!r}"
+    assert sol.get("ClusterLocalRead") == 0

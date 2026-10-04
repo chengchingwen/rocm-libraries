@@ -8,6 +8,7 @@ that the steady region and the drain together cover the summation exactly once.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import gcd as _gcd
 
 from ..nodes import Move, Mma, CondGoto, LoopBack
 from ..nodes import terminator_targets
@@ -19,24 +20,29 @@ from .cfg import successors
 PRE, POST = "pre-test", "post-test"
 
 
-# A count linear in the trip symbol: `coeff * T + const`.  Exact, so the covering check is an
-# equality on integers rather than a comparison of rendered strings.
+# A count linear in the trip symbol: `(coeff * T + const) / div`.  Exact, so the covering check is
+# an equality on integers rather than a comparison of rendered strings.  `div` is what an unrolled
+# body needs: it runs `(T - M) / n` times, and scaling by its own `n` cancels back to `T - M`.
 @dataclass(frozen=True)
 class Linear:
     coeff: int
     const: int
+    div: int = 1
 
     def __add__(self, k):
-        return Linear(self.coeff, self.const + k)
+        return Linear(self.coeff, self.const + k * self.div, self.div)
 
     def scaled(self, k):
-        return Linear(self.coeff * k, self.const * k)
+        common = _gcd(int(k), self.div) or 1
+        return Linear(self.coeff * (k // common), self.const * (k // common), self.div // common)
 
     def render(self, sym="T"):
         if not self.coeff:
-            return str(self.const)
-        s = sym if self.coeff == 1 else f"{self.coeff}*{sym}"
-        return s if not self.const else f"{s} {'+' if self.const > 0 else '-'} {abs(self.const)}"
+            base = str(self.const)
+        else:
+            s = sym if self.coeff == 1 else f"{self.coeff}*{sym}"
+            base = s if not self.const else f"{s} {'+' if self.const > 0 else '-'} {abs(self.const)}"
+        return base if self.div == 1 else f"({base}) // {self.div}"
 
 
 @dataclass(frozen=True)
@@ -93,8 +99,12 @@ def _test_position(prog, tester):
 
 
 def _trips_from_node(t):
-    """The loop's trip count -- READ, not derived."""
-    return Linear(1 if t.trips.var else 0, -t.trips.sub)
+    """The loop's trip count -- READ, not derived.
+
+    `div` is how many chunks one back edge consumes, so the BACK EDGE count carries it: an
+    unrolled body runs fewer times, each time covering more.
+    """
+    return Linear(1 if t.trips.var else 0, -t.trips.sub, max(1, int(t.trips.div)))
 
 
 class LoopShape(Analysis):
@@ -135,24 +145,22 @@ def reduction_coverage_violations(prog, loops):
     prints).  Scoped to the summation loop -- the one whose exit leads into the drain chain -- since
     that is the only loop whose coverage the drain completes."""
     M = prog.meta.get("peel_depth")
-    if M is None:
-        return []
+    if not M:
+        return []                              # unpipelined: there is no peel to split with
     drains = [lab for lab, b in prog.blocks.items() if str(b.phase).startswith("drain")]
-    if not drains:
-        return []
-    required = Linear(1, -M)                   # steady must cover [0, T-M); the drain takes [T-M, T)
+    # With a drain the loop stops M chunks short and exits into it; with the drain suppressed it
+    # owns every chunk and exits straight to the epilogue.
+    required = Linear(1, -M) if drains else Linear(1, 0)
+    exit_prefix = "drain" if drains else "end"
     out = []
     for lp in loops:
-        if not str(lp.exit_to).startswith("drain"):
+        if not str(lp.exit_to).startswith(exit_prefix):
             continue                           # not the loop the drain completes (e.g. the tail)
-        if lp.per_trip != 1:
-            # NOT YET EXPRESSIBLE, and that is a limit of the predicate form, not a choice.
-            # A trip consuming `n` chunks must run `(T - M) / n` times, and `Bound` is `var + const`
-            continue
         if lp.covers != required:
             out.append(
                 f"loop {lp.header!r} ({lp.position}, {lp.per_trip} chunk/trip) covers chunks "
-                f"[0, {lp.covers.render()}) but the {M} drain steps cover [T-{M}, T), so the two "
+                f"[0, {lp.covers.render()}) but the {len(drains)} drain steps cover "
+                f"[T-{M if drains else 0}, T), so the two "
                 f"{'OVERLAP' if lp.covers.const > required.const else 'LEAVE A GAP'} by "
                 f"{abs(lp.covers.const - required.const)} chunk(s) -- they must together be exactly "
                 f"[0, T)")

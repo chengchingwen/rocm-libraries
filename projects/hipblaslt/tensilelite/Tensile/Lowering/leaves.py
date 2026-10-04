@@ -429,9 +429,11 @@ class LeafEmitters:
         if tP["bpeDS"] not in (1, 2):
             raise NotImplementedError(f"LeafEmitters read: only bpeDS 1 (8-bit) and 2 (bf16) "
                                       f"supported (got {tP['bpeDS']})")
-        if kernel["HalfPLR%s" % tc] or kernel["ProblemType"]["Sparse"] or kernel["numSubTiles"] > 1:
-            raise NotImplementedError("LeafEmitters read: HalfPLR/Sparse/SubTiles not "
-                                      "supported (phase 3a)")
+        # HalfPLR is no longer here: its halves are ordinary register GROUPS, and the group's
+        # physical base already arrives via `regBase` off `register_layout`.
+        if kernel["ProblemType"]["Sparse"] or kernel["numSubTiles"] > 1:
+            raise NotImplementedError("LeafEmitters read: Sparse/SubTiles not supported "
+                                      "(phase 3a)")
 
         tile01 = tP["tile01Idx"]
         instruction = tP["localReadInstruction"]

@@ -378,6 +378,30 @@ validParameters = { # we need to make sure this matches develop
     # trip, so it takes a full buffer and cannot be 0.
     "ClusterLocalReadA": [-1, 0, 1],
     "ClusterLocalReadB": [-1, 0, 1],
+    # VgprGroup / VgprAlloc -- the register allocation stated as a FRACTION of the prefetch unit:
+    #
+    #     allocation = prefetch_unit * VgprAlloc / VgprGroup
+    #
+    # `VgprGroup` divides the SIZE of one buffer, `VgprAlloc` counts the buffers.  Together they
+    # say what `PrefetchLocalRead`/`ClusterLocalRead` could only say in whole units: 1.5 buffers
+    # is VG=2, VA=3, and an all-inner operand's `U + P/2` is VG=2, VA=2n+1.
+    #
+    # VG is the DIVISION FACTOR OF THE PREFETCH UNIT -- not a group count and not a region
+    # count.  A TDMSplit operand derives VG=2 because the split is what halves its unit, but the
+    # factor is the statement, and the same VG=2 means the same halved unit with no split at all.
+    #
+    # -1 derives from the CLR/PLR pair: VG is whatever already divides the unit (the TDMSplit
+    # factor, else 1), and VA is `PLR+1` under CLR=0 or the full ring under CLR=1.  Setting them
+    # overrides what CLR=0 would have derived; under CLR=1 the operand holds its whole set by
+    # definition, so VA is forced back to the full ring and only VG is honoured.
+    #
+    # UseLoopModel ONLY.  There VG is the real prefetch unit, which is what lets theta state the
+    # group and the cap directly.  On the legacy path the prefetch unit is fixed, so these would
+    # be an allocation note rather than a shape, and they are rejected unless left at -1.
+    "VgprGroupA": [-1] + list(range(1, 8 + 1)),
+    "VgprGroupB": [-1] + list(range(1, 8 + 1)),
+    "VgprAllocA": [-1] + list(range(1, 128 + 1)),
+    "VgprAllocB": [-1] + list(range(1, 128 + 1)),
     # Allocating PGR+1 LDS buffer if we have enough LDS memory size
     # Only for DirectToLdsA+B + PGR>=2
     # -1: auto (enable this for PGR>=3)

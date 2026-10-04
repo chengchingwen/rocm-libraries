@@ -323,13 +323,17 @@ def loopModelReadAheadCap(state, tc=None) -> int:
   # THE TILE THE NEST WALKS, NOT THE ONE THE SOLUTION NAMES.  A TDMSplit divides the tile axis
   # into regions, so the read-ahead runs along the DIVIDED extent -- reading MIWaveTile here
   # would let a split operand ask for more steps than its axis has values.
-  def _tile(index, split):
+  def _tile(index, split, side):
     whole = max(1, state["MIWaveTile"][index])
     factor = max(1, int(state.get(split, 0) or 0))
-    return whole // factor if factor > 1 and not whole % factor else whole
+    steps = whole // factor if factor > 1 and not whole % factor else whole
+    # PLR COUNTS BUFFERS, and VG cuts each unit into several, so the axis offers that many more
+    # steps to run ahead by.  At VG=1 this is the step count it always was.
+    group = state.get("VgprGroup" + side)
+    return steps * (int(group) if group is not None and int(group) != -1 else 1)
   extent = {"K": max(1, state["LoopIters"]),
-            "M": max(1, _tile(0, "TDMSplitA")),
-            "N": max(1, _tile(1, "TDMSplitB"))}
+            "M": max(1, _tile(0, "TDMSplitA", "A")),
+            "N": max(1, _tile(1, "TDMSplitB", "B"))}
   mine = _READ_AHEAD_AXES.get(tc)
   if mine is not None:
     order = [a for a in order if a in mine]
@@ -1043,10 +1047,17 @@ class Solution(collections.abc.Mapping):
                "UseLoopModel supports only ScheduleIterAlg 0 or 4 (Stinkytofu)")
         return
 
+      if state["HalfPLR"]:
+        reject(state, printRejectionReason,
+               "UseLoopModel does not support HalfPLR: under theta `VgprGroup` IS the prefetch "
+               "unit, so halving it also halves what PrefetchLocalRead counts and HalfPLR's own "
+               "PLR==1 requirement no longer describes the same schedule.  Say the shape "
+               "directly -- VgprGroupA/B=2 with VgprAllocA/B=3 is HalfPLR's 1.5 buffers.")
+        return
+
       if (state.get("UseSubtileImpl", False) or
           state["InnerUnroll"] != 1 or
           (state.get("TDMInst", 0) & 0x3) != 0x3 or
-          state.get("HalfPLR", 0) or
           not state.get("EnableMatrixInstruction", False) or
           state.get("StreamK", 0) != 0):
         return _ulm_reject(state, "")
@@ -2329,6 +2340,34 @@ class Solution(collections.abc.Mapping):
       # requests resolving to one schedule would carry two names and dedupe would miss it.
       state["ClusterLocalReadA"], state["ClusterLocalReadB"] = _cluster["A"], _cluster["B"]
       state["ClusterLocalRead"] = min(_cluster["A"], _cluster["B"])
+    # VgprGroup / VgprAlloc: the allocation as a fraction of the prefetch unit.  VG divides one
+    # buffer's SIZE, VA counts the buffers, so `prefetch_unit * VA / VG` is the whole statement.
+    # Only theta can honour that, because only there is the prefetch unit the model's to move.
+    for _tc in ("A", "B"):
+      _vg, _va = state.get("VgprGroup" + _tc), state.get("VgprAlloc" + _tc)
+      _asked = [k for k, v in (("VgprGroup" + _tc, _vg), ("VgprAlloc" + _tc, _va))
+                if v is not None and int(v) != -1]
+      if _asked and not state.get("UseLoopModel"):
+        reject(state, printRejectionReason,
+               "%s is UseLoopModel-only: off that path the prefetch unit is fixed by the "
+               "scaffold, so VgprGroup/VgprAlloc could only resize the allocation under a unit "
+               "they do not control.  Leave them at -1." % ", ".join(_asked))
+        return
+      # VG=1 divides nothing, so the parity requirement is the same one legacy HalfPLR carries:
+      # a half-buffer of an odd tile count has no whole-tile half.  `MIWaveTileA/B` are not
+      # written yet here; the pair is.
+      _wt = state["MIWaveTile"][0 if _tc == "A" else 1]
+      if _vg is not None and int(_vg) > 1 and int(_wt) % int(_vg):
+        reject(state, printRejectionReason,
+               "VgprGroup%s=%d does not divide MIWaveTile%s=%d, so one buffer is not a whole "
+               "number of tiles." % (_tc, int(_vg), _tc, int(_wt)))
+        return
+      # A buffer smaller than a unit can leave the ring unclosed at the back edge, and then the
+      # body repeats only every few trips -- the same reason HalfPLR forces this.  A drain would
+      # have to know the trip count modulo that period, which it cannot.
+      if _asked and _vg is not None and int(_vg) > 1:
+        state["SuppressNoLoadLoop"] = True
+
     # PrefetchLocalReadA/B stay AUTO here: deriving them needs `LoopIters`, which
     # `assignProblemIndependentDerivedParameters` has not written yet.
 
@@ -3078,6 +3117,9 @@ class Solution(collections.abc.Mapping):
       if not (bufferLoad and state["PrefetchGlobalRead"] == 1 and (state["GlobalSplitU"]==1 or state["GlobalSplitU"]==-1)):
         state["SuppressNoLoadLoop"] = False
 
+    # NO GATE HERE.  PGR=2 with a stated VgprGroup is being FIXED (#558), not refused; the
+    # investigation needs these solutions to reach theta.
+
     #print("PackedC0IdxChars", state["PackedC0IdxChars"])
     #print("PackedC1IdxChars", state["PackedC1IdxChars"])
 
@@ -3768,10 +3810,35 @@ class Solution(collections.abc.Mapping):
     state["HalfPLRA"] = bool(halfPLR & 0x01)
     state["HalfPLRB"] = bool(halfPLR & 0x02)
     if state["HalfPLR"]:
-      state["ClusterLocalRead"] = 0
+      # The force follows the BITMASK, not the scalar: HalfPLR=1 is A alone, so B keeps the
+      # cluster it was given instead of being un-clustered along with it.  A half taken from the
+      # ROTATION unit -- a split hoisted outermost -- holds the whole set, so there CLR=1 is the
+      # requirement and CLR=0 is refused; off the LoopModel path WmmaOuterOrder is always 0.
+      _halfRotation = bool(int(state.get("WmmaOuterOrder", 0) or 0))
+      _halfScalar = int(state.get("ClusterLocalRead", 0) or 0)
+      _halfClr = {}
       for _tc in ("A", "B"):
-        if "ClusterLocalRead" + _tc in state:
-          state["ClusterLocalRead" + _tc] = 0
+        _named = state.get("ClusterLocalRead" + _tc)
+        _value = _halfScalar if _named is None or int(_named) == -1 else int(_named)
+        if state["HalfPLR" + _tc]:
+          if _halfRotation and _value == 0:
+            reject(state, printRejectionReason,
+                   "HalfPLR%s takes its half from the ROTATION unit under WmmaOuterOrder=%d, "
+                   "which keeps %s's whole set resident, so ClusterLocalRead%s=0 cannot serve it. "
+                   "Use ClusterLocalRead%s=1, or WmmaOuterOrder=0 for a prefetch-unit half."
+                   % (_tc, int(state.get("WmmaOuterOrder", 0) or 0), _tc, _tc, _tc))
+            return
+          _value = 1 if _halfRotation else 0
+        _halfClr[_tc] = _value
+      if _halfClr["A"] == _halfClr["B"]:
+        state["ClusterLocalRead"] = _halfClr["A"]
+        for _tc in ("A", "B"):
+          if "ClusterLocalRead" + _tc in state:
+            state["ClusterLocalRead" + _tc] = _halfClr[_tc]
+      else:
+        for _tc in ("A", "B"):
+          state["ClusterLocalRead" + _tc] = _halfClr[_tc]
+        state["ClusterLocalRead"] = min(_halfClr["A"], _halfClr["B"])
       state["SuppressNoLoadLoop"] = True
       state["ExpandPointerSwap"] = False
       if state.get("PrefetchAcrossPersistent", 0):

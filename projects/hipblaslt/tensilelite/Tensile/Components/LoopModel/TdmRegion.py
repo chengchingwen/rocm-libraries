@@ -14,6 +14,7 @@ from rocisa.instruction import SAddCU32, SAddU32, SAddU64, SCSelectB32, SCmpEQU3
     SLShiftLeftB32, SLShiftRightB32, SMovB32, SOrB32, SSubBU32, SSubU32
 
 from Tensile.Components import TDMSplit as _tdm_split
+from ...ExecutionPolicy import isPersistent, isStreamK
 from ..TensorDataMover import TensorDataMoverLoad
 from ..TDMFuse import tdmSetIncsSgpr
 
@@ -187,19 +188,21 @@ def tdmLoadRegionGir(writer, kernel, tP, memToken, region: int = 0) -> Module:
   `tdmRegionIncrementGir`, and `globalReadDo`'s internal load-advance-load would double-walk.
   `memToken` is this region's buffer, so each region gets its own token.
 
-  The StreamK tail LDS bank select and the `enableTDM{A,B}` guard raise rather than being
-  dropped: both lie outside what GIR models, and a load against the wrong bank is silent.
+  The persistent/Stream-K tail LDS bank select and the `enableTDM{A,B}` guard raise rather than
+  being dropped: both lie outside what GIR models, and a load against the wrong bank is silent.
   """
   tc = tP["tensorChar"]
   if not kernel.get(f"enableTDM{tc}", False):
     raise NotImplementedError(
         f"tdmLoadRegionGir({tc}): enableTDM{tc} is off, so the scaffold's arm emits nothing "
         f"while this primitive would emit a load (#236).")
-  if writer.states.inTailLoop and not kernel["1LDSBuffer"] and kernel["StreamK"]:
+  # Two separate strategies, neither supported here; name both rather than let one stand in.
+  if (writer.states.inTailLoop and not kernel["1LDSBuffer"]
+          and (isPersistent(kernel) or isStreamK(kernel))):
     raise NotImplementedError(
-        f"tdmLoadRegionGir({tc}): StreamK selects the tail's LDS bank per tile (PAP bank "
-        f"select), which GIR does not model, and StreamK is rejected under UseLoopModel "
-        f"(#236).  The ordinary tail rebinds both pointers itself and needs no refusal.")
+        f"tdmLoadRegionGir({tc}): a persistent or Stream-K grid selects the tail's LDS bank per "
+        f"tile (PAP bank select), which GIR does not model, and both are rejected under "
+        f"UseLoopModel (#236).  The ordinary tail rebinds both pointers itself.")
   comp: TensorDataMoverLoad = TensorDataMoverLoad.find(writer)
   comp.setMemToken([int(t) for t in memToken] if memToken is not None
                    else [writer.states.ldsTensorTokenIdx])
