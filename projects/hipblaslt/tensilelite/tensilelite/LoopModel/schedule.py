@@ -18,8 +18,31 @@ from .traversal import (CLOBBER, _divisors, _inner_steps, _summation_ring_axis,
                         prefetch_axis_name, prefetch_distance_for,
                         presence_axes, read_coverage, readahead_level,
                         register_reuse_verdict, reload_modes, reload_positions,
-                        reloads_whole_set, requested_read_ahead, ring_slot,
+                        reload_anchor, reloads_whole_set, requested_read_ahead, ring_slot,
                         transfer_extents)
+
+def _placeable_read_ahead(theta, operand, depths) -> int:
+    """The requested read-ahead, lowered until every group's refill has a legal position.
+
+    `reload_anchor` returns None when no position follows the last reader of the value the refill
+    overwrites.  The emitter read that as "no constraint" and placed the refill anywhere -- which
+    put it BETWEEN two consumers of one generation, so the second consumer read the next one and
+    the kernel computed wrong answers.  The honest reading is that this DEPTH cannot be read
+    ahead, so it is lowered until it can; 0 always can.
+    """
+    want = requested_read_ahead(theta, operand, depths)
+    if not want or operand.fragment is None:
+        return want
+    while want > 0:
+        if all(reload_anchor(theta, operand, group,
+                             max(1, depths.get(operand.name, group)),
+                             prefetch_distance_for(theta, operand, want, (group,))) is not None
+               for group in operand.fragment.groups()
+               if prefetch_distance_for(theta, operand, want, (group,))):
+            return want
+        want -= 1
+    return 0
+
 
 def readahead_reach(theta, depths, plans) -> int:
     """How many whole reduction chunks the prefetch crosses into, over every group."""
@@ -465,7 +488,7 @@ class Schedule:
         self._plans = {}
         self._steps = {}   # a plan needs EVERY group's steps, so this layer resolves first
         #: `(theta, depths)` are fixed here, so the request is one number per operand
-        self._want = {operand.name: requested_read_ahead(theta, operand, depths)
+        self._want = {operand.name: _placeable_read_ahead(theta, operand, depths)
                       for operand in theta.operands}
 
     def want(self, operand) -> int:
@@ -609,13 +632,18 @@ class BufferDepths:
 
 
 def derive_S(theta) -> BufferDepths:
-    """Derive register-ring depths onto fragment placements."""
+    """Derive register-ring depths onto fragment placements.
+
+    The fallback for a theta nobody stated depths for; `group_width` is per region, so the region
+    positions are counted here -- `group_ring_depth` takes VA as the count outright.
+    """
     steps = _inner_steps(theta)
     for operand in theta.operands:
         if operand.is_output:
             continue
+        regions = geometry.region_positions(theta, operand)
         operand.fragment.ring_depths = {
-            group: group_width(theta, operand, group, steps)
+            group: group_width(theta, operand, group, steps) * regions
             for group in operand.fragment.groups()
         }
     return BufferDepths(theta, include_shared=False)

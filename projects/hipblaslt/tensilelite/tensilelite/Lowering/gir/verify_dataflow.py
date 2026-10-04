@@ -131,6 +131,27 @@ def prologue_blocks(prog, entry="prologue", loop="steady"):
             and reaches(blk.label, loop) and not reaches(loop, blk.label)]
 
 
+def loop_chain_blocks(prog, loop="steady"):
+    """The loop body in program order: the header, then the blocks the back edge passes through."""
+    succ = successors(prog)
+
+    def reaches(src, want, seen=None):
+        seen = set() if seen is None else seen
+        for t in succ.get(src, ()):
+            if t == want or (t not in seen and (seen.add(t) or reaches(t, want, seen))):
+                return True
+        return False
+
+    chain, cur = [loop], loop
+    while True:
+        nxt = next((t for t in succ.get(cur, ())
+                    if t not in chain and t in prog.blocks and reaches(t, loop)), None)
+        if nxt is None:
+            return chain
+        chain.append(nxt)
+        cur = nxt
+
+
 def check_register_dataflow(prog, entry="prologue", loop="steady", plans=None) -> list:
     """USE-BEFORE-DEF / OVERWRITE-BEFORE-USE / WRONG-SOURCE over the pipelined shape."""
     viol, regs = [], _RegFile()
@@ -140,9 +161,15 @@ def check_register_dataflow(prog, entry="prologue", loop="steady", plans=None) -
         _walk(prog, lab, regs, viol, get(lab))
     if loop not in blocks:
         return viol
-    _walk(prog, loop, regs, viol, get(loop))
+    # THE LOOP BODY IS THE WHOLE CHAIN, not just the header.  Replaying only `steady` models
+    # `steady -> steady`, so an unrolled copy's state is read back one copy out of phase -- which
+    # for a ring that closes over several copies (HalfPLR's three halves) is every register.
+    chain = loop_chain_blocks(prog, loop)
+    for lab in chain:
+        _walk(prog, lab, regs, viol, get(lab))
     n_after_first = len(viol)
-    _walk(prog, loop, regs, viol, get(loop))
+    for lab in chain:
+        _walk(prog, lab, regs, viol, get(lab))
     # A violation seen ONLY on the second pass is loop-carried; label it so the reader is not
     # hunting for it in a straight-line reading of the block.
     for j in range(n_after_first, len(viol)):
@@ -153,8 +180,8 @@ def check_register_dataflow(prog, entry="prologue", loop="steady", plans=None) -
     # steady-trip check passed. Explore each acyclic loop-exit path with an independent register
     # snapshot; joins may be visited more than once, which is harmless for a verifier.
     succ = successors(prog)
-    work = [(label, regs.clone(), (loop,))
-            for label in succ.get(loop, ()) if label != loop]
+    work = [(label, regs.clone(), (chain[-1],))
+            for label in succ.get(chain[-1], ()) if label not in chain]
     seen_exit_blocks = set()
     while work:
         label, state, path = work.pop()
@@ -295,12 +322,58 @@ def check_refill_splits_consumers(prog, phase="steady", acts=None) -> list:
     return viol
 
 
+def _read_slot_pattern(prog, label) -> dict:
+    """The register slots each operand's reads write in this block, IN ISSUE ORDER."""
+    out = {}
+    for act in plan_block(prog, label):
+        if act.kind == "read":
+            out.setdefault((act.at.get("tc"), act.at.get("group")), []).append(act.at["reg_buf"])
+    return {key: tuple(seq) for key, seq in out.items()}
+
+
+def check_drain_continues_rotation(prog, loop="steady") -> list:
+    """A loop-exit block RESUMES the copy chain; it does not restart it.
+
+    A drain built at copy 0 replays the slots `steady` already wrote and serves a wmma the
+    previous generation.  11/11 of the PGR2 kernels that compute wrong answers, 0/66 that do not.
+    """
+    chain = loop_chain_blocks(prog, loop)
+    if len(chain) < 2:
+        return []                      # one copy: nothing rotates, nothing to resume
+    want = _read_slot_pattern(prog, chain[1])
+    viol = []
+    for label in (lab for lab in successors(prog).get(chain[-1], ()) if lab not in chain):
+        if label not in prog.blocks:
+            continue
+        got = _read_slot_pattern(prog, label)
+        for key in sorted(set(want) & set(got), key=str):
+            if got[key] != want[key]:
+                wrong = {v: (got[key][v], want[key][v]) for v in sorted(set(want[key]) & set(got[key]), key=str)
+                         if got[key][v] != want[key][v]}
+                viol.append(
+                    "%s DRAIN-RESTARTS-ROTATION  %s sends (tile,k,region)->slot %s, but resuming "
+                    "the %d-copy chain after %s requires %s -- the drain replays a copy the loop "
+                    "already ran."
+                    % (label, key, {v: a for v, (a, _b) in wrong.items()}, len(chain), chain[0],
+                       {v: b for v, (_a, b) in wrong.items()}))
+    return viol
+
+
 def check_plan(prog, plans=None) -> list:
     """Every semantic check, as one list of violations.  Empty means the plan computes the GEMM its
-    theta describes -- up to the address geometry, which `lds_geometry` owns."""
+    theta describes -- up to the address geometry, which `lds_geometry` owns.
+
+    `check_refill_splits_consumers` BELONGS HERE: it was written, left out of this list, and so
+    never ran on the build path.  Two kernels reached hardware computing wrong answers while
+    every check in this function reported clean -- the ring was big enough, the refill was just
+    scheduled between two consumers of the value it overwrites.  Register DATAFLOW and register
+    SCHEDULING are different questions and the first does not imply the second.
+    """
     steady = None if plans is None else plans.get("steady")
     out = []
     out += check_region_coverage(prog, acts=steady)
     out += check_source_coverage(prog, acts=steady)
     out += check_register_dataflow(prog, plans=plans)
+    out += check_refill_splits_consumers(prog, acts=steady)
+    out += check_drain_continues_rotation(prog)
     return out
