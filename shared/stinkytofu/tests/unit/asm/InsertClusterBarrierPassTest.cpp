@@ -779,6 +779,23 @@ TEST_F(InsertClusterBarrierPassTest, Rule1SignalBelowGsu1IsDrunkByRule2Wait) {
         << "the wait has to have Rule 1's token to drink:" << blockListing(*bb);
 }
 
+TEST_F(InsertClusterBarrierPassTest, Rule1PreservesSccAcrossItsNestedWaveGate) {
+    createSCmpWritingScc(/*srcSgpr=*/90);
+    appendGsu1Preheader();
+    StinkyInstruction* reader = createSCselectReadingScc(/*destSgpr=*/91, /*srcSgpr=*/92);
+
+    runPass();
+
+    const size_t readerIdx = indexOf(reader);
+    const StinkyInstruction* writer = lastSccWriterBefore(readerIdx);
+    ASSERT_NE(writer, nullptr);
+    const auto* comment = writer->getModifier<CommentData>();
+    ASSERT_NE(comment, nullptr);
+    EXPECT_EQ(comment->comment, "restore SCC after cluster signal")
+        << "the complete Rule 1 gate, including its nested WaveIdx gate, must preserve SCC:"
+        << blockListing(*bb);
+}
+
 TEST_F(InsertClusterBarrierPassTest, IdempotencySecondRunIsNoOp) {
     appendGsu1Preheader();
     openLoop();
@@ -1309,7 +1326,37 @@ TEST_F(InsertClusterBarrierPassTest, Rule3ShorterSignalLeadStaysBeforeLiveSccRan
                                   << blockListing(*bb);
 }
 
-// The one shape the downward correction has no answer for: the live range runs
+// The range runs through the wait, so no SCC-dead placement is legal. Preservation must keep the
+// cycle-selected anchor rather than moving the signal earlier or co-locating it with the wait.
+TEST_F(InsertClusterBarrierPassTest, Rule3SignalAnchorKeepsLeadWhenSccRangeCrossesItsWait) {
+    appendGsu1Preheader();
+    openLoop();
+    StinkyInstruction* sccDef = createSSubWritingSgprAndScc(/*sgpr=*/90);
+    for (int i = 0; i < 200; ++i) createWMMA(8 + (i % 8) * 8, (i % 8) * 8, ((i + 1) % 8) * 8);
+    StinkyInstruction* trigger = appendHandshake(/*loadS0=*/0, /*loadS1=*/4);
+    createSCselectReadingScc(/*destSgpr=*/91, /*srcSgpr=*/92);
+    closeLoop();
+
+    StinkyInstruction* loopHead = findLabelNamed("label_TestLoop");
+    ASSERT_NE(loopHead, nullptr);
+    PassContext ctx;
+    ctx.setGemmTileConfig(config);
+    const auto cycleMap = computeEstimatedCyclesPerInstruction(*func, ctx);
+    const auto result = cluster_barrier::test::findRule3SignalAnchorByCycleLeadForUnitTest(
+        trigger, segBeginAfter(loopHead), trigger, cycleMap, /*leadCycles=*/500,
+        /*maxLeadCycles=*/900, /*priorWaitAnchors=*/{}, /*maxHops=*/0, loopHead);
+
+    auto* anchor = dyn_cast<StinkyInstruction>(result.anchor);
+    ASSERT_NE(anchor, nullptr);
+    ASSERT_NE(cycleMap.find(anchor), cycleMap.end());
+    const int lead = static_cast<int>(cycleMap.at(trigger) - cycleMap.at(anchor));
+    EXPECT_GE(lead, 500);
+    EXPECT_LE(lead, 900);
+    EXPECT_NE(anchor, sccDef)
+        << "SCC preservation must not move the signal above a long live range";
+}
+
+// A live-in shape for which placement alone has no answer: the live range runs
 // past the wait itself, so no spot between the lead point and the wait is safe
 // and neither is the wait's own spot, which is where the search otherwise gives
 // up.
@@ -1320,14 +1367,8 @@ TEST_F(InsertClusterBarrierPassTest, Rule3ShorterSignalLeadStaysBeforeLiveSccRan
 //     s_barrier_wait -1 / tensor_load_to_lds
 //     s_cselect_b32                <- the only reader, and it is below the wait
 //
-// The pass may not quietly settle for the wait here: the handshake it plants
-// opens with `s_cmp_eq_u32`, which would clobber the value that s_cselect_b32
-// still wants. Nor is there anywhere else to go. So this is a bug report about
-// the caller rather than a case to recover from, and a real block never gets
-// here -- a range that reaches the wait is closed by something the caller
-// already looked at. The abort is what keeps a future caller from discovering
-// that the hard way.
-TEST_F(InsertClusterBarrierPassTest, Rule3SignalAnchorAbortsWhenSccIsLiveAtItsWait) {
+// The selected anchor remains inside the range; signal emission must spill and restore SCC there.
+TEST_F(InsertClusterBarrierPassTest, Rule3SignalPreservesLiveInSccAtItsWait) {
     appendGsu1Preheader();
     openLoop();
     // The climb has to get past maxLeadCycles while still standing in the range:
@@ -1350,14 +1391,30 @@ TEST_F(InsertClusterBarrierPassTest, Rule3SignalAnchorAbortsWhenSccIsLiveAtItsWa
         << "trigger must be present in the estimated cycle map:" << blockListing(*bb);
     const BasicBlock::iterator segBegin = segBeginAfter(loopHead);
 
-    EXPECT_DEATH(
-        {
-            (void)cluster_barrier::test::findRule3SignalAnchorByCycleLeadForUnitTest(
-                trigger, segBegin, trigger, cycleMap, /*leadCycles=*/500,
-                /*maxLeadCycles=*/900,
-                /*priorWaitAnchors=*/{}, /*maxHops=*/0, loopHead);
-        },
-        "SCC live at the wait");
+    const auto found = cluster_barrier::test::findRule3SignalAnchorByCycleLeadForUnitTest(
+        trigger, segBegin, trigger, cycleMap, /*leadCycles=*/500,
+        /*maxLeadCycles=*/900, /*priorWaitAnchors=*/{}, /*maxHops=*/0, loopHead);
+    ASSERT_NE(found.anchor, nullptr);
+
+    runPass(/*rule3SignalLeadCycles=*/500);
+    const StinkyInstruction* save = nullptr;
+    const StinkyInstruction* restore = nullptr;
+    for (IRBase& ir : *bb) {
+        auto* inst = dyn_cast<StinkyInstruction>(&ir);
+        if (inst == nullptr) continue;
+        const auto* comment = inst->getModifier<CommentData>();
+        if (comment == nullptr) continue;
+        if (comment->comment == "preserve SCC across cluster signal") save = inst;
+        if (comment->comment == "restore SCC after cluster signal") restore = inst;
+    }
+    ASSERT_NE(save, nullptr);
+    ASSERT_NE(restore, nullptr);
+    ASSERT_FALSE(save->getDestRegs().empty());
+    ASSERT_FALSE(restore->getSrcRegs().empty());
+    EXPECT_FALSE(save->getDestRegs()[0].isVirtualReg());
+    EXPECT_EQ(save->getDestRegs()[0].reg.type, restore->getSrcRegs()[0].reg.type);
+    EXPECT_EQ(save->getDestRegs()[0].reg.idx, restore->getSrcRegs()[0].reg.idx)
+        << "save and restore must use the same scavenged temporary SGPR";
 }
 
 // The downward correction is allowed through one kind of wall, and this is the
