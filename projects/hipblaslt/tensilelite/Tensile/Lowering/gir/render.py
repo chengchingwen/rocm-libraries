@@ -9,7 +9,7 @@ compiler reads it back.
 
 from __future__ import annotations
 
-from .nodes import Move, Mma, Mark, Goto, CondGoto, CondChain, LoopBack, Return
+from .nodes import Move, Mma, Mark, Goto, CondGoto, CondChain, LoopBack, LoopCopy, Return
 from ...LoopModel.ir import OBLIGATION_KINDS
 from .analysis import AnalysisManager
 from .analyses.frame_map import FrameMap
@@ -172,6 +172,11 @@ def _term_line(term):
     if isinstance(term, LoopBack):
         lbl = f" [{term.label}]" if term.label else ""
         return (f"term: LoopBack(trips={term.trips.render()} -> {term.body}, "
+                f"exit {term.exit_target}){lbl}")
+    if isinstance(term, LoopCopy):
+        lbl = f" [{term.label}]" if term.label else ""
+        return (f"term: LoopCopy({term.index + 1}/{term.copies}, "
+                f"trips={term.trips.render()} -> {term.next_target}, "
                 f"exit {term.exit_target}){lbl}")
     if isinstance(term, CondGoto):
         return (f"term: CondGoto({_pred_str(term.pred)} -> {term.t_target}, "

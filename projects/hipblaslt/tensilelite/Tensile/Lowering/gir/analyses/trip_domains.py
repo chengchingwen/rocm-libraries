@@ -16,7 +16,7 @@ so the frame contract ships the answer rather than the condition.
 from __future__ import annotations
 
 from ..analysis import Analysis
-from ..nodes import CondChain, CondGoto, Goto, LoopBack
+from ..nodes import CondChain, CondGoto, Goto, LoopBack, LoopCopy
 
 #: Small enough to enumerate, large enough that every peel/drain literal has room above it.
 TRIP_FLOOR = 4
@@ -36,7 +36,7 @@ def _preds_of(block):
 def trip_symbol(prog):
     """The one trip symbol the domains range over, or "" when the program names none."""
     for blk in prog.blocks.values():
-        if isinstance(blk.term, LoopBack) and blk.term.trips.var:
+        if isinstance(blk.term, (LoopBack, LoopCopy)) and blk.term.trips.var:
             return blk.term.trips.var
     for blk in prog.blocks.values():
         for pred, _t in _preds_of(blk)[0]:
@@ -50,9 +50,10 @@ def trip_limit(prog):
     limit = TRIP_FLOOR
     for blk in prog.blocks.values():
         term = blk.term
-        if isinstance(term, LoopBack) and term.trips.var:
+        if isinstance(term, (LoopBack, LoopCopy)) and term.trips.var:
             # Include one-trip and repeated-trip cases after the loop's subtraction/division.
-            limit = max(limit, int(term.trips.sub) + 2 * int(term.trips.div) + TRIP_HEADROOM)
+            width = int(term.copies) if isinstance(term, LoopCopy) else int(term.trips.div)
+            limit = max(limit, int(term.trips.sub) + 2 * width + TRIP_HEADROOM)
         for pred, _t in _preds_of(blk)[0]:
             if not pred.rhs.var:
                 limit = max(limit, int(pred.rhs.const) + TRIP_HEADROOM)
@@ -93,6 +94,23 @@ class TripDomains(Analysis):
             return TripDomainSet(universe, edges)
 
         for lab, blk in prog.blocks.items():
+            if isinstance(blk.term, LoopCopy) and blk.term.trips.var == symbol:
+                term = blk.term
+                counts = {
+                    trip: (trip - int(term.trips.sub)) // max(1, int(term.trips.div))
+                    for trip in universe
+                }
+                position = int(term.index) + 1
+                copies = max(1, int(term.copies))
+                # A static continuation edge is reached on some cycle whenever more than
+                # `position` chunks exist. The exit is reached when the final partial/full
+                # cycle ends at this copy.
+                _narrow(edges, lab, term.next_target,
+                        {trip for trip, count in counts.items() if count > position})
+                _narrow(edges, lab, term.exit_target,
+                        {trip for trip, count in counts.items()
+                         if count >= position and (count - position) % copies == 0})
+                continue
             if isinstance(blk.term, LoopBack) and blk.term.trips.var == symbol:
                 trips = blk.term.trips
                 counts = {

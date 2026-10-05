@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from ..nodes import CondGoto, CondChain, LoopBack
+from ..nodes import CondGoto, CondChain, LoopBack, LoopCopy
 from .early_exit import _drain_chain
 from ..analyses.cfg import BackEdges
 from .base import Pass
@@ -72,6 +72,12 @@ def _label_guard_arms(prog, back_headers):
                 if lbl:
                     blk.term = LoopBack(t.trips, t.body, t.exit_target, lbl)
                     changed = True
+            continue
+        if isinstance(t, LoopCopy):
+            if not t.label:
+                blk.term = LoopCopy(t.trips, t.index, t.copies, t.next_target,
+                                    t.exit_target, _SCAFFOLD_LABEL["back_edge"])
+                changed = True
             continue
         if not isinstance(t, CondGoto) or t.pred.label:
             continue                                # only label a bare (label-free) CondGoto

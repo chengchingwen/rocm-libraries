@@ -244,9 +244,15 @@ def _check_term(prog):
     for lab, blk in prog.blocks.items():
         if blk.term is None:
             raise RuntimeError(f"G-TERM: block {lab} has no terminator")
-        for t in terminator_targets(blk.term):
+        targets = set(terminator_targets(blk.term))
+        for t in targets:
             if t not in prog.blocks and t != "end":
                 raise RuntimeError(f"G-TERM: block {lab} targets missing block '{t}'")
+        unknown_xfers = set((blk.edge_xfers or {})) - targets
+        if unknown_xfers:
+            raise RuntimeError(
+                f"G-TERM: block {lab} has edge transfers for non-successors "
+                f"{sorted(unknown_xfers)}")
     # declared succs must equal the terminator's raw targets ("end" sink included)
     for lab, blk in prog.blocks.items():
         if blk.succs:

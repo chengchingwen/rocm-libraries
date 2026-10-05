@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import gcd as _gcd
 
-from ..nodes import Move, Mma, CondGoto, LoopBack
+from ..nodes import Move, Mma, CondGoto, LoopBack, LoopCopy
 from ..nodes import terminator_targets
 from ..analysis import Analysis
 from .cfg import BackEdges
@@ -117,6 +117,14 @@ class LoopShape(Analysis):
             tester = _exit_tester(prog, blocks)
             if tester is None:
                 continue                       # an infinite loop has no exit test to read
+            latch_term = prog.blocks[be.src].term
+            if isinstance(latch_term, LoopCopy):
+                # Every copy tests the counter, so the final cycle may be partial. `trips`
+                # already counts chunks; dividing by the unroll width would drop the remainder.
+                trips = _trips_from_node(latch_term)
+                out.append(Loop(be.header, be.src, tester, _test_position(prog, tester),
+                                trips, 1, trips, latch_term.exit_target))
+                continue
             term = prog.blocks[tester].term
             if not isinstance(term, LoopBack):
                 continue              # not a counted loop: nothing to state a trip count about

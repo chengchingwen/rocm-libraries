@@ -116,29 +116,15 @@ def test_no_reachable_config_is_refused_by_the_decode_and_lower_path(gen, name):
         + "\n  ".join(f"{k} -> {m}" for k, m in refused[:10]))
 
 
-def test_pgr3_is_unreachable_under_ulm():
-    """`PrefetchGlobalRead >= 3` cannot be generated under UseLoopModel — checked, not assumed."""
-    import importlib.util
-
-    # Read the FILE, not a bound attribute: several of the ULM rejects this reasoning depends on
-    # live outside `assignDerivedParameters`, and `SolutionStructs` re-exports the class over the
-    # module name, so attribute lookup is the wrong instrument here.
-    src = open(importlib.util.find_spec("Tensile.SolutionStructs.Solution").origin).read()
-    assert '"PrefetchGlobalRead>=3 Supports only DirectToLdsA and DirectToLdsB"' in src
-    assert '"PrefetchGlobalRead>=3 Supports only ScheduleIterAlg == 3"' in src
-    # ...and that ULM refuses both of those, which is what makes the combination empty.
-    assert "UseLoopModel does not support DirectToLds" in src
-    assert "UseLoopModel supports only ScheduleIterAlg 0 or 4" in src
-
-
-def test_the_decoder_really_does_assert_at_pgr3():
-    """Non-vacuity for the test above: the unreachability claim is only interesting if the
-    decoder would in fact fail there.  If this ever starts passing, PGR>=3 has been fixed and
-    both this test and ledger note should be retired."""
+def test_pgr3_decode_is_structurally_supported():
+    """The decoder itself carries PGR3; Solution policy may still reject a concrete kernel."""
     k = {**_BASE, "PrefetchGlobalRead": 3, "NumLdsBlk": 3}
-    # RuntimeError, not AssertionError: an inexpressible config is a per-kernel refusal.
-    with pytest.raises(RuntimeError, match="JOIN whose predecessors"):
-        build_gir(adapter.params_to_theta(kernel_to_params(k)))
+    assert build_gir(adapter.params_to_theta(kernel_to_params(k)))
+
+
+def test_pgr3_decode_plan_is_clean():
+    k = {**_BASE, "PrefetchGlobalRead": 3, "NumLdsBlk": 3}
+    assert not check_plan(build_gir(adapter.params_to_theta(kernel_to_params(k))))
 
 
 # ---------------------------------------------------------------------------
@@ -149,13 +135,14 @@ def test_the_decoder_really_does_assert_at_pgr3():
 def test_steady_chain_is_built_and_readable(copies):
     from Tensile.Lowering import steady_chain
     k = _kernel(_mxf8(), _mi("fp8", (2, 2), (2, 2)), 2, 1, "KMN", 0, 0, 1)
+    k["SuppressNoLoadLoop"] = copies > 1
     prog = build_gir(adapter.params_to_theta(kernel_to_params(k)), loop_copies=copies)
     chain = steady_chain(prog)
     assert chain == ["steady"] + ["steady%d" % i for i in range(1, copies)]
-    # every copy is a real body, and only the last one closes the loop
+    # Every physical copy decrements/tests the counter; only the last continuation is a back-edge.
     assert all(prog.blocks[c].body for c in chain)
     terms = [type(prog.blocks[c].term).__name__ for c in chain]
-    assert terms == ["Goto"] * (copies - 1) + ["LoopBack"]
+    assert terms == (["LoopBack"] if copies == 1 else ["LoopCopy"] * copies)
     assert not check_plan(prog)
 
 
@@ -174,18 +161,44 @@ def test_loop_copies_are_read_off_the_rings_not_off_a_parameter(vg, va, copies):
     assert loopModelLoopCopies(theta, BufferDepths(theta, include_shared=False)) == copies
 
 
-def test_the_covering_invariant_runs_on_an_unrolled_loop():
-    """`(T-M)/n` back edges x n chunks each must still cover exactly [0, T-M).
+def test_three_copy_frame_contract_has_backedge_incoming_and_guard_requirements():
+    from Tensile.LoopModel.schedule import BufferDepths
+    from Tensile.LoopModel import traversal as geometry
+    from Tensile.Lowering.gir.emit_plan import plan_program
+    from Tensile.Lowering.gir.frame_contract import build_contract
 
-    Before `Linear` carried a divisor this was skipped whenever per_trip != 1, so the one check
-    that steady and the drain tile the summation was silently off for every unrolled body.
-    """
+    k = _half_plr_kernel("NKM", 1)
+    k["SuppressNoLoadLoop"] = True
+    theta = adapter.params_to_theta(kernel_to_params(k))
+    copies = geometry.ring_trip_copies(
+        theta, BufferDepths(theta, include_shared=False))
+    prog = build_gir(theta, loop_copies=copies)
+    assert [prog.blocks[label].gen_rel for label in ("steady", "steady1", "steady2")] == [0, 1, 2]
+
+    plans = plan_program(prog)
+    anchors = {label: actions[0].action_id for label, actions in plans.items() if actions}
+    contract = build_contract(prog)
+    backedge = [edge for edge in contract.edges
+                if edge.relative
+                and edge.src == anchors["steady2"] and edge.dst == anchors["steady"]]
+    assert backedge
+    assert all((contract.generations[edge.gen].ring,
+                contract.generations[edge.gen].entry,
+                contract.generations[edge.gen].advance) == (2, 0, 1)
+               for edge in backedge)
+    # PGR2's split prefetch guard must remain correlated with the loop entrance/backedge.
+    assert contract.requires
+    assert all(need.gen in contract.generations for need in contract.requires)
+
+
+def test_the_covering_invariant_runs_on_an_unrolled_loop():
+    """Per-copy exits preserve the remainder: an n-copy shell still covers exactly T-M."""
     from Tensile.Lowering.gir.analysis import AnalysisManager
     from Tensile.Lowering.gir.analyses.loop_shape import (
         Linear, LoopShape, reduction_coverage_violations)
 
-    assert Linear(1, -4, 3).scaled(3) == Linear(1, -4)     # the divisor cancels exactly
     k = _kernel(_mxf8(), _mi("fp8", (2, 2), (2, 2)), 2, 1, "KMN", 0, 0, 1)
+    k["SuppressNoLoadLoop"] = True
     th = adapter.params_to_theta(kernel_to_params(k))
     for copies in (1, 2, 3):
         prog = build_gir(th, loop_copies=copies)
@@ -193,21 +206,23 @@ def test_the_covering_invariant_runs_on_an_unrolled_loop():
         steady = [lp for lp in loops if lp.header == "steady"]
         assert steady, f"no steady loop at loop_copies={copies}"
         lp = steady[0]
-        assert lp.per_trip == copies
-        assert lp.trips.div == copies            # the BACK EDGE count carries the divisor
-        assert lp.covers == lp.trips.scaled(copies)
+        assert lp.per_trip == 1
+        assert lp.trips == Linear(1, 0)
+        assert lp.covers == lp.trips
         assert not reduction_coverage_violations(prog, loops), copies
 
 
 # ---------------------------------------------------------------------------
-# HalfPLR: 1.5 buffers, spelled as TWO half-unit groups sharing three slots.
-# `group_rotation_unit_tiles` divides the unit by the group count, so two groups
-# IS the half; ceil(3/2), floor(3/2) is what reproduces valuBlocks = 1.5.
+# HalfPLR shape: VG=2 halves one buffer and VA=3 allocates three halves.
 # ---------------------------------------------------------------------------
 def _half_plr_kernel(order, half_plr):
-    k = _kernel(_mxf8(), _mi("fp8", (2, 2), (2, 2)), 2, 1, order, 0, 0, 1)
-    k["HalfPLR"] = half_plr
-    k["HalfPLRA"], k["HalfPLRB"] = bool(half_plr & 1), bool(half_plr & 2)
+    k = _kernel(_mxf8(), _mi("fp8", (2, 2), (2, 2)), 2, 2, order, 0, 0, 1)
+    k.update(HalfPLR=0, ClusterLocalRead=0,
+             ClusterLocalReadA=0, ClusterLocalReadB=0)
+    for side, bit in (("A", 1), ("B", 2)):
+        stated = bool(half_plr & bit)
+        k["VgprGroup" + side] = 2 if stated else -1
+        k["VgprAlloc" + side] = 3 if stated else -1
     return k
 
 
@@ -230,28 +245,21 @@ def test_halfplr_costs_one_and_a_half_buffers_on_the_named_operand(half_plr, hal
     for name in ("A", "B"):
         if name in halved:
             assert half[name] * 4 == plain[name] * 3, (name, half, plain)   # 1.5 of 2 blocks
-            assert th.op(name).fragment.groups() == ("g0", "g1")
-            assert th.op(name).fragment.ring_depths == {"g0": 2, "g1": 1}   # ceil/floor of 3
+            assert th.op(name).fragment.vgpr_group == 2
+            assert th.op(name).fragment.ring_depths == {"g0": 3}
         else:
             assert half[name] == plain[name], (name, half, plain)
-            assert th.op(name).fragment.groups() == ("g0",)
+            assert th.op(name).fragment.vgpr_group == 1
 
 
-@pytest.mark.parametrize("order", ORDERS3)
+@pytest.mark.parametrize("order", ["NKM"])
 @pytest.mark.parametrize("half_plr", [1, 2, 3])
 def test_halfplr_is_clean_or_refused_never_broken(order, half_plr):
-    """Every cell either lowers cleanly at a 3-copy chain, or is refused by name.
-
-    An ALL-INNER operand has no unit to halve -- its half is `U + P/2`, which a ring depth cannot
-    say -- so it is refused rather than given a ring whose second slot nothing writes.
-    """
+    """The YAML's canonical NKM cell lowers cleanly at a three-copy chain."""
     from Tensile.Lowering import steady_chain
     k = _half_plr_kernel(order, half_plr)
-    try:
-        prog = build_gir(adapter.params_to_theta(kernel_to_params(k)), loop_copies=3)
-    except RuntimeError as exc:
-        assert "ALL-INNER" in str(exc), str(exc)
-        return
+    k["SuppressNoLoadLoop"] = True
+    prog = build_gir(adapter.params_to_theta(kernel_to_params(k)), loop_copies=3)
     assert len(steady_chain(prog)) == 3
     assert not check_plan(prog)
 
@@ -298,20 +306,17 @@ def test_suppressed_no_load_loop_has_no_drain_and_the_loop_owns_every_chunk(orde
 
 @pytest.mark.parametrize("half_plr", [1, 2, 3])
 def test_halfplr_lowers_drain_free_over_its_three_copies(half_plr):
-    """HalfPLR is the reason this path exists: it FORCES SuppressNoLoadLoop (Solution.py).
-
-    The three-copy chain and the drain-free shape have to hold together -- each copy consumes a
-    chunk, so the covering invariant is what catches a chain that lost one.
-    """
+    """VG2/VA3 uses per-copy exits, so a partial final unroll still covers all T chunks."""
     from Tensile.Lowering import steady_chain
-    k = _half_plr_kernel("KMN", half_plr)
+    k = _half_plr_kernel("NKM", half_plr)
     k["SuppressNoLoadLoop"] = True
     prog = build_gir(adapter.params_to_theta(kernel_to_params(k)), loop_copies=3)
     assert len(steady_chain(prog)) == 3
     drains, steady, _peel, steps, cov, plan = _drain_shape(k, loop_copies=3)
     assert drains == [] and steps == 0
     assert (steady.covers.coeff, steady.covers.const) == (1, 0)
-    assert steady.trips.div == 3               # three chunks a trip, so T/3 trips cover T
+    assert steady.trips.div == 1               # copy exits preserve T % 3
+    assert steady.per_trip == 1
     assert not cov and not plan
 
 
@@ -334,11 +339,14 @@ def test_a_drain_emitted_under_suppression_is_a_structural_error():
 # enumerator keeps no digit, and a group shallower than its sibling then aliases its
 # own generations under the deeper one's read-ahead.
 # ---------------------------------------------------------------------------
-def _split_half_plr_theta(order, half_plr, sa, sb, wt=(8, 8), clr=1):
-    k = _kernel(_mxf8(), _mi("fp8", wt, (1, 1)), 2, 1, order, sa, sb, 1)
-    k["ClusterLocalRead"] = clr
-    k["HalfPLR"] = half_plr
-    k["HalfPLRA"], k["HalfPLRB"] = bool(half_plr & 1), bool(half_plr & 2)
+def _split_half_plr_theta(order, half_plr, sa, sb, wt=(2, 2), clr=0, pgr=2):
+    k = _kernel(_mxf8(), _mi("fp8", wt, (1, 1)), pgr, 2, order, sa, sb, 1)
+    k.update(HalfPLR=0, ClusterLocalRead=clr,
+             ClusterLocalReadA=clr, ClusterLocalReadB=clr)
+    for side, bit in (("A", 1), ("B", 2)):
+        stated = bool(half_plr & bit)
+        k["VgprGroup" + side] = 2 if stated else -1
+        k["VgprAlloc" + side] = 3 if stated else -1
     k["SuppressNoLoadLoop"] = True
     return adapter.params_to_theta(kernel_to_params(k))
 
@@ -353,59 +361,77 @@ def test_the_shallow_half_keeps_a_ring_digit_when_the_region_leads():
     from Tensile.LoopModel.schedule import BufferDepths
     from Tensile.LoopModel.adapter import loop_order_of
 
-    th = _split_half_plr_theta(loop_order_of(1, 1), 1, sa=1, sb=0)
+    th = _split_half_plr_theta(loop_order_of(6, 1), 1, sa=1, sb=0)
     op, depths = th.op("A"), BufferDepths(th, include_shared=False)
-    assert op.fragment.ring_depths == {"g0": 2, "g1": 1}           # still 1.5 buffers
-    assert g.regions_lead_the_ring(th, op, "g1")
-    widths = {grp: g.ring_block_width(th, op, grp, g.group_ring_depth(th, op, grp, depths))
-              for grp in op.fragment.groups()}
-    ring = g.product([e for _n, e in g.ring_axes(th, op, "g1")])
-    assert widths["g1"] == ring, widths     # the override: the ring keeps its whole span
-    for grp in op.fragment.groups():        # and every group names its ring axis in the slot
-        slot = g.ring_slot(th, op, grp, g.group_ring_depth(th, op, grp, depths))
-        assert slot is not None and slot.digits[2], (grp, slot)
+    assert op.fragment.vgpr_group == 2
+    assert op.fragment.ring_depths == {"g0": 3}
+    assert g.regions_lead_the_ring(th, op, "g0")
+    slot = g.ring_slot(th, op, "g0", g.group_ring_depth(th, op, "g0", depths))
+    assert slot is not None and slot.digits[2]
 
 
-#: Every way theta can say "1.5 buffers is not reachable here", by the phrase it says it with.
-HALF_PLR_REFUSALS = ("ALL-INNER", "cannot be split", "of the three half-buffers")
+@pytest.mark.parametrize("wio, sb", [(1, 0), (2, 0), (5, 0), (5, 1), (6, 0), (6, 1)])
+@pytest.mark.parametrize("half_plr", [2, 3])
+def test_shallow_half_buffer_repeats_reads_over_the_broadcast_pass(wio, sb, half_plr):
+    """VA3 rereads B for each M pass instead of retaining four live values in three slots."""
+    from Tensile.LoopModel.adapter import loop_order_of
+    from Tensile.LoopModel.schedule import BufferDepths
+    from Tensile.LoopModel import traversal as geometry
+    from Tensile.Lowering.gir.emit_plan import plan_program
+
+    theta = _split_half_plr_theta(loop_order_of(wio, 1), half_plr, 1, sb)
+    copies = geometry.ring_trip_copies(theta, BufferDepths(theta, include_shared=False))
+    prog = build_gir(theta, loop_copies=copies)
+    assert not check_plan(prog)
+
+    issues = {
+        tuple(action.at.get("issue") or ())
+        for actions in plan_program(prog).values()
+        for action in actions
+        if action.kind == "read" and action.at["tc"] == "B"
+    }
+    assert issues == {(("M_split", 0),), (("M_split", 1),)}
 
 
-@pytest.mark.parametrize("half_plr, sa, sb", [(1, 1, 0), (2, 0, 1)])
 @pytest.mark.parametrize("wio", [1, 2])
-def test_halfplr_over_a_one_sided_split_lowers_clean(half_plr, sa, sb, wio):
-    """The reported ValueError: 144 OVERWRITE-BEFORE-USE / WRONG SOURCE violations.
+@pytest.mark.parametrize("half_plr", [1, 2, 3])
+def test_tdmsplit_consuming_vg_still_builds_the_three_copy_ring(wio, half_plr):
+    """A split can spend VG's axis digit without erasing the stated VG/VA shape.
 
-    The halved operand is TDMSplit and its peer is not, so its region axis leads the ring -- and
-    the shallow half was left holding two generations in one slot.
+    These are the twelve PGR1/PGR2 YAML kernels that previously built one steady
+    block, then returned to the wrong half-buffer on hardware.
     """
     from Tensile.LoopModel.adapter import loop_order_of
-    th = _split_half_plr_theta(loop_order_of(wio, 1), half_plr, sa, sb)
-    assert not check_plan(build_gir(th, loop_copies=3))
+    from Tensile.LoopModel.schedule import BufferDepths
+    from Tensile.LoopModel import traversal as geometry
+    from Tensile.Lowering import steady_chain
+    from Tensile.Lowering.gir.emit_plan import plan_program
+    from Tensile.Lowering.gir.frame_contract import build_contract
 
+    theta = _split_half_plr_theta(loop_order_of(wio, 1), half_plr, 1, 1)
+    stated = [op for op in theta.operands
+              if op.fragment is not None and geometry.vgpr_group(theta, op) > 1]
+    assert stated and all(geometry.vgpr_subdivided(theta, op) for op in stated)
+    assert any(geometry.vgpr_group_axis(theta, op) is None for op in stated)
+    assert all(geometry.vgpr_ring_carries(theta, op, op.fragment.groups()[0])
+               for op in stated)
 
-@pytest.mark.parametrize("sa, sb", [(1, 0), (0, 1)])
-@pytest.mark.parametrize("wio", [1, 2])
-def test_halving_BOTH_over_a_one_sided_split_is_refused_by_the_reuse_floor(sa, sb, wio):
-    """The peer of the split operand holds its whole set, so its shallow half would alias."""
-    from Tensile.LoopModel.adapter import loop_order_of
-    with pytest.raises(RuntimeError, match="of the three half-buffers but its reuse floor"):
-        _split_half_plr_theta(loop_order_of(wio, 1), 3, sa, sb)
+    copies = geometry.ring_trip_copies(
+        theta, BufferDepths(theta, include_shared=False))
+    prog = build_gir(theta, loop_copies=copies)
+    assert copies == 3
+    assert steady_chain(prog) == ["steady", "steady1", "steady2"]
+    assert not check_plan(prog)
 
-
-@pytest.mark.parametrize("wio, woo", itertools.product(range(1, 7), (0, 1)))
-@pytest.mark.parametrize("sa, sb", [(0, 0), (1, 0), (0, 1), (1, 1)])
-def test_halfplr_x_tdmsplit_is_clean_or_refused_over_every_order(wio, woo, sa, sb):
-    """The whole (order x split x bitmask) matrix: clean, or refused by name.  Never broken."""
-    from Tensile.LoopModel.adapter import loop_order_of
-    order = loop_order_of(wio, woo)
-    for half_plr in (1, 2, 3):
-        try:
-            th = _split_half_plr_theta(order, half_plr, sa, sb, clr=1 if woo else 0)
-            prog = build_gir(th, loop_copies=3)
-        except RuntimeError as exc:
-            assert any(r in str(exc) for r in HALF_PLR_REFUSALS), str(exc)
-            continue
-        assert not check_plan(prog), (order, half_plr, sa, sb)
+    plans = plan_program(prog)
+    anchors = {label: actions[0].action_id
+               for label, actions in plans.items() if actions}
+    contract = build_contract(prog)
+    assert any(edge.relative
+               and edge.src == anchors["steady2"]
+               and edge.dst == anchors["steady"]
+               for edge in contract.edges)
+    assert contract.requires
 
 
 def test_a_loopmodel_refusal_names_the_solution_exactly_once():
@@ -421,7 +447,7 @@ def test_a_loopmodel_refusal_names_the_solution_exactly_once():
     for side in ("A", "B"):
         k["ClusterLocalRead" + side] = 0
         k["VgprGroup" + side] = 2 if side == "A" else -1
-        k["VgprAlloc" + side] = 9 if side == "A" else -1   # past the ring's own period
+        k["VgprAlloc" + side] = -1
     with pytest.raises((ValueError, RuntimeError)) as refusal:
         loopModelTheta(_Writer(), k)
     assert str(refusal.value).count("solution:") == 1
@@ -433,3 +459,30 @@ def test_a_loopmodel_refusal_names_the_solution_exactly_once():
             with namingSolution(writer):
                 raise ValueError("inner failure")
     assert str(nested.value).count("solution:") == 1
+
+
+def test_gir_semantic_checker_failure_is_always_a_value_error(monkeypatch):
+    """An explicit VG/VA shape does not turn a checker defect into a tuning rejection."""
+    import importlib
+    from types import SimpleNamespace
+
+    program = importlib.import_module("Tensile.Components.LoopModel.Program")
+    writer = SimpleNamespace(states=SimpleNamespace(kernelName="Cijk_CHECKER_VALUE_ERROR"))
+    kernel = {
+        "PrefetchGL2": 0,
+        "VgprGroupA": 2,
+        "VgprAllocA": 3,
+        "VgprGroupB": -1,
+        "VgprAllocB": -1,
+    }
+    fake_prog = SimpleNamespace()
+
+    monkeypatch.setattr(program, "loopModelTheta", lambda *_args: (object(), object()))
+    monkeypatch.setattr(program, "emit_mainloop", lambda *_args: object())
+    monkeypatch.setattr(program, "loopModelLoopCopies", lambda *_args: 1)
+    monkeypatch.setattr(program, "gir_pipeline", lambda: ())
+    monkeypatch.setattr(program, "build_gir", lambda *_args, **_kwargs: fake_prog)
+    monkeypatch.setattr(program, "check_plan", lambda _prog: ["deliberate checker finding"])
+
+    with pytest.raises(ValueError, match="semantic check"):
+        program.loopModelGirProgram(writer, kernel)

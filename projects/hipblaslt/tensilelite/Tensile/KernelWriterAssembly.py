@@ -8134,14 +8134,9 @@ class KernelWriterAssembly(KernelWriter):
         loopCounterName = self.loopCounterName(kernel, loopIdx)
         module.addSpaceLine()
         if kernel["SuppressNoLoadLoop"]:
-          # The arms are TDM vs BUFFER-LOAD, and `HalfPLR` is only the legacy path's way of
-          # saying TDM.  A UseLoopModel kernel reaches here moving data with TDM and `HalfPLR`
-          # at 0 -- VgprGroup/VgprAlloc say that shape now -- so it needs this arm too, and the
-          # `else` would rewind an SrdA it never allocated.  Added rather than substituted:
-          # `UseLoopModel` is False off that path, so no legacy kernel changes branch.
-          if kernel["HalfPLR"] or (kernel["UseLoopModel"]
-                                   and kernel.get("enableTDMA", False)
-                                   and kernel.get("enableTDMB", False)):
+          # Legacy HalfPLR owns its historical pointer repair. ULM TDM rebuilds its descriptors
+          # below and only needs the enable word restored.
+          if kernel["HalfPLR"]:
             # In HalfPLR case, TDM will be disabled in the last unroll loop iterations. Also LDS buffer
             # is not aligned for TDM & local read address. So we need to re-enable TDM & align LDS buffer
             SkipHalfPLRAdjustLabel = Label("Skip_HPLR_Adjust", "")
@@ -8204,6 +8199,15 @@ class KernelWriterAssembly(KernelWriter):
             module.add((SWaitCnt(dscnt=0, comment="HalfPLR: prevent dummy ds_load from polluting LDS buffer")))
             module.add((SBarrier()))
             module.add(SkipHalfPLRAdjustLabel)
+          elif (kernel["UseLoopModel"] and kernel.get("enableTDMA", False)
+                and kernel.get("enableTDMB", False)):
+            # The ULM tail path below rebuilds every TDM descriptor and local-read address.
+            # Legacy HalfPLR's pointer repair is specific to its own register mapping and refers
+            # to split-increment SGPRs that a ULM kernel does not necessarily allocate.
+            for owner in dict.fromkeys(self.tdmDescriptorOwners(kernel).values()):
+              module.add(SMovB32(
+                  dst=sgpr(f"tdm{owner}Group0+0"), src=1,
+                  comment="ULM tail: re-enable descriptor silenced by SuppressNoLoadLoop"))
           else:
             # If the tail loop is suppressed, then final iterations will have moved the Srd base forward
             # (and also moved back the srd shadow limit) and slammed Limit to 0, so need to 'undo'
@@ -8389,7 +8393,11 @@ class KernelWriterAssembly(KernelWriter):
     if pgr == 1:
       return 0 if kernel["SuppressNoLoadLoop"] else 1
     if pgr == 2:
-      return (0 if kernel["HalfPLR"] else 1) if kernel["SuppressNoLoadLoop"] else 2
+      statedVgprRing = kernel.get("UseLoopModel", False) and any(
+          int(kernel.get(name, -1) or -1) != -1
+          for name in ("VgprGroupA", "VgprGroupB", "VgprAllocA", "VgprAllocB"))
+      return (0 if (kernel["HalfPLR"] or statedVgprRing) else 1) \
+          if kernel["SuppressNoLoadLoop"] else 2
     if pgr >= 3:
       # openLoop early-exits to NoGlobalLoadLoop for LoopCounter <= PGR.
       return pgr

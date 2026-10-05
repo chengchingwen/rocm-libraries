@@ -2309,9 +2309,22 @@ class Solution(collections.abc.Mapping):
     # onto the scalar, and AUTO takes the value the operand's position implies.
     for _base in ("PrefetchLocalRead", "ClusterLocalRead"):
       collapseEqualPair(state, _base)
+    _statedVgpr = {}
+    for _tc in ("A", "B"):
+      _vg = state.get("VgprGroup" + _tc)
+      _va = state.get("VgprAlloc" + _tc)
+      _hasVg = _vg is not None and int(_vg) != -1
+      _hasVa = _va is not None and int(_va) != -1
+      if _hasVg != _hasVa:
+        reject(state, printRejectionReason,
+               "VgprGroup%s and VgprAlloc%s form one register-ring shape; set both or leave "
+               "both at -1." % (_tc, _tc))
+        return
+      _statedVgpr[_tc] = _hasVg
     # An operand is ALL-INNER when the outermost tile axis is one it does not walk (A walks M/K,
     # B walks N/K), so it rereads its whole set every trip and holds a full buffer regardless of
-    # the scalar.  The rule is theta's, so it applies only where theta runs.
+    # the scalar.  A stated VG/VA pair is already the complete allocation and therefore bypasses
+    # this derivation; mixing it with CLR=1 would give two conflicting owners for the ring depth.
     _lrOuter = wmma_loop_order(state)[0]
     _clScalar = int(state.get("ClusterLocalRead", 0) or 0)
     _cluster = {}
@@ -2319,7 +2332,15 @@ class Solution(collections.abc.Mapping):
       _key = "ClusterLocalRead" + _tc
       _asked = state.get(_key)
       _asked = _clScalar if _asked is None or int(_asked) == -1 else int(_asked)
-      if _lrOuter not in _walks:                 # all-inner: the whole set is live every trip
+      if _statedVgpr[_tc]:
+        if _asked:
+          reject(state, printRejectionReason,
+                 "ClusterLocalRead%s=1 conflicts with the stated VgprGroup%s/VgprAlloc%s "
+                 "ring.  Leave ClusterLocalRead%s=0 so the explicit allocation is authoritative."
+                 % (_tc, _tc, _tc, _tc))
+          return
+        _asked = 0
+      elif _lrOuter not in _walks:               # all-inner: the whole set is live every trip
         if state.get(_key) is not None and int(state[_key]) == 0:
           reject(state, printRejectionReason,
                  "ClusterLocalRead%s=0 but %s is ALL-INNER under this loop order (outermost "
@@ -2345,8 +2366,7 @@ class Solution(collections.abc.Mapping):
     # Only theta can honour that, because only there is the prefetch unit the model's to move.
     for _tc in ("A", "B"):
       _vg, _va = state.get("VgprGroup" + _tc), state.get("VgprAlloc" + _tc)
-      _asked = [k for k, v in (("VgprGroup" + _tc, _vg), ("VgprAlloc" + _tc, _va))
-                if v is not None and int(v) != -1]
+      _asked = (["VgprGroup" + _tc, "VgprAlloc" + _tc] if _statedVgpr[_tc] else [])
       if _asked and not state.get("UseLoopModel"):
         reject(state, printRejectionReason,
                "%s is UseLoopModel-only: off that path the prefetch unit is fixed by the "
@@ -3114,11 +3134,12 @@ class Solution(collections.abc.Mapping):
     #  - The "NoLoad" loop is only generated if PrefetchGlobalRead>0
     #  - And Suppress does not work if GSU>1 for some reason
     if state["SuppressNoLoadLoop"]:
-      if not (bufferLoad and state["PrefetchGlobalRead"] == 1 and (state["GlobalSplitU"]==1 or state["GlobalSplitU"]==-1)):
+      _vgprLoopModel = state.get("UseLoopModel") and any(_statedVgpr.values())
+      _supportedPgr = state["PrefetchGlobalRead"] == 1 or (
+          _vgprLoopModel and state["PrefetchGlobalRead"] > 0)
+      if not (bufferLoad and _supportedPgr
+              and (state["GlobalSplitU"] == 1 or state["GlobalSplitU"] == -1)):
         state["SuppressNoLoadLoop"] = False
-
-    # NO GATE HERE.  PGR=2 with a stated VgprGroup is being FIXED (#558), not refused; the
-    # investigation needs these solutions to reach theta.
 
     #print("PackedC0IdxChars", state["PackedC0IdxChars"])
     #print("PackedC1IdxChars", state["PackedC1IdxChars"])
@@ -3810,35 +3831,10 @@ class Solution(collections.abc.Mapping):
     state["HalfPLRA"] = bool(halfPLR & 0x01)
     state["HalfPLRB"] = bool(halfPLR & 0x02)
     if state["HalfPLR"]:
-      # The force follows the BITMASK, not the scalar: HalfPLR=1 is A alone, so B keeps the
-      # cluster it was given instead of being un-clustered along with it.  A half taken from the
-      # ROTATION unit -- a split hoisted outermost -- holds the whole set, so there CLR=1 is the
-      # requirement and CLR=0 is refused; off the LoopModel path WmmaOuterOrder is always 0.
-      _halfRotation = bool(int(state.get("WmmaOuterOrder", 0) or 0))
-      _halfScalar = int(state.get("ClusterLocalRead", 0) or 0)
-      _halfClr = {}
+      state["ClusterLocalRead"] = 0
       for _tc in ("A", "B"):
-        _named = state.get("ClusterLocalRead" + _tc)
-        _value = _halfScalar if _named is None or int(_named) == -1 else int(_named)
-        if state["HalfPLR" + _tc]:
-          if _halfRotation and _value == 0:
-            reject(state, printRejectionReason,
-                   "HalfPLR%s takes its half from the ROTATION unit under WmmaOuterOrder=%d, "
-                   "which keeps %s's whole set resident, so ClusterLocalRead%s=0 cannot serve it. "
-                   "Use ClusterLocalRead%s=1, or WmmaOuterOrder=0 for a prefetch-unit half."
-                   % (_tc, int(state.get("WmmaOuterOrder", 0) or 0), _tc, _tc, _tc))
-            return
-          _value = 1 if _halfRotation else 0
-        _halfClr[_tc] = _value
-      if _halfClr["A"] == _halfClr["B"]:
-        state["ClusterLocalRead"] = _halfClr["A"]
-        for _tc in ("A", "B"):
-          if "ClusterLocalRead" + _tc in state:
-            state["ClusterLocalRead" + _tc] = _halfClr[_tc]
-      else:
-        for _tc in ("A", "B"):
-          state["ClusterLocalRead" + _tc] = _halfClr[_tc]
-        state["ClusterLocalRead"] = min(_halfClr["A"], _halfClr["B"])
+        if "ClusterLocalRead" + _tc in state:
+          state["ClusterLocalRead" + _tc] = 0
       state["SuppressNoLoadLoop"] = True
       state["ExpandPointerSwap"] = False
       if state.get("PrefetchAcrossPersistent", 0):

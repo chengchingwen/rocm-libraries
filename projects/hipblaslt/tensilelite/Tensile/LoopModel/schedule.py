@@ -31,6 +31,8 @@ def _placeable_read_ahead(theta, operand, depths) -> int:
     ahead, so it is lowered until it can; 0 always can.
     """
     want = requested_read_ahead(theta, operand, depths)
+    if geometry.vgpr_group_axis(theta, operand) is None:
+        return want
     if not want or operand.fragment is None:
         return want
     while want > 0:
@@ -632,18 +634,13 @@ class BufferDepths:
 
 
 def derive_S(theta) -> BufferDepths:
-    """Derive register-ring depths onto fragment placements.
-
-    The fallback for a theta nobody stated depths for; `group_width` is per region, so the region
-    positions are counted here -- `group_ring_depth` takes VA as the count outright.
-    """
+    """Derive canonical per-region VA onto fragment placements."""
     steps = _inner_steps(theta)
     for operand in theta.operands:
         if operand.is_output:
             continue
-        regions = geometry.region_positions(theta, operand)
         operand.fragment.ring_depths = {
-            group: group_width(theta, operand, group, steps) * regions
+            group: group_width(theta, operand, group, steps)
             for group in operand.fragment.groups()
         }
     return BufferDepths(theta, include_shared=False)

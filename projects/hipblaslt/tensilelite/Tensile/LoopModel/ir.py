@@ -78,6 +78,7 @@ class Load:
     advance: int = 0
     coverage: object = None
     ranges: tuple = ()  # display-only per-token axis ranges for a bulk/fused copy
+    issue_axes: tuple = ()  # invariant axes that intentionally trigger repeated register reads
 
     @property
     def counter(self) -> str:
@@ -96,6 +97,7 @@ class Mma:
     coord: tuple = ()
     scales: tuple = ()  # e.g. ("MXSA0","MXSB0")
     block: str = ""  # the hardware wmma block this lane-wmma belongs to, e.g.
+    source_issue_axes: tuple = ()  # ((operand, (axis,...)), ...) for repeated register reads
 
     @property
     def semantic(self):

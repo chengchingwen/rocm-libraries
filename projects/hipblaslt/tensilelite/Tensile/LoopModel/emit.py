@@ -626,7 +626,8 @@ class _Emitter:
                       for axis in varying_axes(self.theta, operand))
         load = Load((operand.name,), hop.src, Space.REGISTER, 0, coord=coord,
                     size_regs=geometry.frag_regs(self.theta, operand), advance=advance,
-                    coverage=operand.fragment.coverage)
+                    coverage=operand.fragment.coverage,
+                    issue_axes=self._repeat_read_axes(operand))
         return Inst(op=load, placement=placement, awaits=awaits)
 
     def _read_groups(self, operand):
@@ -663,13 +664,31 @@ class _Emitter:
         return min(int(ceiling), *(self.plans.steps(operand, group, want)
                                   for group in selected))
 
+    def _repeat_read_axes(self, operand):
+        """Broadcast passes that must reread an explicit ring too shallow to retain the full set."""
+        if operand.fragment is None or not geometry.vgpr_subdivided(self.theta, operand):
+            return ()
+        shallow = any(
+            geometry.group_ring_depth(self.theta, operand, group, self.depths)
+            < geometry.group_reuse_floor(
+                self.theta, operand, group, charge_lead=False, lead=0)
+            for group in operand.fragment.groups())
+        if not shallow or self.read_level[operand.name] not in self.pos:
+            return ()
+        varying = set(varying_axes(self.theta, operand))
+        level = self.pos[self.read_level[operand.name]]
+        return tuple(name for name, extent in self.inner[:level]
+                     if name not in varying and int(extent) > 1)
+
     def _first_touch_axes(self, operand):
         """Axes this read does not vary over, so it is issued once instead of every iteration."""
         varying = set(varying_axes(self.theta, operand))
+        repeated = set(self._repeat_read_axes(operand))
         if self.read_level[operand.name] not in self.pos:
             return []
         level = self.pos[self.read_level[operand.name]]
-        out = [(name, 0) for (name, _extent) in self.inner[:level] if name not in varying]
+        out = [(name, 0) for (name, _extent) in self.inner[:level]
+               if name not in varying and name not in repeated]
         coverage = read_coverage(self.theta, operand)
         out += [(name, int(coverage[name])) for (name, _extent) in self.inner if name in coverage]
         return out
@@ -735,7 +754,8 @@ class _Emitter:
                     coord=tuple((axis, coord_dict[axis])
                                 for axis in varying_axes(self.theta, operand)),
                     size_regs=geometry.frag_regs(self.theta, operand),
-                    coverage=operand.fragment.coverage)
+                    coverage=operand.fragment.coverage,
+                    issue_axes=self._repeat_read_axes(operand))
         return Inst(op=load, placement=placement, awaits=awaits)
 
     # --- the loop nest ------------------------------------------------------
@@ -851,7 +871,10 @@ class _Emitter:
     def wmma_inst(self):
         scales = ("MXSA[m,k]", "MXSB[n,k]") if self.scale else ()
         mma = Mma(a="A[m,k]", b="B[n,k]", acc="C[m,n]", kiter=0, block="A(k)*B(k)",
-                  coord=tuple((name, None) for name, _extent in self.inner), scales=scales)
+                  coord=tuple((name, None) for name, _extent in self.inner), scales=scales,
+                  source_issue_axes=tuple(
+                      (operand.name, self._repeat_read_axes(operand))
+                      for operand in self.reads if self._repeat_read_axes(operand)))
         awaits = ()
         for operand in self.reads:
             awaits += self._site_awaits(operand.name, "wmma")

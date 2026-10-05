@@ -11,7 +11,7 @@ collapsed onto an invented base.
 from __future__ import annotations
 
 from ..analysis import Analysis
-from ..nodes import LoopBack
+from ..nodes import LoopBack, LoopCopy
 from .cfg import BackEdges, successors
 from .lds_buffers import LdsBufferIds
 
@@ -55,6 +55,9 @@ def _rings(prog):
             out[phi.gen.id] = max(1, phi.gen.ring)
         for xf in blk.xfers:
             out[xf.gen.id] = max(1, xf.ring)
+        for edge_xfers in (blk.edge_xfers or {}).values():
+            for xf in edge_xfers:
+                out[xf.gen.id] = max(1, xf.ring)
         for inst in blk.body:
             for ref in tuple(getattr(inst, "srcs", ())) + tuple(getattr(inst, "dsts", ())):
                 gen = getattr(ref, "gen", None)
@@ -79,9 +82,11 @@ def _edge_values(prog, back):
                 continue
             table = {}
             is_back = back.is_back_edge(lab, succ_lab)
-            is_loop_exit = isinstance(blk.term, LoopBack) and succ_lab == blk.term.exit_target
+            is_loop_exit = isinstance(blk.term, (LoopBack, LoopCopy)) \
+                and succ_lab == blk.term.exit_target
             if is_back or is_loop_exit:
-                for xf in blk.xfers:
+                edge_xfers = (blk.edge_xfers or {}).get(succ_lab)
+                for xf in (edge_xfers if edge_xfers is not None else blk.xfers):
                     advance = int(xf.adv)
                     if is_loop_exit:
                         advance -= int(dst.gen_rel or 0)

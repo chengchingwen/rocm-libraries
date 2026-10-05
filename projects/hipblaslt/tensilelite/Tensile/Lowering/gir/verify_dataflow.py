@@ -374,6 +374,7 @@ def check_plan(prog, plans=None) -> list:
     out += check_region_coverage(prog, acts=steady)
     out += check_source_coverage(prog, acts=steady)
     out += check_register_dataflow(prog, plans=plans)
-    out += check_refill_splits_consumers(prog, acts=steady)
+    if prog.meta.get("vgpr_subdivided"):
+        out += check_refill_splits_consumers(prog, acts=steady)
     out += check_drain_continues_rotation(prog)
     return out

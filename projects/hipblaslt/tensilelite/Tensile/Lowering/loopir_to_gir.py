@@ -13,7 +13,7 @@ from ..LoopModel.traversal import lds_buffers
 from ..LoopModel import traversal as _geometry
 from .gir.passes import pipeline as default_pipeline, run_pipeline
 
-from .gir.nodes import (Tile, Gen, Ref, Move, Mma, Mark, Pred, Bound, Trips, LoopBack,
+from .gir.nodes import (Tile, Gen, Ref, Move, Mma, Mark, Pred, Bound, Trips, LoopBack, LoopCopy,
                         covered_coords,
                         Goto, CondGoto,
                         Block, GenPhi, GenXfer, Program)
@@ -242,6 +242,8 @@ def _reg_residence(theta, op, coord, pl, env, copy=None):
     groups = op.fragment.groups() if op is not None else ("",)
     grp_idx = list(groups).index(label) if label in groups else 0
     width = getattr(gexpr, "mod", 0) or 1
+    if not _geometry.vgpr_ring_carries(theta, op, label):
+        copy = None
     # A RING THE TRIP DOES NOT CLOSE carries: `VA=3` over four positions is 1.5 buffers, so it
     # comes back round only after three trips, and each one starts a period further along.  Where
     # the period is a multiple of the depth the term vanishes and the slot is unchanged.
@@ -413,13 +415,7 @@ def _convert_load(theta, inst, env, rel, gens, reg_copy=_UNSET):
         dst = Ref(dst_tile, group=grp_idx, slot=slot_val, reg_ring=reg_ring,
                   unit_index=unit_index, unit_indexes=unit_indexes,
                   covers=covers, size_regs=ld.size_regs)
-        logical_axes = {axis.name for axis in _geometry.presence_axes(theta, op)}
-        labels = op.fragment.groups()
-        label = labels[grp_idx] if grp_idx is not None and grp_idx < len(labels) else labels[0]
-        repeats = False
-        issue = (tuple((axis.name, env.get(axis.name, 0)) for axis in theta.inner_axes()
-                       if axis.name not in logical_axes and axis.extent > 1)
-                 if repeats else ())
+        issue = tuple((axis, env.get(axis, 0)) for axis in ld.issue_axes)
         return Move(srcs=(src,), dsts=(dst,), deps=_deps_of(inst),
                     advance=int(getattr(ld, "advance", 0) or 0), issue=issue)
 
@@ -431,6 +427,7 @@ def _convert_mma(theta, inst, env, reads, copy=None):
     m = inst.op
     coord = _concrete_coord(m.coord, env)
     pls = inst.placement or {}                       # {operand: Placement} from the decoder
+    source_issue_axes = dict(m.source_issue_axes)
     srcs = []
     for op in reads:
         pl = pls.get(op.name)
@@ -441,12 +438,7 @@ def _convert_mma(theta, inst, env, reads, copy=None):
         pres = set(presence(theta, op))
         own = tuple((ax, v) for ax, v in coord if ax in pres)
         t = Tile(op.name, "register", own, (("regs", size_regs),))
-        labels = op.fragment.groups()
-        label = labels[grp_idx] if grp_idx is not None and grp_idx < len(labels) else labels[0]
-        repeats = False
-        issue_axes = (tuple(axis.name for axis in theta.inner_axes()
-                            if axis.name not in pres and axis.extent > 1)
-                      if repeats else ())
+        issue_axes = tuple(source_issue_axes.get(op.name, ()))
         srcs.append(Ref(t, group=grp_idx, slot=slot_val, reg_ring=reg_ring,
                         unit_index=_geometry.unit_tile_index(theta, op, own),
                         issue_axes=issue_axes,
@@ -515,8 +507,14 @@ def _program_meta(theta, mainloop, M, red_names, free_axes, mma_inputs, mma_scal
     # `peel_depth` is the prologue's LEAD; `drain_steps` is how many chunks ramp back out.  They
     # are equal unless the scaffold suppresses the no-load loop, which keeps the lead and drops
     # the ramp.
-    meta = {"buffer_depths": mainloop.depths, "peel_depth": M,
-            "drain_steps": M if drain_steps is None else int(drain_steps)}
+    meta = {
+        "buffer_depths": mainloop.depths,
+        "peel_depth": M,
+        "drain_steps": M if drain_steps is None else int(drain_steps),
+        "vgpr_subdivided": any(
+            op.fragment is not None and _geometry.vgpr_group_axis(theta, op) is not None
+            for op in theta.operands),
+    }
     meta["register_layout"] = _geometry.register_layout(theta, mainloop.depths)
     meta.update(_axis_facts(theta, red_names, free_axes, mma_inputs, mma_scales))
     meta.update(_region_facts(theta))
@@ -686,18 +684,26 @@ def _add_steady_blocks(prog, theta, gens, reads, steady_loop, pro_body, first_dr
                 else:
                     body.append(_convert_mma(theta, inst, env, reads, copy=rel))
             last = (i == n_copies - 1)
-            # phis on the HEADER only (the join of entry- and back-edge); xfers on the LAST copy
-            # only (the back-edge transfer), advancing by the number of chunks a trip now consumes.
+            # The header joins entry and back-edge. In a multi-copy shell every copy can also
+            # exit, so each carries the transfer for the number of chunks consumed up to its
+            # test; only the last transfer is used on the back-edge.
             phis = [GenPhi(g, entry_val=0) for g in gens.values()] if i == 0 else []
-            xfers = [GenXfer(g, adv=n_copies, ring=g.ring) for g in gens.values()] if last else []
-            if last:
+            xfers = ([GenXfer(g, adv=n_copies, ring=g.ring) for g in gens.values()]
+                     if last else [])
+            edge_xfers = {}
+            if n_copies > 1:
+                next_target = "steady" if last else labels[i + 1]
+                term = LoopCopy(_trips_of(steady_loop.trip), i, n_copies,
+                                next_target, first_drain)
+                succs = (next_target, first_drain)
+                edge_xfers[first_drain] = [
+                    GenXfer(g, adv=i + 1, ring=g.ring) for g in gens.values()]
+            elif last:
                 # the loop states its TRIP COUNT, not a comparison: the outer `Loop.trip`
-                # range's bound IS the count.  `div` is the chunks a trip consumes, so a multi-block
-                term = LoopBack(_trips_of(steady_loop.trip, per_trip=n_copies),
+                # range's bound IS the count.
+                term = LoopBack(_trips_of(steady_loop.trip),
                                 "steady", first_drain)
                 succs = ("steady", first_drain)
-            else:
-                term, succs = Goto(labels[i + 1]), (labels[i + 1],)
             if i == 0:
                 preds = (("prologue",) if pro_body is not None else ()) + (labels[-1],)
             else:
@@ -706,7 +712,8 @@ def _add_steady_blocks(prog, theta, gens, reads, steady_loop, pro_body, first_dr
             # of the trip -- rel == base here, so a steady requirement is just its gdelta.
             prog.add_block(Block(phase=lab, loop=(i == 0),
                                  preds=preds, succs=succs,
-                                 phis=phis, xfers=xfers, body=body, term=term,
+                                 phis=phis, xfers=xfers, edge_xfers=edge_xfers,
+                                 body=body, term=term,
                                  gen_rel=i, chunk_base=i))
 
 
@@ -732,16 +739,19 @@ def _add_drain_blocks(prog, theta, gens, reads, drain_peel, M, drain_labels, fir
                 else:
                     body.append(_convert_mma(theta, inst, env, reads, copy=_copy))
             nxt = drain_labels[i + 1] if i + 1 < len(drain_labels) else "end"
-            last_steady = (f"steady{loop_copies-1}" if (steady_loop is not None
-                                                        and loop_copies > 1) else "steady")
             pro_pred = (("prologue",) if (i == 0 and pro_body is not None
                                           and short_entry == first_drain) else ())
-            preds = (pro_pred + (last_steady,) if i == 0 else (f"drain{i-1}",))
+            steady_preds = (
+                tuple(["steady"] + [f"steady{j}" for j in range(1, n_copies)])
+                if i == 0 and steady_loop is not None else ())
+            preds = (pro_pred + steady_preds if i == 0 else (f"drain{i-1}",))
+            phis = ([GenPhi(g) for g in gens.values()]
+                    if i == 0 and n_copies > 1 and steady_loop is not None else [])
             # frame: `_flatten` gave drain step i the offset `rel = i - M` (its Bind is
             # `iter = T - M + i`, so its gdeltas are relative to T).  Its position on the chunk
             n_cp = max(1, int(loop_copies)) if steady_loop is not None else 0
             prog.add_block(Block(phase=f"drain{i}", preds=preds, succs=(nxt,),
-                                 body=body, term=Goto(nxt),
+                                 phis=phis, body=body, term=Goto(nxt),
                                  gen_rel=i - M, chunk_base=n_cp + i))
 
 
