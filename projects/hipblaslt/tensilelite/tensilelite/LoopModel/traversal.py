@@ -1501,6 +1501,14 @@ def _shifted_ring_slot(theta, operand, group, shift, strides, buffers, fold=None
         return Expr(
             digits=(position_terms(strides, fold), int(shift), digits),
             mod=max(1, buffers))
+    if operand.fragment.va_includes_regions:
+        # Explicit CLR0 VA is one total circular stream.  Every register position inside a
+        # buffer is the low part of the extended read order; region and repeated-broadcast axes
+        # advance that stream instead of wrapping an individual ring digit early.
+        unit = group_register_positions(theta, operand)
+        return Expr(
+            digits=(position_terms(strides, fold), int(shift), ((1, unit, 0),)),
+            mod=max(1, buffers))
     uses_subunit_digits = (vgpr_group_axis(theta, operand) is not None
                            or operand.fragment.va_time_shares_regions
                            or vgpr_ring_carries(theta, operand, group, buffers))
