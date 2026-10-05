@@ -256,7 +256,8 @@ def localReadPair(state, base):
   a, b = state.get(base + "A"), state.get(base + "B")
   if a is None and b is None:
     return False, scalar, scalar
-  return True, scalar if a is None else a, scalar if b is None else b
+  return True, scalar if a is None or int(a) == -1 else a, \
+      scalar if b is None or int(b) == -1 else b
 
 
 def collapseEqualPair(state, base):
@@ -320,6 +321,9 @@ def loopModelReadAheadCap(state, tc=None) -> int:
   bounds nothing for B.  That is what `PrefetchLocalReadA`/`B` exist to say apart.
   """
   order = wmma_loop_order(state)
+  def _group(side):
+    value = state.get("VgprGroup" + side)
+    return int(value) if value is not None and int(value) != -1 else 1
   # THE TILE THE NEST WALKS, NOT THE ONE THE SOLUTION NAMES.  A TDMSplit divides the tile axis
   # into regions, so the read-ahead runs along the DIVIDED extent -- reading MIWaveTile here
   # would let a split operand ask for more steps than its axis has values.
@@ -329,9 +333,8 @@ def loopModelReadAheadCap(state, tc=None) -> int:
     steps = whole // factor if factor > 1 and not whole % factor else whole
     # PLR COUNTS BUFFERS, and VG cuts each unit into several, so the axis offers that many more
     # steps to run ahead by.  At VG=1 this is the step count it always was.
-    group = state.get("VgprGroup" + side)
-    return steps * (int(group) if group is not None and int(group) != -1 else 1)
-  extent = {"K": max(1, state["LoopIters"]),
+    return steps * _group(side)
+  extent = {"K": max(1, state["LoopIters"] * (_group(tc) if tc in ("A", "B") else 1)),
             "M": max(1, _tile(0, "TDMSplitA", "A")),
             "N": max(1, _tile(1, "TDMSplitB", "B"))}
   mine = _READ_AHEAD_AXES.get(tc)
@@ -2316,6 +2319,33 @@ class Solution(collections.abc.Mapping):
       _hasVg = _vg is not None and int(_vg) != -1
       _hasVa = _va is not None and int(_va) != -1
       _statedVgpr[_tc] = _hasVg or _hasVa
+    # Preserve the pre-VG/VA CLR canonicalization for legacy ULM kernels. The explicit-ring path
+    # resolves CLR/VA precedence in the adapter instead.
+    if state.get("UseLoopModel") and not any(_statedVgpr.values()):
+      _lrOuter = wmma_loop_order(state)[0]
+      _clScalar = int(state.get("ClusterLocalRead", 0) or 0)
+      _cluster = {}
+      for _tc, _walks in (("A", ("M", "K")), ("B", ("N", "K"))):
+        _key = "ClusterLocalRead" + _tc
+        _asked = state.get(_key)
+        _asked = _clScalar if _asked is None or int(_asked) == -1 else int(_asked)
+        if _lrOuter not in _walks:
+          if state.get(_key) is not None and int(state[_key]) == 0:
+            reject(state, printRejectionReason,
+                   "ClusterLocalRead%s=0 but %s is ALL-INNER under this loop order (outermost "
+                   "tile axis is %s, which %s does not walk -- it walks %s): it rereads its whole "
+                   "set every trip, so it holds a full register buffer.  Use -1 to derive it."
+                   % (_tc, _tc, _lrOuter, _tc, "/".join(_walks)))
+            return
+          _asked = 1
+        _cluster[_tc] = _asked
+      if _cluster["A"] == _cluster["B"]:
+        state["ClusterLocalRead"] = _cluster["A"]
+        for _tc in ("A", "B"):
+          state.pop("ClusterLocalRead" + _tc, None)
+      else:
+        state["ClusterLocalReadA"], state["ClusterLocalReadB"] = _cluster["A"], _cluster["B"]
+        state["ClusterLocalRead"] = min(_cluster["A"], _cluster["B"])
     # VgprGroup / VgprAlloc: the allocation as a fraction of the prefetch unit.  VG divides one
     # buffer's SIZE, VA counts the buffers, so `prefetch_unit * VA / VG` is the whole statement.
     # Only theta can honour that, because only there is the prefetch unit the model's to move.

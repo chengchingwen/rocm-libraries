@@ -31,6 +31,8 @@ def _placeable_read_ahead(theta, operand, depths) -> int:
     ahead, so it is lowered until it can; 0 always can.
     """
     want = requested_read_ahead(theta, operand, depths)
+    if not geometry.stated_vgpr_shape(theta) and geometry.vgpr_group_axis(theta, operand) is None:
+        return want
     if not want or operand.fragment is None:
         return want
     while want > 0:

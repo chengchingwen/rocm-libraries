@@ -537,6 +537,23 @@ def _build_theta(agent_inputs, copy_depth, read_depth, view, groups, kernel, nes
 #: an operand reads the PLR/CLR of the data tensor it belongs to
 _REGISTER_SIDE = {"A": "A", "MXSA": "A", "B": "B", "MXSB": "B"}
 
+
+def _legacy_register_depth(theta, operand, cluster, prefetch) -> int:
+    group = operand.fragment.groups()[0]
+    rotation = {name for name, _extent in geometry.rotation_unit_modes(theta, operand)}
+    regions = set(getattr(operand, "region_axes", ()) or ()) & rotation
+    ring = [max(1, int(extent))
+            for name, extent in geometry.ring_axes(theta, operand, group)
+            if name not in regions]
+    positions = max(1, geometry.product(ring) if ring else 1)
+    if cluster:
+        return 1 if geometry.reloads_whole_set(theta, operand) else positions
+    want = max(max(1, int(prefetch) + 1),
+               geometry.derived_group_reuse_floor(theta, operand, group))
+    return next((width for width in range(want, positions + 1)
+                 if positions % width == 0), positions)
+
+
 def _derived_register_depth(theta, operand, cluster, prefetch, vg=1) -> int:
     """Translate CLR/PLR into VA once, before register geometry consumes it.
 
@@ -570,6 +587,10 @@ def _set_register_depths(theta, kernel):
     VG divides one prefetch unit. VA counts its per-region buffers; physical region slots are
     derived from that pair by `group_ring_depth`.
     """
+    explicit_shape = any(
+        value is not None and int(value) != -1
+        for side in ("A", "B")
+        for value in (kernel.get("VgprGroup" + side), kernel.get("VgprAlloc" + side)))
     for operand in theta.operands:
         if not (operand.movements and operand.fragment):
             continue
@@ -589,6 +610,13 @@ def _set_register_depths(theta, kernel):
         asked_va = kernel.get("VgprAlloc" + side)
         has_vg = asked_vg is not None and int(asked_vg) != -1
         has_va = asked_va is not None and int(asked_va) != -1
+        operand.fragment.stated_vgpr = has_vg or has_va
+        if not explicit_shape:
+            operand.fragment.vgpr_group = 1
+            depth = _legacy_register_depth(theta, operand, cluster, prefetch)
+            operand.fragment.ring_depths = {
+                label: depth for label in operand.fragment.groups()}
+            continue
         stated_vg = max(1, int(asked_vg)) if has_vg else 1
         split_vg = geometry.split_unit_divisor(theta, operand)
         if has_vg and stated_vg > 1 and stated_vg % split_vg:

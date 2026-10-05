@@ -60,6 +60,24 @@ def _mxf8(blk=None):
 DTYPES = [({}, "bf16"), (_mxf8(), "fp8"), (_mxf8(32), "mxf8_32"), (_mxf8(16), "mxf8_16")]
 
 
+def test_local_read_pair_auto_side_inherits_scalar():
+    from Tensile.SolutionStructs.Solution import localReadPair
+
+    state = {"PrefetchLocalRead": 3, "PrefetchLocalReadA": -1,
+             "PrefetchLocalReadB": 5}
+    assert localReadPair(state, "PrefetchLocalRead") == (True, 3, 5)
+
+
+def test_k_axis_read_ahead_cap_counts_vg_buffers():
+    from Tensile.SolutionStructs.Solution import loopModelReadAheadCap
+
+    k = _kernel(_mxf8(), _mi("fp8", (2, 2), (1, 1)), 2, 1, "KMN", 0, 0, 1)
+    k.update(LoopIters=2, WmmaInnerOrder=1, WmmaOuterOrder=3, VgprGroupA=1)
+    vg1 = loopModelReadAheadCap(k, "A")
+    k["VgprGroupA"] = 2
+    assert loopModelReadAheadCap(k, "A") == 2 * vg1 + 1
+
+
 def _kernel(dover, mi, pgr, plr, order, sa, sb, vw):
     nw = mi[7] * mi[8]
     out = {**_BASE, **dover, "MatrixInstruction": list(mi),
