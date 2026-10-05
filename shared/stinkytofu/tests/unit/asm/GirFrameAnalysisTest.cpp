@@ -94,6 +94,32 @@ TEST(GirFrameAnalysisTest, ReconstructsRingOnStCfgAndFindsSameTripRaw) {
     EXPECT_NE(raw, hazards.hazards.end());
 }
 
+TEST(GirFrameAnalysisTest, FrameDerivedRawPlacementUsesCrossAgentHazard) {
+    Function function("frame_raw_placement");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* loop = function.createBasicBlock("loop");
+    function.addEdge(loop, loop);
+
+    StinkyInstruction* copy = createTensorLoadInBlock(loop, GfxArchID::Gfx1250, 0, 8);
+    copy->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 2, 0, 0, -1, true}}});
+    StinkyInstruction* read = createDsReadB128InBlock(loop, GfxArchID::Gfx1250, 0, 20);
+    read->addModifier<GirActionData>(
+        GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 0, -1, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kRingTwoContract);
+
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    const auto& frames = analyses.getResult<GirFrameAnalysis>(function);
+    const auto& hazards = analyses.getResult<GirFrameHazardAnalysis>(function);
+    const GirRawPlacementPlan placements = computeGirRawPlacementPlan(function, frames, hazards);
+
+    EXPECT_TRUE(placements.markers.contains(read));
+    EXPECT_TRUE(placements.tensorMarkers.contains(read))
+        << "the shared scheduler/fence query must derive tensor RAW identity from FrameMap";
+}
+
 TEST(GirFrameAnalysisTest, ForwardingPhiDistinguishesLatchBackEdgeFromDrainExit) {
     Function function("forwarding_exit");
     setFunctionArch(function, GfxArchID::Gfx1250);

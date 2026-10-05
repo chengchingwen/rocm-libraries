@@ -259,7 +259,7 @@ bool countsFor(const StinkyInstruction& inst, Counter counter) {
 /// producer action may share the earliest of their deadlines only when that slot is legal for
 /// every edge and no issue on the producer's counter lies between them; each edge's FIFO rank is
 /// then unchanged. Different groups that land on the same instruction naturally share one marker.
-Markers rawMarkers(const FrameCFG& cfg, const GirFrameHazardAnalysis::Result& hazards) {
+GirRawPlacementPlan rawMarkers(const FrameCFG& cfg, const GirFrameHazardAnalysis::Result& hazards) {
     using Group = std::tuple<BasicBlock*, uint64_t, Counter>;
     using ByDeadline = std::map<size_t, std::vector<const GirFrameHazard*>>;
     std::map<Group, ByDeadline> deadlines;
@@ -274,7 +274,7 @@ Markers rawMarkers(const FrameCFG& cfg, const GirFrameHazardAnalysis::Result& ha
     std::map<BasicBlock*, const std::vector<StinkyInstruction*>*, std::less<BasicBlock*>> bodies;
     for (size_t n = 0; n < cfg.nodes.size(); ++n) bodies.emplace(cfg.nodes[n].block, &cfg.body[n]);
 
-    Markers markers;
+    GirRawPlacementPlan plan;
     for (const auto& [group, byDeadline] : deadlines) {
         BasicBlock* block = std::get<0>(group);
         const Counter counter = std::get<2>(group);
@@ -301,7 +301,9 @@ Markers rawMarkers(const FrameCFG& cfg, const GirFrameHazardAnalysis::Result& ha
         const auto flush = [&] {
             if (clusterLow >= instructions.size())
                 report_fatal_error("GirFencePlacementPass: RAW deadline is outside its block");
-            markers.insert(instructions[clusterLow]);
+            const StinkyInstruction* marker = instructions[clusterLow];
+            plan.markers.insert(marker);
+            if (counter == Counter::Tensor) plan.tensorMarkers.insert(marker);
         };
         for (++deadline; deadline != byDeadline.rend(); ++deadline) {
             const size_t candidate = deadline->first;
@@ -335,7 +337,7 @@ Markers rawMarkers(const FrameCFG& cfg, const GirFrameHazardAnalysis::Result& ha
         }
         flush();
     }
-    return markers;
+    return plan;
 }
 
 MarkerOwnershipMap collectMarkerOwnership(const GirFrameAnalysis::Result& frames,
@@ -546,7 +548,8 @@ class GirFencePlacementPass final : public StinkyInstPass {
         // stale under an insertion and an undo costs a set erase instead of a block rebuild.
         const FrameCFG cfg = buildFrameCFG(function, frames);
         if (cfg.nodes.empty()) return PreservedAnalyses::all();
-        const Markers mandatoryRawMarkers = rawMarkers(cfg, hazards);
+        const GirRawPlacementPlan rawPlan = rawMarkers(cfg, hazards);
+        const Markers& mandatoryRawMarkers = rawPlan.markers;
         Markers markers = mandatoryRawMarkers;
         MarkerKinds markerKinds;
         for (const StinkyInstruction* marker : mandatoryRawMarkers)
@@ -762,6 +765,14 @@ char GirFencePlacementPass::ID = 0;
 }  // namespace
 
 namespace stinkytofu {
+GirRawPlacementPlan computeGirRawPlacementPlan(Function& function,
+                                               const GirFrameAnalysis::Result& frames,
+                                               const GirFrameHazardAnalysis::Result& hazards) {
+    const FrameCFG cfg = buildFrameCFG(function, frames);
+    if (cfg.nodes.empty()) return {};
+    return rawMarkers(cfg, hazards);
+}
+
 std::unique_ptr<Pass> createGirFencePlacementPass() {
     return std::make_unique<GirFencePlacementPass>();
 }
