@@ -210,9 +210,46 @@ def test_three_copy_frame_contract_has_backedge_incoming_and_guard_requirements(
                 contract.generations[edge.gen].entry,
                 contract.generations[edge.gen].advance) == (2, 0, 1)
                for edge in backedge)
-    # PGR2's split prefetch guard must remain correlated with the loop entrance/backedge.
-    assert contract.requires
-    assert all(need.gen in contract.generations for need in contract.requires)
+    # Every unrolled-copy transition advances the buffer frame by one.
+    for source, destination in (("steady", "steady1"), ("steady1", "steady2")):
+        incoming = [edge for edge in contract.edges
+                    if edge.relative and edge.src == anchors[source]
+                    and edge.dst == anchors[destination]]
+        assert incoming
+        assert all(edge.value == 1 for edge in incoming)
+
+    # A separate control generation makes the copy chain one-way. Relative incoming alone is not
+    # enough: without these singleton requirements ST can revisit a later copy through copy 0.
+    copy_gens = {gen_id for gen_id, generation in contract.generations.items()
+                 if generation.ring == 4}
+    assert len(copy_gens) == 1
+    copy_gen = next(iter(copy_gens))
+    expected = {
+        (anchors["prologue_join"], anchors["steady"]): ((0,), 0),
+        (anchors["steady"], anchors["steady1"]): ((0, 1), 2),
+        (anchors["steady1"], anchors["steady2"]): ((2,), 3),
+        (anchors["steady2"], anchors["steady"]): ((3,), 1),
+    }
+    for key, (required, incoming_value) in expected.items():
+        source, destination = key
+        assert any(need.gen == copy_gen and need.src == source and need.dst == destination
+                   and need.values == required for need in contract.requires)
+        assert any(edge.gen == copy_gen and edge.src == source and edge.dst == destination
+                   and not edge.relative and edge.value == incoming_value
+                   for edge in contract.edges)
+
+    # The shadow/skip arm owns its own full drain. Only the peeled prefetch arm enters the
+    # modeled steady pipeline, otherwise its one-time rank-0 RAW forces tensorcnt(0) at the
+    # recurring loop header.
+    prefetch_gens = {gen_id for gen_id, generation in contract.generations.items()
+                     if generation.ring == 3}
+    assert len(prefetch_gens) == 1
+    prefetch_gen = next(iter(prefetch_gens))
+    assert any(need.gen == prefetch_gen
+               and need.src == anchors["prologue_join"]
+               and need.dst == anchors["steady"]
+               and need.values == (2,)
+               for need in contract.requires)
 
 
 @pytest.mark.parametrize("vg,va,plr", [(1, 6, 4), (2, 12, 8)])

@@ -212,7 +212,7 @@ def _storage_id(operand, region, storage_ids):
     return storage_ids.setdefault((operand, region), len(storage_ids))
 
 
-def _accesses_of(action, storage, distributed, by_region, storage_ids):
+def _accesses_of(action, storage, distributed, by_region, storage_ids, frame_basis=0):
     """Every shared touch of one action, one `SharedAccess` per frame-region instance.
 
     An instance names ITS OWN region's generation.  A `Ref` carries one `gen`, so a read spanning
@@ -235,15 +235,28 @@ def _accesses_of(action, storage, distributed, by_region, storage_ids):
                 operand=_storage_id(operand, region, storage_ids),
                 ring=max(1, int(storage.depth_of(ref.tile.operand))),
                 gen=gen_id,
-                gdelta=int(getattr(ref, "gdelta", 0) or 0),
+                # The serialized frame advances between unrolled steady copies. GIR itself keeps
+                # one frame and states that same advance in each Ref's gdelta, so remove the
+                # block basis here: concrete generation = (frame+basis) + (gdelta-basis).
+                gdelta=int(getattr(ref, "gdelta", 0) or 0) - int(frame_basis),
                 absolute=-1 if absolute is None else int(absolute),
                 cross_agent=bool(distributed.get(ref.tile.operand))))
     return out
 
 
-def _edges_of(prog, plans, frames):
+def _steady_frame_basis(prog):
+    """Chunk-coordinate basis carried by each unrolled steady-copy block."""
+    return {
+        label: (int(block.gen_rel) if block.gen_rel is not None
+                and (label == "steady" or label.startswith("steady")) else 0)
+        for label, block in prog.blocks.items()
+    }
+
+
+def _edges_of(prog, plans, frames, generations, basis):
     """Every phi input, as the phase one block's generation receives from another."""
     out = set()
+    stated = set()
     for block in prog.blocks.values():
         destinations = _anchor_actions(prog, plans, block.label, True)
         for phi in block.phis:
@@ -254,12 +267,40 @@ def _edges_of(prog, plans, frames):
                         "frame contract: phi input %s->%s has no physical action anchor"
                         % (pred, block.label))
                 relative = value is None
-                phase = (_forward_delta(frames, pred, block.label, phi.gen) if relative
-                         else int(value) % max(1, int(phi.gen.ring)))
+                ring = max(1, int(phi.gen.ring))
+                phase = (
+                    (_forward_delta(frames, pred, block.label, phi.gen)
+                     + basis.get(block.label, 0) - basis.get(pred, 0)) % ring
+                    if relative
+                    else (int(value) + basis.get(block.label, 0)) % ring
+                )
                 for source in sources:
                     for destination in destinations:
                         out.add(Edge(int(destination), int(source), int(phi.gen.id),
                                      phase, relative))
+                stated.add((pred, block.label, int(phi.gen.id)))
+
+    # A multi-copy steady body is one logical loop trip split across several physical blocks.
+    # Its non-header edges have no phi, but the frame still advances by one copy. State that
+    # transition explicitly so the consumer does not have to recover it from per-access gdeltas.
+    for source_label, source_block in prog.blocks.items():
+        for destination_label in source_block.succs:
+            if destination_label not in prog.blocks:
+                continue
+            delta = basis.get(destination_label, 0) - basis.get(source_label, 0)
+            if not delta:
+                continue
+            sources = _anchor_actions(prog, plans, source_label, False)
+            destinations = _anchor_actions(prog, plans, destination_label, True)
+            if not sources or not destinations:
+                continue
+            for gen_id, generation in generations.items():
+                if (source_label, destination_label, gen_id) in stated:
+                    continue
+                phase = delta % max(1, int(generation.ring))
+                for source in sources:
+                    for destination in destinations:
+                        out.add(Edge(int(destination), int(source), int(gen_id), phase, True))
     return sorted(out, key=lambda e: (e.relative, e.dst, e.src, e.gen, e.value))
 
 
@@ -288,6 +329,7 @@ def _guards_of(prog, plans, domains, first_free_gen):
                      successor_labels(prog.blocks[s])) if d in prog.blocks)]
 
     generations, incomings, requires = {}, [], []
+    prefetch = (prog.meta or {}).get("prefetch_guard") or {}
     for label, arms in everywhere:
         if len(arms) < 2 or all(d == domains.universe for _t, d in arms):
             continue
@@ -314,6 +356,23 @@ def _guards_of(prog, plans, domains, first_free_gen):
                     requires.append(Requires(
                         int(destination), int(source), gen_id,
                         (GUARD_UNDECIDED, index)))
+        # The short arm skips the peeled copy and reaches `prologue_join`, but it does not enter
+        # the modeled steady software pipeline. Constrain that join explicitly: otherwise its
+        # one-time rank-0 RAW is merged into the recurring loop-header requirement.
+        targets = {target for target, _domain in arms}
+        if "steady1" in prog.blocks \
+                and targets == {prefetch.get("block"), prefetch.get("skip")}:
+            full = next(index for index, (target, _domain) in enumerate(arms, start=1)
+                        if target == prefetch.get("block"))
+            join = prefetch.get("join")
+            if join in prog.blocks:
+                for successor in prog.blocks[join].succs:
+                    if successor not in prog.blocks:
+                        continue
+                    for source in _anchor_actions(prog, plans, join, False):
+                        for destination in _anchor_actions(prog, plans, successor, True):
+                            requires.append(
+                                Requires(int(destination), int(source), gen_id, (full,)))
         for src, dst, edge in refusers:
             allowed = tuple(sorted(
                 [GUARD_UNDECIDED] + [i for i, (_t, d) in enumerate(arms, start=1) if d & edge]))
@@ -323,6 +382,47 @@ def _guards_of(prog, plans, domains, first_free_gen):
     guard_gens = {gen_id: Generation(gen_id, len(arms) + 1, GUARD_UNDECIDED, 0)
                   for gen_id, arms in generations.values()}
     return guard_gens, incomings, requires
+
+
+def _steady_copy_guard(prog, plans, gen_id):
+    """One-way control state for an unrolled steady-copy chain."""
+    if "steady" not in prog.blocks:
+        return {}, [], []
+    chain = ["steady"]
+    while "steady%d" % len(chain) in prog.blocks:
+        chain.append("steady%d" % len(chain))
+    if len(chain) <= 1:
+        return {}, [], []
+
+    # State 0 is the one-time entry into copy 0; state 1 is recurring copy 0. Keeping them
+    # distinct prevents the finite frame graph from aliasing the prologue with a later ring wrap.
+    generation = Generation(gen_id, len(chain) + 1, 0, 0)
+    incomings, requires = [], []
+
+    def edge(source_label, destination_label, source_values, destination_value):
+        if destination_label not in prog.blocks[source_label].succs:
+            return
+        sources = _anchor_actions(prog, plans, source_label, False)
+        destinations = _anchor_actions(prog, plans, destination_label, True)
+        for source in sources:
+            for destination in destinations:
+                incomings.append(
+                    Edge(int(destination), int(source), gen_id, int(destination_value), False))
+                requires.append(
+                    Requires(int(destination), int(source), gen_id,
+                             tuple(int(value) for value in source_values)))
+
+    # Entry is copy 0; every intra-chain edge is a one-way jump to the next copy.
+    first = chain[0]
+    for predecessor in prog.blocks[first].preds:
+        if predecessor not in chain:
+            edge(predecessor, first, (0,), 0)
+    for index, source in enumerate(chain[:-1]):
+        destination = chain[index + 1]
+        source_values = (0, 1) if index == 0 else (index + 1,)
+        edge(source, destination, source_values, index + 2)
+    edge(chain[-1], first, (len(chain),), 1)
+    return {gen_id: generation}, incomings, requires
 
 
 def build_contract(prog) -> Contract:
@@ -344,18 +444,27 @@ def build_contract(prog) -> Contract:
     by_region = _gens_by_region(prog)
     storage_ids = {}
     contract = Contract(generations=_generations(prog))
-    for action in actions:
-        contract.actions[action.action_id] = Action(
-            action.action_id, action.kind, anchors[action.action_id])
-        contract.accesses.extend(
-            _accesses_of(action, storage, distributed, by_region, storage_ids))
-    contract.edges = _edges_of(prog, plans, frames)
+    basis = _steady_frame_basis(prog)
+    for label, block_actions in plans.items():
+        for action in block_actions:
+            contract.actions[action.action_id] = Action(
+                action.action_id, action.kind, anchors[action.action_id])
+            contract.accesses.extend(
+                _accesses_of(action, storage, distributed, by_region, storage_ids,
+                             basis.get(label, 0)))
+    contract.edges = _edges_of(prog, plans, frames, contract.generations, basis)
     domains = analyses.get(TripDomains(), prog)
     first_free = max(contract.generations, default=-1) + 1
     guard_gens, guard_incomings, guard_requires = _guards_of(prog, plans, domains, first_free)
     contract.generations.update(guard_gens)
     contract.edges = list(contract.edges) + guard_incomings
     contract.requires = guard_requires
+    copy_gen = max(contract.generations, default=-1) + 1
+    copy_gens, copy_incomings, copy_requires = _steady_copy_guard(
+        prog, plans, copy_gen)
+    contract.generations.update(copy_gens)
+    contract.edges.extend(copy_incomings)
+    contract.requires.extend(copy_requires)
     return contract
 
 
