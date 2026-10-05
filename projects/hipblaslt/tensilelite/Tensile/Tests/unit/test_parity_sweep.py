@@ -69,13 +69,19 @@ def test_local_read_pair_auto_side_inherits_scalar():
 
 
 def test_k_axis_read_ahead_cap_counts_vg_buffers():
+    from Tensile.LoopModel.adapter import loop_order_of
     from Tensile.SolutionStructs.Solution import loopModelReadAheadCap
 
     k = _kernel(_mxf8(), _mi("fp8", (2, 2), (1, 1)), 2, 1, "KMN", 0, 0, 1)
     k.update(LoopIters=2, WmmaInnerOrder=1, WmmaOuterOrder=3, VgprGroupA=1)
     vg1 = loopModelReadAheadCap(k, "A")
     k["VgprGroupA"] = 2
-    assert loopModelReadAheadCap(k, "A") == 2 * vg1 + 1
+    assert loopModelReadAheadCap(k, "A") == 2 * vg1
+
+    k = _kernel(_mxf8(), _mi("fp8", (8, 8), (2, 2)),
+                2, 8, loop_order_of(6, 2), 1, 1, 4)
+    k.update(LoopIters=2, WmmaInnerOrder=6, WmmaOuterOrder=2, VgprGroupB=2)
+    assert loopModelReadAheadCap(k, "B") == 8
 
 
 def _kernel(dover, mi, pgr, plr, order, sa, sb, vw):

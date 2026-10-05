@@ -314,36 +314,34 @@ _READ_AHEAD_AXES = {"A": ("M", "K"), "B": ("N", "K")}
 
 
 def loopModelReadAheadCap(state, tc=None) -> int:
-  """Most steps a ULM read may run ahead, along the operand's OWN outermost axis.
+  """Most VG-sized buffers a ULM read may run ahead: ``VG * outer-loop trips``.
 
-  `PrefetchLocalRead` counts steps, so an axis of `extent` values allows `extent - 1`.  A is
-  measured on M (or K), B on N (or K): under MNK the outermost axis of the NEST is M, which
-  bounds nothing for B.  That is what `PrefetchLocalReadA`/`B` exist to say apart.
+  A is measured on its outermost M/K loop and B on its outermost N/K loop. TDMSplit halves the
+  trip count of the axis it cuts before VG converts those trips to buffer steps.
   """
   order = wmma_loop_order(state)
   def _group(side):
     value = state.get("VgprGroup" + side)
     return int(value) if value is not None and int(value) != -1 else 1
-  # THE TILE THE NEST WALKS, NOT THE ONE THE SOLUTION NAMES.  A TDMSplit divides the tile axis
-  # into regions, so the read-ahead runs along the DIVIDED extent -- reading MIWaveTile here
-  # would let a split operand ask for more steps than its axis has values.
-  def _tile(index, split, side):
+  def _split(side):
+    return 1 if state.get("TDMSplit") else int(state.get("TDMSplit" + side, 0) or 0)
+  def _tile(index, side):
     whole = max(1, state["MIWaveTile"][index])
-    factor = max(1, int(state.get(split, 0) or 0))
-    steps = whole // factor if factor > 1 and not whole % factor else whole
-    # PLR COUNTS BUFFERS, and VG cuts each unit into several, so the axis offers that many more
-    # steps to run ahead by.  At VG=1 this is the step count it always was.
-    return steps * _group(side)
-  extent = {"K": max(1, state["LoopIters"] * (_group(tc) if tc in ("A", "B") else 1)),
-            "M": max(1, _tile(0, "TDMSplitA", "A")),
-            "N": max(1, _tile(1, "TDMSplitB", "B"))}
+    trips = whole // 2 if _split(side) == 1 and not whole % 2 else whole
+    return max(1, trips * _group(side))
+  ktrips = max(1, state["LoopIters"])
+  if tc in ("A", "B") and _split(tc) == 2 and not ktrips % 2:
+    ktrips //= 2
+  extent = {"K": max(1, ktrips * (_group(tc) if tc in ("A", "B") else 1)),
+            "M": _tile(0, "A"),
+            "N": _tile(1, "B")}
   mine = _READ_AHEAD_AXES.get(tc)
   if mine is not None:
     order = [a for a in order if a in mine]
   # Skip degenerate axes, as `readahead_level_of` does: an extent of 1 is not the axis PLR walks.
   outermost = next((a for a in order if extent.get(a, 1) > 1),
                    next((a for a in order if a in extent), "K"))
-  return max(0, extent[outermost] - 1)
+  return max(0, extent[outermost])
 
 
 def _disableRuntimeStaggerU(state):
@@ -2319,15 +2317,6 @@ class Solution(collections.abc.Mapping):
       _hasVg = _vg is not None and int(_vg) != -1
       _hasVa = _va is not None and int(_va) != -1
       _statedVgpr[_tc] = _hasVg or _hasVa
-    if state.get("UseLoopModel"):
-      _clScalar = int(state.get("ClusterLocalRead", 0) or 0)
-      _cluster = {}
-      for _tc in ("A", "B"):
-        _named = state.get("ClusterLocalRead" + _tc)
-        _cluster[_tc] = _clScalar if _named is None or int(_named) == -1 else int(_named)
-      if _cluster["A"] != _cluster["B"]:
-        state["ClusterLocalReadA"], state["ClusterLocalReadB"] = _cluster["A"], _cluster["B"]
-        state["ClusterLocalRead"] = min(_cluster.values())
     # VgprGroup / VgprAlloc: the allocation as a fraction of the prefetch unit.  VG divides one
     # buffer's SIZE, VA counts the buffers, so `prefetch_unit * VA / VG` is the whole statement.
     # Only theta can honour that, because only there is the prefetch unit the model's to move.
