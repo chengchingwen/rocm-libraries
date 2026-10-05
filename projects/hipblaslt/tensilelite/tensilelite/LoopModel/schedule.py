@@ -31,16 +31,19 @@ def _placeable_read_ahead(theta, operand, depths) -> int:
     ahead, so it is lowered until it can; 0 always can.
     """
     want = requested_read_ahead(theta, operand, depths)
-    if geometry.vgpr_group_axis(theta, operand) is None:
-        return want
     if not want or operand.fragment is None:
         return want
     while want > 0:
-        if all(reload_anchor(theta, operand, group,
-                             max(1, depths.get(operand.name, group)),
-                             prefetch_distance_for(theta, operand, want, (group,))) is not None
-               for group in operand.fragment.groups()
-               if prefetch_distance_for(theta, operand, want, (group,))):
+        def legal(group):
+            distance = prefetch_distance_for(theta, operand, want, (group,))
+            if not distance:
+                return True
+            buffers = geometry.group_ring_depth(theta, operand, group, depths)
+            anchor = reload_anchor(theta, operand, group, buffers, distance)
+            return anchor is not None and (
+                bool(anchor) or not geometry.vgpr_ring_carries(
+                    theta, operand, group, buffers))
+        if all(legal(group) for group in operand.fragment.groups()):
             return want
         want -= 1
     return 0

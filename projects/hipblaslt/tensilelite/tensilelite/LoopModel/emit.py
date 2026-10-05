@@ -665,13 +665,17 @@ class _Emitter:
                                   for group in selected))
 
     def _repeat_read_axes(self, operand):
-        """Broadcast passes that must reread an explicit ring too shallow to retain the full set."""
-        if operand.fragment is None or not geometry.vgpr_subdivided(self.theta, operand):
+        """Broadcast passes that reread a VA ring too shallow to retain the full resident set."""
+        if operand.fragment is None or operand.name.startswith("MXS"):
             return ()
         shallow = any(
             geometry.group_ring_depth(self.theta, operand, group, self.depths)
             < geometry.group_reuse_floor(
                 self.theta, operand, group, charge_lead=False, lead=0)
+            for group in operand.fragment.groups())
+        shallow = shallow or any(
+            geometry.regions_lead_the_ring(self.theta, operand, group)
+            and operand.fragment.va_time_shares_regions
             for group in operand.fragment.groups())
         if not shallow or self.read_level[operand.name] not in self.pos:
             return ()
@@ -849,10 +853,17 @@ class _Emitter:
         if geometry.reloads_whole_set(self.theta, operand) or operand.name.startswith("MXS"):
             return max(1, span)
         selected = tuple(groups or operand.fragment.groups())
-        width = min(max(1, self.depths.get(operand.name, group)) for group in selected)
+        width = min(geometry.group_ring_depth(self.theta, operand, group, self.depths)
+                    for group in selected)
+        time_shares_regions = any(
+            geometry.regions_lead_the_ring(self.theta, operand, group)
+            and operand.fragment.va_time_shares_regions for group in selected)
+        unit_positions = (geometry.group_prefetch_unit_positions(self.theta, operand)
+                          if time_shares_regions else
+                          geometry.rotation_unit_positions(self.theta, operand))
         return max(1,
                    geometry.group_register_positions(self.theta, operand),
-                   width * geometry.rotation_unit_positions(self.theta, operand))
+                   width * unit_positions)
 
     def _last_pass_of(self, invariant) -> dict:
         """The final value of each invariant axis -- where a read that ran a whole cycle ahead
