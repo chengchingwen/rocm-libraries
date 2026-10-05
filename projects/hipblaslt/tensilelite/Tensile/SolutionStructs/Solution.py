@@ -2319,33 +2319,15 @@ class Solution(collections.abc.Mapping):
       _hasVg = _vg is not None and int(_vg) != -1
       _hasVa = _va is not None and int(_va) != -1
       _statedVgpr[_tc] = _hasVg or _hasVa
-    # Preserve the pre-VG/VA CLR canonicalization for legacy ULM kernels. The explicit-ring path
-    # resolves CLR/VA precedence in the adapter instead.
-    if state.get("UseLoopModel") and not any(_statedVgpr.values()):
-      _lrOuter = wmma_loop_order(state)[0]
+    if state.get("UseLoopModel"):
       _clScalar = int(state.get("ClusterLocalRead", 0) or 0)
       _cluster = {}
-      for _tc, _walks in (("A", ("M", "K")), ("B", ("N", "K"))):
-        _key = "ClusterLocalRead" + _tc
-        _asked = state.get(_key)
-        _asked = _clScalar if _asked is None or int(_asked) == -1 else int(_asked)
-        if _lrOuter not in _walks:
-          if state.get(_key) is not None and int(state[_key]) == 0:
-            reject(state, printRejectionReason,
-                   "ClusterLocalRead%s=0 but %s is ALL-INNER under this loop order (outermost "
-                   "tile axis is %s, which %s does not walk -- it walks %s): it rereads its whole "
-                   "set every trip, so it holds a full register buffer.  Use -1 to derive it."
-                   % (_tc, _tc, _lrOuter, _tc, "/".join(_walks)))
-            return
-          _asked = 1
-        _cluster[_tc] = _asked
-      if _cluster["A"] == _cluster["B"]:
-        state["ClusterLocalRead"] = _cluster["A"]
-        for _tc in ("A", "B"):
-          state.pop("ClusterLocalRead" + _tc, None)
-      else:
+      for _tc in ("A", "B"):
+        _named = state.get("ClusterLocalRead" + _tc)
+        _cluster[_tc] = _clScalar if _named is None or int(_named) == -1 else int(_named)
+      if _cluster["A"] != _cluster["B"]:
         state["ClusterLocalReadA"], state["ClusterLocalReadB"] = _cluster["A"], _cluster["B"]
-        state["ClusterLocalRead"] = min(_cluster["A"], _cluster["B"])
+        state["ClusterLocalRead"] = min(_cluster.values())
     # VgprGroup / VgprAlloc: the allocation as a fraction of the prefetch unit.  VG divides one
     # buffer's SIZE, VA counts the buffers, so `prefetch_unit * VA / VG` is the whole statement.
     # Only theta can honour that, because only there is the prefetch unit the model's to move.

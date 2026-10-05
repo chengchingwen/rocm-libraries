@@ -588,11 +588,6 @@ def group_live_peak(theta, operand, group, steps, post_war=True, off=None) -> in
     return (1 + -(-int(off) // max(1, stride))) * concurrent_regions(theta, operand)
 
 
-def stated_vgpr_shape(theta) -> bool:
-    return any(getattr(op.fragment, "stated_vgpr", False)
-               for op in theta.operands if op.fragment is not None)
-
-
 def derived_group_reuse_floor(theta, operand, group) -> int:
     """Reuse floor in prefetch-unit buffers, before the adapter records canonical VA."""
     cache = getattr(theta, "_derived_group_reuse_floor_cache", None)
@@ -616,10 +611,8 @@ def derived_group_reuse_floor(theta, operand, group) -> int:
         intervals[source] = (first, time)
 
     maximum = max(1, group_ring_size(theta, operand, group))
-    regions = max(1, _region_count(theta, operand))
     for width in range(1, maximum + 1):
-        buffers = width if stated_vgpr_shape(theta) else width * regions
-        slot = ring_slot(theta, operand, group, buffers)
+        slot = ring_slot(theta, operand, group, width)
         by_register = {}
         for source, live in intervals.items():
             coord = dict(zip(axes, source))
@@ -752,34 +745,33 @@ def _direct_input(theta, side):
 def requested_read_ahead(theta, operand, depths=None) -> int:
     """Internal per-operand PLR, in this operand's grouped-prefetch units.
 
-    PLR already counts the current prefetch unit. TDMSplit has reduced that unit before this
-    request is interpreted, and VG divides it afterward; neither rescales the parameter here.
-    ``depths`` applies only the selected VGPR scheme's capacity cap.
+    The adapter normalizes an explicit VG request after TDMSplit.  A whole-set operand then
+    converts its lead from the original prefetch unit to the current structural unit; other
+    operands already count the current unit. ``depths`` applies the VA capacity cap.
     """
     raw = _raw_read_ahead(theta, operand)
     if not raw:
         return 0
 
-    if stated_vgpr_shape(theta):
-        want = raw
+    extents = {axis.name: axis.extent for axis in theta.inner_axes()}
+    has_split_region = any(max(1, int(extents.get(axis, 1))) > 1
+                           for axis in (getattr(operand, "region_axes", ()) or ()))
+    if reloads_whole_set(theta, operand) and not has_split_region:
+        side = _side(operand)
+        peer = _direct_input(theta, "B" if side == "A" else "A")
+        want = raw if peer is None else \
+            _raw_read_ahead(theta, peer) * prefetch_unit_tiles(theta, peer)
+    elif reloads_whole_set(theta, operand):
+        original = product(extent for _name, extent
+                           in original_prefetch_unit_modes(theta, operand))
+        grouped = prefetch_unit_tiles(theta, operand)
+        if original % grouped:
+            raise RuntimeError(
+                f"{operand.name}: original prefetch unit {original} is not divisible by "
+                f"current unit {grouped}")
+        want = raw * (original // grouped)
     else:
-        extents = {axis.name: axis.extent for axis in theta.inner_axes()}
-        has_split_region = any(max(1, int(extents.get(axis, 1))) > 1
-                               for axis in (getattr(operand, "region_axes", ()) or ()))
-        if reloads_whole_set(theta, operand) and not has_split_region:
-            side = _side(operand)
-            peer = _direct_input(theta, "B" if side == "A" else "A")
-            want = raw if peer is None else \
-                _raw_read_ahead(theta, peer) * prefetch_unit_tiles(theta, peer)
-        else:
-            original = product(extent for _name, extent
-                               in original_prefetch_unit_modes(theta, operand))
-            grouped = group_prefetch_unit_tiles(theta, operand)
-            if original % grouped:
-                raise RuntimeError(
-                    f"{operand.name}: original prefetch unit {original} is not divisible by "
-                    f"group unit {grouped}")
-            want = raw * (original // grouped)
+        want = raw
 
     if reloads_whole_set(theta, operand):
         outer = theta.summation_chunk_name()
@@ -977,8 +969,6 @@ def vgpr_subdivided(theta, operand) -> bool:
     Either TDMSplit or VG can provide the HalfPLR half.  In particular, a tile split that already
     halves the prefetch unit uses VG=1 rather than dividing that half a second time.
     """
-    if not stated_vgpr_shape(theta):
-        return vgpr_group(theta, operand) > 1
     return split_unit_divisor(theta, operand) > 1 or vgpr_group(theta, operand) > 1
 
 
@@ -1319,13 +1309,6 @@ def regions_lead_the_ring(theta, operand, group) -> bool:
 
 def vgpr_ring_carries(theta, operand, group, buffers) -> bool:
     """Whether one trip advances this VA ring to a different starting phase."""
-    if not stated_vgpr_shape(theta):
-        if not vgpr_subdivided(theta, operand):
-            return False
-        if vgpr_group_axis(theta, operand) is not None:
-            return True
-        return (regions_lead_the_ring(theta, operand, group)
-                and group_unit_tiles(theta, operand, group) == 1)
     extents = transfer_extents(theta, operand)
     strides, _span = axis_strides(theta, varying_axes(theta, operand), extents)
     _digits, period = _ring_digits(theta, operand, group, strides, buffers)
@@ -1770,9 +1753,9 @@ def reload_positions(theta, operand, group, buffers, distance):
     None means no such position exists, so this width cannot carry this read-ahead.
     """
     if (vgpr_group_axis(theta, operand) is None and buffers > 1
-            and (not stated_vgpr_shape(theta) or _region_count(theta, operand) <= 1)
-            and not (reloads_whole_set(theta, operand)
-                     and len(operand.fragment.groups()) == 1)):
+            and (_region_count(theta, operand) <= 1
+                 or (reloads_whole_set(theta, operand)
+                     and len(operand.fragment.groups()) == 1))):
         return {}
     # A storage-region walk can put a refill between two invariant-axis consumers even at VG1,
     # so it needs the same physical-register timeline as a subdivided ring.  The unsplit VG1
