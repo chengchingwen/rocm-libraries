@@ -38,7 +38,13 @@ def loopModelValuRegs(writer, kernel):
   for op in theta.operands:
     if op.trajectory.fragment_fill is None:
       continue
-    out[op.name] = int(_geometry.operand_emitted_regs(theta, op, S))
+    side = "A" if op.name in ("A", "MXSA") else "B" if op.name in ("B", "MXSB") else None
+    stated = side is not None and any(
+        int(kernel.get(name + side, -1) if kernel.get(name + side, -1) is not None else -1) != -1
+        for name in ("VgprGroup", "VgprAlloc"))
+    sizing = (_geometry.operand_footprint_regs if stated
+              else _geometry.operand_emitted_regs)
+    out[op.name] = int(sizing(theta, op, S))
   return out
 
 
