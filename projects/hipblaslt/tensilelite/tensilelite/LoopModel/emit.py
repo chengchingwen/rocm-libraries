@@ -666,7 +666,9 @@ class _Emitter:
 
     def _repeat_read_axes(self, operand):
         """Broadcast passes that reread a VA ring too shallow to retain the full resident set."""
-        if operand.fragment is None or operand.name.startswith("MXS"):
+        if operand.fragment is None or operand.name.startswith("MXS") \
+                or (not geometry.stated_vgpr_shape(self.theta)
+                    and not geometry.vgpr_subdivided(self.theta, operand)):
             return ()
         shallow = any(
             geometry.group_ring_depth(self.theta, operand, group, self.depths)
@@ -853,6 +855,11 @@ class _Emitter:
         if geometry.reloads_whole_set(self.theta, operand) or operand.name.startswith("MXS"):
             return max(1, span)
         selected = tuple(groups or operand.fragment.groups())
+        if not geometry.stated_vgpr_shape(self.theta):
+            width = min(max(1, self.depths.get(operand.name, group)) for group in selected)
+            return max(1,
+                       geometry.group_register_positions(self.theta, operand),
+                       width * geometry.rotation_unit_positions(self.theta, operand))
         width = min(geometry.group_ring_depth(self.theta, operand, group, self.depths)
                     for group in selected)
         time_shares_regions = any(
