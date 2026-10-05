@@ -529,29 +529,13 @@ def _build_theta(agent_inputs, copy_depth, read_depth, view, groups, kernel, nes
     for operand in theta.operands:
         if operand.movements and operand.fragment:
             operand.fragment.grouping_mode = geometry.grouping_mode_name(theta, operand)
-    _place_read_offsets(theta, read_requests)
     _set_register_depths(theta, kernel)
+    _place_read_offsets(theta, read_requests, kernel)
     return theta
 
 
 #: an operand reads the PLR/CLR of the data tensor it belongs to
 _REGISTER_SIDE = {"A": "A", "MXSA": "A", "B": "B", "MXSB": "B"}
-
-
-def _legacy_register_depth(theta, operand, cluster, prefetch) -> int:
-    group = operand.fragment.groups()[0]
-    rotation = {name for name, _extent in geometry.rotation_unit_modes(theta, operand)}
-    regions = set(getattr(operand, "region_axes", ()) or ()) & rotation
-    ring = [max(1, int(extent))
-            for name, extent in geometry.ring_axes(theta, operand, group)
-            if name not in regions]
-    positions = max(1, geometry.product(ring) if ring else 1)
-    if cluster:
-        return 1 if geometry.reloads_whole_set(theta, operand) else positions
-    want = max(max(1, int(prefetch) + 1),
-               geometry.derived_group_reuse_floor(theta, operand, group))
-    return next((width for width in range(want, positions + 1)
-                 if positions % width == 0), positions)
 
 
 def _derived_register_depth(theta, operand, cluster, prefetch, vg=1) -> int:
@@ -573,7 +557,19 @@ def _derived_register_depth(theta, operand, cluster, prefetch, vg=1) -> int:
                 extent for name, extent in geometry.ring_axes(theta, operand, group)
                 if name not in regions))
         return max(1, resident * max(1, int(vg)))
-    return max(1, int(prefetch) + 1)
+    if geometry.vgpr_subdivided(theta, operand):
+        return max(1, int(prefetch) + 1)
+    group = operand.fragment.groups()[0]
+    rotation = {name for name, _extent in geometry.rotation_unit_modes(theta, operand)}
+    regions = set(getattr(operand, "region_axes", ()) or ()) & rotation
+    ring = [max(1, int(extent))
+            for name, extent in geometry.ring_axes(theta, operand, group)
+            if name not in regions]
+    positions = max(1, geometry.product(ring) if ring else 1)
+    want = max(max(1, int(prefetch) + 1),
+               geometry.derived_group_reuse_floor(theta, operand, group))
+    return next((width for width in range(want, positions + 1)
+                 if positions % width == 0), positions)
 
 
 def _set_register_depths(theta, kernel):
@@ -587,10 +583,6 @@ def _set_register_depths(theta, kernel):
     VG divides one prefetch unit. VA counts its per-region buffers; physical region slots are
     derived from that pair by `group_ring_depth`.
     """
-    explicit_shape = any(
-        value is not None and int(value) != -1
-        for side in ("A", "B")
-        for value in (kernel.get("VgprGroup" + side), kernel.get("VgprAlloc" + side)))
     for operand in theta.operands:
         if not (operand.movements and operand.fragment):
             continue
@@ -610,13 +602,6 @@ def _set_register_depths(theta, kernel):
         asked_va = kernel.get("VgprAlloc" + side)
         has_vg = asked_vg is not None and int(asked_vg) != -1
         has_va = asked_va is not None and int(asked_va) != -1
-        operand.fragment.stated_vgpr = has_vg or has_va
-        if not explicit_shape:
-            operand.fragment.vgpr_group = 1
-            depth = _legacy_register_depth(theta, operand, cluster, prefetch)
-            operand.fragment.ring_depths = {
-                label: depth for label in operand.fragment.groups()}
-            continue
         stated_vg = max(1, int(asked_vg)) if has_vg else 1
         split_vg = geometry.split_unit_divisor(theta, operand)
         if has_vg and stated_vg > 1 and stated_vg % split_vg:
@@ -626,6 +611,7 @@ def _set_register_depths(theta, kernel):
         # VG names the total subdivision. TDMSplit has already supplied its factor, so theta
         # retains only the additional divisor applied to the current PU (VG2 -> VG1 at split2).
         vg = max(1, stated_vg // split_vg)
+        operand.fragment.vgpr_group = vg
         derived = _derived_register_depth(theta, operand, cluster, prefetch, vg)
         if cluster and cluster_was_forced and has_va:
             # AUTO/all-inner CLR1 may retain a caller's larger rotation-unit allocation.
@@ -643,7 +629,6 @@ def _set_register_depths(theta, kernel):
             raise RuntimeError(
                 "VgprGroup%s=%d does not divide %s's %d-tile prefetch unit under this loop "
                 "order." % (side, vg, operand.name, unit))
-        operand.fragment.vgpr_group = vg
         operand.fragment.va_includes_regions = bool(has_va and not cluster)
         operand.fragment.va_time_shares_regions = bool(has_va and not cluster)
         operand.fragment.ring_depths = {
@@ -666,11 +651,18 @@ def params_to_theta(p: dict) -> Theta:
     return theta
 
 
-def _place_read_offsets(theta, requests):
+def _place_read_offsets(theta, requests, kernel):
     for operand in theta.operands:
         depth = requests.get(operand.name, 0)
         if depth <= 0:
             continue
+        side = _REGISTER_SIDE.get(operand.name)
+        group = kernel.get("VgprGroup" + side) if side is not None else None
+        if group is not None and int(group) != -1:
+            # Explicit PLR is already expressed in VG-sized buffers. TDMSplit has consumed its
+            # structural part of VG, so remove that factor before the common traversal converts
+            # back from the original prefetch unit.
+            depth = max(0, int(depth) // geometry.split_unit_divisor(theta, operand))
         axis = readahead_level(theta, operand)
         if axis is None:  # no intra-region axis this operand advances along
             continue
