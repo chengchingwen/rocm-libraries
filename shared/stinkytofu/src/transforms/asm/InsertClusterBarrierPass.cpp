@@ -976,6 +976,11 @@ Rule3SignalAnchor findRule3SignalAnchorByCycleLead(
     auto hardStopAnchor = [&](StinkyInstruction* inst) -> IRBase* {
         if (isClusterBarrierWait(*inst))
             return anchorAfterWorkgroupBarrierFollowing(inst, defaultAnchor);
+        // A Rule 3 phase may not straddle a tensor-counter drain. The drain is the physical
+        // publication point selected from FrameMap; settle after its workgroup fence so every
+        // wave has crossed that RAW before wave 0 opens the cluster phase.
+        if (inst->is(InstFlag::IF_WaitTensorCnt))
+            return anchorAfterWorkgroupBarrierFollowing(inst, defaultAnchor);
         if (isWorkgroupBarrierSignal(*inst) && priorWaitAnchors.count(inst) != 0)
             return anchorAfterWorkgroupBarrierPair(inst, defaultAnchor);
         return nullptr;

@@ -948,6 +948,43 @@ TEST_F(InsertClusterBarrierPassTest, Rule3ClusterWaitIsHoistedAboveTensorDrain) 
         << "the hoist moves the cluster wait, not the drain:" << blockListing(*bb);
 }
 
+TEST_F(InsertClusterBarrierPassTest, Rule3SignalDoesNotClimbAcrossEarlierTensorRawFence) {
+    appendGsu1Preheader();
+    openLoop();
+    StinkyInstruction* drain = createWaitTensorCnt(2);
+    createBarrierSignal(kWorkgroupBarrierId);
+    StinkyInstruction* rawWait = createBarrierWait(kWorkgroupBarrierId);
+    for (int i = 0; i < 40; ++i) createWMMA(8 + (i % 8) * 8, (i % 8) * 8, ((i + 1) % 8) * 8);
+    StinkyInstruction* trigger = createBarrierSignal(kWorkgroupBarrierId);
+    createBarrierWait(kWorkgroupBarrierId);
+    createTensorLoadInBlock(bb, arch, /*s0=*/0, /*s1=*/4);
+    closeLoop();
+
+    runPass(/*rule3SignalLeadCycles=*/200);
+
+    StinkyInstruction* clusterCmp = findClusterWaveCmpAfter(indexOf(rawWait));
+    ASSERT_NE(clusterCmp, nullptr) << blockListing(*bb);
+    EXPECT_GT(indexOf(clusterCmp), indexOf(rawWait))
+        << "the cluster signal must start after the RAW publication fence:" << blockListing(*bb);
+    EXPECT_LT(indexOf(clusterCmp), indexOf(trigger)) << blockListing(*bb);
+
+    StinkyInstruction* clusterWait = realInstBefore(trigger);
+    ASSERT_NE(clusterWait, nullptr) << blockListing(*bb);
+    ASSERT_TRUE(isClusterBarrierWithLiteral(*clusterWait, /*wantSignal=*/false))
+        << blockListing(*bb);
+    EXPECT_LT(indexOf(drain), indexOf(clusterCmp)) << blockListing(*bb);
+
+    size_t idx = 0;
+    for (IRBase& ir : *bb) {
+        if (ir.getType() != IRBase::IRType::StinkyTofu) continue;
+        auto* inst = cast<StinkyInstruction>(&ir);
+        if (idx > indexOf(clusterCmp) && idx < indexOf(clusterWait))
+            EXPECT_FALSE(inst->is(InstFlag::IF_WaitTensorCnt))
+                << "no tensorcnt may lie inside a cluster phase:" << blockListing(*bb);
+        ++idx;
+    }
+}
+
 // Re-running the pass must not plant a second cluster wait just because the
 // first one now sits above the drain rather than adjacent to the anchor.
 TEST_F(InsertClusterBarrierPassTest, HoistedClusterWaitStaysIdempotent) {
