@@ -242,7 +242,7 @@ def _reg_residence(theta, op, coord, pl, env, copy=None):
     groups = op.fragment.groups() if op is not None else ("",)
     grp_idx = list(groups).index(label) if label in groups else 0
     width = getattr(gexpr, "mod", 0) or 1
-    if not _geometry.vgpr_ring_carries(theta, op, label):
+    if not _geometry.vgpr_ring_carries(theta, op, label, width):
         copy = None
     # A RING THE TRIP DOES NOT CLOSE carries: `VA=3` over four positions is 1.5 buffers, so it
     # comes back round only after three trips, and each one starts a period further along.  Where

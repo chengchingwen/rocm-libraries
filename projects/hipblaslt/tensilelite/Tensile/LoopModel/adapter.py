@@ -537,30 +537,35 @@ def _build_theta(agent_inputs, copy_depth, read_depth, view, groups, kernel, nes
 #: an operand reads the PLR/CLR of the data tensor it belongs to
 _REGISTER_SIDE = {"A": "A", "MXSA": "A", "B": "B", "MXSB": "B"}
 
-def _derived_register_depth(theta, operand, cluster, prefetch) -> int:
-    """Derive the old CLR/PLR request into VA units at the adapter boundary."""
-    group = operand.fragment.groups()[0]
-    rotation = {name for name, _extent in geometry.rotation_unit_modes(theta, operand)}
-    regions = set(getattr(operand, "region_axes", ()) or ()) & rotation
-    ring = [max(1, int(extent))
-            for name, extent in geometry.ring_axes(theta, operand, group)
-            if name not in regions]
-    positions = max(1, geometry.product(ring) if ring else 1)
+def _derived_register_depth(theta, operand, cluster, prefetch, vg=1) -> int:
+    """Translate CLR/PLR into VA once, before register geometry consumes it.
+
+    CLR=0 allocates the value in use plus the requested prefetched buffers.  CLR=1 owns the
+    complete outer-loop resident set; because VA counts buffers after VG subdivides one prefetch
+    unit, each resident unit contributes ``VG`` buffers.
+    """
     if cluster:
-        depth = 1 if geometry.reloads_whole_set(theta, operand) else positions
-    else:
-        want = max(max(1, int(prefetch) + 1),
-                   geometry.derived_group_reuse_floor(theta, operand, group))
-        depth = next((width for width in range(want, positions + 1)
-                      if positions % width == 0), positions)
-    return depth
+        if geometry.reloads_whole_set(theta, operand):
+            # One buffer is already a full rotation unit for an all-inner operand.
+            resident = 1
+        else:
+            group = operand.fragment.groups()[0]
+            rotation = {name for name, _extent in geometry.rotation_unit_modes(theta, operand)}
+            regions = set(getattr(operand, "region_axes", ()) or ()) & rotation
+            resident = max(1, geometry.product(
+                extent for name, extent in geometry.ring_axes(theta, operand, group)
+                if name not in regions))
+        return max(1, resident * max(1, int(vg)))
+    return max(1, int(prefetch) + 1)
 
 
 def _set_register_depths(theta, kernel):
     """Set the canonical VG/VA pair consumed by every register calculation.
 
-    Explicit VgprGroup/VgprAlloc is copied directly. Otherwise the compatibility CLR/PLR request
-    is translated here exactly once; no downstream geometry reads CLR/PLR to size the ring.
+    CLR/PLR and every ``-1`` are resolved here exactly once; no downstream geometry reads them.
+    Explicit CLR=1's full outer-loop allocation overrides a stated VA.  An all-inner CLR1 forced
+    from AUTO may retain a stated VA when it is at least that large.  With CLR=0, a stated VA
+    overrides the derived ``PLR + 1`` value.
 
     VG divides one prefetch unit. VA counts its per-region buffers; physical region slots are
     derived from that pair by `group_ring_depth`.
@@ -571,49 +576,48 @@ def _set_register_depths(theta, kernel):
         side = _REGISTER_SIDE.get(operand.name)
         if side is None:
             continue
-        cluster = _per_operand(kernel, "ClusterLocalRead", side,
-                               int(kernel.get("ClusterLocalRead", 0) or 0))
+        named_cluster = kernel.get("ClusterLocalRead" + side)
+        cluster_is_auto = named_cluster is None or int(named_cluster) == -1
+        requested_cluster = (int(kernel.get("ClusterLocalRead", 0) or 0)
+                             if cluster_is_auto else int(named_cluster))
+        all_inner = geometry.reloads_whole_set(theta, operand)
+        cluster_was_forced = all_inner and requested_cluster != 1
+        cluster = 1 if all_inner else max(0, requested_cluster)
         prefetch = _per_operand(kernel, "PrefetchLocalRead", side,
                                 int(kernel.get("PrefetchLocalRead", 0) or 0))
         asked_vg = kernel.get("VgprGroup" + side)
         asked_va = kernel.get("VgprAlloc" + side)
         has_vg = asked_vg is not None and int(asked_vg) != -1
         has_va = asked_va is not None and int(asked_va) != -1
-        if has_vg != has_va:
+        stated_vg = max(1, int(asked_vg)) if has_vg else 1
+        split_vg = geometry.split_unit_divisor(theta, operand)
+        if has_vg and stated_vg > 1 and stated_vg % split_vg:
             raise RuntimeError(
-                "VgprGroup%s and VgprAlloc%s form one register-ring shape; set both or leave "
-                "both at -1." % (side, side))
-        stated = has_vg
-        split = max(1, geometry.split_unit_divisor(theta, operand))
-        if not stated:
-            # CLR/PLR are compatibility inputs only. Translate them once into the canonical
-            # pair; every later calculation reads Fragment.vgpr_group/ring_depths.
-            operand.fragment.vgpr_group = 1
-            depth = _derived_register_depth(theta, operand, cluster, prefetch)
-            operand.fragment.ring_depths = {
-                label: depth for label in operand.fragment.groups()}
-            continue
-        if cluster:
+                "VgprGroup%s=%d is not compatible with TDMSplit's prefetch-unit divisor %d."
+                % (side, stated_vg, split_vg))
+        # VG names the total subdivision. TDMSplit has already supplied its factor, so theta
+        # retains only the additional divisor applied to the current PU (VG2 -> VG1 at split2).
+        vg = max(1, stated_vg // split_vg)
+        derived = _derived_register_depth(theta, operand, cluster, prefetch, vg)
+        if cluster and cluster_was_forced and has_va:
+            # AUTO/all-inner CLR1 may retain a caller's larger rotation-unit allocation.
+            depth = max(derived, int(asked_va))
+        elif cluster:
+            # An explicitly requested CLR1 owns the full outer-loop allocation.
+            depth = derived
+        elif has_va:
+            # Under CLR0, a stated VA replaces the derived PLR+1 count.
+            depth = max(1, int(asked_va))
+        else:
+            depth = derived
+        unit = geometry.prefetch_unit_tiles(theta, operand)
+        if vg > 1 and unit % vg:
             raise RuntimeError(
-                "VgprGroup%s/VgprAlloc%s requires ClusterLocalRead%s=0; the explicit pair "
-                "already owns the register-ring depth." % (side, side, side))
-        vg = max(1, int(asked_vg))
-        depth = max(1, int(asked_va))
-        if vg % split:
-            raise RuntimeError(
-                "VgprGroup%s=%d: the split already cuts %s's prefetch unit %d ways, so a buffer "
-                "is at most a %d-th of it and %d is not a multiple of %d.  Use a multiple of %d, "
-                "or leave it at -1 to derive." % (side, vg, operand.name, split, split, vg,
-                                                  split, split))
-        extra = max(1, vg // split)
-        block = geometry.group_unit_tiles(theta, operand, operand.fragment.groups()[0])
-        if extra > 1 and block % extra:
-            raise RuntimeError(
-                "VgprGroup%s=%d: %s holds %d tile(s) per buffer under this loop order, which %d "
-                "does not divide, so there is no whole-tile %d-th of it to allocate.  Use a VG "
-                "that divides %d, or leave it at -1 to derive."
-                % (side, vg, operand.name, block, extra, extra, block))
+                "VgprGroup%s=%d does not divide %s's %d-tile prefetch unit under this loop "
+                "order." % (side, vg, operand.name, unit))
         operand.fragment.vgpr_group = vg
+        operand.fragment.va_includes_regions = bool(has_va and not cluster)
+        operand.fragment.va_time_shares_regions = bool(has_va and not cluster)
         operand.fragment.ring_depths = {
             label: depth for label in operand.fragment.groups()}
 

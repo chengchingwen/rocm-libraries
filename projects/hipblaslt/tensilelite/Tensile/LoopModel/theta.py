@@ -40,6 +40,8 @@ class Fragment:
     offsets: dict = field(default_factory=dict)
     ring_depths: dict = None          #: VA -- buffers of one unit, per group
     vgpr_group: int = 1               #: VG -- the factor the prefetch unit is DIVIDED by
+    va_includes_regions: bool = False #: explicit CLR0 VA is the total, not per-region, count
+    va_time_shares_regions: bool = False #: that VA is reused when regions execute sequentially
 
     space = Space.REGISTER
 

@@ -2315,58 +2315,15 @@ class Solution(collections.abc.Mapping):
       _va = state.get("VgprAlloc" + _tc)
       _hasVg = _vg is not None and int(_vg) != -1
       _hasVa = _va is not None and int(_va) != -1
-      if _hasVg != _hasVa:
-        reject(state, printRejectionReason,
-               "VgprGroup%s and VgprAlloc%s form one register-ring shape; set both or leave "
-               "both at -1." % (_tc, _tc))
-        return
-      _statedVgpr[_tc] = _hasVg
-    # An operand is ALL-INNER when the outermost tile axis is one it does not walk (A walks M/K,
-    # B walks N/K), so it rereads its whole set every trip and holds a full buffer regardless of
-    # the scalar.  A stated VG/VA pair is already the complete allocation and therefore bypasses
-    # this derivation; mixing it with CLR=1 would give two conflicting owners for the ring depth.
-    _lrOuter = wmma_loop_order(state)[0]
-    _clScalar = int(state.get("ClusterLocalRead", 0) or 0)
-    _cluster = {}
-    for _tc, _walks in (("A", ("M", "K")), ("B", ("N", "K"))) if state.get("UseLoopModel") else ():
-      _key = "ClusterLocalRead" + _tc
-      _asked = state.get(_key)
-      _asked = _clScalar if _asked is None or int(_asked) == -1 else int(_asked)
-      if _statedVgpr[_tc]:
-        if _asked:
-          reject(state, printRejectionReason,
-                 "ClusterLocalRead%s=1 conflicts with the stated VgprGroup%s/VgprAlloc%s "
-                 "ring.  Leave ClusterLocalRead%s=0 so the explicit allocation is authoritative."
-                 % (_tc, _tc, _tc, _tc))
-          return
-        _asked = 0
-      elif _lrOuter not in _walks:               # all-inner: the whole set is live every trip
-        if state.get(_key) is not None and int(state[_key]) == 0:
-          reject(state, printRejectionReason,
-                 "ClusterLocalRead%s=0 but %s is ALL-INNER under this loop order (outermost "
-                 "tile axis is %s, which %s does not walk -- it walks %s): it rereads its whole "
-                 "set every trip, so it holds a full register buffer.  Use -1 to derive it."
-                 % (_tc, _tc, _lrOuter, _tc, "/".join(_walks)))
-          return
-        _asked = 1
-      _cluster[_tc] = _asked
-    if not _cluster:                             # not theta's to decide; leave both spellings
-      pass
-    elif _cluster["A"] == _cluster["B"]:         # one answer: the scalar says it, the pair goes
-      state["ClusterLocalRead"] = _cluster["A"]
-      for _tc in ("A", "B"):
-        state.pop("ClusterLocalRead" + _tc, None)
-    else:
-      # The scalar stays in the name beside the pair, so PIN it to the pair -- left as asked, two
-      # requests resolving to one schedule would carry two names and dedupe would miss it.
-      state["ClusterLocalReadA"], state["ClusterLocalReadB"] = _cluster["A"], _cluster["B"]
-      state["ClusterLocalRead"] = min(_cluster["A"], _cluster["B"])
+      _statedVgpr[_tc] = _hasVg or _hasVa
     # VgprGroup / VgprAlloc: the allocation as a fraction of the prefetch unit.  VG divides one
     # buffer's SIZE, VA counts the buffers, so `prefetch_unit * VA / VG` is the whole statement.
     # Only theta can honour that, because only there is the prefetch unit the model's to move.
     for _tc in ("A", "B"):
       _vg, _va = state.get("VgprGroup" + _tc), state.get("VgprAlloc" + _tc)
-      _asked = (["VgprGroup" + _tc, "VgprAlloc" + _tc] if _statedVgpr[_tc] else [])
+      _asked = [name for name, value in (
+          ("VgprGroup" + _tc, _vg), ("VgprAlloc" + _tc, _va))
+          if value is not None and int(value) != -1]
       if _asked and not state.get("UseLoopModel"):
         reject(state, printRejectionReason,
                "%s is UseLoopModel-only: off that path the prefetch unit is fixed by the "
