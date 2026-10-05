@@ -530,7 +530,7 @@ def _build_theta(agent_inputs, copy_depth, read_depth, view, groups, kernel, nes
         if operand.movements and operand.fragment:
             operand.fragment.grouping_mode = geometry.grouping_mode_name(theta, operand)
     _set_register_depths(theta, kernel)
-    _place_read_offsets(theta, read_requests, kernel)
+    _place_read_offsets(theta, read_requests)
     return theta
 
 
@@ -589,19 +589,21 @@ def _set_register_depths(theta, kernel):
         side = _REGISTER_SIDE.get(operand.name)
         if side is None:
             continue
-        named_cluster = kernel.get("ClusterLocalRead" + side)
-        cluster_is_auto = named_cluster is None or int(named_cluster) == -1
-        requested_cluster = (int(kernel.get("ClusterLocalRead", 0) or 0)
-                             if cluster_is_auto else int(named_cluster))
-        all_inner = geometry.reloads_whole_set(theta, operand)
-        cluster_was_forced = all_inner and requested_cluster != 1
-        cluster = 1 if all_inner else max(0, requested_cluster)
-        prefetch = _per_operand(kernel, "PrefetchLocalRead", side,
-                                int(kernel.get("PrefetchLocalRead", 0) or 0))
         asked_vg = kernel.get("VgprGroup" + side)
         asked_va = kernel.get("VgprAlloc" + side)
         has_vg = asked_vg is not None and int(asked_vg) != -1
         has_va = asked_va is not None and int(asked_va) != -1
+        named_cluster = kernel.get("ClusterLocalRead" + side)
+        cluster_is_auto = named_cluster is None or int(named_cluster) == -1
+        requested_cluster = (0 if cluster_is_auto and (has_vg or has_va)
+                             else int(kernel.get("ClusterLocalRead", 0) or 0)
+                             if cluster_is_auto else int(named_cluster))
+        all_inner = geometry.reloads_whole_set(theta, operand)
+        cluster_was_forced = bool(kernel.get("_ClusterLocalReadForced" + side, False)) \
+            or (all_inner and requested_cluster != 1)
+        cluster = 1 if all_inner else max(0, requested_cluster)
+        prefetch = _per_operand(kernel, "PrefetchLocalRead", side,
+                                int(kernel.get("PrefetchLocalRead", 0) or 0))
         stated_vg = max(1, int(asked_vg)) if has_vg else 1
         split_vg = geometry.split_unit_divisor(theta, operand)
         if has_vg and stated_vg > 1 and stated_vg % split_vg:
@@ -614,8 +616,9 @@ def _set_register_depths(theta, kernel):
         operand.fragment.vgpr_group = vg
         derived = _derived_register_depth(theta, operand, cluster, prefetch, vg)
         if cluster and cluster_was_forced and has_va:
-            # AUTO/all-inner CLR1 may retain a caller's larger rotation-unit allocation.
-            depth = max(derived, int(asked_va))
+            # AUTO/all-inner CLR1 may retain VA only when it holds the complete resident set.
+            required = geometry._canonical_ring_period(theta, operand)
+            depth = max(derived, required, int(asked_va))
         elif cluster:
             # An explicitly requested CLR1 owns the full outer-loop allocation.
             depth = derived
@@ -629,8 +632,9 @@ def _set_register_depths(theta, kernel):
             raise RuntimeError(
                 "VgprGroup%s=%d does not divide %s's %d-tile prefetch unit under this loop "
                 "order." % (side, vg, operand.name, unit))
-        operand.fragment.va_includes_regions = bool(has_va and not cluster)
-        operand.fragment.va_time_shares_regions = bool(has_va and not cluster)
+        explicit_total = bool(has_va and (not cluster or cluster_was_forced))
+        operand.fragment.va_includes_regions = explicit_total
+        operand.fragment.va_time_shares_regions = explicit_total
         operand.fragment.ring_depths = {
             label: depth for label in operand.fragment.groups()}
 
@@ -651,18 +655,11 @@ def params_to_theta(p: dict) -> Theta:
     return theta
 
 
-def _place_read_offsets(theta, requests, kernel):
+def _place_read_offsets(theta, requests):
     for operand in theta.operands:
         depth = requests.get(operand.name, 0)
         if depth <= 0:
             continue
-        side = _REGISTER_SIDE.get(operand.name)
-        group = kernel.get("VgprGroup" + side) if side is not None else None
-        if group is not None and int(group) != -1:
-            # Explicit PLR is already expressed in VG-sized buffers. TDMSplit has consumed its
-            # structural part of VG, so remove that factor before the common traversal converts
-            # back from the original prefetch unit.
-            depth = max(0, int(depth) // geometry.split_unit_divisor(theta, operand))
         axis = readahead_level(theta, operand)
         if axis is None:  # no intra-region axis this operand advances along
             continue
@@ -686,6 +683,8 @@ def _shape_params(elem_bytes, kernel, mi, wt0, wt1):
         "PrefetchLocalReadB": kernel.get("PrefetchLocalReadB", -1),
         "ClusterLocalRead": kernel.get("ClusterLocalRead", 0),
         "ClusterLocalReadA": kernel.get("ClusterLocalReadA", -1),
+        "_ClusterLocalReadForcedA": bool(kernel.get("_ClusterLocalReadForcedA", False)),
+        "_ClusterLocalReadForcedB": bool(kernel.get("_ClusterLocalReadForcedB", False)),
         "VgprGroupA": kernel.get("VgprGroupA", -1),
         "VgprGroupB": kernel.get("VgprGroupB", -1),
         "VgprAllocA": kernel.get("VgprAllocA", -1),

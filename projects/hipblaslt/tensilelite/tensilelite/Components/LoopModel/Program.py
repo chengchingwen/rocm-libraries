@@ -5,6 +5,7 @@
 from ...LoopModel import traversal as geometry
 from ...LoopModel.emit import emit_mainloop
 from ...LoopModel.render import render_theta
+from ...LoopModel.schedule import Schedule
 from ...Lowering import build_gir, gir_text
 from ...Lowering.gir import check_plan
 from ...Lowering.gir.analyses import Gl2PrefetchRegions
@@ -33,6 +34,28 @@ def loopModelGirProgram(writer, kernel):
 
     theta, _S = loopModelTheta(writer, kernel)
     with namingSolution(writer, kernel):
+        plans = Schedule(theta, _S)
+        missing = []
+        for operand in theta.operands:
+            if operand.name not in ("A", "B") or operand.trajectory.shared_read is None:
+                continue
+            stated_ring = any(
+                kernel.get(name) is not None and int(kernel.get(name)) != -1
+                for name in ("VgprGroup" + operand.name, "VgprAlloc" + operand.name))
+            if not stated_ring:
+                continue
+            requested = geometry.requested_read_ahead(theta, operand, _S)
+            if requested <= 0:
+                continue
+            for group in operand.fragment.groups():
+                actual = plans.plan(operand, group).prefetch_steps
+                if actual == 0:
+                    missing.append(
+                        f"{operand.name}/{group}: requested PLR{requested}, scheduled PLR0")
+        if missing:
+            raise ValueError(
+                "UseLoopModel: nonzero PrefetchLocalRead lost all prefetch — "
+                + "; ".join(missing))
         # PrefetchGL2 is placed by an analysis but is not modeled in theta. GIR only
         # chooses where its existing issue/increment pair is emitted.
         mainloop = emit_mainloop(theta)

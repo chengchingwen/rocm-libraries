@@ -234,7 +234,33 @@ def _slot_of(theta, op, coord, pl):
     return pl.slots[0]
 
 
-def _reg_residence(theta, op, coord, pl, env, copy=None):
+def _issue_axis_count(theta, issue_axes) -> int:
+    names = set(issue_axes or ())
+    count = 1
+    for axis in theta.inner_axes():
+        if axis.name in names:
+            count *= max(1, int(axis.extent))
+    return count
+
+
+def _advanced_issue(theta, op, env, issue_axes, advance):
+    """Residency-pass coordinates reached by a read's flat advance."""
+    names = tuple(issue_axes or ())
+    if not names:
+        return ()
+    extents = _geometry.transfer_extents(theta, op)
+    modes = set(_geometry.reload_modes(theta, op)) | set(names)
+    strides, _span = _geometry.axis_strides(theta, modes, extents)
+    terms = _geometry.position_terms(strides, _geometry.read_coverage(theta, op))
+    position = sum((int(env.get(name, 0)) // max(1, divisor)) * int(coef)
+                   for name, coef, divisor in terms)
+    reached = position + max(0, int(advance or 0))
+    return tuple((name, (reached // max(1, int(strides[name])))
+                         % max(1, int(extents.get(name, 1))))
+                 for name in names)
+
+
+def _reg_residence(theta, op, coord, pl, env, copy=None, issue_axes=()):
     """`(group index, concrete slot, rotation width W)` for `op`'s register fragment AT `coord`."""
     label, gexpr = _slot_of(theta, op, coord, pl)
     if gexpr is None:
@@ -247,7 +273,8 @@ def _reg_residence(theta, op, coord, pl, env, copy=None):
     # A RING THE TRIP DOES NOT CLOSE carries: `VA=3` over four positions is 1.5 buffers, so it
     # comes back round only after three trips, and each one starts a period further along.  Where
     # the period is a multiple of the depth the term vanishes and the slot is unchanged.
-    period = _geometry.ring_positions(theta, op, label, width) if copy else 0
+    period = (_geometry.ring_positions(theta, op, label, width)
+              * _issue_axis_count(theta, issue_axes) if copy else 0)
     return grp_idx, (gexpr.eval(env) + int(copy or 0) * period) % width, width
 
 
@@ -390,7 +417,8 @@ def _convert_load(theta, inst, env, rel, gens, reg_copy=_UNSET):
         # register residence: (group index, concrete slot, rotation width W) for THIS COORDINATE's
         # group. W is the slot Expr's modulus (a LoopIR fact GIR consumes, B3): mod>1 -> W
         grp_idx, slot_val, reg_ring = _reg_residence(
-            theta, op, coord, pl, env, copy=(rel if reg_copy is _UNSET else reg_copy))
+            theta, op, coord, pl, env, copy=(rel if reg_copy is _UNSET else reg_copy),
+            issue_axes=ld.issue_axes)
         # source shared generation
         src_ref_kw = {}
         if src_space == Space.SHARED and pl is not None and pl.src_slot is not None:
@@ -415,7 +443,7 @@ def _convert_load(theta, inst, env, rel, gens, reg_copy=_UNSET):
         dst = Ref(dst_tile, group=grp_idx, slot=slot_val, reg_ring=reg_ring,
                   unit_index=unit_index, unit_indexes=unit_indexes,
                   covers=covers, size_regs=ld.size_regs)
-        issue = tuple((axis, env.get(axis, 0)) for axis in ld.issue_axes)
+        issue = _advanced_issue(theta, op, env, ld.issue_axes, ld.advance)
         return Move(srcs=(src,), dsts=(dst,), deps=_deps_of(inst),
                     advance=int(getattr(ld, "advance", 0) or 0), issue=issue)
 
@@ -431,14 +459,15 @@ def _convert_mma(theta, inst, env, reads, copy=None):
     srcs = []
     for op in reads:
         pl = pls.get(op.name)
-        grp_idx, slot_val, reg_ring = _reg_residence(theta, op, coord, pl, env, copy=copy)
+        issue_axes = tuple(source_issue_axes.get(op.name, ()))
+        grp_idx, slot_val, reg_ring = _reg_residence(
+            theta, op, coord, pl, env, copy=copy, issue_axes=issue_axes)
         size_regs = _geometry.frag_regs(theta, op)
         # THE SOURCE NAMES THE OPERAND'S OWN COORDINATE, NOT THE WMMA'S.
         #
         pres = set(presence(theta, op))
         own = tuple((ax, v) for ax, v in coord if ax in pres)
         t = Tile(op.name, "register", own, (("regs", size_regs),))
-        issue_axes = tuple(source_issue_axes.get(op.name, ()))
         srcs.append(Ref(t, group=grp_idx, slot=slot_val, reg_ring=reg_ring,
                         unit_index=_geometry.unit_tile_index(theta, op, own),
                         issue_axes=issue_axes,
