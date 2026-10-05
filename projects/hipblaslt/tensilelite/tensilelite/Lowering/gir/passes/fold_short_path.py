@@ -7,7 +7,7 @@ then remove the arm.
 
 from __future__ import annotations
 
-from ..nodes import CondGoto, Goto, LoopBack, Mma, Move
+from ..nodes import CondGoto, Goto, LoopBack, LoopCopy, Mma, Move
 from ..nodes import terminator_targets
 
 
@@ -115,7 +115,8 @@ class FoldShortPathPass(Pass):
             for producer_pos, consumer_pos, producer, consumer in constraints:
                 # WAR DEFERRAL MUST NOT BREAK RAW.  Moving the refill past a wmma that reads the
                 # value this very read delivers leaves that wmma on the previous generation.
-                if _reads_own_value(block.body, producer, producer_pos, consumer_pos):
+                if (prog.meta.get("vgpr_subdivided")
+                        and _reads_own_value(block.body, producer, producer_pos, consumer_pos)):
                     continue
                 prior = latest.get(id(producer))
                 if prior is None or positions[id(prior)] < consumer_pos:
@@ -174,6 +175,11 @@ class FoldShortPathPass(Pass):
                 _rewire(lab)
                 blk.term = LoopBack(t.trips, t.body, first_drain, t.label)
                 blk.succs = (t.body, first_drain)
+            elif isinstance(t, LoopCopy) and t.exit_target in short:
+                _rewire(lab)
+                blk.term = LoopCopy(t.trips, t.index, t.copies, t.next_target,
+                                    first_drain, t.label)
+                blk.succs = (t.next_target, first_drain)
 
         for lab in short:
             del prog.blocks[lab]

@@ -128,6 +128,9 @@ def _generations(prog) -> dict:
             if fact["advance"] not in (None, value):
                 raise RuntimeError("frame contract: inconsistent transfer for Gen %d" % xfer.gen.id)
             fact["advance"] = value
+        for edge_xfers in (block.edge_xfers or {}).values():
+            for xfer in edge_xfers:
+                ensure(xfer.gen, xfer.ring)
         for inst in block.body:
             if isinstance(inst, Move):
                 for ref in tuple(inst.srcs) + tuple(inst.dsts):
