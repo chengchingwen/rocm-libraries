@@ -203,6 +203,22 @@ class LoopBack:
 
 
 @dataclass(frozen=True)
+class LoopCopy:
+    """One copy in a statically unrolled counted loop.
+
+    The emitted scaffold decrements/tests after every copy. `index` is zero-based, `copies` is
+    the unroll width, `next_target` is the next copy (or the header on the last copy), and
+    `exit_target` is the common drain/exit. `trips` counts chunks, not groups of `copies`.
+    """
+    trips:       Trips
+    index:       int
+    copies:      int
+    next_target: str
+    exit_target: str
+    label:       str = ""
+
+
+@dataclass(frozen=True)
 class Return:
     """Function-early-exit terminator -- a SINK with no successors."""
 
@@ -241,6 +257,8 @@ def terminator_targets(term):
         return [term.t_target, term.f_target]
     if isinstance(term, LoopBack):
         return [term.body, term.exit_target]
+    if isinstance(term, LoopCopy):
+        return [term.next_target, term.exit_target]
     if isinstance(term, Return):
         return []                       # a sink: no successors, no dominance/back-edge role
     if isinstance(term, CondChain):
@@ -262,6 +280,7 @@ class Block:
     succs: tuple = ()
     phis:  list = field(default_factory=list)
     xfers: list = field(default_factory=list)
+    edge_xfers: dict = field(default_factory=dict)  # {successor: [GenXfer]} for non-back exits
     body:  list = field(default_factory=list)
     term:  object = None
     role:  str = "all"

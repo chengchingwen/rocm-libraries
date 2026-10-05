@@ -537,113 +537,33 @@ def _build_theta(agent_inputs, copy_depth, read_depth, view, groups, kernel, nes
 #: an operand reads the PLR/CLR of the data tensor it belongs to
 _REGISTER_SIDE = {"A": "A", "MXSA": "A", "B": "B", "MXSB": "B"}
 
-class _StatedDepth:
-    """A `depths`-shaped view of the depth just assigned, so `group_ring_depth` stays the one
-    place that turns a per-group VA into the slots the emitter addresses."""
-
-    def __init__(self, depth):
-        self._depth = max(1, int(depth))
-
-    def get(self, _name, _group):
-        return self._depth
-
-
-def _fit_read_ahead(theta, operand, group, depth) -> None:
-    """Pull this operand's read-ahead back to what `depth` buffers can hold in flight.
-
-    A lead of `L` keeps `L + 1` values live, so a ring of `depth` carries a lead of `depth - 1`
-    and no more.  Asking for more does not deepen the pipeline, it refills a slot still in use.
-    """
-    axis = geometry.readahead_level(theta, operand)
-    if axis is None:
-        return
-    offsets = operand.trajectory.fragment_fill.destination.offsets
-    while int(offsets.get(axis[0], 0) or 0) > 0 and _lead_of(theta, operand, group) + 1 > depth:
-        offsets[axis[0]] = int(offsets[axis[0]]) - 1
-
-
-def _lead_of(theta, operand, group) -> int:
-    return int(geometry.prefetch_distance_for(
-        theta, operand, geometry.requested_read_ahead(theta, operand), (group,)))
-
-
-def _share_regions(theta, operand, group, depth, regions) -> int:
-    """`depth` cut to ONE region's share, if the ring walk says the regions may share it.
-
-    They may when the regions LEAD the ring -- the outer loop finishes region 0 before region 1
-    begins -- and when the read-ahead does not run past the region edge, which is the one thing
-    that overlaps them.  The lead is pulled back to what one region can carry and the shared ring
-    is then walked for real: anything short of a clobber is a ring that holds what it claims.
-    `regions_lead_the_ring` alone is NOT enough -- it passed 56/384 cells that clobber.
-    """
-    if regions <= 1 or not geometry.regions_lead_the_ring(theta, operand, group):
-        return depth
-    # AN ALL-INNER OPERAND HAS NOTHING TO DEFER.  Its resident set already spans every region --
-    # that is what rereading the whole set every trip means -- so one buffer per region IS the
-    # share, and halving again leaves one buffer holding two regions' worth.
-    if geometry.reloads_whole_set(theta, operand):
-        return depth
-    # AND NOTHING IT MUST OUTLIVE IS NESTED ABOVE THE RING.  An axis the operand is INVARIANT
-    # over is a pass the resident set has to survive: inside the region it means the next region
-    # arrives while this one is still being reread, outside it means the set is wanted again on
-    # the next turn of that axis.  Either way a shared slot serves the wrong region to a wmma --
-    # 48/384 for the inner case, 16/384 for the outer.  Both operands split is where it bites:
-    # each one's ring straddles the OTHER's region axis.
-    order = [axis.name for axis in theta.ord]
-    varies = set(geometry.varying_axes(theta, operand))
-    regional = {name for name in (getattr(operand, "region_axes", ()) or ()) if name in order}
-    ringed = [name for name, _extent in geometry.ring_axes(theta, operand, group)
-              if name in order]
-    last = min(order.index(name) for name in ringed)
-    if any(order[index] not in varies and order[index] not in regional
-           for index in range(1, last)):          # 0 is `iter`, the trip, which nothing outlives
-        return depth
-    shared = max(1, depth // regions)
-    axis = geometry.readahead_level(theta, operand)
-    offsets = operand.trajectory.fragment_fill.destination.offsets if axis else {}
-    restore = dict(offsets)
-    if axis is not None:
-        while int(offsets.get(axis[0], 0) or 0) > 0 and _lead_of(theta, operand, group) + 1 > shared:
-            offsets[axis[0]] = int(offsets[axis[0]]) - 1
-    # THE FLOOR IS THE AUTHORITY, asked of the SHARED ring: the regions no longer each keep a
-    # copy of what is live, so it is the per-region reuse windows that decide.  A share below it
-    # aliases two live generations however outer the region axis is.
-    floor = geometry.group_reuse_floor(theta, operand, group, shared_regions=True)
-    verdict = geometry.register_reuse_verdict(
-        theta, operand, group, shared, _lead_of(theta, operand, group))
-    if shared >= floor and verdict != geometry.CLOBBER:
-        return shared
-    offsets.clear()
-    offsets.update(restore)                      # the share was refused; leave the lead alone
+def _derived_register_depth(theta, operand, cluster, prefetch) -> int:
+    """Derive the old CLR/PLR request into VA units at the adapter boundary."""
+    group = operand.fragment.groups()[0]
+    rotation = {name for name, _extent in geometry.rotation_unit_modes(theta, operand)}
+    regions = set(getattr(operand, "region_axes", ()) or ()) & rotation
+    ring = [max(1, int(extent))
+            for name, extent in geometry.ring_axes(theta, operand, group)
+            if name not in regions]
+    positions = max(1, geometry.product(ring) if ring else 1)
+    if cluster:
+        depth = 1 if geometry.reloads_whole_set(theta, operand) else positions
+    else:
+        want = max(max(1, int(prefetch) + 1),
+                   geometry.derived_group_reuse_floor(theta, operand, group))
+        depth = next((width for width in range(want, positions + 1)
+                      if positions % width == 0), positions)
     return depth
 
 
-def _scheduled_lead(theta, operand, group) -> int:
-    """The read-ahead distance this operand will actually be SCHEDULED at, not the one asked for.
-
-    `schedule._placeable_read_ahead` lowers the request when the refill has no legal position, so
-    a refusal that charges the raw request judges a pipeline depth the kernel never gets.
-    """
-    from .schedule import BufferDepths, _placeable_read_ahead
-    depths = BufferDepths(theta, include_shared=False)
-    return int(geometry.prefetch_distance_for(
-        theta, operand, _placeable_read_ahead(theta, operand, depths), (group,)))
-
-
 def _set_register_depths(theta, kernel):
-    """The ring depth is STATED by the solution, not searched for.
+    """Set the canonical VG/VA pair consumed by every register calculation.
 
-    This is the ROTATION count, not the width.  `ClusterLocalRead` keeps the operand's whole set
-    resident, and what that costs depends on whether the operand has an OUTER axis:
+    Explicit VgprGroup/VgprAlloc is copied directly. Otherwise the compatibility CLR/PLR request
+    is translated here exactly once; no downstream geometry reads CLR/PLR to size the ring.
 
-      all-inner  -- it rereads the same set every trip, so nothing rotates and the ring is 1
-      has-outer  -- it advances along its outer axis, so a full buffer is one slot per value
-
-    Without clustering the ring is the read-ahead depth plus the value in use, raised to the
-    reuse floor: a value consumed again after an axis the operand is invariant over has to
-    survive that pass, and a ring that does not divide its positions aliases two live values.
-    Every arm is measured on the operand's OWN axis, which is why the depth is per operand at
-    all.  This replaces the depth SEARCH and nothing else -- the grouping is left as it was.
+    VG divides one prefetch unit. VA counts its per-region buffers; physical region slots are
+    derived from that pair by `group_ring_depth`.
     """
     for operand in theta.operands:
         if not (operand.movements and operand.fragment):
@@ -655,102 +575,37 @@ def _set_register_depths(theta, kernel):
                                int(kernel.get("ClusterLocalRead", 0) or 0))
         prefetch = _per_operand(kernel, "PrefetchLocalRead", side,
                                 int(kernel.get("PrefetchLocalRead", 0) or 0))
-        # POSITIONS THE RING ENUMERATES, off the same `ring_axes` the slot expression walks, so a
-        # buffer can never out-count its slots.  A REGION AXIS IS ONE OF THEM: it is a loop
-        # coordinate like any other, so it is counted here, once, and nothing multiplies the
-        # depth by it afterwards.  VG and VA then stand free of TDMSplit, PLR and CLR.
-        group = operand.fragment.groups()[0]
-        # VG IS SETTLED FIRST, because the derivation below ASKS the geometry questions and VG
-        # changes their answers: `group_reuse_floor` searches up to the ring size in BUFFERS, so
-        # asking it before the fragment carries VG capped the search at the un-cut ring, found
-        # no width, and silently returned that ceiling -- which the floor's own cache then froze.
         asked_vg = kernel.get("VgprGroup" + side)
         asked_va = kernel.get("VgprAlloc" + side)
+        has_vg = asked_vg is not None and int(asked_vg) != -1
+        has_va = asked_va is not None and int(asked_va) != -1
+        if has_vg != has_va:
+            raise RuntimeError(
+                "VgprGroup%s and VgprAlloc%s form one register-ring shape; set both or leave "
+                "both at -1." % (side, side))
+        stated = has_vg
         split = max(1, geometry.split_unit_divisor(theta, operand))
-        vg = split if asked_vg is None or int(asked_vg) == -1 else max(1, int(asked_vg))
-        operand.fragment.vgpr_group = max(1, vg)
-        region_axes = set(getattr(operand, "region_axes", ()) or ())
-        ring = [max(1, int(extent))
-                for name, extent in geometry.ring_axes(theta, operand, group)
-                if name not in region_axes]
-        # A region appears at its own multiplicity, not its axis extent, so it is taken from
-        # `region_positions` rather than from the enumerator -- counted here and nowhere else.
-        regions = max(1, geometry.region_positions(theta, operand))
-        positions = max(1, geometry.product(ring) if ring else 1) * regions
+        if not stated:
+            # CLR/PLR are compatibility inputs only. Translate them once into the canonical
+            # pair; every later calculation reads Fragment.vgpr_group/ring_depths.
+            operand.fragment.vgpr_group = 1
+            depth = _derived_register_depth(theta, operand, cluster, prefetch)
+            operand.fragment.ring_depths = {
+                label: depth for label in operand.fragment.groups()}
+            continue
         if cluster:
-            # All-inner holds one buffer; otherwise the whole ring.  A read-ahead still fits: the
-            # refill is in place, deferred past the last use.
-            depth = regions if geometry.reloads_whole_set(theta, operand) else positions
-            # CLUSTERING OVER A SPLIT KEEPS ONE REGION RESIDENT where the regions can share
-            # the ring -- the halved full, which is what CLR=1 over a split should cost.
-            depth = _share_regions(theta, operand, group, depth, regions)
-            # A CLUSTERED RING STILL HAS TO CARRY ITS OWN LEAD.  This arm sizes the ring to the
-            # resident set and never asked the floor, so an all-inner operand took ONE buffer
-            # while `PrefetchLocalRead` gave it a lead of 2 -- the refill then landed on the
-            # value in use.  The set is resident; reading ahead inside it buys nothing.
-            _fit_read_ahead(theta, operand, group, depth)
-            # AND IT MUST COVER WHAT THE READS REACH.  "The whole set is resident" says what the
-            # ring has to HOLD, not that one buffer can hold it: where the set turns through more
-            # than one rotation place, one buffer serves the wrong tile to a wmma.  The reuse
-            # FLOOR is the wrong bound here -- it over-reports on a clustered ring (8/384) --
-            # the right one is the places the reads actually write.
-            depth = max(depth, geometry.ring_reached_positions(theta, operand, group, depth))
-        else:
-            # A scale takes its tensor's read-ahead but enumerates its own ring, and one scale
-            # read can cover every free tile -- so the depth it asks for is bounded by the ring.
-            # PLR IS CONVERTED TO BUFFERS HERE, regions included: they are concurrent, so a
-            # lead of `PLR` keeps `PLR + 1` live in each of them.  The floor already speaks
-            # buffers, so both sides of the max are the unit VA counts and the result IS VA.
-            want = max(max(1, int(prefetch) + 1) * regions,
-                       geometry.group_reuse_floor(theta, operand, group))
-            # A WIDTH BELOW THE REGION DIGIT'S PLACE ERASES IT.  The region digit sits above
-            # the enumerator, so a modulus at or under the enumerator's span folds every region
-            # onto the same slot and two concurrent regions alias.  Where the regions rotate,
-            # the ring has to span them.
-            if regions > 1:
-                want = max(want, positions)
-            depth = next((width for width in range(want, positions + 1)
-                          if positions % width == 0), positions)
-        # VG/VA ARE THE AUTHORITY INSIDE THETA.  `ClusterLocalRead`/`PrefetchLocalRead` reach no
-        # further than this function: they are one way of SAYING a (VG, VA) pair, and the pair is
-        # what the model carries.  Stating them directly says shapes the pair cannot -- 1.5
-        # buffers is VG=2/VA=3, and an all-inner operand's `U + P/2` is VG=2/VA=2n+1.
-        # ONLY WHAT VG DIVIDES BEYOND THE SPLIT changes anything here: the split's own share is
-        # already spent as the per-region unit.  A sub-iteration still consumes a whole unit, so
-        # a unit cut `extra` ways takes `extra` buffers; at the derived VG that factor is 1 and
-        # the depth is the one PLR/CLR gave.
-        # A VG THE SPLIT DOES NOT DIVIDE HAS NO MEANING, and floors away silently: the split has
-        # already cut the unit `split` ways and the buffer cannot be bigger than what it left.
-        if asked_vg is not None and int(asked_vg) != -1 and vg % split:
+            raise RuntimeError(
+                "VgprGroup%s/VgprAlloc%s requires ClusterLocalRead%s=0; the explicit pair "
+                "already owns the register-ring depth." % (side, side, side))
+        vg = max(1, int(asked_vg))
+        depth = max(1, int(asked_va))
+        if vg % split:
             raise RuntimeError(
                 "VgprGroup%s=%d: the split already cuts %s's prefetch unit %d ways, so a buffer "
                 "is at most a %d-th of it and %d is not a multiple of %d.  Use a multiple of %d, "
                 "or leave it at -1 to derive." % (side, vg, operand.name, split, split, vg,
                                                   split, split))
         extra = max(1, vg // split)
-        # SCALED ON BOTH ARMS, clustered included: VG cuts the buffer, so the same resident set
-        # takes that many more of them.  Leaving CLR=1 unscaled halved the block and kept the
-        # unhalved ring, which is a depth that cannot hold what it claims.  CLR=1 still
-        # OVERWRITES VA -- the whole set is resident by definition -- it just honours VG too.
-        depth *= extra
-        # VA IS THE BUFFER COUNT OUTRIGHT -- regions included, not multiplied on afterwards.
-        if asked_va is not None and int(asked_va) != -1 and not cluster:
-            depth = int(asked_va)
-        operand.fragment.vgpr_group = max(1, vg)
-        operand.fragment.ring_depths = {
-            label: depth for label in operand.fragment.groups()}
-        # THESE TWO CHECK A STATED PAIR, NOT A DERIVED ONE.  VG cuts the buffer, so VA has to
-        # count more of them, and the caller is the one who has to get that right: the floor is
-        # the smallest ring that keeps a value alive across every consumer pass, the ceiling is
-        # all the positions the ring has to write.  A DERIVED depth is whatever PLR/CLR already
-        # settled, and re-judging it here would refuse kernels that have always generated.
-        if asked_vg is None and asked_va is None:
-            continue
-        if int(asked_vg if asked_vg is not None else -1) == -1 \
-                and int(asked_va if asked_va is not None else -1) == -1:
-            continue
-        # VG HAS TO DIVIDE THE BLOCK IT CUTS.  A block of one tile has no half, and the cut
-        # floors away silently -- leaving the allocation scaled for buffers the reads never fill.
         block = geometry.group_unit_tiles(theta, operand, operand.fragment.groups()[0])
         if extra > 1 and block % extra:
             raise RuntimeError(
@@ -758,59 +613,9 @@ def _set_register_depths(theta, kernel):
                 "does not divide, so there is no whole-tile %d-th of it to allocate.  Use a VG "
                 "that divides %d, or leave it at -1 to derive."
                 % (side, vg, operand.name, block, extra, extra, block))
-        for label in operand.fragment.groups():
-            # CHECK THE SLOTS THE EMITTER ADDRESSES, not the per-group VA.  `group_ring_depth`
-            # gives each region its own turn, and `_check_dead_slots` and the slot modulus both
-            # count that way; judging `depth` instead agrees only at one region, so a split
-            # operand's over-ask used to walk past here and surface as a check_plan defect.
-            slots = geometry.group_ring_depth(theta, operand, label, _StatedDepth(depth))
-            # THE FLOOR IS A SINGLE-TRIP MODEL.  It asks what stays live inside ONE turn of the
-            # ring, so it cannot judge a ring the trip does NOT close -- 3 buffers over 4
-            # positions is the 1.5-buffer rotation, which closes after three trips and carries a
-            # lead the single-trip bound calls impossible (`lead + 1` of 5 on a 4-position ring).
-            # Those widths are the ones `ring_trip_copies` replicates the body for, and they
-            # verify clean; `check_plan` is their gate, not this.
-            period = geometry.ring_positions(theta, operand, label, slots)
-            if period % max(1, slots):
-                continue
-            # THE REFUSAL ASKS FOR THE UNCHARGED FLOOR -- what actually aliases, not what the
-            # lead would cost if its reload were never anchored.  The charged number is right
-            # for the scheduler and too strict as a gate.
-            floor = geometry.group_reuse_floor(theta, operand, label, charge_lead=False,
-                                               lead=_scheduled_lead(theta, operand, label))
-            if slots < floor:
-                raise RuntimeError(
-                    "VgprGroup%s=%d with VgprAlloc%s=%d: %s:%s rotates through %d buffers but "
-                    "needs at least %d to keep one read alive across every pass that consumes "
-                    "it -- fewer would alias two live generations.  Raise VgprAlloc%s."
-                    % (side, vg, side, depth, operand.name, label, slots, floor, side))
-            # NO CEILING.  A VgprAlloc above what the reads reach leaves slots nobody writes,
-            # which is WASTED REGISTERS, not a defect -- measured: VA 5..12 on a 4-position ring
-            # all verify clean once the dead-slot check stops treating an unused slot as an
-            # error.  VA is the caller's to spend; only a ring too SHALLOW aliases live values.
-
-
-def _check_ring_closes(theta, kernel) -> None:
-    """A ring the trip does not close needs the drain-free lowering, and must say so by name.
-
-    The body repeats only every `ring_trip_copies` trips, so a drain would have to enter at the
-    right phase -- it would need the trip count modulo that period, which it cannot know.
-    `SuppressNoLoadLoop` removes the drain; `Solution.py` clears that flag unless BufferLoad and
-    PrefetchGlobalRead==1 and GlobalSplitU<=1, so the value that survives is what matters.
-    Asked HERE rather than at the Solution because `VgprGroup > 1` is only a proxy for it: 42 of
-    94 VG=2 configurations close every trip and take a drain perfectly well.
-    """
-    if kernel.get("SuppressNoLoadLoop"):
-        return
-    from .schedule import BufferDepths
-    copies = geometry.ring_trip_copies(theta, BufferDepths(theta, include_shared=False))
-    if copies <= 1:
-        return
-    raise RuntimeError(
-        "this ring closes only every %d trips, so it needs SuppressNoLoadLoop, which this "
-        "solution cannot keep (that wants BufferLoad, PrefetchGlobalRead=1 and GlobalSplitU<=1): "
-        "a drain cannot know the trip count modulo %d, so it would enter at the wrong phase."
-        % (copies, copies))
+        operand.fragment.vgpr_group = vg
+        operand.fragment.ring_depths = {
+            label: depth for label in operand.fragment.groups()}
 
 
 def params_to_theta(p: dict) -> Theta:

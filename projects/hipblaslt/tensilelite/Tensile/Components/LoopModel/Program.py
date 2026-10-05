@@ -45,9 +45,6 @@ def loopModelGirProgram(writer, kernel):
         )
         violations = check_plan(prog)
         if violations:
-            # EVERY semantic violation is a LOWERING DEFECT and stops the build.  A stated
-            # (VgprGroup, VgprAlloc) does not downgrade one to a per-kernel skip: a dial can ask
-            # for a ring this shape cannot carry, but it cannot ask for the wrong answer.
             raise ValueError(
                 "UseLoopModel: the GIR plan fails its own semantic check (%d violation(s)) — "
                 "a decoder/lowering defect to repair, do NOT gate it off.\n  %s"

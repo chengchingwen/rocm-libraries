@@ -587,9 +587,51 @@ def group_live_peak(theta, operand, group, steps, post_war=True, off=None) -> in
     return (1 + -(-int(off) // max(1, stride))) * concurrent_regions(theta, operand)
 
 
+def derived_group_reuse_floor(theta, operand, group) -> int:
+    """Reuse floor in prefetch-unit buffers, before the adapter records canonical VA."""
+    cache = getattr(theta, "_derived_group_reuse_floor_cache", None)
+    if cache is None:
+        cache = {}
+        setattr(theta, "_derived_group_reuse_floor_cache", cache)
+    cache_key = (operand.name, tuple(operand.fragment.groups()),
+                 getattr(operand.fragment, "grouping_mode", None), group)
+    if cache_key in cache:
+        return cache[cache_key]
+    labels = operand.fragment.groups()
+    group_number = labels.index(group) if group in labels else 0
+    axes = [axis.name for axis in presence_axes(theta, operand)]
+    intervals = {}
+    for time, step in enumerate(_inner_steps(theta)):
+        coord = {name: step.get(name, 0) for name in axes}
+        if group_index(theta, operand, coord) != group_number:
+            continue
+        source = tuple(coord[name] for name in axes)
+        first, _last = intervals.get(source, (time, time))
+        intervals[source] = (first, time)
+
+    maximum = max(1, group_ring_size(theta, operand, group))
+    regions = max(1, _region_count(theta, operand))
+    for width in range(1, maximum + 1):
+        slot = ring_slot(theta, operand, group, width * regions)
+        by_register = {}
+        for source, live in intervals.items():
+            coord = dict(zip(axes, source))
+            register_key = (slot.eval(coord), unit_tile_index(theta, operand, coord))
+            by_register.setdefault(register_key, []).append(live)
+        if all(previous[1] < current[0]
+               for lives in by_register.values()
+               for previous, current in zip(sorted(lives), sorted(lives)[1:])):
+            cache[cache_key] = width
+            return width
+    cache[cache_key] = maximum
+    return maximum
+
+
 def group_reuse_floor(theta, operand, group, shared_regions=False, charge_lead=True,
                       lead=None) -> int:
     """Smallest ring that retains one read across every invariant-axis consumer pass."""
+    if vgpr_group_axis(theta, operand) is None:
+        return derived_group_reuse_floor(theta, operand, group)
     cache = getattr(theta, "_group_reuse_floor_cache", None)
     if cache is None:
         cache = {}
@@ -682,6 +724,8 @@ def _raw_read_ahead(theta, operand) -> int:
     axis = prefetch_axis_name(theta, operand)
     if axis is None:
         return 0
+    if vgpr_group_axis(theta, operand) is None:
+        return max(0, int(theta.off_at(operand.name, READ, axis) or 0))
     split = vgpr_group_axis(theta, operand)
     buffers = max(0, int(theta.off_at(operand.name, READ, axis) or 0))
     return buffers // (split[1] if split is not None else 1)
@@ -919,6 +963,17 @@ def vgpr_group(theta, operand) -> int:
     return max(1, int(getattr(operand.fragment, "vgpr_group", 1) or 1))
 
 
+def vgpr_subdivided(theta, operand) -> bool:
+    """Whether VG explicitly subdivides this operand's prefetch unit.
+
+    The TDMSplit may consume the same factor, leaving no additional
+    ``vgpr_group_axis`` digit.  That does not turn VG=2 back into the legacy
+    VG=1 geometry: VA still names half-unit buffers and its ring can span
+    multiple steady copies.
+    """
+    return vgpr_group(theta, operand) > 1
+
+
 def split_unit_divisor(theta, operand) -> int:
     """The factor the SPLIT already divides the prefetch unit by -- VG's derived value."""
     return max(1, original_prefetch_unit_tiles(theta, operand)
@@ -937,15 +992,8 @@ def region_positions(theta, operand) -> int:
 
 
 def group_ring_depth(theta, operand, group, depths) -> int:
-    """VA -- the buffers one group rotates through, outright.
-
-    VA IS THE COUNT, with nothing added on top of it here.  The regions used to be multiplied in
-    at this point, which made VA mean "buffers per region" to the adapter and "buffers" to every
-    reader, and left no way to say that the regions SHARE a ring -- which is exactly what
-    `ClusterLocalRead=1` over a split asks for.  The region positions are `region_positions`,
-    counted into the ring where the question is answered.
-    """
-    return max(1, int(depths.get(operand.name, group)))
+    """Physical slots: canonical VA buffers for each storage region."""
+    return max(1, int(depths.get(operand.name, group))) * max(1, _region_count(theta, operand))
 
 
 def register_layout(theta, depths) -> dict:
@@ -1259,6 +1307,22 @@ def regions_lead_the_ring(theta, operand, group) -> bool:
     return min(order.index(name) for name in regions) < min(order.index(name) for name in ring)
 
 
+def vgpr_ring_carries(theta, operand, group) -> bool:
+    """Whether this stated VG/VA ring changes phase across steady trips.
+
+    Usually the extra VG digit makes that explicit.  A TDMSplit can consume
+    the same factor, leaving no ``vgpr_group_axis``; its VA ring still carries
+    when the region leads the ring and the physical block has no inner unit
+    digit to absorb the turn.
+    """
+    if not vgpr_subdivided(theta, operand):
+        return False
+    if vgpr_group_axis(theta, operand) is not None:
+        return True
+    return (regions_lead_the_ring(theta, operand, group)
+            and group_unit_tiles(theta, operand, group) == 1)
+
+
 def vgpr_group_axis(theta, operand):
     """The axis VG subdivides and by how much -- ``(name, radix)`` -- or ``None``.
 
@@ -1284,34 +1348,17 @@ def vgpr_group_digit(theta, operand, strides):
 
 
 def ring_block_width(theta, operand, group, buffers) -> int:
-    """Slots the enumerator owns before the region digits begin -- its own span, normally.
+    """Traversal positions owned by the ring enumerator before region digits are appended.
 
-    THE PERIOD DEPENDS ON `buffers` HERE, AND THAT IS A DEFECT (#557).  Reserving the regions a
-    share of the DEPTH makes the ring's period a function of how many registers were allocated:
-    the same traversal walks 2 positions at VA<4 and 4 at VA>=4, so correctness is NON-MONOTONIC
-    -- measured on MKMN/TDMSplitA, VA 1 and 4+ verify while VA 2 and 3 alias two generations.
-    An allocation cannot change how many places a traversal visits.  Returning `span`
-    unconditionally fixes that cell and breaks 20 others (8 -> 28 in the baseline sweep), so the
-    reservation is load-bearing for the partitioned shapes the paragraph below describes and the
-    real fix has to separate the two.
-
-    A region owns a block, so the enumerator wraps inside its share of the depth rather than
-    spanning it whole, which would land the region digit where the modulus is 0.  Its share is
-    reserved whenever there IS more than one region -- `group_ring_depth` counts them
-    unconditionally, so gating the reservation on a read-ahead erased the digit at PLR=0.
-
-    One group of SEVERAL is the exception, and only when its share falls to a single slot: a share
-    of one leaves the enumerator no digit, so the group stops telling its generations apart.  An
-    unpartitioned operand owns the read order and can afford that -- it consumes a region's
-    generations before reading the next.  Partitioned, the groups share ONE read order at
-    DIFFERENT depths, so the deeper group's read-ahead drags the shallow one's refill on top of a
-    value still in use.  Where the region leads the ring the region digit cannot separate those two
-    generations, so the ring keeps its own span and the regions share slots instead.
+    A regioned ring reserves one equal share of VA per region. Unsplit rings use the full span.
     """
     span = 1
     for _name, extent in ring_axes(theta, operand, group):
         span *= max(1, extent)
-    return max(1, span)
+    regions = max(1, _region_count(theta, operand))
+    if regions <= 1:
+        return max(1, span)
+    return max(1, min(span, max(1, int(buffers)) // regions))
 
 
 def regions_time_share(theta, operand, group, buffers) -> bool:
@@ -1369,31 +1416,12 @@ def ring_positions(theta, operand, group, buffers) -> int:
     Where it is a multiple of the depth the ring closes every trip; where it is not -- four
     positions over three buffers -- the slot carries into the next one.
     """
+    if not vgpr_ring_carries(theta, operand, group):
+        return max(1, int(buffers))
     extents = transfer_extents(theta, operand)
     strides, _span = axis_strides(theta, varying_axes(theta, operand), extents)
     _digits, period = _ring_digits(theta, operand, group, strides, buffers)
     return period
-
-
-def ring_reached_positions(theta, operand, group, buffers) -> int:
-    """Rotation places the reads actually WRITE, which is at most the period.
-
-    The period is what the digits could say; this is what the coordinates reach.  An operand
-    whose digit sits on an axis it barely varies over turns through fewer places than the radices
-    suggest, and a depth above THAT count declares slots nothing ever writes -- the shape
-    `_check_dead_slots` reports, caught here where the request can still be named.
-    """
-    extents = transfer_extents(theta, operand)
-    strides, _span = axis_strides(theta, varying_axes(theta, operand), extents)
-    digits, _period = _ring_digits(theta, operand, group, strides, buffers)
-    if not digits:
-        return 1
-    place = Expr(digits=(position_terms(strides, read_coverage(theta, operand)), 0,
-                         tuple(reversed(digits))))
-    walked = [(name, max(1, int(extents.get(name, 1)))) for name in strides]
-    names = [name for name, _count in walked]
-    return max(1, len({place.eval(dict(zip(names, point)))
-                       for point in _iproduct(*[range(count) for _name, count in walked])}))
 
 
 def ring_trip_copies(theta, depths) -> int:
@@ -1417,6 +1445,24 @@ def ring_trip_copies(theta, depths) -> int:
 
 def _shifted_ring_slot(theta, operand, group, shift, strides, buffers, fold=None):
     """The rotation slot the prefetched read writes, as an Expr."""
+    if not vgpr_ring_carries(theta, operand, group):
+        ring = [(name, extent) for name, extent in ring_axes(theta, operand, group)
+                if name in strides]
+        width = ring_block_width(theta, operand, group, buffers)
+        digits, place = [], 1
+        for name, extent in reversed(ring):
+            if place >= width:
+                break
+            radix = min(max(1, extent), width // place)
+            if radix <= 1:
+                continue
+            digits.append((place, max(1, strides[name]), radix))
+            place *= radix
+        digits.extend(_region_digits(theta, operand, strides, width))
+        if not digits:
+            return None
+        return Expr(digits=(position_terms(strides, fold), shift, tuple(reversed(digits))),
+                    mod=max(1, buffers))
     digits, _period = _ring_digits(theta, operand, group, strides, buffers)
     if not digits:
         return None
@@ -1698,12 +1744,12 @@ def reload_positions(theta, operand, group, buffers, distance):
 
     None means no such position exists, so this width cannot carry this read-ahead.
     """
-    # NO EARLY-OUT ON `buffers > 1`.  Returning `{}` here says "a rotating ring places its own
-    # refills", and a rotating ring usually does -- but not when one value has consumers either
-    # side of the refill.  The constraint was being COMPUTED below and thrown away: the refill
-    # then landed between two readers of the generation it overwrites, and the second read took
-    # the next one.  Two kernels reached hardware computing wrong answers this way.  Where there
-    # is no conflict `_overwrites_live_register` is empty and this still returns `{}`.
+    if (vgpr_group_axis(theta, operand) is None and buffers > 1
+            and not (reloads_whole_set(theta, operand)
+                     and len(operand.fragment.groups()) == 1)):
+        return {}
+    # A VG subdivision can rotate a refill between consumers even with several slots, so it runs
+    # the full placement check. The compatibility VG=1 path keeps its established placement.
     timeline = _register_timeline(theta, operand, group, buffers, distance)
     if timeline is None:
         return {}
