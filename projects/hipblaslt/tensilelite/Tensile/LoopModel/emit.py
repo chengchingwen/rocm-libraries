@@ -614,12 +614,13 @@ class _Emitter:
         # PER OPERAND.  `self.dr` is the deepest ANY operand asks for; a full-inner one derives a
         # shallower depth, and priming it for the peer's is what leaves its obligation undischarged.
         distance = self.plans.want(operand) if shift is None else min(shift, self.plans.want(operand))
+        repeats = self._repeat_read_axes(operand)
         placement = _read_placement(self.theta, operand, self.depths, prefetch_steps=distance,
-                                    groups=groups, plans=self.plans)
+                                    groups=groups, plans=self.plans, repeat_axes=repeats)
         hop = operand.trajectory.fragment_fill
         awaits = self._site_awaits(operand.name, "read", kiter_note=kiter_note, groups=groups)
         advance, strides, span, extents = _readahead_shift(self.theta, operand, distance, self.depths,
-                                                           groups, self.plans)
+                                                           groups, self.plans, repeats)
         coverage = read_coverage(self.theta, operand)
         coord = tuple((axis, _shifted_coord(axis, advance, strides, span, extents, coverage))
                       if advance else (axis, None)
@@ -627,7 +628,7 @@ class _Emitter:
         load = Load((operand.name,), hop.src, Space.REGISTER, 0, coord=coord,
                     size_regs=geometry.frag_regs(self.theta, operand), advance=advance,
                     coverage=operand.fragment.coverage,
-                    issue_axes=self._repeat_read_axes(operand))
+                    issue_axes=repeats)
         return Inst(op=load, placement=placement, awaits=awaits)
 
     def _read_groups(self, operand):
@@ -666,16 +667,22 @@ class _Emitter:
 
     def _repeat_read_axes(self, operand):
         """Broadcast passes that reread a VA ring too shallow to retain the full resident set."""
-        if operand.fragment is None or operand.name.startswith("MXS"):
+        if operand.fragment is None or operand.name.startswith("MXS") \
+                or geometry.reloads_whole_set(self.theta, operand):
             return ()
+        want = self.plans.want(operand)
         shallow = any(
             geometry.group_ring_depth(self.theta, operand, group, self.depths)
             < geometry.group_reuse_floor(
                 self.theta, operand, group, charge_lead=False, lead=0)
-            for group in operand.fragment.groups())
-        shallow = shallow or any(
-            geometry.regions_lead_the_ring(self.theta, operand, group)
-            and operand.fragment.va_time_shares_regions
+            or (
+                operand.fragment.va_time_shares_regions
+                and geometry.group_ring_depth(self.theta, operand, group, self.depths)
+                < geometry.group_live_peak(
+                    self.theta, operand, group, geometry._inner_steps(self.theta),
+                    off=geometry.prefetch_distance_for(
+                        self.theta, operand, self.plans.steps(operand, group, want)))
+            )
             for group in operand.fragment.groups())
         if not shallow or self.read_level[operand.name] not in self.pos:
             return ()
@@ -699,7 +706,9 @@ class _Emitter:
 
     def _read_anchor(self, operand, groups, depth):
         """The invariant-axis coordinates a prefetching read must sit at, if any."""
-        distance = _readahead_shift(self.theta, operand, depth, self.depths, groups, self.plans)[0]
+        distance = _readahead_shift(
+            self.theta, operand, depth, self.depths, groups, self.plans,
+            self._repeat_read_axes(operand))[0]
         if not distance:
             return {}
         invariant = {name for name, _step in self._first_touch_axes(operand)}
@@ -748,8 +757,10 @@ class _Emitter:
 
     def _fill_read_inst(self, operand, coord_dict):
         groups = self._owning_group(operand, coord_dict)
+        repeats = self._repeat_read_axes(operand)
         placement = _read_placement(self.theta, operand, self.depths, prefetch_steps=0,
-                                    groups=groups, plans=self.plans).at(coord_dict)
+                                    groups=groups, plans=self.plans,
+                                    repeat_axes=repeats).at(coord_dict)
         hop = operand.trajectory.fragment_fill
         awaits = tuple(a for a in self._site_awaits(operand.name, "read",
                                                    kiter_note=self.outer_var)
@@ -759,7 +770,7 @@ class _Emitter:
                                 for axis in varying_axes(self.theta, operand)),
                     size_regs=geometry.frag_regs(self.theta, operand),
                     coverage=operand.fragment.coverage,
-                    issue_axes=self._repeat_read_axes(operand))
+                    issue_axes=repeats)
         return Inst(op=load, placement=placement, awaits=awaits)
 
     # --- the loop nest ------------------------------------------------------
@@ -816,8 +827,9 @@ class _Emitter:
         # its invariant axis -- where every wmma in that pass has already read it.
         depth = self._read_depth(operand, groups, ceiling)
         node = self.read_inst(operand, self.outer_var, shift=depth, groups=groups)
+        repeats = self._repeat_read_axes(operand)
         advance, strides, span, _extents = _readahead_shift(self.theta, operand, depth, self.depths,
-                                                            groups, self.plans)
+                                                            groups, self.plans, repeats)
         coverage = read_coverage(self.theta, operand)
         if suppress_ahead and advance and self.reads_ahead:
             guard = Pred(Expr(terms=position_terms(strides, coverage), add=advance), "<", span)
@@ -833,7 +845,18 @@ class _Emitter:
         if not suppress_ahead and remainder and invariant:
             # The advance wraps the ring mid-pass, so the two sides of the wrap touch first at
             # different points of the invariant axis; each arm carries its own first-touch guard.
-            nowrap = Pred(Expr(terms=position_terms(strides, coverage), mod=reload_cycle),
+            # A ring whose phase carries into the next body must classify the WHOLE logical walk:
+            # reducing modulo VA would reopen an early window later in this same walk and overwrite
+            # the first refill. A closed ring keeps the established per-cycle predicate.
+            selected = tuple(groups or operand.fragment.groups())
+            carries = any(geometry.vgpr_ring_carries(
+                self.theta, operand, group,
+                geometry.group_ring_depth(self.theta, operand, group, self.depths))
+                for group in selected)
+            guard_cycle = (max(reload_cycle, span)
+                           if carries and not repeats
+                           else reload_cycle)
+            nowrap = Pred(Expr(terms=position_terms(strides, coverage), mod=guard_cycle),
                           "<", reload_cycle - remainder)
             return Cond(pred=nowrap,
                         then=[self._first_touch_guard(node, first_touch, {})],
@@ -859,7 +882,8 @@ class _Emitter:
             geometry.regions_lead_the_ring(self.theta, operand, group)
             and operand.fragment.va_time_shares_regions for group in selected)
         unit_positions = (geometry.group_prefetch_unit_positions(self.theta, operand)
-                          if time_shares_regions else
+                          if time_shares_regions
+                          or geometry.vgpr_group_axis(self.theta, operand) is not None else
                           geometry.rotation_unit_positions(self.theta, operand))
         return max(1,
                    geometry.group_register_positions(self.theta, operand),
@@ -889,7 +913,9 @@ class _Emitter:
         awaits = ()
         for operand in self.reads:
             awaits += self._site_awaits(operand.name, "wmma")
-        placement = {operand.name: _read_placement(self.theta, operand, self.depths, prefetch_steps=0, plans=self.plans)
+        placement = {operand.name: _read_placement(
+                         self.theta, operand, self.depths, prefetch_steps=0, plans=self.plans,
+                         repeat_axes=self._repeat_read_axes(operand))
                      for operand in self.reads}
         return Inst(op=mma, placement=placement, awaits=awaits)
 

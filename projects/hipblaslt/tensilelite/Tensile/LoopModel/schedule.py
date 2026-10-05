@@ -40,9 +40,16 @@ def _placeable_read_ahead(theta, operand, depths) -> int:
                 return True
             buffers = geometry.group_ring_depth(theta, operand, group, depths)
             anchor = reload_anchor(theta, operand, group, buffers, distance)
+            if operand.fragment.va_includes_regions \
+                    and max(1, int(depths.get(operand.name, group))) >= want + 1:
+                return True
+            if reloads_whole_set(theta, operand) and geometry.vgpr_subdivided(theta, operand) \
+                    and buffers >= group_live_peak(
+                        theta, operand, group, _inner_steps(theta), off=distance):
+                return True
             return anchor is not None and (
-                bool(anchor) or not geometry.vgpr_ring_carries(
-                    theta, operand, group, buffers))
+                bool(anchor)
+                or not geometry.vgpr_ring_carries(theta, operand, group, buffers))
         if all(legal(group) for group in operand.fragment.groups()):
             return want
         want -= 1
@@ -270,7 +277,16 @@ def prefetch_steps_for(theta, operand, group, requested, depths) -> int:
     Neither does `regions_time_share`: regions landing on one slot is WHERE the refill goes, and a
     refill placed after the region's last use overwrites nothing that is still live.
     """
-    if max(1, depths.get(operand.name, group)) < group_reuse_floor(theta, operand, group):
+    depth = max(1, int(depths.get(operand.name, group)))
+    if operand.fragment.va_includes_regions and depth >= max(0, int(requested)) + 1:
+        return min(max(0, int(requested)), requested_read_ahead(theta, operand, depths))
+    if reloads_whole_set(theta, operand) and geometry.vgpr_subdivided(theta, operand):
+        distance = prefetch_distance_for(theta, operand, requested, (group,))
+        buffers = geometry.group_ring_depth(theta, operand, group, depths)
+        if buffers >= group_live_peak(
+                theta, operand, group, _inner_steps(theta), off=distance):
+            return min(max(0, int(requested)), requested_read_ahead(theta, operand, depths))
+    if depth < group_reuse_floor(theta, operand, group):
         return 0
     return min(max(0, int(requested)), requested_read_ahead(theta, operand, depths))
 
@@ -356,10 +372,12 @@ def _readahead_depth(theta, operand, prefetch_steps, depths, groups=None, plans=
     return min(plans.steps(operand, group, prefetch_steps) for group in selected)
 
 
-def _readahead_shift(theta, operand, prefetch_steps, depths, groups=None, plans=None):
+def _readahead_shift(theta, operand, prefetch_steps, depths, groups=None, plans=None,
+                     repeat_axes=()):
     """The load-order offset the read-ahead becomes, with the strides it was measured in."""
     extents = transfer_extents(theta, operand)
-    strides, reload_span = axis_strides(theta, reload_modes(theta, operand), extents)
+    modes = set(reload_modes(theta, operand)) | set(repeat_axes or ())
+    strides, reload_span = axis_strides(theta, modes, extents)
     steps = _readahead_depth(theta, operand, prefetch_steps, depths, groups, plans)
     # `prefetch_distance_for` is the ONE answer -- re-testing the level against `strides` here is
     # how an operand invariant over it came back with no read-ahead at all.
@@ -376,16 +394,17 @@ def loads_in_place(theta, operand, prefetch_steps, depths, groups=None, plans=No
     return bool(shift) and shift % max(1, reload_span) == 0
 
 
-def _read_placement(theta, operand, depths, prefetch_steps=0, groups=None, plans=None):
+def _read_placement(theta, operand, depths, prefetch_steps=0, groups=None, plans=None,
+                    repeat_axes=()):
     shift, strides, reload_span, extents = _readahead_shift(theta, operand, prefetch_steps,
-                                                            depths, groups, plans)
+                                                            depths, groups, plans, repeat_axes)
     slots = []
     all_groups = operand.fragment.groups()
     selected = all_groups if groups is None else tuple(g for g in all_groups if g in groups)
     for group in selected:
         buffers = geometry.group_ring_depth(theta, operand, group, depths)
         label = group if len(all_groups) > 1 else ""
-        slot = ring_slot(theta, operand, group, buffers, advance=shift)
+        slot = ring_slot(theta, operand, group, buffers, advance=shift, strides=strides)
         slots.append((label, slot))
     src_slot = None
     if operand.trajectory.shared_read is not None:

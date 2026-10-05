@@ -291,7 +291,12 @@ def check_address_keys(prog, packed, phase="steady", acts=None, force_within=Fal
 
 
 def check_refill_splits_consumers(prog, phase="steady", acts=None) -> list:
-    """A HOISTED refill must not be placed BETWEEN two consumers of the generation it overwrites."""
+    """A HOISTED refill must not split consumers of the SAME logical value.
+
+    A short physical ring legitimately reuses one register for two different logical tiles inside
+    a body.  The refill belongs between those consumer sets; only an overlap of the logical values
+    consumed on both sides means it split a generation.
+    """
     order = {}
     for i, act in enumerate(plan_block(prog, phase) if acts is None else acts):
         at = act.at
@@ -300,25 +305,28 @@ def check_refill_splits_consumers(prog, phase="steady", acts=None) -> list:
                           (at.get("unit_index", at.get("tile_flat", at["tile"])),))
             for unit in units:
                 slot = (at["tc"], at.get("group"), at["reg_buf"], unit)
-                order.setdefault(slot, []).append((i, "refill" if at.get("advance") else "fill"))
+                order.setdefault(slot, []).append(
+                    (i, "refill" if at.get("advance") else "fill", None))
         elif act.kind == "wmma":
             for op, grp, buf, unit_index, _logical_index in at.get("srcs", ()) or ():
-                order.setdefault((op, grp, buf, unit_index), []).append((i, "use"))
+                issue = tuple(at.get("source_issues", {}).get(op, ()))
+                value = (_logical_index, at.get("u"), issue)
+                order.setdefault((op, grp, buf, unit_index), []).append((i, "use", value))
     viol = []
     for slot, seq in sorted(order.items(), key=lambda kv: str(kv[0])):
         seq.sort()
-        seen_use = False
-        for n, kind in seq:
-            if kind == "use":
-                seen_use = True
-            elif kind == "refill" and seen_use:
-                if any(k == "use" for m, k in seq if m > n):
+        for index, (n, kind, _value) in enumerate(seq):
+            if kind == "refill":
+                before = {value for _m, k, value in seq[:index] if k == "use"}
+                after = {value for _m, k, value in seq[index + 1:] if k == "use"}
+                split = before & after
+                if split:
                     viol.append(
                         "%s:%d REFILL-SPLITS-CONSUMERS  register %s is consumed, refilled by a "
-                        "hoisted read (advance != 0), then consumed AGAIN -- the second consumer "
-                        "reads the next generation.  Event order: %s"
-                        % (phase, n, slot, [(m, k) for m, k in seq]))
-                break
+                        "hoisted read (advance != 0), then consumes the same logical value(s) %s "
+                        "AGAIN -- the second consumer reads the next generation.  Event order: %s"
+                        % (phase, n, slot, sorted(split), [(m, k, value) for m, k, value in seq]))
+                    break
     return viol
 
 

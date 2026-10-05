@@ -215,6 +215,60 @@ def test_three_copy_frame_contract_has_backedge_incoming_and_guard_requirements(
     assert all(need.gen in contract.generations for need in contract.requires)
 
 
+@pytest.mark.parametrize("vg,va,plr", [(1, 6, 4), (2, 12, 8)])
+def test_deep_b_ring_keeps_full_plr_and_a_complete_three_copy_frame(vg, va, plr):
+    """A 1.5-ring refills only slots whose old logical value has finished.
+
+    The VA6 and VA12 spellings are the same shape at different VG granularity.  Both need three
+    steady copies, no drain join, and a frame contract covering every copy edge.
+    """
+    from Tensile.LoopModel import traversal as geometry
+    from Tensile.LoopModel.adapter import loop_order_of
+    from Tensile.LoopModel.schedule import BufferDepths, Schedule
+    from Tensile.Lowering import steady_chain
+    from Tensile.Lowering.gir.emit_plan import plan_program
+    from Tensile.Lowering.gir.frame_contract import build_contract
+
+    k = _kernel(_mxf8(), _mi("fp8", (8, 8), (2, 2)),
+                2, plr, loop_order_of(6, 2), 1, 1, 4)
+    k.update(LoopIters=2, WmmaInnerOrder=6, WmmaOuterOrder=2,
+             PrefetchLocalReadA=1, PrefetchLocalReadB=plr,
+             ClusterLocalRead=0, ClusterLocalReadA=1, ClusterLocalReadB=0,
+             VgprGroupB=vg, VgprAllocB=va, SuppressNoLoadLoop=True)
+    theta = adapter.params_to_theta(kernel_to_params(k))
+    depths = BufferDepths(theta, include_shared=False)
+    operand = theta.op("B")
+    plans = Schedule(theta, depths)
+    assert geometry.requested_read_ahead(theta, operand, depths) == plr
+    assert all(plans.plan(operand, group).prefetch_steps == plr
+               for group in operand.fragment.groups())
+
+    copies = geometry.ring_trip_copies(theta, depths)
+    assert copies == 3
+    prog = build_gir(theta, loop_copies=copies)
+    assert not check_plan(prog)
+    chain = steady_chain(prog)
+    assert chain == ["steady", "steady1", "steady2"]
+    assert not any(label.startswith("drain") for label in prog.blocks)
+    assert [(prog.blocks[label].gen_rel, prog.blocks[label].chunk_base)
+            for label in chain] == [(0, 0), (1, 1), (2, 2)]
+
+    emitted = plan_program(prog)
+    anchors = {label: emitted[label][0].action_id for label in chain}
+    contract = build_contract(prog)
+    backedge = [edge for edge in contract.edges
+                if edge.relative
+                and edge.src == anchors["steady2"] and edge.dst == anchors["steady"]]
+    incoming = [edge for edge in contract.edges
+                if not edge.relative and edge.dst == anchors["steady"]
+                and edge.gen in {item.gen for item in backedge}]
+    assert backedge and len(incoming) == len(backedge)
+    required_edges = {(need.src, need.dst) for need in contract.requires}
+    assert {(anchors["steady"], anchors["steady1"]),
+            (anchors["steady1"], anchors["steady2"]),
+            (anchors["steady2"], anchors["steady"])} <= required_edges
+
+
 def test_the_covering_invariant_runs_on_an_unrolled_loop():
     """Per-copy exits preserve the remainder: an n-copy shell still covers exactly T-M."""
     from Tensile.Lowering.gir.analysis import AnalysisManager
@@ -307,14 +361,81 @@ def test_clr_and_explicit_va_precedence_is_resolved_in_the_adapter():
 
 
 def test_all_inner_forced_clr1_retains_a_large_enough_explicit_va():
+    from Tensile.LoopModel import traversal as geometry
+    from Tensile.LoopModel.schedule import BufferDepths, Schedule
+
+    def assert_prefetch_is_kept(theta):
+        depths = BufferDepths(theta, include_shared=False)
+        operand = theta.op("A")
+        requested = geometry.requested_read_ahead(theta, operand, depths)
+        assert requested > 0
+        assert Schedule(theta, depths).plan(operand, "g0").prefetch_steps == requested
+
     k = _half_plr_kernel("NKM", 1)
     # One all-inner buffer is a complete rotation unit; VG2 therefore needs two such halves.
     theta = adapter.params_to_theta(kernel_to_params(k))
     assert theta.op("A").fragment.ring_depths == {"g0": 3}
+    assert_prefetch_is_kept(theta)
 
     k["VgprAllocA"] = 1
     theta = adapter.params_to_theta(kernel_to_params(k))
     assert theta.op("A").fragment.ring_depths == {"g0": 2}
+    assert_prefetch_is_kept(theta)
+
+
+def test_forced_all_inner_flag_overwrites_va_too_small_for_split_regions():
+    """Solution's forced CLR1 retains VA only when it holds the complete split resident set."""
+    from Tensile.LoopModel import traversal as geometry
+    from Tensile.LoopModel.adapter import loop_order_of
+    from Tensile.LoopModel.schedule import BufferDepths, Schedule
+
+    k = _kernel(_mxf8(), _mi("fp8", (2, 2), (1, 1)),
+                2, 2, loop_order_of(5, 0), 1, 0, 2)
+    k.update(WmmaInnerOrder=5, WmmaOuterOrder=0,
+             ClusterLocalRead=0, ClusterLocalReadA=1, ClusterLocalReadB=0,
+             _ClusterLocalReadForcedA=True,
+             VgprGroupA=2, VgprAllocA=3,
+             VgprGroupB=-1, VgprAllocB=-1,
+             SuppressNoLoadLoop=True, SourceSwap=False)
+    theta = adapter.params_to_theta(kernel_to_params(k))
+    depths = BufferDepths(theta, include_shared=False)
+    operand = theta.op("A")
+    assert operand.fragment.ring_depths == {"g0": 4}
+    assert geometry.group_ring_depth(theta, operand, "g0", depths) == 4
+    requested = geometry.requested_read_ahead(theta, operand, depths)
+    assert requested == Schedule(theta, depths).plan(operand, "g0").prefetch_steps
+    copies = geometry.ring_trip_copies(theta, depths)
+    assert copies == 1
+    assert not check_plan(build_gir(theta, loop_copies=copies))
+
+
+@pytest.mark.parametrize("wio,sa,sb,arm", [
+    (1, 1, 0, 1), (2, 1, 0, 1), (4, 0, 1, 2), (6, 1, 0, 1),
+])
+def test_split_provided_vg_edge_orders_keep_prefetch_and_sources(wio, sa, sb, arm):
+    from Tensile.LoopModel import traversal as geometry
+    from Tensile.LoopModel.adapter import loop_order_of
+    from Tensile.LoopModel.schedule import BufferDepths, Schedule
+
+    k = _kernel(_mxf8(), _mi("fp8", (2, 2), (1, 1)),
+                2, 2, loop_order_of(wio, 0), sa, sb, 2)
+    k.update(WmmaInnerOrder=wio, WmmaOuterOrder=0,
+             ClusterLocalRead=0, ClusterLocalReadA=0, ClusterLocalReadB=0,
+             SuppressNoLoadLoop=True, SourceSwap=False)
+    for side, bit in (("A", 1), ("B", 2)):
+        k["VgprGroup" + side] = 2 if arm & bit else -1
+        k["VgprAlloc" + side] = 3 if arm & bit else -1
+    theta = adapter.params_to_theta(kernel_to_params(k))
+    depths = BufferDepths(theta, include_shared=False)
+    plans = Schedule(theta, depths)
+    for side, bit in (("A", 1), ("B", 2)):
+        if arm & bit:
+            operand = theta.op(side)
+            requested = geometry.requested_read_ahead(theta, operand, depths)
+            assert requested > 0
+            assert plans.plan(operand, "g0").prefetch_steps > 0
+    copies = geometry.ring_trip_copies(theta, depths)
+    assert not check_plan(build_gir(theta, loop_copies=copies))
 
 
 @pytest.mark.parametrize("order", ["NKM"])
@@ -580,7 +701,9 @@ def test_gir_semantic_checker_failure_is_always_a_value_error(monkeypatch):
     }
     fake_prog = SimpleNamespace()
 
-    monkeypatch.setattr(program, "loopModelTheta", lambda *_args: (object(), object()))
+    monkeypatch.setattr(
+        program, "loopModelTheta",
+        lambda *_args: (SimpleNamespace(operands=[]), object()))
     monkeypatch.setattr(program, "emit_mainloop", lambda *_args: object())
     monkeypatch.setattr(program, "loopModelLoopCopies", lambda *_args: 1)
     monkeypatch.setattr(program, "gir_pipeline", lambda: ())

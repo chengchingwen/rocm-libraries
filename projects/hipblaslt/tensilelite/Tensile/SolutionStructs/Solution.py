@@ -2337,6 +2337,32 @@ class Solution(collections.abc.Mapping):
       _hasVg = _vg is not None and int(_vg) != -1
       _hasVa = _va is not None and int(_va) != -1
       _statedVgpr[_tc] = _hasVg or _hasVa
+    # Resolve CLR before the kernel is named.  The outermost tile axis decides whether an
+    # operand is all-inner; VG/VA then sizes that same ring, rather than selecting a second
+    # allocation path.  In particular, an explicit VA is legal for all-inner when it is large
+    # enough -- the adapter validates that size against the forced full-buffer requirement.
+    _cluster = {}
+    if state.get("UseLoopModel"):
+      _lrOuter = wmma_loop_order(state)[0]
+      _clScalar = int(state.get("ClusterLocalRead", 0) or 0)
+      for _tc, _walks in (("A", ("M", "K")), ("B", ("N", "K"))):
+        _key = "ClusterLocalRead" + _tc
+        _asked = state.get(_key)
+        _auto = _asked is None or int(_asked) == -1
+        _asked = (0 if _auto and _statedVgpr[_tc] else _clScalar) if _auto else int(_asked)
+        if _lrOuter not in _walks:
+          if _asked != 1:
+            state["_ClusterLocalReadForced" + _tc] = True
+          _asked = 1
+        _cluster[_tc] = _asked
+    if _cluster:
+      if _cluster["A"] == _cluster["B"]:
+        state["ClusterLocalRead"] = _cluster["A"]
+        for _tc in ("A", "B"):
+          state.pop("ClusterLocalRead" + _tc, None)
+      else:
+        state["ClusterLocalReadA"], state["ClusterLocalReadB"] = _cluster["A"], _cluster["B"]
+        state["ClusterLocalRead"] = min(_cluster["A"], _cluster["B"])
     # VgprGroup / VgprAlloc: the allocation as a fraction of the prefetch unit.  VG divides one
     # buffer's SIZE, VA counts the buffers, so `prefetch_unit * VA / VG` is the whole statement.
     # Only theta can honour that, because only there is the prefetch unit the model's to move.
@@ -2360,10 +2386,9 @@ class Solution(collections.abc.Mapping):
                "VgprGroup%s=%d does not divide MIWaveTile%s=%d, so one buffer is not a whole "
                "number of tiles." % (_tc, int(_vg), _tc, int(_wt)))
         return
-      # A buffer smaller than a unit can leave the ring unclosed at the back edge, and then the
-      # body repeats only every few trips -- the same reason HalfPLR forces this.  A drain would
-      # have to know the trip count modulo that period, which it cannot.
-      if _asked and _vg is not None and int(_vg) > 1:
+      # Any stated ring can leave the back edge at a nonzero phase (VA need not divide the trip
+      # even when VG=1). A shared drain entry cannot represent every copy-exit phase.
+      if _asked:
         state["SuppressNoLoadLoop"] = True
 
     # PrefetchLocalReadA/B stay AUTO here: deriving them needs `LoopIters`, which
