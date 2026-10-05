@@ -378,7 +378,8 @@ def _realized_ring_depth(theta, operand, coord) -> int:
     labels = operand.fragment.groups()
     group = labels[group_index(theta, operand, coord)] if labels else None
     width = int((operand.fragment.ring_depths or {}).get(group, 1))
-    return max(1, width) * max(1, _region_count(theta, operand))
+    regions = 1 if operand.fragment.va_includes_regions else _region_count(theta, operand)
+    return max(1, width) * max(1, regions)
 
 
 def unit_tile_index(theta, operand, coord) -> int:
@@ -610,9 +611,8 @@ def derived_group_reuse_floor(theta, operand, group) -> int:
         intervals[source] = (first, time)
 
     maximum = max(1, group_ring_size(theta, operand, group))
-    regions = max(1, _region_count(theta, operand))
     for width in range(1, maximum + 1):
-        slot = ring_slot(theta, operand, group, width * regions)
+        slot = ring_slot(theta, operand, group, width)
         by_register = {}
         for source, live in intervals.items():
             coord = dict(zip(axes, source))
@@ -745,32 +745,15 @@ def _direct_input(theta, side):
 def requested_read_ahead(theta, operand, depths=None) -> int:
     """Internal per-operand PLR, in this operand's grouped-prefetch units.
 
-    Every operand with a split region converts the global request from its own region-local unit
-    to the selected grouped unit. Split axes select storage/agents and never multiply PLR,
-    including for an all-inner operand. An unsplit all-inner operand retains the direct side's
-    literal tile lead. ``depths`` applies the selected VGPR scheme's capacity cap.
+    PLR already counts the current prefetch unit. TDMSplit has reduced that unit before this
+    request is interpreted, and VG divides it afterward; neither rescales the parameter here.
+    ``depths`` applies only the selected VGPR scheme's capacity cap.
     """
     raw = _raw_read_ahead(theta, operand)
     if not raw:
         return 0
 
-    extents = {axis.name: axis.extent for axis in theta.inner_axes()}
-    has_split_region = any(max(1, int(extents.get(axis, 1))) > 1
-                           for axis in (getattr(operand, "region_axes", ()) or ()))
-    if reloads_whole_set(theta, operand) and not has_split_region:
-        side = _side(operand)
-        peer = _direct_input(theta, "B" if side == "A" else "A")
-        want = raw if peer is None else \
-            _raw_read_ahead(theta, peer) * prefetch_unit_tiles(theta, peer)
-    else:
-        original = product(extent for _name, extent
-                           in original_prefetch_unit_modes(theta, operand))
-        grouped = group_prefetch_unit_tiles(theta, operand)
-        if original % grouped:
-            raise RuntimeError(
-                f"{operand.name}: original prefetch unit {original} is not divisible by "
-                f"group unit {grouped}")
-        want = raw * (original // grouped)
+    want = raw
 
     if reloads_whole_set(theta, operand):
         outer = theta.summation_chunk_name()
@@ -956,22 +939,19 @@ def operand_emitted_regs(theta, operand, depths) -> int:
 def vgpr_group(theta, operand) -> int:
     """VG -- the factor this operand's prefetch unit is DIVIDED by.
 
-    Not a group count and not a region count: it is the divisor itself.  A TDMSplit operand
-    already has its unit cut by the split, which IS its VG; stating a larger one cuts further,
-    and stating VG=2 with no split cuts a unit nothing else divides.
+    Not a group count and not a region count: it divides the current prefetch unit after structural
+    TDMSplit factors have already been removed from that unit.
     """
     return max(1, int(getattr(operand.fragment, "vgpr_group", 1) or 1))
 
 
 def vgpr_subdivided(theta, operand) -> bool:
-    """Whether VG explicitly subdivides this operand's prefetch unit.
+    """Whether this operand's unit is smaller than its original unsplit prefetch unit.
 
-    The TDMSplit may consume the same factor, leaving no additional
-    ``vgpr_group_axis`` digit.  That does not turn VG=2 back into the legacy
-    VG=1 geometry: VA still names half-unit buffers and its ring can span
-    multiple steady copies.
+    Either TDMSplit or VG can provide the HalfPLR half.  In particular, a tile split that already
+    halves the prefetch unit uses VG=1 rather than dividing that half a second time.
     """
-    return vgpr_group(theta, operand) > 1
+    return split_unit_divisor(theta, operand) > 1 or vgpr_group(theta, operand) > 1
 
 
 def split_unit_divisor(theta, operand) -> int:
@@ -992,8 +972,10 @@ def region_positions(theta, operand) -> int:
 
 
 def group_ring_depth(theta, operand, group, depths) -> int:
-    """Physical slots: canonical VA buffers for each storage region."""
-    return max(1, int(depths.get(operand.name, group))) * max(1, _region_count(theta, operand))
+    """Physical slots for VA, sharing only when an outer region finishes before the ring turns."""
+    depth = max(1, int(depths.get(operand.name, group)))
+    regions = 1 if operand.fragment.va_includes_regions else _region_count(theta, operand)
+    return depth * max(1, regions)
 
 
 def register_layout(theta, depths) -> dict:
@@ -1307,31 +1289,22 @@ def regions_lead_the_ring(theta, operand, group) -> bool:
     return min(order.index(name) for name in regions) < min(order.index(name) for name in ring)
 
 
-def vgpr_ring_carries(theta, operand, group) -> bool:
-    """Whether this stated VG/VA ring changes phase across steady trips.
-
-    Usually the extra VG digit makes that explicit.  A TDMSplit can consume
-    the same factor, leaving no ``vgpr_group_axis``; its VA ring still carries
-    when the region leads the ring and the physical block has no inner unit
-    digit to absorb the turn.
-    """
-    if not vgpr_subdivided(theta, operand):
-        return False
-    if vgpr_group_axis(theta, operand) is not None:
-        return True
-    return (regions_lead_the_ring(theta, operand, group)
-            and group_unit_tiles(theta, operand, group) == 1)
+def vgpr_ring_carries(theta, operand, group, buffers) -> bool:
+    """Whether one trip advances this VA ring to a different starting phase."""
+    extents = transfer_extents(theta, operand)
+    strides, _span = axis_strides(theta, varying_axes(theta, operand), extents)
+    _digits, period = _ring_digits(theta, operand, group, strides, buffers)
+    return period % max(1, int(buffers)) != 0
 
 
 def vgpr_group_axis(theta, operand):
     """The axis VG subdivides and by how much -- ``(name, radix)`` -- or ``None``.
 
     VG divides the unit, so a unit the enumerator counts once is now VG buffers; the factor that
-    tells them apart is the TOP factor of the innermost prefetch-unit axis.  A split already cut
-    the unit by its own factor and spends a region digit saying so, so only the part VG divides
-    BEYOND the split is taken here.
+    tells them apart is the TOP factor of the current innermost prefetch-unit axis. TDMSplit has
+    already been removed from that unit and is not divided out again here.
     """
-    radix = max(1, vgpr_group(theta, operand) // max(1, split_unit_divisor(theta, operand)))
+    radix = vgpr_group(theta, operand)
     modes = [(name, extent) for name, extent in prefetch_unit_modes(theta, operand)
              if max(1, extent) % radix == 0]
     return (modes[-1][0], radix) if radix > 1 and modes else None
@@ -1350,7 +1323,8 @@ def vgpr_group_digit(theta, operand, strides):
 def ring_block_width(theta, operand, group, buffers) -> int:
     """Traversal positions owned by the ring enumerator before region digits are appended.
 
-    A regioned ring reserves one equal share of VA per region. Unsplit rings use the full span.
+    An outer region completes before the ring turns and therefore time-shares the full VA ring.
+    Concurrent regions reserve equal shares. Unsplit rings use the full span.
     """
     span = 1
     for _name, extent in ring_axes(theta, operand, group):
@@ -1358,6 +1332,9 @@ def ring_block_width(theta, operand, group, buffers) -> int:
     regions = max(1, _region_count(theta, operand))
     if regions <= 1:
         return max(1, span)
+    if regions_lead_the_ring(theta, operand, group) \
+            and operand.fragment.va_time_shares_regions:
+        return max(1, min(span, max(1, int(buffers))))
     return max(1, min(span, max(1, int(buffers)) // regions))
 
 
@@ -1405,8 +1382,17 @@ def _ring_digits(theta, operand, group, strides, buffers):
     # A region is extra rotation, so it can carry the ring alone when the enumerator is empty.
     # IT STARTS WHERE THE DIGITS REACHED, not at the nominal width: a gap between them is a place
     # the modulus folds away, and the region then shares a slot with position 0.
-    digits.extend(_region_digits(theta, operand, strides, max(place, 1)))
-    period = digits[-1][0] * digits[-1][2] if digits else 1
+    region_digits = _region_digits(theta, operand, strides, max(place, 1))
+    time_shares_regions = (regions_lead_the_ring(theta, operand, group)
+                           and operand.fragment.va_time_shares_regions)
+    if not time_shares_regions:
+        digits.extend(region_digits)
+    digit_period = digits[-1][0] * digits[-1][2] if digits else 1
+    # A time-shared region does not own separate slots, but traversing it still advances the ring.
+    # Keep that distance in the per-trip period so VA=3 over two split halves carries by four
+    # positions (the split-provided VG1 HalfPLR shape), not by only the inner K span.
+    region_period = region_digits[-1][0] * region_digits[-1][2] if region_digits else 1
+    period = max(digit_period, region_period)
     return digits, max(1, period)
 
 
@@ -1416,7 +1402,7 @@ def ring_positions(theta, operand, group, buffers) -> int:
     Where it is a multiple of the depth the ring closes every trip; where it is not -- four
     positions over three buffers -- the slot carries into the next one.
     """
-    if not vgpr_ring_carries(theta, operand, group):
+    if not vgpr_ring_carries(theta, operand, group, buffers):
         return max(1, int(buffers))
     extents = transfer_extents(theta, operand)
     strides, _span = axis_strides(theta, varying_axes(theta, operand), extents)
@@ -1445,7 +1431,9 @@ def ring_trip_copies(theta, depths) -> int:
 
 def _shifted_ring_slot(theta, operand, group, shift, strides, buffers, fold=None):
     """The rotation slot the prefetched read writes, as an Expr."""
-    if not vgpr_ring_carries(theta, operand, group):
+    uses_subunit_digits = (vgpr_group_axis(theta, operand) is not None
+                           or operand.fragment.va_time_shares_regions)
+    if not uses_subunit_digits:
         ring = [(name, extent) for name, extent in ring_axes(theta, operand, group)
                 if name in strides]
         width = ring_block_width(theta, operand, group, buffers)
@@ -1458,7 +1446,9 @@ def _shifted_ring_slot(theta, operand, group, shift, strides, buffers, fold=None
                 continue
             digits.append((place, max(1, strides[name]), radix))
             place *= radix
-        digits.extend(_region_digits(theta, operand, strides, width))
+        if not (regions_lead_the_ring(theta, operand, group)
+                and operand.fragment.va_time_shares_regions):
+            digits.extend(_region_digits(theta, operand, strides, width))
         if not digits:
             return None
         return Expr(digits=(position_terms(strides, fold), shift, tuple(reversed(digits))),
@@ -1745,11 +1735,13 @@ def reload_positions(theta, operand, group, buffers, distance):
     None means no such position exists, so this width cannot carry this read-ahead.
     """
     if (vgpr_group_axis(theta, operand) is None and buffers > 1
+            and _region_count(theta, operand) <= 1
             and not (reloads_whole_set(theta, operand)
                      and len(operand.fragment.groups()) == 1)):
         return {}
-    # A VG subdivision can rotate a refill between consumers even with several slots, so it runs
-    # the full placement check. The compatibility VG=1 path keeps its established placement.
+    # A storage-region walk can put a refill between two invariant-axis consumers even at VG1,
+    # so it needs the same physical-register timeline as a subdivided ring.  The unsplit VG1
+    # compatibility path keeps its established placement.
     timeline = _register_timeline(theta, operand, group, buffers, distance)
     if timeline is None:
         return {}

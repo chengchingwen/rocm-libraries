@@ -228,7 +228,7 @@ def _half_plr_kernel(order, half_plr):
 
 @pytest.mark.parametrize("half_plr, halved", [(1, "A"), (2, "B"), (3, "AB")])
 def test_halfplr_costs_one_and_a_half_buffers_on_the_named_operand(half_plr, halved):
-    """THREE halves where PLR1 holds two whole buffers -- 1.5 blocks, so 3/4 of the pair.
+    """VG2/VA3 is three halves: 1.5 PU, or 3/4 of a VG1/VA2 allocation.
 
     And only for the operand the bitmask names: HalfPLR=1 leaves B alone.
     """
@@ -240,16 +240,57 @@ def test_halfplr_costs_one_and_a_half_buffers_on_the_named_operand(half_plr, hal
         d = BufferDepths(th, include_shared=False)
         return th, {n: g.operand_emitted_regs(th, th.op(n), d) for n in ("A", "B")}
 
-    _, plain = regs(_half_plr_kernel("KMN", 0))
-    th, half = regs(_half_plr_kernel("KMN", half_plr))
+    half_kernel = _half_plr_kernel("KMN", half_plr)
+    th, half = regs(half_kernel)
     for name in ("A", "B"):
         if name in halved:
-            assert half[name] * 4 == plain[name] * 3, (name, half, plain)   # 1.5 of 2 blocks
+            full_kernel = dict(half_kernel)
+            full_kernel["VgprGroup" + name] = 1
+            full_kernel["VgprAlloc" + name] = 2
+            _, full = regs(full_kernel)
+            assert half[name] * 4 == full[name] * 3, (name, half, full)
             assert th.op(name).fragment.vgpr_group == 2
             assert th.op(name).fragment.ring_depths == {"g0": 3}
         else:
-            assert half[name] == plain[name], (name, half, plain)
             assert th.op(name).fragment.vgpr_group == 1
+
+
+def test_clr_and_explicit_va_precedence_is_resolved_in_the_adapter():
+    k = _half_plr_kernel("KMN", 1)
+
+    # CLR0: explicit VA replaces PLR+1.
+    theta = adapter.params_to_theta(kernel_to_params(k))
+    assert theta.op("A").fragment.ring_depths == {"g0": 3}
+
+    # CLR0 with VA=-1: derive PLR2+1.
+    k["VgprAllocA"] = -1
+    theta = adapter.params_to_theta(kernel_to_params(k))
+    assert theta.op("A").fragment.ring_depths == {"g0": 3}
+
+    # CLR0 with VG=-1: explicit VA alone overrides PLR+1 at the default VG1.
+    k["VgprGroupA"] = -1
+    k["VgprAllocA"] = 5
+    theta = adapter.params_to_theta(kernel_to_params(k))
+    assert theta.op("A").fragment.vgpr_group == 1
+    assert theta.op("A").fragment.ring_depths == {"g0": 5}
+
+    # Explicit CLR1: the two-unit outer loop, split into VG2 buffers, owns four buffers.
+    k["VgprGroupA"] = 2
+    k["VgprAllocA"] = 3
+    k.update(ClusterLocalRead=1, ClusterLocalReadA=1, ClusterLocalReadB=1)
+    theta = adapter.params_to_theta(kernel_to_params(k))
+    assert theta.op("A").fragment.ring_depths == {"g0": 4}
+
+
+def test_all_inner_forced_clr1_retains_a_large_enough_explicit_va():
+    k = _half_plr_kernel("NKM", 1)
+    # One all-inner buffer is a complete rotation unit; VG2 therefore needs two such halves.
+    theta = adapter.params_to_theta(kernel_to_params(k))
+    assert theta.op("A").fragment.ring_depths == {"g0": 3}
+
+    k["VgprAllocA"] = 1
+    theta = adapter.params_to_theta(kernel_to_params(k))
+    assert theta.op("A").fragment.ring_depths == {"g0": 2}
 
 
 @pytest.mark.parametrize("order", ["NKM"])
@@ -345,27 +386,30 @@ def _split_half_plr_theta(order, half_plr, sa, sb, wt=(2, 2), clr=0, pgr=2):
              ClusterLocalReadA=clr, ClusterLocalReadB=clr)
     for side, bit in (("A", 1), ("B", 2)):
         stated = bool(half_plr & bit)
-        k["VgprGroup" + side] = 2 if stated else -1
+        walks = ("M", "K") if side == "A" else ("N", "K")
+        pu_axis = next(axis for axis in reversed(order) if axis in walks)
+        split = sa if side == "A" else sb
+        split_axis = (("M" if side == "A" else "N") if split == 1
+                      else "K" if split == 2 else None)
+        # TDMSplit has already supplied the half when it cuts this operand's PU.
+        vg = 1 if split_axis == pu_axis else 2
+        k["VgprGroup" + side] = vg if stated else -1
         k["VgprAlloc" + side] = 3 if stated else -1
     k["SuppressNoLoadLoop"] = True
     return adapter.params_to_theta(kernel_to_params(k))
 
 
 def test_the_shallow_half_keeps_a_ring_digit_when_the_region_leads():
-    """NON-VACUITY for the test below: the two groups really do get different widths.
-
-    g1 is one slot per region, so without the override its share is 1 and the enumerator emits
-    nothing -- the ring axis would vanish from the slot while g0 kept it.
-    """
+    """A TDMSplit-provided half is VG1/VA3 and still retains a physical ring digit."""
     from Tensile.LoopModel import traversal as g
     from Tensile.LoopModel.schedule import BufferDepths
     from Tensile.LoopModel.adapter import loop_order_of
 
-    th = _split_half_plr_theta(loop_order_of(6, 1), 1, sa=1, sb=0)
+    th = _split_half_plr_theta(loop_order_of(1, 1), 1, sa=1, sb=0)
     op, depths = th.op("A"), BufferDepths(th, include_shared=False)
-    assert op.fragment.vgpr_group == 2
+    assert op.fragment.vgpr_group == 1
     assert op.fragment.ring_depths == {"g0": 3}
-    assert g.regions_lead_the_ring(th, op, "g0")
+    assert g.split_unit_divisor(th, op) == 2
     slot = g.ring_slot(th, op, "g0", g.group_ring_depth(th, op, "g0", depths))
     assert slot is not None and slot.digits[2]
 
@@ -396,7 +440,7 @@ def test_shallow_half_buffer_repeats_reads_over_the_broadcast_pass(wio, sb, half
 @pytest.mark.parametrize("wio", [1, 2])
 @pytest.mark.parametrize("half_plr", [1, 2, 3])
 def test_tdmsplit_consuming_vg_still_builds_the_three_copy_ring(wio, half_plr):
-    """A split can spend VG's axis digit without erasing the stated VG/VA shape.
+    """A split that halves the PU uses VG1 and still builds the HalfPLR ring.
 
     These are the twelve PGR1/PGR2 YAML kernels that previously built one steady
     block, then returned to the wrong half-buffer on hardware.
@@ -409,15 +453,17 @@ def test_tdmsplit_consuming_vg_still_builds_the_three_copy_ring(wio, half_plr):
     from Tensile.Lowering.gir.frame_contract import build_contract
 
     theta = _split_half_plr_theta(loop_order_of(wio, 1), half_plr, 1, 1)
-    stated = [op for op in theta.operands
-              if op.fragment is not None and geometry.vgpr_group(theta, op) > 1]
-    assert stated and all(geometry.vgpr_subdivided(theta, op) for op in stated)
-    assert any(geometry.vgpr_group_axis(theta, op) is None for op in stated)
-    assert all(geometry.vgpr_ring_carries(theta, op, op.fragment.groups()[0])
-               for op in stated)
+    shaped = [theta.op(side) for side, bit in (("A", 1), ("B", 2)) if half_plr & bit]
+    assert shaped
+    assert all(geometry.vgpr_group(theta, op) == 1 for op in shaped)
+    assert all(geometry.split_unit_divisor(theta, op) == 2 for op in shaped)
+    depths = BufferDepths(theta, include_shared=False)
+    assert all(geometry.vgpr_ring_carries(
+        theta, op, op.fragment.groups()[0],
+        geometry.group_ring_depth(theta, op, op.fragment.groups()[0], depths))
+        for op in shaped)
 
-    copies = geometry.ring_trip_copies(
-        theta, BufferDepths(theta, include_shared=False))
+    copies = geometry.ring_trip_copies(theta, depths)
     prog = build_gir(theta, loop_copies=copies)
     assert copies == 3
     assert steady_chain(prog) == ["steady", "steady1", "steady2"]
@@ -434,6 +480,39 @@ def test_tdmsplit_consuming_vg_still_builds_the_three_copy_ring(wio, half_plr):
     assert contract.requires
 
 
+def test_ungrouped_peer_defers_a_reload_that_would_clobber_its_broadcast_reuse():
+    """VG1 uses the same register timeline as an explicit ring when placing read-ahead.
+
+    With M_split outside B's walk, B's four region slots are consumed once in each M pass.
+    Loading the next generation between those passes overwrites values the second pass still
+    needs; this was numerically wrong on hardware while the logical GIR source check stayed clean.
+    """
+    from Tensile.LoopModel.adapter import loop_order_of
+    from Tensile.LoopModel.schedule import BufferDepths, Schedule
+    from Tensile.LoopModel import traversal as geometry
+
+    k = _kernel(_mxf8(), _mi("fp8", (2, 2), (1, 1)),
+                1, 2, loop_order_of(1, 1), 1, 1, 1)
+    k.update(HalfPLR=0, ClusterLocalRead=0,
+             ClusterLocalReadA=0, ClusterLocalReadB=0,
+             PrefetchLocalReadA=2, PrefetchLocalReadB=1,
+             SuppressNoLoadLoop=True,
+             VgprGroupA=2, VgprAllocA=3,
+             VgprGroupB=-1, VgprAllocB=-1)
+    theta = adapter.params_to_theta(kernel_to_params(k))
+    depths = BufferDepths(theta, include_shared=False)
+    b = theta.op("B")
+    group = b.fragment.groups()[0]
+    buffers = geometry.group_ring_depth(theta, b, group, depths)
+
+    assert geometry.requested_read_ahead(theta, b, depths) == 1
+    assert geometry.register_reuse_verdict(theta, b, group, buffers, 1) \
+        == geometry.CLOBBER
+    assert Schedule(theta, depths).want(b) == 0
+    prog = build_gir(theta, loop_copies=geometry.ring_trip_copies(theta, depths))
+    assert not check_plan(prog)
+
+
 def test_a_loopmodel_refusal_names_the_solution_exactly_once():
     """A bare refusal costs a bisect to place, and saying the name twice is noise."""
     from Tensile.Components.LoopModel.Theta import loopModelTheta, namingSolution
@@ -446,7 +525,7 @@ def test_a_loopmodel_refusal_names_the_solution_exactly_once():
     k["ClusterLocalRead"] = 0
     for side in ("A", "B"):
         k["ClusterLocalRead" + side] = 0
-        k["VgprGroup" + side] = 2 if side == "A" else -1
+        k["VgprGroup" + side] = 3 if side == "A" else -1
         k["VgprAlloc" + side] = -1
     with pytest.raises((ValueError, RuntimeError)) as refusal:
         loopModelTheta(_Writer(), k)

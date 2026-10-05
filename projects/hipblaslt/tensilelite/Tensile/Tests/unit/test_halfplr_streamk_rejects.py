@@ -350,6 +350,27 @@ def test_halfplr_rejects_tdmfuse1_at_a_divergent_pair(
 # ClusterLocalRead follows the HalfPLR BITMASK, not the scalar. HalfPLR=1 is A
 # alone, so B keeps the cluster it was given instead of being un-clustered.
 # ---------------------------------------------------------------------------
+def test_stated_vgpr_allocation_accepts_an_independent_cluster_request(
+    _gp_gfx1250, gfx1250_iim, assembler, capsys
+):
+    sol, out = _derive(
+        gfx1250_iim,
+        assembler,
+        capsys,
+        UseLoopModel=True,
+        HalfPLR=0,
+        ClusterLocalRead=1,
+        ClusterLocalReadA=1,
+        ClusterLocalReadB=1,
+        VgprGroupA=2,
+        VgprAllocA=3,
+        VgprGroupB=-1,
+        VgprAllocB=-1,
+    )
+    assert sol.get("Valid") is True, f"expected accept, rejected with: {out!r}"
+    assert sol.get("ClusterLocalRead") == 1
+
+
 @pytest.mark.parametrize(
     "half_plr, expectA, expectB",
     [(1, 0, 1), (2, 1, 0), (3, 0, 0)],
