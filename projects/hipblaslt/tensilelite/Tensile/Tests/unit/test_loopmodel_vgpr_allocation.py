@@ -4,6 +4,7 @@
 import ast
 from pathlib import Path
 from types import SimpleNamespace
+from typing import NamedTuple
 
 import pytest
 
@@ -17,6 +18,7 @@ _LOOPMODEL_REGISTERS = (Path(__file__).resolve().parents[2]
 _AXIS_MT = "MT"
 _AXIS_DU = "DU"
 _SPLIT_OF = None
+_VALU_ALLOC = None
 
 
 def _function(path, name, namespace=None):
@@ -136,15 +138,37 @@ def _split_of():
     return _SPLIT_OF
 
 
-def _valu_size(kernel, tc, bpe):
+def _valu_alloc(kernel, tc, bpe):
     writer = SimpleNamespace(states=SimpleNamespace(
         bpr=4, packDTVA=False, convDTVA=False, packDTVB=False, convDTVB=False))
     size = _function(
         _LOOPMODEL_REGISTERS,
         "operandValuPuVaVg",
-        {"split_of": _split_of(), "AXIS_MT": _AXIS_MT, "AXIS_DU": _AXIS_DU},
+        {"split_of": _split_of(), "AXIS_MT": _AXIS_MT, "AXIS_DU": _AXIS_DU,
+         "ValuAlloc": _valu_alloc_type()},
     )
     return size(writer, kernel, tc, bpe)
+
+
+def _valu_alloc_type():
+    global _VALU_ALLOC
+    if _VALU_ALLOC is None:
+        source = _LOOPMODEL_REGISTERS.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(_LOOPMODEL_REGISTERS))
+        cls = next(node for node in ast.walk(tree)
+                   if isinstance(node, ast.ClassDef) and node.name == "ValuAlloc")
+        module = ast.Module(body=[cls], type_ignores=[])
+        ast.fix_missing_locations(module)
+        namespace = {"NamedTuple": NamedTuple}
+        exec(compile(module, str(_LOOPMODEL_REGISTERS), "exec"), namespace)
+        _VALU_ALLOC = namespace["ValuAlloc"]
+    return _VALU_ALLOC
+
+
+def _valu_size(kernel, tc, bpe):
+    """`(perBuffer, va)` -- the two terms most tests assert on."""
+    alloc = _valu_alloc(kernel, tc, bpe)
+    return alloc.perBuffer, alloc.va
 
 
 def _nmk_kernel():
@@ -252,6 +276,20 @@ def test_lowering_folds_the_layout_address_into_the_allocation():
     assert fold(256, 1 * 128 + 7 * 16) == 240
     # A zero span is the non-UseLoopModel path.
     assert fold(0, 7 * 128 + 7 * 16) == 7 * 128 + 7 * 16
+
+
+def test_the_allocation_carries_the_terms_of_its_own_formula():
+    # The IR dump states PU * VA / VG, so the allocation reports the terms and
+    # not only their product.  MKN splits B's prefetch unit from 8 tiles to 4.
+    kernel = _nmk_kernel()
+    kernel.update(WmmaInnerOrder=4, TDMSplitB=1, VgprGroupB=2, VgprAllocB=3,
+                  ClusterLocalReadB=0, PrefetchLocalReadB=2)
+
+    alloc = _valu_alloc(kernel, "B", 1)
+
+    assert (alloc.puTiles, alloc.puRegs, alloc.vg, alloc.va) == (4, 64, 2, 3)
+    assert alloc.perBuffer == alloc.puRegs // alloc.vg
+    assert alloc.total == alloc.perBuffer * alloc.va == 96
 
 
 def test_halfplr_shape_is_vg2_va3():
