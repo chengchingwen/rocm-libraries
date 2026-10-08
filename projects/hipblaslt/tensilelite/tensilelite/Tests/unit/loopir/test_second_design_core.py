@@ -124,6 +124,40 @@ def _raw_points(program, complete_operation, issue_operation):
     return loopir.dependence_points(relation) if relation is not None else ()
 
 
+def test_expression_analysis_is_stored_on_immutable_values():
+    from copy import deepcopy
+    import pickle
+    from Tensile.LoopModel.loopir.semantics import _affine
+
+    x = loopir.Axis("x", 4)
+    y = loopir.Axis("y", 2)
+    trip = loopir.Param("T")
+    expression = 2 * x + y + trip
+    predicate = (expression >= 1) & (x < y + 2)
+
+    assert expression.free_axes() is expression._free_axes
+    assert expression.free_params() is expression._free_params
+    assert predicate.free_axes() is predicate._free_axes
+    assert predicate.free_params() is predicate._free_params
+    assert _affine(expression) is None
+    assert expression._affine_computed
+    affine = 2 * x + y + 3
+    assert loopir.expr_equivalent(affine, y + 3 + 2 * x)
+    assert affine._equivalence_key is not None
+    copied_x, copied_y, copied_affine = deepcopy((x, y, affine))
+    assert loopir.expr_equivalent(
+        copied_affine,
+        2 * copied_x + copied_y + 3,
+    )
+    pickled_x, pickled_y, pickled_affine = pickle.loads(
+        pickle.dumps((x, y, affine))
+    )
+    assert loopir.expr_equivalent(
+        pickled_affine,
+        2 * pickled_x + pickled_y + 3,
+    )
+
+
 def test_g3_tensor_load_dependencies_are_exact_per_wave():
     program, wave, load0, load1, reads = _g3_program()
 
@@ -155,6 +189,11 @@ def test_dependence_repr_does_not_embed_program_subtrees():
         len(repr(dependence))
         for dependence in loopir.dependences(program)
     ) < 4096
+
+
+def test_loopir_dependence_vocabulary_is_raw_and_war_only():
+    assert tuple(kind.name for kind in loopir.DependenceKind) == ("RAW", "WAR")
+    assert not hasattr(loopir, "WAW")
 
 
 def test_new_loopir_checker_rejects_reordered_phase_markers():
@@ -579,6 +618,29 @@ def test_rewrite_is_a_pure_program_to_program_function():
     assert rewritten is not program
     assert load0 in tuple(loopir.walk(program))
     assert load0 not in tuple(loopir.walk(rewritten))
+    assert rewritten.check() is rewritten
+
+
+def test_program_body_check_can_be_deferred_explicitly():
+    program, _wave, _load0, _load1, _reads = _g3_program()
+    tile = program.axes[0]
+    undeclared = loopir.Operand("undeclared", (tile,))
+    read = loopir.Movement(
+        loopir.DS_LOAD,
+        (_transfer(
+            undeclared[tile],
+            loopir.SHARED,
+            loopir.REGISTER,
+        ),),
+        loopir.CompletionClass("read", loopir.WAVE),
+    )
+
+    with pytest.raises(loopir.IRTypeError, match="undeclared operand"):
+        program.with_body((read,))
+    unchecked = program.with_body((read,), check=False)
+    assert unchecked.body == (read,)
+    with pytest.raises(loopir.IRTypeError, match="undeclared operand"):
+        unchecked.check()
 
 
 def test_tensorload_partition_is_a_pure_generic_transformation():
@@ -822,9 +884,60 @@ def test_theta_pipeline_builds_valid_loopir_gir():
     theta = adapter.params_to_theta(params)
     decoded = decode_theta(theta)
     assert not validate_loopir(decoded.program, decoded.profile)
+    derived = loopir.dependences(decoded.program)
+    required = loopir.required_dependences(decoded.program)
     actual = lower_to_gir(decoded.program, decoded.profile)
+    assert loopir.dependences(decoded.program) is derived
+    assert loopir.required_dependences(decoded.program) is required
     run_pipeline(actual, passes=gir_pipeline())
     assert not check_plan(actual)
+
+
+def test_dependency_free_lowering_preserves_emitted_gir():
+    from Tensile.LoopModel import adapter
+    from Tensile.LoopModel.decoder import decode_theta
+    from Tensile.Lowering.gir.passes import pipeline as gir_pipeline
+    from Tensile.Lowering.gir.passes import run_pipeline
+    from Tensile.Lowering.gir.render import render_gir
+    from Tensile.Lowering.loopir_to_gir import lower_to_gir
+
+    params = {
+        "MIWaveTile": [2, 2],
+        "MatrixInstruction": [16, 16, 128, 1, 1, 2, 2, 2, 2],
+        "DepthU": 128,
+        "ElemBytes": 1,
+        "PrefetchGlobalRead": 1,
+        "PrefetchLocalRead": 1,
+        "LoopOrder": "KMN",
+    }
+    unchecked = decode_theta(adapter.params_to_theta(params))
+    without_dependencies = lower_to_gir(
+        unchecked.program,
+        unchecked.profile,
+        include_dependencies=False,
+    )
+    assert not unchecked.program._analysis
+
+    checked = decode_theta(adapter.params_to_theta(params))
+    with_dependencies = lower_to_gir(checked.program, checked.profile)
+    for block in with_dependencies.blocks.values():
+        for operation in block.body:
+            if hasattr(operation, "deps"):
+                operation.deps = ()
+
+    run_pipeline(
+        with_dependencies,
+        passes=gir_pipeline(),
+        verify=False,
+    )
+    run_pipeline(
+        without_dependencies,
+        passes=gir_pipeline(),
+        verify=False,
+    )
+    assert render_gir(with_dependencies) == render_gir(
+        without_dependencies
+    )
 
 
 def test_wave_is_a_program_agent_not_a_loop_or_program_axis():
@@ -888,6 +1001,7 @@ def test_runtime_iter_is_projected_to_generation_phase_not_discarded():
 
 def test_post_finalize_read_retiming_requires_profile_refinalization():
     from Tensile.LoopModel import adapter
+    from Tensile.LoopModel.checks import validate_loopir
     from Tensile.LoopModel.decoder import decode_theta
     from Tensile.Lowering.loopir_to_gir import lower_to_gir
 
@@ -916,6 +1030,10 @@ def test_post_finalize_read_retiming_requires_profile_refinalization():
             },
         ),
     )
+    errors = validate_loopir(retimed, decoded.profile)
+    assert any("re-finalize" in error for error in errors)
+    assert "dependences" not in retimed._analysis
+    assert "required_dependences" not in retimed._analysis
     with pytest.raises(RuntimeError, match="re-finalize"):
         lower_to_gir(retimed, decoded.profile)
 
@@ -1219,7 +1337,7 @@ def test_physical_register_ring_projection_is_materialized_in_loopir(
 ):
     from Tensile.LoopModel import adapter, traversal
     from Tensile.LoopModel.decoder import decode_theta
-    from Tensile.LoopModel.schedule import build_S, resolve_coverage
+    from Tensile.LoopModel.schedule import build_S
     from Tensile.Lowering.loopir_to_gir import lower_to_gir
 
     params = {
@@ -1235,7 +1353,6 @@ def test_physical_register_ring_projection_is_materialized_in_loopir(
     }
     point = adapter.params_to_theta(params)
     depths, _minimum = build_S(point)
-    resolve_coverage(point, depths)
     copies = traversal.ring_trip_copies(point, depths)
     assert copies == expected_copies
 
@@ -1258,7 +1375,7 @@ def test_repeat_read_occurrences_drive_the_three_copy_ring_projection():
     from Tensile.LoopModel import traversal
     from Tensile.LoopModel.adapter import params_to_theta
     from Tensile.LoopModel.decoder import decode_theta
-    from Tensile.LoopModel.schedule import build_S, resolve_coverage
+    from Tensile.LoopModel.schedule import build_S
     from Tensile.Lowering.loopir_to_gir import lower_to_gir
     from Tensile.Lowering.gir.emit_plan import plan_program
     from Tensile.Lowering.gir.passes import pipeline as gir_pipeline
@@ -1292,7 +1409,6 @@ def test_repeat_read_occurrences_drive_the_three_copy_ring_projection():
     assert all(not hasattr(operation, "issue") for operation in a_reads)
 
     depths, _minimum = build_S(theta)
-    resolve_coverage(theta, depths)
     copies = traversal.ring_trip_copies(theta, depths)
     assert copies == 3
     gir = lower_to_gir(
@@ -1471,7 +1587,6 @@ def test_target_coverage_inplace_read_order_lowers_to_valid_gir(
         "ReadVectorElems": {"MXSA": 8, "MXSB": 8},
         "ReadPhi": {"MXSA": 2, "MXSB": 2},
         "ReadRho": {"MXSA": 0, "MXSB": 0},
-        "RegisterBudget": 992,
     }
     if split is not None:
         params.update({
@@ -1503,7 +1618,6 @@ def test_fused_mixed_coverage_drain_order_lowers_to_valid_gir():
         "ReadVectorElems": {"MXSA": 4, "MXSB": 4},
         "ReadPhi": {"MXSA": 2, "MXSB": 2},
         "ReadRho": {"MXSA": 2, "MXSB": 2},
-        "RegisterBudget": 992,
     }
     theta = adapter.params_to_theta(params)
     _decoded, actual = _lower_theta(theta)
@@ -1618,7 +1732,7 @@ def test_backward_same_iteration_relation_is_kept_conservatively():
 def test_no_load_loop_is_an_explicit_program_transform():
     from Tensile.LoopModel import adapter, traversal
     from Tensile.LoopModel.decoder import decode_theta
-    from Tensile.LoopModel.schedule import build_S, resolve_coverage
+    from Tensile.LoopModel.schedule import build_S
 
     params = {
         "MIWaveTile": [2, 2],
@@ -1634,7 +1748,6 @@ def test_no_load_loop_is_an_explicit_program_transform():
     }
     point = adapter.params_to_theta(params)
     depths, _minimum = build_S(point)
-    resolve_coverage(point, depths)
     copies = traversal.ring_trip_copies(point, depths)
     decoded = decode_theta(point)
     assert loopir.DRAIN not in {

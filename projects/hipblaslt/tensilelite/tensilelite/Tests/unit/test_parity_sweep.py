@@ -739,7 +739,10 @@ def test_gir_semantic_checker_failure_is_always_a_value_error(monkeypatch):
     monkeypatch.setattr(
         program,
         "decode_theta",
-        lambda *_args: SimpleNamespace(program=object(), profile=object()),
+        lambda *_args: SimpleNamespace(
+            program=object(),
+            profile=SimpleNamespace(schedule=object()),
+        ),
     )
     monkeypatch.setattr(program, "validate_loopir", lambda *_args: [])
     monkeypatch.setattr(program, "gir_pipeline", lambda: ())
@@ -751,3 +754,77 @@ def test_gir_semantic_checker_failure_is_always_a_value_error(monkeypatch):
 
     with pytest.raises(ValueError, match="semantic check"):
         program.loopModelGirProgram(writer, kernel)
+
+
+def test_loopmodel_ir_verify_false_skips_all_ir_checks(monkeypatch):
+    import importlib
+    from types import SimpleNamespace
+
+    program = importlib.import_module("Tensile.Components.LoopModel.Program")
+    writer = SimpleNamespace(states=SimpleNamespace(kernelName="Cijk_NO_IR_VERIFY"))
+    kernel = {
+        "PrefetchGL2": 0,
+        "VgprGroupA": -1,
+        "VgprAllocA": -1,
+        "VgprGroupB": -1,
+        "VgprAllocB": -1,
+    }
+    fake_prog = SimpleNamespace(params={})
+    lowered = {}
+    pipelined = {}
+
+    monkeypatch.setitem(
+        program.globalParameters,
+        "LoopModelIRVerify",
+        False,
+    )
+    monkeypatch.setitem(program.globalParameters, "OutputLoopIR", False)
+    monkeypatch.setattr(
+        program,
+        "loopModelTheta",
+        lambda *_args: (SimpleNamespace(operands=[]), object()),
+    )
+    monkeypatch.setattr(
+        program,
+        "decode_theta",
+        lambda *_args: SimpleNamespace(
+            program=object(),
+            profile=SimpleNamespace(schedule=object()),
+        ),
+    )
+    monkeypatch.setattr(
+        program,
+        "validate_loopir",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("LoopIR verification ran")
+        ),
+    )
+    monkeypatch.setattr(program, "gir_pipeline", lambda: ())
+
+    def lower(*_args, **kwargs):
+        lowered.update(kwargs)
+        return fake_prog
+
+    def run(_prog, **kwargs):
+        pipelined.update(kwargs)
+
+    monkeypatch.setattr(program, "lower_to_gir", lower)
+    monkeypatch.setattr(program, "run_pipeline", run)
+    monkeypatch.setattr(
+        program,
+        "check_plan",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("GIR verification ran")
+        ),
+    )
+    monkeypatch.setattr(
+        program,
+        "required_dependences",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("dependency analysis ran")
+        ),
+    )
+
+    assert program.loopModelGirProgram(writer, kernel) is fake_prog
+    assert lowered["include_dependencies"] is False
+    assert pipelined["verify"] is False

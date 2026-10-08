@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 """Sort the (theta, op) functions into MODEL (intrinsic) vs DECISION (policy-dependent).
 
-Regenerates the table in `Tensile/LoopModel/docs/ARCHITECTURE.md`. Run from the tensilelite root:
+Run from the tensilelite root:
     python Tensile/Tests/unit/characterization/LoopModel/classify_operand_functions.py
 
 The test from the plan: does the answer change if PLR or the register budget changes? Mechanically:

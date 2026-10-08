@@ -34,7 +34,6 @@ class Fragment:
     coverage: object = None
     instances_per_instruction: int = 1
     agent_group_size: int = 0
-    kind: str = "load"
     offsets: dict = field(default_factory=dict)
     ring_depths: dict = None          #: VA -- buffers of one unit, per group
     vgpr_group: int = 1               #: VG -- the factor the prefetch unit is DIVIDED by
@@ -56,16 +55,6 @@ class Fragment:
 
     def groups(self) -> tuple:
         return self.group_labels()
-
-    def size_of(self, label) -> int:
-        labs = self.group_labels()
-        return self.parts[labs.index(label)] if label in labs else 1
-
-    def total_slots(self) -> int:
-        return sum(self.parts)
-
-    def group_broadcast(self) -> set:
-        return set(self.broadcast_axes)
 
     def policy_of(self, group):
         gp = self.group_policy or {}
@@ -95,7 +84,6 @@ class Global:
     """Global-memory placement."""
     vector_elements: int = 0
     coverage: object = None
-    kind: str = "load"
     offsets: dict = field(default_factory=dict)
 
     space = GLOBAL
@@ -109,7 +97,6 @@ class Shared:
     ring_depth: int = 0
     regions: RegionLayout = field(default_factory=RegionLayout)
     coverage: object = None
-    kind: str = "tdm"
     offsets: dict = field(default_factory=dict)
 
     space = SHARED
@@ -138,17 +125,10 @@ class Movement:
         return getattr(self.destination, "coverage", None)
 
     @property
-    def instances_per_instruction(self) -> int:
-        return max(1, int(getattr(self.destination, "instances_per_instruction", 1) or 1))
-
-    @property
     def agent_group_size(self) -> int:
-        return int(getattr(self.destination, "agent_group_size", 0) or 0)
-
-    @property
-    def kind(self) -> str:
-        return getattr(self.destination, "kind", None) or (
-            "tdm" if self.op is TENSOR_LOAD else "load")
+        return int(
+            getattr(self.destination, "agent_group_size", 0) or 0
+        )
 
     @property
     def split(self) -> int:
@@ -298,16 +278,6 @@ class Operand:
         shared = self.trajectory.shared
         return shared.regions.span if shared is not None else {}
 
-    @property
-    def free_split(self) -> int:
-        shared = self.trajectory.shared
-        return shared.regions.free_split if shared is not None else 1
-
-    @property
-    def wave_region_span(self) -> int:
-        shared = self.trajectory.shared
-        return shared.regions.wave_span if shared is not None else 1
-
     def region_of(self, coord) -> tuple:
         shared = self.trajectory.shared
         return shared.regions.index(coord) if shared is not None else ()
@@ -316,9 +286,6 @@ class Operand:
     def split(self) -> int:
         shared = self.trajectory.shared
         return max(1, shared.split) if shared is not None else 1
-
-    def has_bulk(self) -> bool:
-        return any(movement.is_bulk for movement in self.movements)
 
     def validate_trajectory(self):
         ranks = {GLOBAL: 0, SHARED: 1, REGISTER: 2}
@@ -415,7 +382,7 @@ def mode_role(name) -> str:
     return role if role in ("K", "M", "N") else None
 
 
-def readahead_level_of(inner, region_names, broadcast_names=(), rotation_regions=()):
+def readahead_level_of(inner, region_names):
     """`(name, extent, span)` of the axis one PLR step advances: the OUTERMOST non-region axis.
 
  A step must REACH something, so a degenerate axis is never the level: it is in the nest whatever
@@ -423,8 +390,6 @@ def readahead_level_of(inner, region_names, broadcast_names=(), rotation_regions
  the level, REGION AXES INCLUDED, because one step covers them; a split outside the level is not
  covered, so the read-ahead re-issues there.
     """
-    bcast = set(broadcast_names or ())
-    inner = [axis for axis in inner if axis.name not in bcast]
     regions = set(region_names or ())
     at = next((i for i, axis in enumerate(inner) if axis.name not in regions), None)
     if at is None:
@@ -538,7 +503,7 @@ class Theta:
             members = [by_name[name] for name in key]
             # THE WALK IS AS LONG AS THE LONGEST MEMBER.  A member with fewer regions than the
             # unit does not move on every step; `Operand.split` says how many it owns, and the
-            # copy side skips it on the steps it does not (see `loopir_to_gir._absent_at_region`).
+            # The decoder copy side skips it on region steps it does not own.
             units.append((key, members, max(max(1, operand.split) for operand in members)))
         return units
 
@@ -655,12 +620,6 @@ class Theta:
                                unit_enumerator=enumerator, summation_modes=summation,
                                reduction_ring=reduction)
 
-    def free_extent(self, mode_name):
-        for axis in self.ord:
-            if axis.name == mode_name:
-                return int(axis.extent.constant_value)
-        return 1
-
     def off_at(self, opname, operation, level_name) -> int:
         operand = self.op(opname) if isinstance(opname, str) else opname
         movement = next(
@@ -685,18 +644,4 @@ class Theta:
 
     def wave_served_axes(self) -> set:
         return self.agent_assignment.served_axes()
-
-    def tensor_instrs_per_kiter(self) -> int:
-        """distinct global->shared instructions per kiter (one shared counter tracks all)."""
-        byname = {operand.name: operand for operand in self.operands
-                  if operand.trajectory.shared is not None}
-        fused = {tile for group in self.fused_copy_groups for tile in group}
-        n = 0
-        for group in self.fused_copy_groups:
-            members = [byname[tile] for tile in group if tile in byname]
-            n += max((max(1, operand.split) for operand in members), default=1)
-        for name, operand in byname.items():  # unfused copies
-            if name not in fused:
-                n += max(1, operand.split)
-        return max(1, n)
 

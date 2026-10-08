@@ -44,10 +44,6 @@ def _mx_frag_elems(kernel, free_mi, mxblock):
     return max(1, data // max(1, mxblock) * dup)
 
 
-def _coalesce(kernel):
-    return max(1, kernel["LocalReadVectorWidth"] // max(1, kernel["VectorWidthA"]))
-
-
 AXIS_NAMES = ["K_split", "K_inner",
               "M_split", "M_inner", "N_split", "N_inner"]
 
@@ -236,7 +232,6 @@ def _read_params(p):
     fanM, fanN = kernel["MIWaveTile"][0], kernel["MIWaveTile"][1]
     copy_depth = max(0, kernel["PrefetchGlobalRead"])
     read_depth = max(0, kernel["PrefetchLocalRead"])
-    coalesce = _coalesce(kernel)  # substeps sharing one hi-register (reuse rate)
 
     return copy_depth, read_depth, elem_bytes, fanM, fanN, kernel, substeps, matrix_instruction
 
@@ -349,12 +344,12 @@ def _build_agent_assignment(movements, nest):
 def _build_fragments(kernel, matrix_instruction, nest, splits):
     """The operands: their paths, fragments, register widths and MX scale rings."""
     # --- register width: DERIVED, not a parameter
-    def reg_fragment(bcast, grp_mode, fan_extent, tc=None):
+    def reg_fragment(bcast, grp_mode):
         return Fragment(broadcast_axes=set(bcast), parts=1, labels=group_labels(1),
                         grouping_mode=grp_mode, group_policy={"*": "pipeline"})
 
-    fragA = reg_fragment(nest.N_BCAST, "M_inner", nest.mInner, "A")
-    fragB = reg_fragment(nest.M_BCAST, "N_inner", nest.nInner, "B")
+    fragA = reg_fragment(nest.N_BCAST, "M_inner")
+    fragB = reg_fragment(nest.M_BCAST, "N_inner")
 
     fragElA = _frag_elems(kernel, matrix_instruction[0])
     fragElB = _frag_elems(kernel, matrix_instruction[1])
@@ -419,8 +414,8 @@ def _build_operands(configure_read, elem_bytes, frags, movements, kernel, matrix
 
     hasMXA, hasMXB = kernel["MXBlockA"] > 0, kernel["MXBlockB"] > 0
 
-    def add_scale(name, free_mode, parent, copy_width, broadcast, free_mi, block):
-        fragment = frags.reg_fragment(broadcast, free_mode, 1, name)
+    def add_scale(name, free_mode, copy_width, broadcast, free_mi, block):
+        fragment = frags.reg_fragment(broadcast, free_mode)
         fragment.fragment_elements = _mx_frag_elems(kernel, free_mi, block)
         # A SCALE IS NEVER SPLIT, so it owns no region axis.  Borrowing the parent's gave it
         # `region_axes` with `split=1`, and every region-count reader had to work around that.
@@ -432,10 +427,10 @@ def _build_operands(configure_read, elem_bytes, frags, movements, kernel, matrix
             elem_bytes=1))
 
     if hasMXA:
-        add_scale("MXSA", "M_inner", "A", movements.grvwA, nest.N_BCAST,
+        add_scale("MXSA", "M_inner", movements.grvwA, nest.N_BCAST,
                   matrix_instruction[0], kernel["MXBlockA"])
     if hasMXB:
-        add_scale("MXSB", "N_inner", "B", movements.grvwB, nest.M_BCAST,
+        add_scale("MXSB", "N_inner", movements.grvwB, nest.M_BCAST,
                   matrix_instruction[1], kernel["MXBlockB"])
 
     return hasMXA, hasMXB, operands
@@ -758,7 +753,7 @@ def _place_read_offsets(theta, requests):
         depth = requests.get(operand.name, 0)
         if depth <= 0:
             continue
-        axis = readahead_level(theta, operand)
+        axis = readahead_level(theta)
         if axis is None:  # no intra-region axis this operand advances along
             continue
         movement = operand.trajectory.fragment_fill
@@ -835,7 +830,6 @@ def _movement_params(kernel, target):
         "ReadRho": dict({tc: f[1] for tc in ("MXSA", "MXSB")
                          for f in (_mxs_fold(kernel, tc),) if f[1] > 1},
                         **((target or {}).get("ReadRho", {}) or {})),
-        "RegisterBudget": (target or {}).get("RegisterBudget"),
     }
 
 

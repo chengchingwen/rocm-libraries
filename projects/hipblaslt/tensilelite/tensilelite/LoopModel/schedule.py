@@ -4,17 +4,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 from itertools import product
 
 from . import traversal as geometry
 from .loopir import TENSOR_LOAD
-from .theta import group_labels
-from .traversal import (CLOBBER, _divisors, _inner_steps, _summation_ring_axis,
-                        axis_strides, broadcast_width, chunks_crossed,
-                        coverage_tile_cap, free_axes, group_live_peak,
-                        group_reuse_floor, group_ring_size, is_uniform_over,
-                        lds_buffers, operand_level, position_terms,
+from .traversal import (CLOBBER, axis_strides,
+                        broadcast_width, chunks_crossed, group_live_peak,
+                        group_reuse_floor, group_ring_size, lds_buffers, position_terms,
                         prefetch_axis_name, prefetch_distance_for,
                         presence_axes, read_coverage, readahead_level,
                         register_reuse_verdict, reload_modes, reload_positions,
@@ -45,7 +42,7 @@ def _placeable_read_ahead(theta, operand, depths) -> int:
                 return True
             if reloads_whole_set(theta, operand) and geometry.vgpr_subdivided(theta, operand) \
                     and buffers >= group_live_peak(
-                        theta, operand, group, _inner_steps(theta), off=distance):
+                        theta, operand, group, off=distance):
                 return True
             return anchor is not None and (
                 bool(anchor)
@@ -54,25 +51,6 @@ def _placeable_read_ahead(theta, operand, depths) -> int:
             return want
         want -= 1
     return 0
-
-
-def readahead_reach(theta, depths, plans) -> int:
-    """How many whole reduction chunks the prefetch crosses into, over every group."""
-    deepest = 0
-    for operand in theta.operands:
-        if operand.trajectory.shared_read is None:
-            continue
-        prefetch_axis = prefetch_axis_name(theta, operand)  # PER operand: the axis it varies on
-        if prefetch_axis is None:
-            continue
-        prefetch_steps = plans.want(operand)
-        if prefetch_steps <= 0:
-            continue
-        for group in operand.fragment.groups():
-            steps = plans.steps(operand, group, prefetch_steps)
-            deepest = max(deepest, chunks_crossed(theta, operand, steps))
-    return deepest
-
 
 def copy_must_be_first(theta, operand, depths, plans=None):
     plans = Schedule(theta, depths) if plans is None else plans
@@ -95,151 +73,6 @@ def copy_first_operands(theta, depths, plans=None):
     return frozenset(operand.name for operand in theta.operands
                      if operand.trajectory.shared is not None
                      and copy_must_be_first(theta, operand, depths, plans))
-
-
-def chunk_crossing_violations(theta, depths, plans=None):
-    """The coupling `off(copy, iter) >= r + 1`, per operand -- [] when theta is emittable."""
-    plans = Schedule(theta, depths) if plans is None else plans
-    outer = theta.summation_chunk_name()
-    if outer is None:
-        return []
-    bad = []
-    for operand in theta.operands:
-        if operand.trajectory.shared is None:
-            continue
-        # The DERIVED depth, as `copy_must_be_first` reads it: the raw `off` charges a full-inner
-        # operand a crossing its clamped depth never makes, and refuses the kernel for it.
-        prefetch_steps = plans.want(operand)
-        for group in operand.fragment.groups():
-            steps = plans.steps(operand, group, prefetch_steps)
-            crossed = chunks_crossed(theta, operand, steps)
-            if crossed <= 0:
-                continue
-            copy_offset = theta.off_at(operand.name, TENSOR_LOAD, outer)
-            need = crossed if copy_must_be_first(theta, operand, depths, plans) else crossed + 1
-            if copy_offset < need:
-                bad.append((operand.name, steps, crossed, copy_offset, need))
-                break  # one report per operand is enough
-    return bad
-
-
-@dataclass(frozen=True)
-class PeelDepths:
-    """The peel depth per level: how many iterations each level lifts out of the loop."""
-    per_level: dict
-    offsets: dict
-    requested_steps: int
-    chunk: object
-    reach: int = 0
-    deferrals: dict = field(default_factory=dict)
-
-    def depth(self, level) -> int:
-        """How many steps of `level` are lifted out of the loop; 0 means it is not peeled."""
-        return int(self.per_level.get(level, 0))
-
-    @property
-    def chunk_depth(self) -> int:
-        """The peel at the reduction chunk -- the one level the emitter currently peels."""
-        return self.depth(self.chunk)
-
-    def peeled_levels(self) -> list:
-        """Every level with `M_l > 0`, outer->inner."""
-        return list(self.per_level)
-
-    def copy_off(self) -> dict:
-        return {name: depth for (name, role, level), depth in self.offsets.items()
-                if role is TENSOR_LOAD and level == self.chunk}
-
-
-def _read_offsets(theta):
-    """Every non-zero `off` theta carries, split by sign: forward peels and rejected deferrals."""
-    offsets, deferrals = {}, {}
-    for operand in theta.operands:
-        if operand.movements and operand.is_output:
-            raise RuntimeError(
-                f"operand {operand.name!r} has a REVERSE trajectory "
-                f"({[f'{h.src}->{h.dst}' for h in operand.movements]}): its hops run register->shared"
-                f"->global, and the mirrored peel that shape needs is not emitted yet. Refusing "
-                f"rather than peeling it forward, because the hop role still says 'read' for the "
-                f"read-back leg, so a role-keyed peel would look correct and run backwards.")
-        for hop in operand.movements:
-            for axis in theta.ord:
-                depth = theta.off_at(operand, hop.op, axis.name)
-                if depth > 0:
-                    offsets[(operand.name, hop.op, axis.name)] = depth
-                elif depth < 0:
-                    deferrals[(operand.name, hop.op, axis.name)] = depth
-    return offsets, deferrals
-
-
-def _deepest_read_ahead(theta, depths=None):
-    """The largest read-ahead any shared->register read asks for, in its own axis's steps."""
-    asked = [requested_read_ahead(theta, operand, depths) for operand in theta.operands
-             if operand.trajectory.shared_read is not None]
-    return max(0, max(asked, default=0))
-
-
-def peel_depths(theta, depths, plans=None):
-    """The peel depth of every level, and the offsets it was derived from."""
-    plans = Schedule(theta, depths) if plans is None else plans
-    chunk = theta.summation_chunk_name()
-    offsets, deferrals = _read_offsets(theta)
-
-    per_level = {}
-    for (_name, _role, level), depth in offsets.items():
-        per_level[level] = max(depth, per_level.get(level, 0))
-
-    prefetch_steps = max((plans.want(operand) for operand in theta.operands
-                          if operand.trajectory.shared_read is not None), default=0)
-    reach = readahead_reach(theta, depths, plans) if prefetch_steps else 0
-    if reach and chunk is not None:
-        per_level[chunk] = max(reach, per_level.get(chunk, 0))
-    per_level = {axis.name: per_level[axis.name] for axis in theta.ord if axis.name in per_level}
-    return PeelDepths(per_level=per_level, offsets=offsets, requested_steps=prefetch_steps,
-                      chunk=chunk, reach=reach, deferrals=deferrals)
-
-
-@dataclass(frozen=True)
-class BoundaryHoist:
-    """One cross-level boundary term."""
-    op: str
-    role: object
-    level: str
-    home: str
-    delta: int
-    coords: tuple
-
-
-def _leading_inner_coords(home, delta):
-    return tuple({home: i} for i in range(max(0, delta)))
-
-
-def boundary_hoists(theta, pd):
-    """Every cross-level boundary term `theta` carries (see `BoundaryHoist`), outer level first."""
-    names = [axis.name for axis in theta.ord]
-    outer = {axis.name for axis in theta.outer_axes()}
-    out = []
-    for (opname, role, level), delta in pd.offsets.items():
-        if level not in outer:
-            continue  # (1) inner level -> no boundary to cross
-        operand = theta.op(opname)
-        home = operand_level(theta, operand, role)
-        if home is None or home not in names:
-            continue
-        if names.index(home) <= names.index(level):
-            continue  # (2) home is at or outer to level
-        if home not in outer:
-            continue  # (3) unrolled home -> ordinary prefetch
-        out.append(BoundaryHoist(op=opname, role=role, level=level, home=home, delta=delta,
-                                 coords=_leading_inner_coords(home, delta)))
-    return sorted(
-        out,
-        key=lambda hop: (
-            names.index(hop.level),
-            hop.op,
-            hop.role.__name__,
-        ),
-    )
 
 
 def _all_varying_coords(theta, operand, varying):
@@ -294,7 +127,7 @@ def prefetch_steps_for(theta, operand, group, requested, depths) -> int:
         distance = prefetch_distance_for(theta, operand, requested, (group,))
         buffers = geometry.group_ring_depth(theta, operand, group, depths)
         if buffers >= group_live_peak(
-                theta, operand, group, _inner_steps(theta), off=distance):
+                theta, operand, group, off=distance):
             return min(max(0, int(requested)), requested_read_ahead(theta, operand, depths))
     if depth < group_reuse_floor(theta, operand, group):
         return 0
@@ -340,7 +173,7 @@ def prefetch_refusal(theta, operand, group, prefetch_steps, depths):
         return refusal(BAND_EMPTY, depth=refused, buffers=buffers,
                        rate=group_ring_size(theta, operand, group),
                        fan=broadcast_width(theta, operand))
-    peak = group_live_peak(theta, operand, group, _inner_steps(theta), off=refused)
+    peak = group_live_peak(theta, operand, group, off=refused)
     if peak > buffers:
         return refusal(CAPACITY, depth=refused, buffers=buffers, peak=peak)
     distance = prefetch_distance_for(theta, operand, refused)
@@ -358,7 +191,7 @@ def prefetch_refusals(theta, depths, prefetch_steps=None):
     """Every (op, group) whose PLR request the derivation could not honour."""
     if prefetch_steps is None:
         try:
-            prefetch_steps = peel_depths(theta, depths).requested_steps
+            prefetch_steps = Schedule(theta, depths).read_ahead_steps
         except Exception:
             return ()
     out = []
@@ -431,79 +264,6 @@ def _read_placement(theta, operand, depths, prefetch_steps=0, groups=None, plans
     return tuple(slots), src_slot
 
 
-def resolve_coverage(theta, depths=None) -> dict:
-    return {operand.name: operand.fragment.coverage
-            for operand in theta.operands
-            if operand.fragment is not None and operand.fragment.coverage is not None}
-
-
-def _generation_map(theta, operand, depths, prefetch_steps):
-    slots, source = _read_placement(
-        theta,
-        operand,
-        depths,
-        prefetch_steps=prefetch_steps,
-    )
-    varying = list(presence_axes(theta, operand))
-    chunk = theta.summation_chunk_name()
-    out = {}
-    for combo in product(*[
-        range(max(1, int(axis.extent.constant_value)))
-        for axis in varying
-    ]):
-        env = {chunk: 0}
-        env.update({axis.name: v for axis, v in zip(varying, combo)})
-        generation = source.evaluate(env) if source is not None else source
-        values = tuple(slot.evaluate(env) for _group, slot in slots)
-        out[tuple(zip((axis.name for axis in varying), combo))] = (
-            generation,
-            values,
-        )
-    return out, varying
-
-
-def transfer_coverage_axes(theta, operand, hop, depths) -> tuple:
-    """The axes one instruction of this hop covers, and by what factor (the movement coverage)."""
-    cap = coverage_tile_cap(theta, operand, hop)
-    if cap <= 1:
-        return ()
-    free = [
-        axis for axis in free_axes(theta, operand)
-        if int(axis.extent.constant_value) > 1
-    ]
-    if not free:
-        return ()
-    steps = theta.off_of(operand, hop, prefetch_axis_name(theta, operand))
-    generations, varying = _generation_map(theta, operand, depths, steps)
-    best, covered = (), 1
-    for depth in range(1, len(free) + 1):
-        whole = free[-(depth - 1):] if depth > 1 else []  # outer axes, spanned whole
-        inner = free[-depth]  # the one that may take a factor
-        outer_width = 1
-        for axis in whole:
-            outer_width *= max(1, int(axis.extent.constant_value))
-        if outer_width > cap:
-            break
-        room = cap // outer_width
-        inner_extent = int(inner.extent.constant_value)
-        factor = max(
-            (f for f in _divisors(inner_extent) if f <= room),
-            default=1,
-        )
-        if factor <= 1 and not whole:
-            break  # nothing to merge at this depth
-        candidate = tuple([
-            (axis.name, int(axis.extent.constant_value))
-            for axis in whole
-        ]
-                          + ([(inner.name, factor)] if factor > 1 else []))
-        if is_uniform_over(generations, candidate) and outer_width * factor > covered:
-            best, covered = candidate, outer_width * factor
-        if factor < inner_extent:
-            break
-    return best
-
-
 # --- schedule --------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -521,26 +281,18 @@ class OperandPlan:
     prefetch_distance: int
     #: the loop position a reload must follow; empty means it may sit at first use
     reload_after: dict
-    #: tiles loaded before the loop starts, so the first iteration has data
-    preloaded_tiles: tuple
     #: how many LDS copies the global-to-LDS side keeps
     lds_buffers: int
     #: why `prefetch_steps` came out below what was requested, or None
     prefetch_refused: object
 
-    @property
-    def loads_ahead(self) -> bool:
-        return self.prefetch_steps >= 1
-
 
 class Schedule:
     """The decision table for one theta, computed on demand and cached."""
 
-    def __init__(self, theta, depths, requested_depth=None):
+    def __init__(self, theta, depths):
         self.theta = theta
         self.depths = depths                     # the register depth map
-        self.requested_depth = (_deepest_read_ahead(theta, depths) if requested_depth is None
-                                else requested_depth)
         self._plans = {}
         self._steps = {}   # a plan needs EVERY group's steps, so this layer resolves first
         #: `(theta, depths)` are fixed here, so the request is one number per operand
@@ -551,11 +303,23 @@ class Schedule:
         """The selected scheme's one realized internal PLR for this operand."""
         return self._want[operand.name]
 
+    @property
+    def read_ahead_steps(self) -> int:
+        """Largest selected shared-to-register lead across all operands."""
+
+        return max(
+            (
+                self.want(operand)
+                for operand in self.theta.operands
+                if operand.trajectory.shared_read is not None
+            ),
+            default=0,
+        )
+
     def steps(self, operand, group, want) -> int:
         """How far ahead this group actually reads, at the depth `want` asks for.
 
-        Kept below `plan`, not inside it: a plan's `preloaded_tiles` spans every group of the
-        fragment, so deriving one plan asks for the others' steps. Two layers, no cycle.
+        Kept below `plan` so placement and diagnostics share one cached answer.
         """
         key = (operand.name, group, want)
         if key not in self._steps:
@@ -580,15 +344,13 @@ class Schedule:
         reload_after = {}
         for coord in anchors.values():
             reload_after.update(coord)
-        level = readahead_level(theta, operand)
+        level = readahead_level(theta)
         return OperandPlan(
             register_buffers=width,
             prefetch_axis=level[0] if level else None,
             prefetch_steps=steps,
             prefetch_distance=distance,
             reload_after=reload_after,
-            preloaded_tiles=tuple(map(_freeze,
-                                      preloaded_tiles(theta, operand, want, depths, self))),
             lds_buffers=lds_buffers(theta, operand),
             prefetch_refused=prefetch_refusal(theta, operand, group, want, depths),
         )
@@ -601,14 +363,9 @@ class Schedule:
             for group in operand.fragment.groups():
                 yield operand, group
 
-
-def _freeze(coord):
-    return tuple(sorted(coord.items())) if isinstance(coord, dict) else coord
-
-
 # ---  ------------------------------------------------------------------------------------------------
 
-def group_width(theta, operand, group, steps) -> int:
+def group_width(theta, operand, group) -> int:
     """Rotation-unit width selected for one group."""
     read = operand.trajectory.fragment_fill
     if read is not None and not presence_axes(theta, operand, hop=read):
@@ -622,10 +379,10 @@ def group_width(theta, operand, group, steps) -> int:
     # lead nothing is in flight and it cannot bind.  An uncovered operand is retained across a
     # sweep and owes its floor either way.
     covered = read is not None and read.coverage is not None
-    L_floor = max(group_live_peak(theta, operand, group, steps),
+    L_floor = max(group_live_peak(theta, operand, group),
                   1 if (covered and not distance)
                   else group_reuse_floor(theta, operand, group))
-    L_prefetch = group_live_peak(theta, operand, group, steps, off=distance)
+    L_prefetch = group_live_peak(theta, operand, group, off=distance)
     choice = operand.fragment.policy_of(group)
     if choice == "inplace":
         return L_floor
@@ -646,14 +403,14 @@ class BufferDepths:
     theta: object
     include_shared: bool = True
 
-    def get(self, operand, group, default=1, region=None):
+    def get(self, operand, group, default=1):
         try:
             fragment = self.theta.op(operand).fragment
         except RuntimeError:
             return default
         return int((fragment.ring_depths or {}).get(group, default))
 
-    def groups_of(self, operand, region=None):
+    def groups_of(self, operand):
         try:
             fragment = self.theta.op(operand).fragment
         except RuntimeError:
@@ -669,13 +426,6 @@ class BufferDepths:
             return default
         return int(placement.ring_depth)
 
-    def register_items(self):
-        for operand in self.theta.operands:
-            if operand.fragment is None:
-                continue
-            for group, depth in (operand.fragment.ring_depths or {}).items():
-                yield operand, group, int(depth)
-
     def __repr__(self):
         rows = []
         for operand in self.theta.operands:
@@ -689,12 +439,11 @@ class BufferDepths:
 
 def derive_S(theta) -> BufferDepths:
     """Derive per-region VA onto fragment placements."""
-    steps = _inner_steps(theta)
     for operand in theta.operands:
         if operand.is_output:
             continue
         operand.fragment.ring_depths = {
-            group: group_width(theta, operand, group, steps)
+            group: group_width(theta, operand, group)
             for group in operand.fragment.groups()
         }
     return BufferDepths(theta, include_shared=False)
@@ -709,136 +458,3 @@ def build_S(theta):
         if shared is not None and shared.ring_depth <= 0:
             shared.ring_depth = lds_buffers(theta, operand)
     return BufferDepths(theta), floor
-
-
-_GROUPING_SCHEMES = (
-    (1, ("pipeline",)),
-    (2, ("pipeline", "pipeline")),
-    (2, ("pipeline", "inplace")),
-    (4, ("pipeline",) * 4),
-    (4, ("pipeline", "inplace") * 2),
-    (8, ("pipeline",) * 8),
-    (8, ("pipeline", "inplace") * 4),
-    (1, ("inplace",)),
-)
-
-
-class RegisterDepthSelector:
-    """Choose fragment groups and ring depths within a register budget."""
-
-    def __init__(self, theta, budget):
-        self.theta = theta
-        self.budget = budget
-        self.splittable = [
-            operand for operand in theta.operands
-            if operand.movements
-            and operand.fragment.grouping_mode is not None
-            and geometry.grouping_extent(theta, operand) > 1
-        ]
-        self.original = {operand.name: operand.fragment for operand in self.splittable}
-        self.blocked = None
-
-    def admissible(self, operand, groups) -> bool:
-        fan = geometry.grouping_extent(self.theta, operand)
-        return (
-            groups >= 1
-            and fan % groups == 0
-            and fan // groups >= 1
-            and (groups == 1 or geometry.grouping_preserves_coverage(
-                self.theta, operand, groups))
-        )
-
-    def apply(self, operand, groups, policies) -> bool:
-        if not self.admissible(operand, groups):
-            return False
-        labels = group_labels(groups)
-        operand.fragment = replace(
-            self.original[operand.name],
-            parts=groups,
-            labels=labels,
-            group_policy=dict(zip(labels, policies)),
-            ring_depths=None)
-        return True
-
-    def order(self, depths) -> list:
-        names = [operand.name for operand in self.theta.operands]
-        positions = {axis.name: i for i, axis in enumerate(self.theta.inner_axes())}
-        return sorted(
-            self.splittable,
-            key=lambda operand: (
-                operand.name.startswith("MXS"),
-                -positions.get(operand.fragment.grouping_mode, -1),
-                not geometry.reloads_whole_set(self.theta, operand),
-                geometry.operand_emitted_regs(self.theta, operand, depths),
-                names.index(operand.name),
-            ))
-
-    def unserved(self, operand, depths):
-        want = requested_read_ahead(self.theta, operand, depths)
-        if operand.is_output or not want:
-            return None
-        for group in operand.fragment.groups():
-            if operand.fragment.policy_of(group) == "inplace":
-                continue
-            if prefetch_steps_for(self.theta, operand, group, want, depths) < want:
-                return group
-        return None
-
-    def cost(self, depths, operands=None) -> int:
-        selected = self.theta.operands if operands is None else operands
-        return sum(geometry.operand_emitted_regs(self.theta, operand, depths)
-                   for operand in selected)
-
-    def candidates(self, operand) -> list:
-        out = []
-        for groups, policies in _GROUPING_SCHEMES:
-            if not self.apply(operand, groups, policies):
-                continue
-            try:
-                depths = derive_S(self.theta)
-                if self.unserved(operand, depths) is None:
-                    out.append((groups, policies,
-                                geometry.operand_emitted_regs(self.theta, operand, depths)))
-            except RuntimeError:
-                pass
-        operand.fragment = self.original[operand.name]
-        return out
-
-    def choose(self, order, options, index, spent):
-        if index == len(order):
-            depths = derive_S(self.theta)
-            return None if chunk_crossing_violations(self.theta, depths) else depths
-
-        rest = sum(min((regs for _groups, _policies, regs in options[i]), default=0)
-                   for i in range(index + 1, len(order)))
-        operand = order[index]
-        for groups, policies, regs in options[index]:
-            if self.budget and spent + regs > self.budget:
-                blocked = spent + regs + rest
-                self.blocked = min(self.blocked or blocked, blocked)
-                continue
-            self.apply(operand, groups, policies)
-            result = self.choose(order, options, index + 1, spent + regs)
-            if result is not None:
-                return result
-        operand.fragment = self.original[operand.name]
-        return None
-
-    def build(self):
-        base = derive_S(self.theta)
-        order = self.order(base)
-        names = {operand.name for operand in self.splittable}
-        fixed = self.cost(base, [operand for operand in self.theta.operands
-                                 if operand.name not in names])
-        result = self.choose(order, [self.candidates(operand) for operand in order], 0, fixed)
-        if result is not None:
-            return result
-        for operand in self.splittable:
-            operand.fragment = self.original[operand.name]
-        reason = (f"register budget {self.budget} is below {self.blocked}"
-                  if self.blocked is not None else "no grouping carries the requested read-ahead")
-        raise RuntimeError(f"no register grouping is valid: {reason}")
-
-
-def select_register_depths(theta, budget=None):
-    return RegisterDepthSelector(theta, budget).build()

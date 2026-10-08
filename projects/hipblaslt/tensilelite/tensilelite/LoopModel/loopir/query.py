@@ -20,6 +20,7 @@ from .model import (
     Region,
     Switch,
 )
+from .rewrite import walk
 
 
 Path = tuple[tuple[str, int], ...]
@@ -43,34 +44,6 @@ class Occurrence:
 
     def __getattr__(self, name):
         return getattr(self.node, name)
-
-@dataclass(frozen=True)
-class Selection:
-    """An ordered tuple of structural occurrences from one Program."""
-
-    occurrences: tuple[Occurrence, ...]
-    _program: Program = field(repr=False)
-
-    def __post_init__(self):
-        if not isinstance(self.occurrences, tuple):
-            raise IRTypeError("Selection.occurrences must be a tuple")
-        if any(item._program is not self._program for item in self.occurrences):
-            raise IRTypeError("a Selection cannot mix Programs")
-
-    def __len__(self) -> int:
-        return len(self.occurrences)
-
-    def __getitem__(self, index):
-        return self.occurrences[index]
-
-def _selection_of(program: Program, occurrences) -> Selection:
-    if not isinstance(program, Program):
-        raise IRTypeError("selection_of expects a Program")
-    values = tuple(occurrences)
-    if not all(isinstance(item, Occurrence) for item in values):
-        raise IRTypeError("selection values must be Occurrence objects")
-    return Selection(values, program)
-
 
 def _walk_body(
     program,
@@ -155,25 +128,6 @@ def occurrences(program: Program) -> tuple[Occurrence, ...]:
     return tuple(_walk_body(program, program.body))
 
 
-def _find(program: Program, predicate) -> Selection:
-    if not isinstance(program, Program):
-        raise IRTypeError("find expects a Program")
-    if not callable(predicate):
-        raise IRTypeError("find.predicate must be callable")
-    return _selection_of(
-        program,
-        (item for item in occurrences(program) if bool(predicate(item))),
-    )
-
-
-def _one(selection: Selection, name: str) -> Occurrence:
-    if len(selection) != 1:
-        raise TransformRefused(
-            f"{name} expected exactly one match, found {len(selection)}"
-        )
-    return selection[0]
-
-
 def find_loop(
     program: Program,
     axis: Axis,
@@ -190,7 +144,17 @@ def find_loop(
             and (lo is None or expr_equivalent(node.lo, lo)) \
             and (hi is None or expr_equivalent(node.hi, hi))
 
-    return _one(_find(program, matches), "find_loop")
+    if not isinstance(program, Program):
+        raise IRTypeError("find_loop expects a Program")
+    selected = tuple(
+        item for item in occurrences(program)
+        if matches(item)
+    )
+    if len(selected) != 1:
+        raise TransformRefused(
+            f"find_loop expected exactly one match, found {len(selected)}"
+        )
+    return selected[0]
 
 
 def operations(program: Program) -> tuple[Movement | Compute, ...]:
@@ -198,8 +162,7 @@ def operations(program: Program) -> tuple[Movement | Compute, ...]:
         raise IRTypeError("operations expects a Program")
     result = []
     identities = set()
-    for item in occurrences(program):
-        node = item.node
+    for node in walk(program):
         if isinstance(node, (Movement, Compute)) and id(node._identity) not in identities:
             identities.add(id(node._identity))
             result.append(node)
@@ -210,7 +173,7 @@ def regions(program: Program) -> tuple[Region, ...]:
     if not isinstance(program, Program):
         raise IRTypeError("regions expects a Program")
     return tuple(
-        item.node for item in occurrences(program) if isinstance(item.node, Region)
+        node for node in walk(program) if isinstance(node, Region)
     )
 
 

@@ -240,6 +240,7 @@ globalParameters["AsanBuild"] = False  # build with asan
 #globalParameters["SaveTemps"] = False  # Generate intermediate results of hip kernels
 globalParameters["KeepBuildTmp"] = False  # If true, do not remove artifacts in build_tmp
 globalParameters["OutputLoopIR"] = False  # If true, also dump the LoopModel θ-IR to a sibling ir/ dir
+globalParameters["LoopModelIRVerify"] = True  # Set False only for output-parity codegen sweeps.
 
 # debug for assembly
 #globalParameters["SplitGSU"] = False  # Split GSU kernel into GSU1 and GSUM
@@ -967,6 +968,9 @@ def assignGlobalParameters(config, isaInfoMap: Dict[IsaVersion, IsaInfo]):
 
     if "OutputLoopIR" in config:
         globalParameters["OutputLoopIR"] = config["OutputLoopIR"]
+
+    if "LoopModelIRVerify" in config:
+        globalParameters["LoopModelIRVerify"] = config["LoopModelIRVerify"]
 
     if "CodeObjectVersion" in config:
         globalParameters["CodeObjectVersion"] = config["CodeObjectVersion"]

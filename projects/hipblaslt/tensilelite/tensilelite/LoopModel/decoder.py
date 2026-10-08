@@ -66,9 +66,7 @@ from .schedule import (
     build_S,
     copy_first_operands,
     loads_in_place,
-    peel_depths,
     preloaded_tiles,
-    resolve_coverage,
 )
 
 
@@ -89,17 +87,6 @@ class ThetaTargetProfile:
     read_signatures: object
     register_inplace: frozenset
     shared_inplace: frozenset
-
-    @cached_property
-    def _dependences(self):
-        return {}
-
-    def cache_dependences(self, program, derived):
-        self._dependences[id(program)] = (program, tuple(derived))
-
-    def cached_dependences(self, program):
-        entry = self._dependences.get(id(program))
-        return entry[1] if entry is not None and entry[0] is program else None
 
     def shared_ring(self, operand: str) -> int:
         if self.theta.op(operand).trajectory.shared is None:
@@ -211,16 +198,47 @@ class ThetaTargetProfile:
         except Exception:
             group = 0
         group = min(max(0, group), len(labels) - 1)
-        slots, _source = _read_placement(
-            self.theta,
-            descriptor,
-            self.depths,
-            prefetch_steps=int(prefetch_steps),
-            groups=(labels[group],),
-            plans=self.schedule,
-            repeat_axes=tuple(issue_axes),
+        label = labels[group]
+        template_key = (
+            operand,
+            label,
+            int(prefetch_steps),
+            tuple(issue_axes),
         )
-        expression = slots[0][1]
+        template = self._register_placement_templates.get(template_key)
+        if template is None:
+            slots, _source = _read_placement(
+                self.theta,
+                descriptor,
+                self.depths,
+                prefetch_steps=int(prefetch_steps),
+                groups=(label,),
+                plans=self.schedule,
+                repeat_axes=tuple(issue_axes),
+            )
+            expression = slots[0][1]
+            width = (
+                int(expression.args[1])
+                if expression.op == "mod" else 1
+            )
+            carries = geometry.vgpr_ring_carries(
+                self.theta,
+                descriptor,
+                label,
+                width,
+            )
+            positions = (
+                geometry.ring_positions(
+                    self.theta,
+                    descriptor,
+                    label,
+                    width,
+                )
+                if carries else 0
+            )
+            template = expression, width, carries, positions
+            self._register_placement_templates[template_key] = template
+        expression, width, carries, positions = template
         bindings = dict(placement_environment or environment)
         for axis in expression.free_axes():
             value = bindings.get(axis.name, bindings.get(axis, 0))
@@ -230,21 +248,12 @@ class ThetaTargetProfile:
             slot = int(expression.evaluate(bindings))
         except Exception:
             slot = 0
-        width = int(expression.args[1]) if expression.op == "mod" else 1
-        label = labels[group]
-        if geometry.vgpr_ring_carries(
-            self.theta,
-            descriptor,
-            label,
-            width,
-        ):
+        if carries:
             phase = int(copy_phase or 0)
             direction = -1 if issue_axes else 1
             slot = (
                 slot
-                + direction * phase * geometry.ring_positions(
-                    self.theta, descriptor, label, width
-                )
+                + direction * phase * positions
             ) % width
         result = group, slot, width
         self._register_locations[key] = result
@@ -254,23 +263,32 @@ class ThetaTargetProfile:
     def _register_locations(self):
         return {}
 
+    @cached_property
+    def _register_placement_templates(self):
+        return {}
+
     def unit_index(self, operand: str, coordinate) -> int:
+        coordinate_key = tuple(sorted(
+            (getattr(key, "name", key), value)
+            for key, value in dict(coordinate).items()
+        ))
+        key = operand, coordinate_key
+        if key in self._unit_indices:
+            return self._unit_indices[key]
         try:
-            return int(geometry.unit_tile_index(
+            result = int(geometry.unit_tile_index(
                 self.theta,
                 self.theta.op(operand),
                 dict(coordinate),
             ))
         except Exception:
-            return 0
+            result = 0
+        self._unit_indices[key] = result
+        return result
 
-    def size_of(self, operand: str) -> tuple[int, int]:
-        descriptor = self.theta.op(operand)
-        return (
-            int(getattr(descriptor, "elem_bytes", 0) or 0),
-            int(geometry.frag_regs(self.theta, descriptor))
-            if descriptor.fragment is not None else 0,
-        )
+    @cached_property
+    def _unit_indices(self):
+        return {}
 
     def bulk_bytes(self, operand: str) -> int:
         descriptor = self.theta.op(operand)
@@ -406,11 +424,6 @@ class ThetaTargetProfile:
             },
             "coverage_axes": coverage_axes,
             "read_fold": read_fold,
-            "read_instructions": {
-                operand.name: int(getattr(operand.fragment, "instructions", 0) or 0)
-                for operand, _movement in reads
-                if int(getattr(operand.fragment, "instructions", 0) or 0) > 0
-            },
             "mma_inputs": [
                 operand.name
                 for operand in self.theta.operands
@@ -423,8 +436,6 @@ class ThetaTargetProfile:
             ][2:],
             "per_region_completion": bool(self.theta.per_region_completion),
         }
-        if not metadata["read_instructions"]:
-            metadata.pop("read_instructions")
         return metadata
 
     def as_meta(self) -> dict:
@@ -440,14 +451,9 @@ class DecodedSchedule:
 class _Decoder:
     def __init__(self, theta):
         self.theta = theta
-        self.depths, self.minimum_depths = build_S(theta)
-        resolve_coverage(theta, self.depths)
+        self.depths, _ = build_S(theta)
         self.schedule = Schedule(theta, self.depths)
-        requested_steps = peel_depths(
-            theta,
-            self.depths,
-            self.schedule,
-        ).requested_steps
+        requested_steps = self.schedule.read_ahead_steps
         self._register_inplace = {
             (operand.name, group)
             for operand in theta.operands
@@ -916,7 +922,6 @@ class _Decoder:
                     self.theta,
                     descriptor,
                     group,
-                    geometry._inner_steps(self.theta),
                     off=geometry.prefetch_distance_for(
                         self.theta,
                         descriptor,
@@ -1527,7 +1532,11 @@ class _Decoder:
             ))),
         )
         if not any(isinstance(node, Region) for node in walk(program)):
-            program = program.with_body((Region(STEADY), *program.body))
+            program = program.with_body(
+                (Region(STEADY), *program.body),
+                check=False,
+            )
+        program.check()
         final_reads = tuple(
             operation for operation in operations(program)
             if isinstance(operation, Movement)

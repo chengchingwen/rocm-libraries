@@ -5,8 +5,7 @@
 from __future__ import annotations
 
 from . import traversal as geometry
-from .loopir import Program, render as render_program
-from .schedule import Schedule, build_S, peel_depths, prefetch_refusals
+from .schedule import Schedule, build_S, prefetch_refusals
 from .traversal import (
     _region_count,
     frag_regs,
@@ -22,10 +21,6 @@ from .traversal import (
     summation_tiles,
     varying_axes,
 )
-
-
-def render_ir(program: Program) -> str:
-    return render_program(program)
 
 
 def _geometry_unit_table(lines, theta, depths):
@@ -53,7 +48,7 @@ def _geometry_unit_table(lines, theta, depths):
 
 
 def _geometry_operand_table(lines, depths, requested_steps, theta):
-    plans = Schedule(theta, depths, requested_steps)
+    plans = Schedule(theta, depths)
     lines.append(
         "  operand role   axes               free ktiles fragregs tileB reads "
         "shared_depth register_depths vgpr read_mode"
@@ -191,7 +186,7 @@ def render_geometry(theta) -> str:
                 for (operand, operation, axis), depth in rows
             )
         )
-    requested = peel_depths(theta, depths).requested_steps
+    requested = Schedule(theta, depths).read_ahead_steps
     lines.append(
         f"  mma_grid={shape.m_tiles}x{shape.n_tiles}x{shape.k_tiles} "
         f"count={shape.count}"
@@ -242,7 +237,7 @@ def render_operand_facts(theta) -> str:
     for operand in theta.operands:
         if operand.is_output or operand.fragment is None:
             continue
-        axis = readahead_level(theta, operand)
+        axis = readahead_level(theta)
         rows.append(
             "%-7s  %-34s  %-27s  %-8s  %-5s  %2d/%2d/%2d      "
             "%7d  %4d/%-5d  %3d"
@@ -264,28 +259,8 @@ def render_operand_facts(theta) -> str:
     return "\n".join(rows)
 
 
-def grouping_note(share, policies, spent, why):
-    head = "%d-way%s" % (
-        share,
-        "" if policies is None else "/" + "+".join(map(str, policies)),
-    )
-    if why is not None and why[0] == "derive":
-        return "%s: %s" % (head, why[1])
-    body = "%s: %d regs" % (head, spent)
-    if why is None:
-        return body
-    if why[0] == "ring":
-        return "%s, %s ring carries %d of %d" % ((body,) + why[1:])
-    return (
-        "%s, %s reads %d chunk(s) ahead but the copy stages %d, needs %d"
-        % ((body,) + why[1:])
-    )
-
-
 __all__ = [
-    "grouping_note",
     "render_geometry",
-    "render_ir",
     "render_operand_facts",
     "render_schedule",
 ]

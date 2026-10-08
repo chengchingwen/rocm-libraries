@@ -140,8 +140,7 @@ def decode(kernel):
     """
     from Tensile.LoopModel import adapter
     from Tensile.LoopModel.decoder import decode_theta
-    from Tensile.LoopModel.loopir import dependences
-    from Tensile.LoopModel.render import render_ir
+    from Tensile.LoopModel.loopir import dependences, render
     from Tensile.Lowering import lower_to_gir
     from Tensile.Lowering.gir.passes import pipeline, run_pipeline
     from Tensile.Lowering.gir.render import render_gir
@@ -154,7 +153,7 @@ def decode(kernel):
         )
         gir = lower_to_gir(decoded.program, decoded.profile)
         run_pipeline(gir, passes=pipeline())
-        return render_ir(decoded.program), render_gir(gir), edges
+        return render(decoded.program), render_gir(gir), edges
     except Exception as exc:                       # a refusal is behaviour worth pinning
         return ("%s: %s" % (type(exc).__name__, str(exc).split("\n")[0]),) * 3
 

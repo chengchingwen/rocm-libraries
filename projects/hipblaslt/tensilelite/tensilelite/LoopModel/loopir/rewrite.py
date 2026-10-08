@@ -104,7 +104,7 @@ def rewrite(
     body = edit_body(program.body)
     if body is program.body:
         return program
-    return program.with_body(body)
+    return program.with_body(body, check=False)
 
 
 def _matches(candidate: Node, target: Node) -> bool:
@@ -167,7 +167,7 @@ def replace(
     body = edit_body(program.body)
     if matches == 0:
         raise TransformRefused("replace matched no nodes")
-    return program.with_body(body)
+    return program.with_body(body, check=False)
 
 
 def insert(
@@ -209,4 +209,4 @@ def insert(
         raise TransformRefused("insert parent_body does not belong to this Program")
     if hits > 1:
         raise TransformRefused("insert parent_body is shared by several tree positions")
-    return program.with_body(body)
+    return program.with_body(body, check=False)

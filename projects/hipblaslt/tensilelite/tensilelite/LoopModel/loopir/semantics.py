@@ -150,6 +150,7 @@ class _EffectContext:
     predicates: tuple[Pred, ...]
     local_axes: tuple[Axis, ...]
     agent_axes: tuple[tuple[Axis, object], ...]
+    fixed_equalities: tuple
 
 
 def effect_domain(effect: EffectInstance) -> _EffectContext:
@@ -173,12 +174,25 @@ def effect_domain(effect: EffectInstance) -> _EffectContext:
         for axis, scope in occurrence._program.agents
         if id(axis) in free_ids
     )
+    predicates = occurrence.predicates + (effect.predicate,)
+    fixed_equalities = tuple(
+        (
+            expression,
+            value,
+            frozenset(id(axis) for axis in expression.free_axes()),
+        )
+        for predicate in predicates
+        for fixed in (_fixed_equality(predicate),)
+        if fixed is not None
+        for expression, value in (fixed,)
+    )
     return _EffectContext(
         occurrence.domains,
         occurrence.bindings,
-        occurrence.predicates + (effect.predicate,),
+        predicates,
         local,
         agent,
+        fixed_equalities,
     )
 
 
@@ -293,12 +307,10 @@ def effect_points(
 class DependenceKind(Enum):
     RAW = auto()
     WAR = auto()
-    WAW = auto()
 
 
 RAW = DependenceKind.RAW
 WAR = DependenceKind.WAR
-WAW = DependenceKind.WAW
 
 
 @dataclass(frozen=True)
@@ -336,9 +348,7 @@ class Dependence:
             return RAW
         if self.complete.kind is READ and self.issue.kind is WRITE:
             return WAR
-        if self.complete.kind is WRITE and self.issue.kind is WRITE:
-            return WAW
-        raise IRTypeError("READ-to-READ is not a dependence")
+        raise IRTypeError("a dependence requires exactly one write")
 
     @property
     def crossing_raw(self) -> bool:
@@ -415,32 +425,7 @@ def dependence_points(
 
 
 def _affine(expression: Expr):
-    if expression.op == "const":
-        return {}, expression.args[0]
-    if expression.op == "axis":
-        return {expression.args[0]: 1}, 0
-    if expression.op == "add":
-        coefficients, constant = {}, 0
-        for argument in expression.args:
-            value = _affine(argument)
-            if value is None:
-                return None
-            terms, add = value
-            constant += add
-            for axis, coefficient in terms.items():
-                coefficients[axis] = coefficients.get(axis, 0) + coefficient
-        return coefficients, constant
-    if expression.op == "mul":
-        value = _affine(expression.args[1])
-        if value is None:
-            return None
-        terms, constant = value
-        factor = expression.args[0]
-        return (
-            {axis: factor * coefficient for axis, coefficient in terms.items()},
-            factor * constant,
-        )
-    return None
+    return expression._affine_form()
 
 
 def _path_order(first, second):
@@ -578,22 +563,14 @@ def _fixed_equality(predicate):
 def _domains_are_disjoint(complete_domain, issue_domain, loop_axes):
     loop_ids = {id(axis) for axis in loop_axes}
     complete_equalities = tuple(
-        value
-        for predicate in complete_domain.predicates
-        for value in (_fixed_equality(predicate),)
-        if value is not None
-        and not any(
-            id(axis) in loop_ids for axis in value[0].free_axes()
-        )
+        (expression, value)
+        for expression, value, free_ids in complete_domain.fixed_equalities
+        if not loop_ids & free_ids
     )
     issue_equalities = tuple(
-        value
-        for predicate in issue_domain.predicates
-        for value in (_fixed_equality(predicate),)
-        if value is not None
-        and not any(
-            id(axis) in loop_ids for axis in value[0].free_axes()
-        )
+        (expression, value)
+        for expression, value, free_ids in issue_domain.fixed_equalities
+        if not loop_ids & free_ids
     )
     return any(
         left_value != right_value
@@ -669,6 +646,8 @@ def _relation(
         return None
     if structural is None:
         return None
+    if domains_disjoint:
+        return None
     loop_axis_ids = {id(axis) for axis in loop_axes}
     distances = {}
     equalities = []
@@ -679,7 +658,7 @@ def _relation(
             continue
         active = [
             (axis, coefficient)
-            for axis, coefficient in lhs[0].items()
+            for axis, coefficient in lhs[0]
             if id(axis) in loop_axis_ids and coefficient
         ]
         if not active:
@@ -698,8 +677,6 @@ def _relation(
         if prior != distance:
             # Two coordinates require contradictory distances on one axis.
             return None
-    if domains_disjoint:
-        return None
     conservative = False
     if structural != -1 and not any(distances.values()):
         if not loop_axes:
@@ -736,9 +713,61 @@ def _relation(
     return relation
 
 
-def dependences(program: Program) -> tuple[Dependence, ...]:
-    """Derive completion-to-issue RAW/WAR/WAW relations from Program effects."""
+def _constant_effect_index(grouped, constants):
+    index = {}
+    for effect in grouped:
+        values = constants[id(effect)]
+        bucket = index.setdefault(
+            len(values),
+            {
+                "effects": [],
+                "wildcards": [set() for _value in values],
+                "values": [{} for _value in values],
+            },
+        )
+        position = len(bucket["effects"])
+        bucket["effects"].append(effect)
+        for coordinate, value in enumerate(values):
+            if value is None:
+                bucket["wildcards"][coordinate].add(position)
+            else:
+                bucket["values"][coordinate].setdefault(
+                    value,
+                    set(),
+                ).add(position)
+    return index
 
+
+def _constant_candidates(effect, index, constants):
+    values = constants[id(effect)]
+    bucket = index.get(len(values))
+    if bucket is None:
+        return ()
+    selected = None
+    for coordinate, value in enumerate(values):
+        if value is None:
+            continue
+        matching = set(bucket["wildcards"][coordinate])
+        matching.update(
+            bucket["values"][coordinate].get(value, ())
+        )
+        selected = matching if selected is None else selected & matching
+        if not selected:
+            return ()
+    if selected is None:
+        return tuple(bucket["effects"])
+    return tuple(
+        bucket["effects"][position]
+        for position in sorted(selected)
+    )
+
+
+def dependences(program: Program) -> tuple[Dependence, ...]:
+    """Derive completion-to-issue RAW/WAR relations from Program effects."""
+
+    cached = program._analysis.get("dependences")
+    if cached is not None:
+        return cached
     all_effects = effects(program)
     domains = {
         id(effect): effect_domain(effect)
@@ -761,24 +790,24 @@ def dependences(program: Program) -> tuple[Dependence, ...]:
     contexts = {}
     disjoint = {}
     for grouped in groups.values():
+        reads = tuple(
+            effect for effect in grouped
+            if effect.kind is READ
+        )
         writes = tuple(
             effect for effect in grouped
             if effect.kind is WRITE
         )
+        read_index = _constant_effect_index(reads, constants)
+        write_index = _constant_effect_index(writes, constants)
         for complete in grouped:
-            issues = writes if complete.kind is READ else grouped
+            issues = _constant_candidates(
+                complete,
+                write_index if complete.kind is READ else read_index,
+                constants,
+            )
             for issue in issues:
                 if complete.occurrence.path == issue.occurrence.path:
-                    continue
-                if any(
-                    left is not None
-                    and right is not None
-                    and left != right
-                    for left, right in zip(
-                        constants[id(complete)],
-                        constants[id(issue)],
-                    )
-                ):
                     continue
                 context_key = (
                     id(complete.occurrence),
@@ -817,7 +846,9 @@ def dependences(program: Program) -> tuple[Dependence, ...]:
                 )
                 if domain is not None:
                     result.append(Dependence(complete, issue, domain))
-    return tuple(result)
+    result = tuple(result)
+    program._analysis["dependences"] = result
+    return result
 
 
 def _dependence_replacements(dependence):
@@ -882,7 +913,17 @@ def required_dependences(
 ) -> tuple[Dependence, ...]:
     """Derived completion-to-issue waits after logical completion coalescing."""
 
-    derived = dependences(program) if derived is None else derived
+    cached_derived = program._analysis.get("dependences")
+    cached_required = program._analysis.get("required_dependences")
+    if derived is None:
+        if cached_required is not None:
+            return cached_required
+        derived = dependences(program)
+        cache_result = True
+    else:
+        cache_result = derived is cached_derived
+        if cache_result and cached_required is not None:
+            return cached_required
     waiters = {}
     result = []
     operation_regions = {}
@@ -980,7 +1021,10 @@ def required_dependences(
         if not redundant:
             result.append(dependence)
             prior.append(dependence)
-    return tuple(result)
+    result = tuple(result)
+    if cache_result:
+        program._analysis["required_dependences"] = result
+    return result
 
 
 __all__ = [
@@ -988,7 +1032,7 @@ __all__ = [
     "MovementSource", "MovementDestination", "ComputeRead", "ComputeWrite",
     "Endpoint", "EffectInstance", "effect_domain",
     "effects_of_occurrence", "effects", "effect_points",
-    "DependenceKind", "RAW", "WAR", "WAW",
+    "DependenceKind", "RAW", "WAR",
     "EffectEquality", "IterationConstraint", "SymbolicRelation",
     "Dependence", "dependences", "dependence_points",
     "dependence_logical_tile",
