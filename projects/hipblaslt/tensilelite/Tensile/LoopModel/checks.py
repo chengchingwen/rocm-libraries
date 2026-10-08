@@ -121,7 +121,11 @@ def _check_effect_partitions(program, errors):
 
 
 def validate_loopir(program, profile=None):
-    """Return structural, effect, and target-projection violations."""
+    """Return structural/effect violations and finalized-profile mismatches.
+
+    Profile-less programs also run the exhaustive symbolic dependence oracle.
+    Target-decoded programs use the direct ledger verified after GIR lowering.
+    """
 
     if not isinstance(program, Program):
         raise ValueError("validate_loopir expects a LoopIR Program")
@@ -132,8 +136,9 @@ def validate_loopir(program, profile=None):
         _check_effect_partitions(program, errors)
         if profile is not None:
             profile.validate(program)
-        derived = dependences(program)
-        required_dependences(program, derived)
+        else:
+            derived = dependences(program)
+            required_dependences(program, derived)
     except Exception as error:
         errors.append("%s: %s" % (type(error).__name__, error))
     return errors

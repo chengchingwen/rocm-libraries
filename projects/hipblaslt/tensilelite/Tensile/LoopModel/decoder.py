@@ -87,6 +87,7 @@ class ThetaTargetProfile:
     read_signatures: object
     register_inplace: frozenset
     shared_inplace: frozenset
+    copy_first: frozenset
 
     def shared_ring(self, operand: str) -> int:
         if self.theta.op(operand).trajectory.shared is None:
@@ -1592,6 +1593,7 @@ class _Decoder:
                     for operand, _group in self._register_inplace
                 ),
                 self._shared_inplace,
+                self.copy_first,
             ),
         )
 

@@ -247,6 +247,11 @@ per-tile dependencies rather than a unioned operand-wide wait.
 When affine analysis cannot prove a loop-carried distance, the relation is retained as
 conservative and consumers must wait. Only proven-empty relations are omitted.
 
+`dependences(program)` is the exhaustive symbolic oracle for hand-authored and
+test Programs. A target-decoded Program lowers through a bounded ledger derived
+directly from scheduled TensorLoad, DSLoad, and Compute roles; production does
+not materialize every occurrence pair.
+
 All ordering is completion-to-issue:
 
 ```text

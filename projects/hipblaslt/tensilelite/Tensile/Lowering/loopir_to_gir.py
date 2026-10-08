@@ -435,6 +435,9 @@ def _ref(
 
 
 def _dependency_map(program, profile=None):
+    if profile is not None:
+        return _build_dependency_ledger(program, profile)
+
     result = {}
     derived = dependences(program)
     required = required_dependences(program, derived)
@@ -603,6 +606,154 @@ def _dependency_map(program, profile=None):
         result.setdefault(issue_id, []).append((generation, entry))
     return {
         identity: tuple(dict.fromkeys(records))
+        for identity, records in result.items()
+    }
+
+
+def _completion_counter(completion):
+    return (
+        f"C_{completion.name}"
+        if completion is not IMMEDIATE else "immediate"
+    )
+
+
+def _build_dependency_ledger(program, profile):
+    """Build the finalized dependency ledger from scheduled operation roles."""
+
+    ordered = operations(program)
+    distributed = profile.as_meta().get("agent_distributed", {})
+    reads = {}
+    copies = []
+    computes = []
+    for operation in ordered:
+        if isinstance(operation, Movement):
+            if operation.op is TENSOR_LOAD:
+                copies.append(operation)
+            elif operation.op is DS_LOAD:
+                for transfer in operation.transfers:
+                    reads.setdefault(
+                        transfer.local_tile.operand.name,
+                        [],
+                    ).append(operation)
+        elif isinstance(operation, Compute):
+            computes.append(operation)
+
+    result = {}
+
+    def add(operation, generation, endpoint, counter, kind, scope):
+        record = generation, (endpoint, counter, kind, scope)
+        records = result.setdefault(operation._identity, [])
+        if record not in records:
+            records.append(record)
+
+    copy_groups = {}
+    for operation in copies:
+        unit = tuple(dict.fromkeys(
+            transfer.local_tile.operand.name
+            for transfer in operation.transfers
+        ))
+        completion = operation.completion
+        copy_groups.setdefault((completion, unit), operation)
+
+        for name in unit:
+            operand_reads = reads.get(name, ())
+            if not operand_reads:
+                continue
+            read = operand_reads[0]
+            kind = (
+                "inplace-WAR"
+                if profile.shared_refill_in_place(name)
+                else "rotation-WAR"
+            )
+            scope = (
+                "wave"
+                if kind == "rotation-WAR"
+                else "block" if distributed.get(name, False)
+                else "wave"
+            )
+            add(
+                operation,
+                None,
+                _DependencyEndpoint(name, "shared", "lastread"),
+                _completion_counter(read.completion),
+                kind,
+                scope,
+            )
+
+        if any(name in profile.copy_first for name in unit):
+            add(
+                operation,
+                None,
+                _DependencyEndpoint(unit, "shared", "copy"),
+                _completion_counter(completion),
+                "crossing-RAW",
+                "wave",
+            )
+
+    for (completion, unit), _copy in copy_groups.items():
+        waiter_name = next(
+            (name for name in unit if name in reads),
+            None,
+        )
+        if waiter_name is None:
+            continue
+        waiter = reads[waiter_name][0]
+        add(
+            waiter,
+            None,
+            _DependencyEndpoint(unit, "global", gen=("iter",)),
+            _completion_counter(completion),
+            "RAW-residency",
+            "block" if distributed.get(waiter_name, False) else "wave",
+        )
+
+    consumed = {
+        tile.operand.name
+        for compute in computes
+        for tile in compute.reads
+    }
+    for name, operand_reads in reads.items():
+        if name not in consumed:
+            continue
+        for operation in operand_reads:
+            kind = (
+                "inplace-WAR"
+                if profile.register_refill_in_place(name)
+                else "rotation-WAR"
+            )
+            scope = (
+                "wave"
+                if kind == "rotation-WAR"
+                else "block" if distributed.get(name, False)
+                else "wave"
+            )
+            add(
+                operation,
+                None,
+                _DependencyEndpoint(name, "g0", "lastread"),
+                _completion_counter(operation.completion),
+                kind,
+                scope,
+            )
+
+    for compute in computes:
+        for tile in compute.reads:
+            name = tile.operand.name
+            operand_reads = reads.get(name, ())
+            if not operand_reads:
+                continue
+            read = operand_reads[0]
+            add(
+                compute,
+                None,
+                _DependencyEndpoint(name, "shared"),
+                _completion_counter(read.completion),
+                "RAW-residency",
+                "block" if distributed.get(name, False) else "wave",
+            )
+
+    return {
+        identity: tuple(records)
         for identity, records in result.items()
     }
 
