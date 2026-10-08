@@ -2,9 +2,10 @@
 
 Status: implemented.
 
-This design keeps the useful part of the first attempt: a small immutable tree, logical axis
-expressions, and pure schedule transformations. It removes the parts that turned into a second
-scheduler beside LoopIR.
+This design keeps the useful part of the first attempt: a small mutable
+schedule tree and immutable logical expressions, tiles, effects, and
+operations. It removes the parts that turned into a second scheduler beside
+LoopIR.
 
 ## Contract
 
@@ -130,7 +131,7 @@ Wave is declared in `Program.agents` when available. It is not a `Loop` and is n
 tile size or read width. Declaring it does not add it to every effect; the generator must name it
 in an effect tile/predicate or specialize control with `Cond`/`Switch`.
 
-## Scheduling by functional transformation
+## Scheduling by typed transformation
 
 Manipulation keys are operation values and functions, never strings. Public transformations are
 ordinary typed functions:
@@ -151,9 +152,10 @@ The core set includes:
 - region extension/replacement
 - finite operation-run materialization
 
-`compose(*transforms)` combines them left to right. Every transformation returns a new immutable
-`Program` and preserves hidden logical operation identity where one operation gains multiple
-structural occurrences.
+`compose(*transforms)` combines them left to right. Transformations mutate and
+return the same `Program`; semantic operation values remain immutable and
+preserve hidden logical identity where one operation gains multiple structural
+occurrences.
 
 Theta decoding uses the same API. It does not directly manufacture a private schedule object for
 lowering to interpret.

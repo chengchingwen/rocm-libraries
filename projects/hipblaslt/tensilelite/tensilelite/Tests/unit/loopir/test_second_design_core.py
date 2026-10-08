@@ -609,14 +609,13 @@ def test_operation_api_has_checked_ds_load_and_implicit_serial_loops():
         )
 
 
-def test_rewrite_is_a_pure_program_to_program_function():
+def test_rewrite_mutates_the_program_in_place():
     program, _wave, load0, _load1, _reads = _g3_program()
     rewritten = loopir.rewrite(
         program,
         lambda node: () if node is load0 else node,
     )
-    assert rewritten is not program
-    assert load0 in tuple(loopir.walk(program))
+    assert rewritten is program
     assert load0 not in tuple(loopir.walk(rewritten))
     assert rewritten.check() is rewritten
 
@@ -643,7 +642,7 @@ def test_program_body_check_can_be_deferred_explicitly():
         unchecked.check()
 
 
-def test_tensorload_partition_is_a_pure_generic_transformation():
+def test_tensorload_partition_mutates_generic_structure():
     wave = loopir.Axis("wave", 2)
     tile = loopir.Axis("tile", 3)
     a = loopir.Operand("A", (tile,))
@@ -671,12 +670,12 @@ def test_tensorload_partition_is_a_pure_generic_transformation():
         (2 * tile + wave < 3, 2 * tile + wave >= 3),
         (copy, copy),
     )
+    assert partitioned is program
     parts = tuple(
         node for node in loopir.walk(partitioned)
         if isinstance(node, loopir.Movement)
     )
     assert len(parts) == 2
-    assert tuple(loopir.walk(program))[-1] is load
     points = []
     for part in parts:
         write = next(
@@ -727,7 +726,7 @@ def test_fuse_combines_transfers_but_not_domains():
     assert write_domains == (("tile_a",), ("tile_b",))
 
 
-def test_pipeline_is_a_pure_composition_of_ordinary_nodes_and_markers():
+def test_pipeline_mutates_composition_of_ordinary_nodes_and_markers():
     trip = loopir.Param("T")
     iteration = loopir.Axis("iter", trip)
     tile = loopir.Axis("tile", 1)
@@ -747,7 +746,7 @@ def test_pipeline_is_a_pure_composition_of_ordinary_nodes_and_markers():
     program = loopir.Program((trip,), (iteration, tile), (a,), (main,))
     pipelined = loopir.pipeline(program, main, ((load, 1),))
 
-    assert program.body == (main,)
+    assert pipelined is program
     guard = pipelined.body[0]
     assert isinstance(guard, loopir.Cond)
     assert tuple(
@@ -886,9 +885,8 @@ def test_theta_pipeline_builds_valid_loopir_gir():
     assert not validate_loopir(decoded.program, decoded.profile)
     derived = loopir.dependences(decoded.program)
     required = loopir.required_dependences(decoded.program)
+    assert derived and required
     actual = lower_to_gir(decoded.program, decoded.profile)
-    assert loopir.dependences(decoded.program) is derived
-    assert loopir.required_dependences(decoded.program) is required
     run_pipeline(actual, passes=gir_pipeline())
     assert not check_plan(actual)
 
@@ -916,7 +914,6 @@ def test_dependency_free_lowering_preserves_emitted_gir():
         unchecked.profile,
         include_dependencies=False,
     )
-    assert not unchecked.program._analysis
 
     checked = decode_theta(adapter.params_to_theta(params))
     with_dependencies = lower_to_gir(checked.program, checked.profile)
@@ -1065,8 +1062,6 @@ def test_post_finalize_read_retiming_requires_profile_refinalization():
     )
     errors = validate_loopir(retimed, decoded.profile)
     assert any("re-finalize" in error for error in errors)
-    assert "dependences" not in retimed._analysis
-    assert "required_dependences" not in retimed._analysis
     with pytest.raises(RuntimeError, match="re-finalize"):
         lower_to_gir(retimed, decoded.profile)
 

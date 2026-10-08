@@ -1,6 +1,6 @@
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
-"""Named pure Program transformations for LoopIR generation."""
+"""Named in-place Program transformations for LoopIR generation."""
 
 from __future__ import annotations
 
@@ -36,7 +36,7 @@ from .model import (
     child_bodies,
     same_operation,
 )
-from .rewrite import insert, replace, rewrite
+from .rewrite import _rebuild_children, insert, replace, rewrite
 Transform = Callable[[Program], Program]
 
 
@@ -116,14 +116,9 @@ def materialize_steady_copies(program: Program, copies: int) -> Program:
         raise TransformRefused(
             f"expected one symbolic steady Loop, found {changed}"
         )
-    return Program(
-        program.params,
-        (*program.axes, copy_axis),
-        program.operands,
-        body,
-        program.agents,
-        _identity=program._identity,
-    )
+    axes = (*program.axes, copy_axis)
+    program.axes = axes
+    return program.with_body(body, check=False)
 
 
 def _replace_predicate(original: Pred, extra: Pred) -> Pred:
@@ -689,14 +684,21 @@ def defer_single_path_operations(
     """Defer selected operations only through single-path structural wrappers."""
 
     identities = {operation._identity for operation in operations}
+    selected = {}
 
     def selected_identity(node):
+        original = node
+        cached = selected.get(id(original), ...)
+        if cached is not ...:
+            return cached
         while True:
             if isinstance(node, (Movement, Compute)):
-                return (
+                result = (
                     node._identity
                     if node._identity in identities else None
                 )
+                selected[id(original)] = result
+                return result
             if isinstance(node, Loop) and len(node.body) == 1:
                 node = node.body[0]
                 continue
@@ -707,6 +709,7 @@ def defer_single_path_operations(
             ):
                 node = node.then_body[0]
                 continue
+            selected[id(original)] = None
             return None
 
     def edit_body(body, active_region=None):
@@ -717,37 +720,10 @@ def defer_single_path_operations(
                 current_region = node.tag
                 rebuilt.append(node)
                 continue
-            if isinstance(node, Loop):
-                node = Loop(
-                    node.axis,
-                    node.lo,
-                    node.hi,
-                    edit_body(node.body, current_region),
-                )
-            elif isinstance(node, Cond):
-                node = Cond(
-                    node.pred,
-                    edit_body(node.then_body, current_region),
-                    edit_body(node.else_body, current_region),
-                )
-            elif isinstance(node, Let):
-                node = Let(
-                    node.axis,
-                    node.value,
-                    edit_body(node.body, current_region),
-                )
-            elif isinstance(node, Switch):
-                node = Switch(
-                    node.expression,
-                    tuple(
-                        (
-                            value,
-                            edit_body(case, current_region),
-                        )
-                        for value, case in node.cases
-                    ),
-                    edit_body(node.otherwise, current_region),
-                )
+            node = _rebuild_children(
+                node,
+                lambda nested: edit_body(nested, current_region),
+            )[0]
             rebuilt.append(node)
         def reordered(nodes):
             return (
@@ -806,9 +782,14 @@ def defer_operations(
     if not identities:
         return program
 
+    selected = {}
+
     def selected_unit(node):
-        present = _operation_identities(node)
-        return bool(present) and present <= identities
+        key = id(node)
+        if key not in selected:
+            present = _operation_identities(node)
+            selected[key] = bool(present) and present <= identities
+        return selected[key]
 
     def edit_body(body, active_region=None):
         output = []
@@ -831,30 +812,13 @@ def defer_operations(
                         if selected_unit(item)
                     )
                     child = leading + trailing
-                rebuilt = Loop(
-                    node.axis, node.lo, node.hi, child,
-                )
-            elif isinstance(node, Cond):
-                rebuilt = Cond(
-                    node.pred,
-                    edit_body(node.then_body, current_region),
-                    edit_body(node.else_body, current_region),
-                )
-            elif isinstance(node, Let):
-                rebuilt = Let(
-                    node.axis,
-                    node.value,
-                    edit_body(node.body, current_region),
-                )
-            elif isinstance(node, Switch):
-                rebuilt = Switch(
-                    node.expression,
-                    tuple(
-                        (value, edit_body(case, current_region))
-                        for value, case in node.cases
-                    ),
-                    edit_body(node.otherwise, current_region),
-                )
+                node.body = child
+                rebuilt = node
+            else:
+                rebuilt = _rebuild_children(
+                    node,
+                    lambda nested: edit_body(nested, current_region),
+                )[0]
             output.append(rebuilt)
         return tuple(output)
 
@@ -872,9 +836,14 @@ def prioritize_operations(
     if not identities:
         return program
 
+    selected = {}
+
     def selected_unit(node):
-        present = _operation_identities(node)
-        return bool(present) and present <= identities
+        key = id(node)
+        if key not in selected:
+            present = _operation_identities(node)
+            selected[key] = bool(present) and present <= identities
+        return selected[key]
 
     def edit_body(body, active_region=None):
         output = []
@@ -884,30 +853,10 @@ def prioritize_operations(
                 current_region = node.tag
                 output.append(node)
                 continue
-            if isinstance(node, Loop):
-                node = Loop(
-                    node.axis,
-                    node.lo,
-                    node.hi,
-                    edit_body(node.body, current_region),
-                )
-            elif isinstance(node, Cond):
-                node = Cond(
-                    node.pred,
-                    edit_body(node.then_body, current_region),
-                    edit_body(node.else_body, current_region),
-                )
-            elif isinstance(node, Let):
-                node = Let(node.axis, node.value, edit_body(node.body, current_region))
-            elif isinstance(node, Switch):
-                node = Switch(
-                    node.expression,
-                    tuple(
-                        (value, edit_body(case, current_region))
-                        for value, case in node.cases
-                    ),
-                    edit_body(node.otherwise, current_region),
-                )
+            node = _rebuild_children(
+                node,
+                lambda nested: edit_body(nested, current_region),
+            )[0]
             output.append(node)
         output = tuple(output)
         if current_region is not region:
@@ -936,34 +885,10 @@ def materialize_region_operations(
         raise IRTypeError("materialize_region_operations expects callables")
 
     def edit_body(body):
-        rebuilt = []
-        for node in body:
-            if isinstance(node, Loop):
-                node = Loop(
-                    node.axis,
-                    node.lo,
-                    node.hi,
-                    edit_body(node.body),
-                )
-            elif isinstance(node, Cond):
-                node = Cond(
-                    node.pred,
-                    edit_body(node.then_body),
-                    edit_body(node.else_body),
-                )
-            elif isinstance(node, Let):
-                node = Let(node.axis, node.value, edit_body(node.body))
-            elif isinstance(node, Switch):
-                node = Switch(
-                    node.expression,
-                    tuple(
-                        (value, edit_body(case))
-                        for value, case in node.cases
-                    ),
-                    edit_body(node.otherwise),
-                )
-            rebuilt.append(node)
-        body = tuple(rebuilt)
+        body = tuple(
+            _rebuild_children(node, edit_body)[0]
+            for node in body
+        )
         output = []
         index = 0
         while index < len(body):
@@ -996,9 +921,16 @@ def materialize_operation_runs(
 ) -> Program:
     """Unroll and order consecutive selected-operation structural units."""
 
+    selected = {}
+
     def selected_unit(node):
-        found = _operations_in((node,))
-        return bool(found) and all(selector(operation) for operation in found)
+        key = id(node)
+        if key not in selected:
+            found = _operations_in((node,))
+            selected[key] = bool(found) and all(
+                selector(operation) for operation in found
+            )
+        return selected[key]
 
     def edit_body(body, active_region=None):
         rebuilt = []
@@ -1008,30 +940,10 @@ def materialize_operation_runs(
                 current_region = node.tag
                 rebuilt.append(node)
                 continue
-            if isinstance(node, Loop):
-                node = Loop(
-                    node.axis, node.lo, node.hi,
-                    edit_body(node.body, current_region),
-                )
-            elif isinstance(node, Cond):
-                node = Cond(
-                    node.pred,
-                    edit_body(node.then_body, current_region),
-                    edit_body(node.else_body, current_region),
-                )
-            elif isinstance(node, Let):
-                node = Let(
-                    node.axis, node.value, edit_body(node.body, current_region)
-                )
-            elif isinstance(node, Switch):
-                node = Switch(
-                    node.expression,
-                    tuple(
-                        (value, edit_body(case, current_region))
-                        for value, case in node.cases
-                    ),
-                    edit_body(node.otherwise, current_region),
-                )
+            node = _rebuild_children(
+                node,
+                lambda child: edit_body(child, current_region),
+            )[0]
             rebuilt.append(node)
         body = tuple(rebuilt)
         if current_region is not region:
@@ -1070,28 +982,10 @@ def extend_region(
         raise IRTypeError("extend_region.nodes must be LoopIR values")
 
     def edit_body(body):
-        rebuilt = []
-        for node in body:
-            if isinstance(node, Loop):
-                node = Loop(
-                    node.axis, node.lo, node.hi, edit_body(node.body),
-                )
-            elif isinstance(node, Cond):
-                node = Cond(
-                    node.pred,
-                    edit_body(node.then_body),
-                    edit_body(node.else_body),
-                )
-            elif isinstance(node, Let):
-                node = Let(node.axis, node.value, edit_body(node.body))
-            elif isinstance(node, Switch):
-                node = Switch(
-                    node.expression,
-                    tuple((value, edit_body(case)) for value, case in node.cases),
-                    edit_body(node.otherwise),
-                )
-            rebuilt.append(node)
-        body = tuple(rebuilt)
+        body = tuple(
+            _rebuild_children(node, edit_body)[0]
+            for node in body
+        )
         output = []
         index = 0
         while index < len(body):

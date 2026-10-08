@@ -363,7 +363,7 @@ def _body(value, field_name: str) -> tuple[LoopIR, ...]:
     return value
 
 
-@dataclass(frozen=True, eq=False, init=False)
+@dataclass(eq=False, init=False)
 class Loop(LoopIR):
     axis: Axis
     lo: Expr
@@ -399,7 +399,7 @@ class Loop(LoopIR):
         object.__setattr__(self, "body", _body(body, "Loop.body"))
 
 
-@dataclass(frozen=True, eq=False, init=False)
+@dataclass(eq=False, init=False)
 class Cond(LoopIR):
     pred: Pred
     then_body: tuple[LoopIR, ...]
@@ -411,7 +411,7 @@ class Cond(LoopIR):
         object.__setattr__(self, "else_body", _body(else_body, "Cond.else_body"))
 
 
-@dataclass(frozen=True, eq=False, init=False)
+@dataclass(eq=False, init=False)
 class Let(LoopIR):
     axis: Axis
     value: Expr
@@ -425,7 +425,7 @@ class Let(LoopIR):
         object.__setattr__(self, "body", _body(body, "Let.body"))
 
 
-@dataclass(frozen=True, eq=False, init=False)
+@dataclass(eq=False, init=False)
 class Switch(LoopIR):
     expression: Expr
     cases: tuple[tuple[int, tuple[LoopIR, ...]], ...]
@@ -454,7 +454,7 @@ class Switch(LoopIR):
             raise TransformRefused(f"Switch has no case {value}") from error
 
 
-@dataclass(frozen=True)
+@dataclass
 class Region(LoopIR):
     """Zero-runtime marker starting a tagged block in its containing body."""
 
@@ -559,7 +559,7 @@ def _check_program(
             raise IRTypeError("Program agent axes cannot be bound by Loop")
 
 
-@dataclass(frozen=True, eq=False, init=False)
+@dataclass(eq=False, init=False)
 class Program:
     params: tuple[Param, ...]
     axes: tuple[Axis, ...]
@@ -590,21 +590,17 @@ class Program:
         object.__setattr__(self, "body", body)
         object.__setattr__(self, "agents", agents)
         object.__setattr__(self, "_identity", _identity or object())
-        object.__setattr__(self, "_checked", True)
-        object.__setattr__(self, "_analysis", {})
 
     def check(self) -> "Program":
         """Check declarations and every stored node, returning this Program."""
 
-        if not getattr(self, "_checked", False):
-            _check_program(
-                self.params,
-                self.axes,
-                self.operands,
-                self.body,
-                self.agents,
-            )
-            object.__setattr__(self, "_checked", True)
+        _check_program(
+            self.params,
+            self.axes,
+            self.operands,
+            self.body,
+            self.agents,
+        )
         return self
 
     def with_body(
@@ -626,16 +622,8 @@ class Program:
                 body,
                 self.agents,
             )
-        result = object.__new__(Program)
-        object.__setattr__(result, "params", self.params)
-        object.__setattr__(result, "axes", self.axes)
-        object.__setattr__(result, "operands", self.operands)
-        object.__setattr__(result, "body", body)
-        object.__setattr__(result, "agents", self.agents)
-        object.__setattr__(result, "_identity", self._identity)
-        object.__setattr__(result, "_checked", check)
-        object.__setattr__(result, "_analysis", {})
-        return result
+        self.body = body
+        return self
 
 
 def _operations_in(body):
