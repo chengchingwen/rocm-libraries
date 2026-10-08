@@ -65,8 +65,9 @@ from .Components.LoopModel.Emit import (loopModelDrainIter, loopModelPrologue,
                                         loopModelPrologueCopies, loopModelSteadyBlocks,
                                         loopModelSteadyIter)
 from .Components.LoopModel.Program import attachFrameContract
-from .Components.LoopModel.Registers import applyLoopModelValuRegs, loopModelRegBuffers, \
-    loopModelRegisterLayout, loopModelValuRegs
+from .Components.LoopModel.Registers import loopModelRegBuffers, \
+    loopModelRegisterLayout, loopModelValuRegs, operandNumVgprBuffer, \
+    operandValuPuVaVg
 from .SolutionStructs import Solution, isPackedIndex
 from .SolutionStructs.Utilities import getMiInputType, isSubtileIterateMode
 from .AsmMemoryInstruction import MemoryInstruction
@@ -251,6 +252,13 @@ class StateValues:
 
   numItersPLR: int                       = 0
   numVgprBuffer: int                     = 0
+  # Per-operand Valu ring depth.  vgprAllocationImplClassic fills these; 0 means
+  # "not set, use numVgprBuffer".  Under UseLoopModel each operand keeps its own
+  # θ width instead of the max across operands.
+  numVgprBufferA: int                    = 0
+  numVgprBufferB: int                    = 0
+  numVgprBufferMXSA: int                 = 0
+  numVgprBufferMXSB: int                 = 0
   # ReuseAcrossPersistent: which resident k-tile the section being emitted owns.
   # Lives in states (not on the writer) so it is covered by the emitter-state
   # snapshot taken around a second emission of the compute section.
@@ -7666,11 +7674,11 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       self.states.numVgprBuffer = kernel["PrefetchLocalRead"] + 1
 
     # GIR's slots and the Valu allocation must come from the same cached θ/S.
+    # Widths stay per operand.  vgprAllocationImplClassic applies them; a max
+    # across operands would size every ring to the widest one.
     self.states.loopModelRegBufferWidths = loopModelRegBuffers(self, kernel)
     self.states.loopModelValuVgprs = loopModelValuRegs(self, kernel)
     self.states.loopModelRegisterLayout = loopModelRegisterLayout(self, kernel)
-    if self.states.loopModelRegBufferWidths:
-      self.states.numVgprBuffer = max(self.states.loopModelRegBufferWidths.values())
 
     if kernel["ClusterLocalRead"]:
       self.states.numVgprBufferPackA = kernel["LoopIters"]
@@ -8341,13 +8349,27 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
     def vgprAllocationImplClassic():
       ####################################
       # num vgprs: valu
+      # Start from the scaffold depth (PrefetchLocalRead+1, or LoopIters when
+      # clustered).  UseLoopModel replaces this with VA when it assigns the
+      # final size PU * VA / VG below.
+      self.states.numVgprBufferA = self.states.numVgprBuffer
+      self.states.numVgprBufferB = self.states.numVgprBuffer
+      self.states.numVgprBufferMXSA = self.states.numVgprBuffer
+      self.states.numVgprBufferMXSB = self.states.numVgprBuffer
+
       if kernel["EnableMatrixInstruction"]:
         #jgolds bpeCinternal because we are allocating accumulation registers here
         self.states.c.numVgprValu = (kernel["ThreadTile0"]*kernel["ThreadTile1"]*self.states.bpeCinternal)//self.states.bpr
 
-        # pack or input conversion DTV case, need double buffer (LoopIters * 2)
-        numVgprBufferA = self.states.numVgprBuffer if not (self.states.packDTVA or self.states.convDTVA) else kernel["LoopIters"] * 2
-        numVgprBufferB = self.states.numVgprBuffer if not (self.states.packDTVB or self.states.convDTVB) else kernel["LoopIters"] * 2
+        # pack or input conversion DTV case, need double buffer (LoopIters * 2).
+        # UseLoopModel's buffer count is VA, assigned with the Valu size below,
+        # so DTV does not replace it here.
+        if kernel["UseLoopModel"]:
+          numVgprBufferA = self.states.numVgprBufferA
+          numVgprBufferB = self.states.numVgprBufferB
+        else:
+          numVgprBufferA = self.states.numVgprBufferA if not (self.states.packDTVA or self.states.convDTVA) else kernel["LoopIters"] * 2
+          numVgprBufferB = self.states.numVgprBufferB if not (self.states.packDTVB or self.states.convDTVB) else kernel["LoopIters"] * 2
         # RAP gives A and its MX scales one buffer set per resident k-tile rather
         # than one per prefetch slot, so the whole K extent is addressable at
         # once. B is untouched: it is still reloaded every tile.
@@ -8356,9 +8378,17 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
         valuBlocksA = (1.5 if kernel["HalfPLRA"] else numVgprBufferA) * kernel["InnerUnroll"]
         valuBlocksB = (1.5 if kernel["HalfPLRB"] else numVgprBufferB) * kernel["InnerUnroll"]
         if kernel["ProblemType"]["MXBlockA"]:
-          valuBlocksMXSA = numVgprBufferA * kernel["InnerUnroll"]
+          # Off UseLoopModel, MX shares A's buffer, including its RAP growth.
+          # Under UseLoopModel, MXSA keeps its own ring depth.
+          if kernel["UseLoopModel"]:
+            valuBlocksMXSA = self.states.numVgprBufferMXSA * self.rapResidentKTiles(kernel) * kernel["InnerUnroll"]
+          else:
+            valuBlocksMXSA = numVgprBufferA * kernel["InnerUnroll"]
         if kernel["ProblemType"]["MXBlockB"]:
-          valuBlocksMXSB = numVgprBufferB * kernel["InnerUnroll"]
+          if kernel["UseLoopModel"]:
+            valuBlocksMXSB = self.states.numVgprBufferMXSB * kernel["InnerUnroll"]
+          else:
+            valuBlocksMXSB = numVgprBufferB * kernel["InnerUnroll"]
 
         self.states.a.numVgprValuPerBlock = int(kernel["MIWaveTileA"] * kernel["MIInputPerThreadA"] * tensorParametersA["bpe"] // self.states.bpr)
         self.states.b.numVgprValuPerBlock = int(kernel["MIWaveTileB"] * kernel["MIInputPerThreadB"] * tensorParametersB["bpe"] // self.states.bpr)
@@ -8439,9 +8469,28 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
           if not self.states.asmCaps["HasWMMA_V3"] and self.states.lrvwTileMXSB > 1:
             self.states.mxsb.numVgprValu = self.states.mxsb.numVgprValuPerBlock * kernel["InnerUnroll"]
 
-        # The code above derives scaffold metadata and packing sizes.  ULM1's Valu rings are
-        # different: their physical sizes are determined by LoopOrder and θ/S.
-        applyLoopModelValuRegs(self, kernel)
+        # Final Valu size on UseLoopModel is PU * VA / VG.  One buffer is the
+        # registers of one prefetch unit after VG.  VA is the buffer count.
+        # The scaffold product above (wave tile, RAP, InnerUnroll, HalfPLR)
+        # does not modify that number.
+        if kernel["UseLoopModel"]:
+          for tc, state, bpe, bufName in (
+              ("A", self.states.a, tensorParametersA["bpe"], "numVgprBufferA"),
+              ("B", self.states.b, tensorParametersB["bpe"], "numVgprBufferB")):
+            perBuffer, va = operandValuPuVaVg(self, kernel, tc, bpe)
+            state.numVgprValuPerBlock = perBuffer
+            state.numVgprValu = perBuffer * va
+            setattr(self.states, bufName, va)
+          if kernel["ProblemType"]["MXBlockA"]:
+            perBuffer, va = operandValuPuVaVg(self, kernel, "MXSA", None)
+            self.states.mxsa.numVgprValuPerBlock = perBuffer
+            self.states.mxsa.numVgprValu = perBuffer * va
+            self.states.numVgprBufferMXSA = va
+          if kernel["ProblemType"]["MXBlockB"]:
+            perBuffer, va = operandValuPuVaVg(self, kernel, "MXSB", None)
+            self.states.mxsb.numVgprValuPerBlock = perBuffer
+            self.states.mxsb.numVgprValu = perBuffer * va
+            self.states.numVgprBufferMXSB = va
 
       else: # mac instruction
         valuBlocksA = (1 + kernel["PrefetchLocalRead"]) * kernel["InnerUnroll"]
@@ -9027,7 +9076,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
         if not kernel["UnrollMajorLDSMXSA"]:
           self.states.mxsa.startVgprValuPack = vgprIdx
           if self.states.lrvwTileMXSA > 1:
-            numVgprValuPackMXSA = ceil(kernel["VectorWidthMXSA"] / self.states.bpr) * kernel["MIWaveTileMXSA"] // kernel["VectorWidthMXSA"] * kernel["InnerUnroll"] * self.states.numVgprBuffer * kernel["MIInputPerThreadMXSA"]
+            numVgprValuPackMXSA = ceil(kernel["VectorWidthMXSA"] / self.states.bpr) * kernel["MIWaveTileMXSA"] // kernel["VectorWidthMXSA"] * kernel["InnerUnroll"] * operandNumVgprBuffer(self, "MXSA") * kernel["MIInputPerThreadMXSA"]
             if self.states.packDTVA:
               # pack DTV case, double the number
               numVgprValuPackMXSA *= 2
@@ -9066,7 +9115,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
         if not kernel["UnrollMajorLDSMXSB"]:
           self.states.mxsb.startVgprValuPack = vgprIdx
           if self.states.lrvwTileMXSB > 1:
-            numVgprValuPackMXSB = ceil(kernel["VectorWidthMXSB"] / self.states.bpr) * kernel["MIWaveTileMXSB"] // kernel["VectorWidthMXSB"] * kernel["InnerUnroll"] * self.states.numVgprBuffer * kernel["MIInputPerThreadMXSB"]
+            numVgprValuPackMXSB = ceil(kernel["VectorWidthMXSB"] / self.states.bpr) * kernel["MIWaveTileMXSB"] // kernel["VectorWidthMXSB"] * kernel["InnerUnroll"] * operandNumVgprBuffer(self, "MXSB") * kernel["MIInputPerThreadMXSB"]
             if self.states.packDTVB:
               # pack DTV case, double the number
               numVgprValuPackMXSB *= 2
@@ -9293,7 +9342,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       if tensorParametersA["bpe"] < 4 and not kernel["UnrollMajorLDSA"] and not kernel["enableLDSTrA"]:
         self.states.a.startVgprValuPack = vgprIdx
         if self.states.lrvwTileA > 1:
-          numVgprValuPackA = ceil(kernel["VectorWidthA"] * tensorParametersA["bpe"] / self.states.bpr) * kernel["MIWaveTileA"] // kernel["VectorWidthA"] * kernel["InnerUnroll"] * self.states.numVgprBuffer * kernel["MIInputPerThreadA"]
+          numVgprValuPackA = ceil(kernel["VectorWidthA"] * tensorParametersA["bpe"] / self.states.bpr) * kernel["MIWaveTileA"] // kernel["VectorWidthA"] * kernel["InnerUnroll"] * operandNumVgprBuffer(self, "A") * kernel["MIInputPerThreadA"]
           if self.states.packDTVA:
             # pack DTV case, double the number
             numVgprValuPackA *= 2
@@ -9333,7 +9382,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       if tensorParametersB["bpe"] < 4 and not kernel["UnrollMajorLDSB"] and not kernel["enableLDSTrB"]:
         self.states.b.startVgprValuPack = vgprIdx
         if self.states.lrvwTileB > 1:
-          numVgprValuPackB = ceil(kernel["VectorWidthB"] * tensorParametersB["bpe"] / self.states.bpr) * kernel["MIWaveTileB"] // kernel["VectorWidthB"] * kernel["InnerUnroll"] * self.states.numVgprBuffer * kernel["MIInputPerThreadB"]
+          numVgprValuPackB = ceil(kernel["VectorWidthB"] * tensorParametersB["bpe"] / self.states.bpr) * kernel["MIWaveTileB"] // kernel["VectorWidthB"] * kernel["InnerUnroll"] * operandNumVgprBuffer(self, "B") * kernel["MIInputPerThreadB"]
           if self.states.packDTVB:
             # pack DTV case, double the number
             numVgprValuPackB *= 2

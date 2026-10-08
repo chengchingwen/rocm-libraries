@@ -132,6 +132,7 @@ from typing import List, Mapping, NamedTuple, Optional, Tuple, Union
 from Tensile.Components import TDMSplit as _tdm_split
 from .Lowering.lds_geometry import region_row_elems
 from .Components.LoopModel.Program import loopModelGirProgram
+from .Components.LoopModel.Registers import operandNumVgprBuffer
 from .Components.LoopModel.TdmRegion import tdmDescriptorEnableGir, tdmGirIsIter, \
     tdmIncrementGir, tdmLoadRegionGir, tdmMaskShortMembers, tdmRegionIncrementGir, \
     tdmSplitDim1ForRegion
@@ -1456,9 +1457,9 @@ class KernelWriterAssembly(KernelWriter):
     numBi = PLR
 
     def valuBufferCount(tc):
-      if not kernel["UseLoopModel"]:
-        return numBi
-      return int(self.states.loopModelRegBufferWidths[tc])
+      # Per-operand depth is chosen in vgprAllocationImplClassic.  Before that
+      # runs, the shared scaffold count (numBi) still applies.
+      return operandNumVgprBuffer(self, tc) or numBi
 
     ########################################
     # VGPR Macros
@@ -1487,8 +1488,10 @@ class KernelWriterAssembly(KernelWriter):
           if kernel["DirectToVgprA"] and (self.states.packDTVA or self.states.convDTVA):
             # DirectToVgpr case, we need LoopIters * 2 buffers
             numBiFactor = kernel["LoopIters"] * 2
-          # RAP: one buffer set per resident k-tile, matching the grown allocation.
-          numBiFactor *= self.rapResidentKTiles(kernel)
+          # RAP grows the classic allocation.  UseLoopModel's size is already
+          # PU * VA / VG, so the symbol table must not multiply it again.
+          if not kernel["UseLoopModel"]:
+            numBiFactor *= self.rapResidentKTiles(kernel)
           if self.states.lrvwTileMXSA > 1:
             moduleVgprMacroMXS.add(RegSet("v", "vgprValuMXSA_X0_I0_BASE", "vgprMXSBase", self.states.mxsa.startVgprValu))
             for bi in range(0,numBiFactor): # buffer indices
@@ -1624,8 +1627,10 @@ class KernelWriterAssembly(KernelWriter):
         if kernel["DirectToVgprA"] and (self.states.packDTVA or self.states.convDTVA):
           # DirectToVgpr case, we need LoopIters * 2 buffers
           numBiFactor = kernel["LoopIters"] * 2
-        # RAP: one buffer set per resident k-tile, matching the grown allocation.
-        numBiFactor *= self.rapResidentKTiles(kernel)
+        # RAP grows the classic allocation.  UseLoopModel's size is already
+        # PU * VA / VG, so the symbol table must not multiply it again.
+        if not kernel["UseLoopModel"]:
+          numBiFactor *= self.rapResidentKTiles(kernel)
         if self.states.lrvwTileA > 1:
           moduleVgprMacro.add(RegSet("v", "vgprValuA_X0_I0_BASE", "vgprBase", self.states.a.startVgprValu - self.states.startVgpr))
           for bi in range(0,numBiFactor): # buffer indices
@@ -7303,7 +7308,7 @@ class KernelWriterAssembly(KernelWriter):
       numValuA = self.states.a.numVgprValu
       if tensorParametersA["bpe"] < 4 and not kernel["UnrollMajorLDSA"] and not kernel["enableLDSTrA"]:
         if self.states.lrvwTileA > 1:
-          numVgprValuPackA = ceil(kernel["VectorWidthA"] * tensorParametersA["bpe"] / self.states.bpr) * kernel["MIWaveTileA"] // kernel["VectorWidthA"] * kernel["InnerUnroll"] * self.states.numVgprBuffer * kernel["MIInputPerThreadA"]
+          numVgprValuPackA = ceil(kernel["VectorWidthA"] * tensorParametersA["bpe"] / self.states.bpr) * kernel["MIWaveTileA"] // kernel["VectorWidthA"] * kernel["InnerUnroll"] * operandNumVgprBuffer(self, "A") * kernel["MIInputPerThreadA"]
           if self.states.packDTVA:
             # pack DTV case, double the number
             numVgprValuPackA *= 2
@@ -7327,7 +7332,7 @@ class KernelWriterAssembly(KernelWriter):
       numValuB = self.states.b.numVgprValu
       if tensorParametersB["bpe"] < 4 and not kernel["UnrollMajorLDSB"] and not kernel["enableLDSTrB"]:
         if self.states.lrvwTileB > 1:
-          numVgprValuPackB = ceil(kernel["VectorWidthB"] * tensorParametersB["bpe"] / self.states.bpr) * kernel["MIWaveTileB"] // kernel["VectorWidthB"] * kernel["InnerUnroll"] * self.states.numVgprBuffer * kernel["MIInputPerThreadB"]
+          numVgprValuPackB = ceil(kernel["VectorWidthB"] * tensorParametersB["bpe"] / self.states.bpr) * kernel["MIWaveTileB"] // kernel["VectorWidthB"] * kernel["InnerUnroll"] * operandNumVgprBuffer(self, "B") * kernel["MIInputPerThreadB"]
           if self.states.packDTVB:
             # pack DTV case, double the number
             numVgprValuPackB *= 2
@@ -7493,7 +7498,7 @@ class KernelWriterAssembly(KernelWriter):
         numVgprValuPackA = 0
         if tensorParametersA["bpe"] < 4 and not kernel["UnrollMajorLDSA"]:
           if self.states.lrvwTileA > 1:
-            numVgprValuPackA = ceil(kernel["VectorWidthA"] * tensorParametersA["bpe"] / self.states.bpr) * kernel["MIWaveTileA"] // kernel["VectorWidthA"] * kernel["InnerUnroll"] * self.states.numVgprBuffer * kernel["MIInputPerThreadA"]
+            numVgprValuPackA = ceil(kernel["VectorWidthA"] * tensorParametersA["bpe"] / self.states.bpr) * kernel["MIWaveTileA"] // kernel["VectorWidthA"] * kernel["InnerUnroll"] * operandNumVgprBuffer(self, "A") * kernel["MIInputPerThreadA"]
             if self.states.packDTVA:
               # pack DTV case, double the number
               numVgprValuPackA *= 2
@@ -7531,7 +7536,7 @@ class KernelWriterAssembly(KernelWriter):
         numVgprValuPackB = 0
         if tensorParametersB["bpe"] < 4 and not kernel["UnrollMajorLDSB"]:
           if self.states.lrvwTileB > 1:
-            numVgprValuPackB = ceil(kernel["VectorWidthB"] * tensorParametersB["bpe"] / self.states.bpr) * kernel["MIWaveTileB"] // kernel["VectorWidthB"] * kernel["InnerUnroll"] * self.states.numVgprBuffer * kernel["MIInputPerThreadB"]
+            numVgprValuPackB = ceil(kernel["VectorWidthB"] * tensorParametersB["bpe"] / self.states.bpr) * kernel["MIWaveTileB"] // kernel["VectorWidthB"] * kernel["InnerUnroll"] * operandNumVgprBuffer(self, "B") * kernel["MIInputPerThreadB"]
             if self.states.packDTVB:
               # pack DTV case, double the number
               numVgprValuPackB *= 2
