@@ -94,7 +94,8 @@ class LogicalInstruction : public IRBase {
     std::optional<std::vector<int>> memtoken;  ///< Memory token IDs for LDS dependency tracking
     std::optional<std::array<int, 5>>
         swaitcnt;  ///< s_waitcnt values {vlcnt,vscnt,dlcnt,dscnt,kmcnt} for gfx12+ split
-    std::optional<uint64_t> giraction;  ///< Stable semantic action id from finalized GIR
+    std::optional<GirActionData>
+        giraction;  ///< Complete finalized GIR action facts carried through logical lowering
 
     /// LLVM-style casting support
     static bool classof(const IRBase* ir) {

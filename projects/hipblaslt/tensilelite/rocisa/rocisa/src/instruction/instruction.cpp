@@ -134,7 +134,25 @@ void init_inst(nb::module_ m)
                  auto data = self.getGirActionData();
                  if(!data)
                      return nb::none();
-                 return nb::int_(data->actionId);
+                 nb::dict result;
+                 result["action_id"]     = nb::int_(data->actionId);
+                 result["anchor_action"] = nb::int_(data->anchorAction);
+                 result["kind"]          = nb::int_(static_cast<uint8_t>(data->kind));
+                 nb::list accesses;
+                 for(const rocisa::GirAccess& src : data->accesses)
+                 {
+                     nb::dict access;
+                     access["is_write"]    = nb::bool_(src.isWrite);
+                     access["operand"]     = nb::int_(src.operand);
+                     access["ring"]        = nb::int_(src.ring);
+                     access["gen"]         = nb::int_(src.genId);
+                     access["gdelta"]      = nb::int_(src.gdelta);
+                     access["absolute"]    = nb::int_(src.absolute);
+                     access["cross_agent"] = nb::bool_(src.crossAgent);
+                     accesses.append(std::move(access));
+                 }
+                 result["accesses"] = std::move(accesses);
+                 return std::move(result);
              })
         .def("setInlineAsm", &rocisa::Instruction::setInlineAsm)
         .def("getParams", &rocisa::Instruction::getParams)

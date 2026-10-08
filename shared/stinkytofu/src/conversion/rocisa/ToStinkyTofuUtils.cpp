@@ -369,35 +369,23 @@ Legalized legalizeInstruction(StinkyInstruction* inst, rocisa::Instruction* roci
     return {nullptr, nullptr};
 }
 
-/// Create StinkyInstruction from rocisa instruction
-StinkyInstruction* createStinkyInstructionFromRocisa(rocisa::Instruction& inst,
-                                                     std::type_index rocisaTy,
-                                                     AsmIRBuilder& irBuilder, GfxArchID archId) {
+/// Create every StinkyInstruction that physically realizes one rocisa instruction.
+std::vector<StinkyInstruction*> createStinkyInstructionsFromRocisa(rocisa::Instruction& inst,
+                                                                   std::type_index rocisaTy,
+                                                                   AsmIRBuilder& irBuilder,
+                                                                   GfxArchID archId) {
     const HwInstDesc* hwInstDesc = getRocisaToMCID(rocisaTy, archId);
-    StinkyInstruction* stinkyInst = nullptr;
 
     if (hwInstDesc != nullptr) {
         // Direct mapping exists - create instruction directly
-        stinkyInst = irBuilder.create(hwInstDesc);
-    } else {
-        // Need conversion function
-        ConvertRocisaToHwInstFunc convFn = getConvertRocisaToHwInstFunc(rocisaTy, archId);
-        if (convFn == nullptr) {
-            return nullptr;
-        }
-
-        // Call conversion function
-        std::vector<StinkyInstruction*> stinkyInsts = convFn(inst, irBuilder);
-
-        if (stinkyInsts.empty()) {
-            return nullptr;
-        }
-
-        // For now, only handle single instruction conversions
-        stinkyInst = stinkyInsts[0];
+        StinkyInstruction* created = irBuilder.create(hwInstDesc);
+        return created ? std::vector<StinkyInstruction*>{created}
+                       : std::vector<StinkyInstruction*>{};
     }
 
-    return stinkyInst;
+    ConvertRocisaToHwInstFunc convFn = getConvertRocisaToHwInstFunc(rocisaTy, archId);
+    if (convFn == nullptr) return {};
+    return convFn(inst, irBuilder);
 }
 
 /// Add source and destination registers to StinkyInstruction
@@ -1184,13 +1172,13 @@ static std::shared_ptr<StinkyAsmModule> toStinkyTofuModule(
         assert(dynamic_cast<rocisa::SSetVgprMsb*>(inst) == nullptr &&
                "SSetVgprMsb should not be created directly in TensileLite");
 
-        // Create StinkyInstruction from rocisa instruction
+        // Create every physical realization, keeping the first as the syntax/operand carrier.
         std::type_index rocisaTy = std::type_index(typeid(*inst));
-        StinkyInstruction* stinkyInst =
-            createStinkyInstructionFromRocisa(*inst, rocisaTy, irBuilder, archId);
-
-        assert(stinkyInst != nullptr &&
-               "Failed to create StinkyInstruction from rocisa instruction");
+        std::vector<StinkyInstruction*> stinkyInsts =
+            createStinkyInstructionsFromRocisa(*inst, rocisaTy, irBuilder, archId);
+        assert(!stinkyInsts.empty() &&
+               "Failed to create StinkyInstruction(s) from rocisa instruction");
+        StinkyInstruction* stinkyInst = stinkyInsts.front();
 
         // Add registers (sources and destinations) to the instruction
         addRegistersToInstruction(stinkyInst, inst, asmCaps, hasVgprMsb, archId);
@@ -1206,7 +1194,8 @@ static std::shared_ptr<StinkyAsmModule> toStinkyTofuModule(
             stinkyAsmModule.setPluginDataI64(
                 "gir.action_tag_count",
                 stinkyAsmModule.getPluginDataI64("gir.action_tag_count", 0) + 1);
-            stinkyInst->addModifier<GirActionData>(girActionOf(*girAction));
+            for (StinkyInstruction* realized : stinkyInsts)
+                realized->addModifier<GirActionData>(girActionOf(*girAction));
         }
 
         Legalized legalizedInsts =
