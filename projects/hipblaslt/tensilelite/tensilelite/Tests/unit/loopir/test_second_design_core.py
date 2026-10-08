@@ -940,6 +940,39 @@ def test_dependency_free_lowering_preserves_emitted_gir():
     )
 
 
+def test_target_lowering_uses_direct_ledger_not_symbolic_oracle(monkeypatch):
+    from Tensile.LoopModel import adapter
+    from Tensile.LoopModel.decoder import decode_theta
+    import Tensile.Lowering.loopir_to_gir as lowering
+
+    decoded = decode_theta(adapter.params_to_theta({
+        "MIWaveTile": [2, 2],
+        "MatrixInstruction": [16, 16, 128, 1, 1, 2, 2, 2, 2],
+        "DepthU": 128,
+        "ElemBytes": 1,
+        "PrefetchGlobalRead": 1,
+        "PrefetchLocalRead": 1,
+        "LoopOrder": "KMN",
+    }))
+    monkeypatch.setattr(
+        lowering,
+        "dependences",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("symbolic dependence oracle ran")
+        ),
+    )
+    ledger = lowering._build_dependency_ledger(
+        decoded.program,
+        decoded.profile,
+    )
+    ledger_rows = sum(
+        len(records)
+        for records in ledger.values()
+    )
+    assert 0 < ledger_rows < 32
+    assert lowering.lower_to_gir(decoded.program, decoded.profile).blocks
+
+
 def test_wave_is_a_program_agent_not_a_loop_or_program_axis():
     from Tensile.LoopModel import adapter
     from Tensile.LoopModel.decoder import decode_theta

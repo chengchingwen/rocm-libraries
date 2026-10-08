@@ -6,7 +6,6 @@ from ...Common.GlobalParameters import globalParameters
 from ...LoopModel import traversal as geometry
 from ...LoopModel.checks import validate_loopir
 from ...LoopModel.decoder import decode_theta
-from ...LoopModel.loopir import required_dependences
 from ...LoopModel.loopir import render as render_loopir
 from ...LoopModel.render import render_geometry
 from ...Lowering import gir_text
@@ -96,10 +95,13 @@ def loopModelGirProgram(writer, kernel):
                     "a decoder/lowering defect to repair, do NOT gate it off.\n  %s"
                     % (len(violations), "\n  ".join(violations[:8])))
     kinds = {}
-    if include_dependencies:
-        for dependence in required_dependences(decoded.program):
-            kind = dependence.kind.name
-            kinds[kind] = kinds.get(kind, 0) + 1
+    if globalParameters.get("OutputLoopIR", False):
+        for block in prog.blocks.values():
+            for operation in block.body:
+                for _endpoint, _counter, kind, _scope in (
+                    getattr(operation, "deps", ()) or ()
+                ):
+                    kinds[kind] = kinds.get(kind, 0) + 1
     writer._loopModelMainloopCache = (key, decoded.program, kinds)
     writer._loopModelGirCache = (
         key,
@@ -140,9 +142,6 @@ def loopModelIrTextCached(writer):
             kinds = mainloop_cache[2]
         else:
             kinds = {}
-            for dependence in required_dependences(program):
-                kind = dependence.kind.name
-                kinds[kind] = kinds.get(kind, 0) + 1
         summary = ", ".join(
             f"{name}={count}"
             for name, count in sorted(kinds.items())
