@@ -739,7 +739,7 @@ def test_gir_semantic_checker_failure_is_always_a_value_error(monkeypatch):
     monkeypatch.setattr(
         program,
         "decode_theta",
-        lambda *_args: SimpleNamespace(
+        lambda *_args, **_kwargs: SimpleNamespace(
             program=object(),
             profile=SimpleNamespace(schedule=object()),
         ),
@@ -770,6 +770,7 @@ def test_loopmodel_ir_verify_false_skips_all_ir_checks(monkeypatch):
         "VgprAllocB": -1,
     }
     fake_prog = SimpleNamespace(params={})
+    decoded = {}
     lowered = {}
     pipelined = {}
 
@@ -784,14 +785,14 @@ def test_loopmodel_ir_verify_false_skips_all_ir_checks(monkeypatch):
         "loopModelTheta",
         lambda *_args: (SimpleNamespace(operands=[]), object()),
     )
-    monkeypatch.setattr(
-        program,
-        "decode_theta",
-        lambda *_args: SimpleNamespace(
+    def decode(*_args, **kwargs):
+        decoded.update(kwargs)
+        return SimpleNamespace(
             program=object(),
             profile=SimpleNamespace(schedule=object()),
-        ),
-    )
+        )
+
+    monkeypatch.setattr(program, "decode_theta", decode)
     monkeypatch.setattr(
         program,
         "validate_loopir",
@@ -817,14 +818,8 @@ def test_loopmodel_ir_verify_false_skips_all_ir_checks(monkeypatch):
             AssertionError("GIR verification ran")
         ),
     )
-    monkeypatch.setattr(
-        program,
-        "required_dependences",
-        lambda *_args: (_ for _ in ()).throw(
-            AssertionError("dependency analysis ran")
-        ),
-    )
-
     assert program.loopModelGirProgram(writer, kernel) is fake_prog
+    assert decoded["verify"] is False
     assert lowered["include_dependencies"] is False
+    assert lowered["verify"] is False
     assert pipelined["verify"] is False

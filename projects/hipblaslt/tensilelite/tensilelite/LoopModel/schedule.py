@@ -326,10 +326,10 @@ class Schedule:
             self._steps[key] = prefetch_steps_for(self.theta, operand, group, want, self.depths)
         return self._steps[key]
 
-    def plan(self, operand, group, depth=None) -> OperandPlan:
-        """The plan for one (operand, group), at `depth` or theta's requested depth."""
-        want = self.want(operand) if depth is None else min(depth, self.want(operand))
-        key = (operand.name, group, want)
+    def plan(self, operand, group) -> OperandPlan:
+        """The diagnostic facts for one selected operand/group schedule."""
+        want = self.want(operand)
+        key = (operand.name, group)
         if key not in self._plans:
             self._plans[key] = self._derive(operand, group, want)
         return self._plans[key]
@@ -338,7 +338,6 @@ class Schedule:
         theta, depths = self.theta, self.depths
         width = max(1, depths.get(operand.name, group))
         steps = self.steps(operand, group, want)
-        asked = min(want, self.want(operand))
         distance = prefetch_distance_for(theta, operand, steps)
         anchors = reload_positions(theta, operand, group, width, distance) or {}
         reload_after = {}
@@ -352,7 +351,13 @@ class Schedule:
             prefetch_distance=distance,
             reload_after=reload_after,
             lds_buffers=lds_buffers(theta, operand),
-            prefetch_refused=prefetch_refusal(theta, operand, group, want, depths),
+            prefetch_refused=prefetch_refusal(
+                theta,
+                operand,
+                group,
+                want,
+                depths,
+            ),
         )
 
     def operands(self):

@@ -10,11 +10,9 @@ from .values import IRTypeError, TransformRefused
 from .expr import (
     And,
     Axis,
-    Compare,
     Pred,
     TRUE,
     as_pred,
-    expr_equivalent,
 )
 from .model import (
     DRAIN,
@@ -40,6 +38,14 @@ from .rewrite import _rebuild_children, insert, replace, rewrite
 Transform = Callable[[Program], Program]
 
 
+def _in_regions(active, regions) -> bool:
+    if regions is None:
+        return True
+    if isinstance(regions, (tuple, set, frozenset)):
+        return any(active is item for item in regions)
+    return active is regions
+
+
 def compose(*transforms: Transform) -> Transform:
     """Compose named ``Program -> Program`` functions left to right."""
 
@@ -63,7 +69,73 @@ def append(program: Program, nodes: tuple[LoopIR, ...]) -> Program:
     return insert(program, program.body, len(program.body), nodes)
 
 
-def materialize_steady_copies(program: Program, copies: int) -> Program:
+def _reorder(program, parent_body, nodes, *, first):
+    if not isinstance(parent_body, tuple):
+        raise IRTypeError("the selected body must be a Program body tuple")
+    if not isinstance(nodes, tuple) or not nodes:
+        raise IRTypeError("nodes must be a non-empty tuple")
+    selected = {id(node) for node in nodes}
+    if len(selected) != len(nodes) or any(
+        not any(candidate is node for candidate in parent_body)
+        for node in nodes
+    ):
+        raise TransformRefused(
+            "defer/hoist nodes must be distinct direct children of the body"
+        )
+    hits = 0
+
+    def edit_body(body):
+        nonlocal hits
+        if body is parent_body:
+            hits += 1
+            chosen = tuple(node for node in body if id(node) in selected)
+            rest = tuple(node for node in body if id(node) not in selected)
+            return chosen + rest if first else rest + chosen
+        return tuple(
+            _rebuild_children(node, edit_body)[0]
+            for node in body
+        )
+
+    body = edit_body(program.body)
+    if hits != 1:
+        raise TransformRefused(
+            f"selected body must occur exactly once, found {hits}"
+        )
+    return program.with_body(body, check=False)
+
+
+def defer(program: Program, body, nodes: tuple[LoopIR, ...]) -> Program:
+    """Move selected direct children to the end of one AST body."""
+
+    return _reorder(program, body, nodes, first=False)
+
+
+def hoist(program: Program, body, nodes: tuple[LoopIR, ...]) -> Program:
+    """Move selected direct children to the start of one AST body."""
+
+    return _reorder(program, body, nodes, first=True)
+
+
+def unroll(program: Program, loop: Loop) -> Program:
+    """Replace one constant-bounded Loop with value-binding Let bodies."""
+
+    if not isinstance(loop, Loop):
+        raise IRTypeError("unroll expects a Loop")
+    lo = loop.lo.constant_value
+    hi = loop.hi.constant_value
+    if lo is None or hi is None:
+        raise TransformRefused("unroll requires constant loop bounds")
+    return replace(
+        program,
+        loop,
+        tuple(
+            Let(loop.axis, value, loop.body)
+            for value in range(lo, hi)
+        ),
+    )
+
+
+def _repeat_steady(program: Program, copies: int) -> Program:
     """Materialize the target-derived steady ring period in Program structure."""
 
     if not isinstance(copies, int) or isinstance(copies, bool) or copies < 1:
@@ -504,7 +576,7 @@ def pipeline(
     return replace(program, loop, (replacement,))
 
 
-def suppress_drain(program: Program) -> Program:
+def _drop_drain(program: Program) -> Program:
     """Remove pipeline drain/short arms while retaining prologue and steady.
 
     The result contains the same ordinary Region markers and Loop nodes; this
@@ -549,139 +621,13 @@ def suppress_drain(program: Program) -> Program:
     return rewrite(program, rule)
 
 
-def _first_touch_value(predicate, axis):
-    if not isinstance(predicate, Compare) or predicate.op != "==":
-        return None
-    axis_expression = axis._as_expr()
-    if expr_equivalent(predicate.lhs, axis_expression):
-        return predicate.rhs.constant_value
-    if expr_equivalent(predicate.rhs, axis_expression):
-        return predicate.lhs.constant_value
-    return None
-
-
-def _resolve_first_touch(body, axis, value):
-    output = []
-    for node in body:
-        if isinstance(node, Cond):
-            expected = _first_touch_value(node.pred, axis)
-            if expected is not None:
-                branch = node.then_body if int(value) == expected else node.else_body
-                output.extend(_resolve_first_touch(branch, axis, value))
-                continue
-            node = Cond(
-                node.pred,
-                _resolve_first_touch(node.then_body, axis, value),
-                _resolve_first_touch(node.else_body, axis, value),
-            )
-        elif isinstance(node, Loop):
-            node = Loop(
-                node.axis,
-                node.lo,
-                node.hi,
-                _resolve_first_touch(node.body, axis, value),
-            )
-        elif isinstance(node, Let):
-            node = Let(
-                node.axis,
-                node.value,
-                _resolve_first_touch(node.body, axis, value),
-            )
-        elif isinstance(node, Switch):
-            node = Switch(
-                node.expression,
-                tuple(
-                    (
-                        case,
-                        _resolve_first_touch(case_body, axis, value),
-                    )
-                    for case, case_body in node.cases
-                ),
-                _resolve_first_touch(node.otherwise, axis, value),
-            )
-        output.append(node)
-    return tuple(output)
-
-
-def specialize_first_touch(program: Program, region=None) -> Program:
-    """Specialize finite loop bodies at simple first-touch equality guards."""
-
-    def edit_body(body, active_region=None):
-        output = []
-        current_region = active_region
-        for node in body:
-            if isinstance(node, Region):
-                current_region = node.tag
-                output.append(node)
-                continue
-            if isinstance(node, Loop):
-                child = edit_body(node.body, current_region)
-                lo = node.lo.constant_value
-                hi = node.hi.constant_value
-                if (
-                    (region is None or current_region is region)
-                    and lo is not None
-                    and hi is not None
-                    and hi > lo
-                ):
-                    cases = tuple(
-                        (
-                            value,
-                            _resolve_first_touch(
-                                child, node.axis, value
-                            ),
-                        )
-                        for value in range(lo, hi)
-                    )
-                    if not all(
-                        case_body == cases[0][1]
-                        for _value, case_body in cases[1:]
-                    ):
-                        child = (Switch(node.axis, cases, ()),)
-                    else:
-                        child = cases[0][1]
-                node = Loop(
-                    node.axis,
-                    node.lo,
-                    node.hi,
-                    child,
-                )
-            elif isinstance(node, Cond):
-                node = Cond(
-                    node.pred,
-                    edit_body(node.then_body, current_region),
-                    edit_body(node.else_body, current_region),
-                )
-            elif isinstance(node, Let):
-                node = Let(
-                    node.axis,
-                    node.value,
-                    edit_body(node.body, current_region),
-                )
-            elif isinstance(node, Switch):
-                node = Switch(
-                    node.expression,
-                    tuple(
-                        (
-                            value,
-                            edit_body(case, current_region),
-                        )
-                        for value, case in node.cases
-                    ),
-                    edit_body(node.otherwise, current_region),
-                )
-            output.append(node)
-        return tuple(output)
-
-    return program.with_body(edit_body(program.body), check=False)
-
-
-def defer_single_path_operations(
+def _defer_paths(
     program: Program,
-    region,
+    *,
+    regions,
     operations: tuple[Movement | Compute, ...],
 ) -> Program:
-    """Defer selected operations only through single-path structural wrappers."""
+    """Move selected operations to body ends through one-branch wrappers."""
 
     identities = {operation._identity for operation in operations}
     selected = {}
@@ -740,7 +686,7 @@ def defer_single_path_operations(
         if not any(isinstance(node, Region) for node in rebuilt):
             return (
                 reordered(tuple(rebuilt))
-                if active_region is region else tuple(rebuilt)
+                if _in_regions(active_region, regions) else tuple(rebuilt)
             )
         output = []
         index = 0
@@ -759,7 +705,7 @@ def defer_single_path_operations(
             segment = tuple(rebuilt[index:stop])
             output.extend(
                 reordered(segment)
-                if segment_region is region else segment
+                if _in_regions(segment_region, regions) else segment
             )
             index = stop
         return tuple(output)
@@ -767,12 +713,13 @@ def defer_single_path_operations(
     return program.with_body(edit_body(program.body), check=False)
 
 
-def defer_operations(
+def _defer_loops(
     program: Program,
-    region,
+    *,
+    regions,
     operations: tuple[Movement | Compute, ...],
 ) -> Program:
-    """Move selected direct-body operations to the end of Loops in one region."""
+    """Move selected operation-only children to each selected Loop's end."""
 
     identities = {
         operation._identity
@@ -802,7 +749,7 @@ def defer_operations(
             rebuilt = node
             if isinstance(node, Loop):
                 child = edit_body(node.body, current_region)
-                if current_region is region:
+                if _in_regions(current_region, regions):
                     leading = tuple(
                         item for item in child
                         if not selected_unit(item)
@@ -825,12 +772,13 @@ def defer_operations(
     return program.with_body(edit_body(program.body), check=False)
 
 
-def prioritize_operations(
+def _hoist_region(
     program: Program,
-    region,
+    *,
+    regions,
     operations: tuple[Movement | Compute, ...],
 ) -> Program:
-    """Move selected operation-only structural units to body fronts in one region."""
+    """Move selected operation-only children to selected region body starts."""
 
     identities = {operation._identity for operation in operations}
     if not identities:
@@ -859,7 +807,7 @@ def prioritize_operations(
             )[0]
             output.append(node)
         output = tuple(output)
-        if current_region is not region:
+        if not _in_regions(current_region, regions):
             return output
         return (
             tuple(item for item in output if selected_unit(item))
@@ -869,20 +817,21 @@ def prioritize_operations(
     return program.with_body(edit_body(program.body), check=False)
 
 
-def materialize_region_operations(
+def _unroll_region(
     program: Program,
+    *,
     region,
     selector: Callable[[Movement | Compute], bool],
     key: Callable[[Movement | Compute], object],
 ) -> Program:
-    """Unroll and order operation-only regions using caller-owned policy.
+    """Unroll and sort an operation-only region using caller-owned policy.
 
     The structural rewrite is generic.  Theta generation supplies the
     operation selector and ordering key; lowering never reconstructs them.
     """
 
     if not callable(selector) or not callable(key):
-        raise IRTypeError("materialize_region_operations expects callables")
+        raise IRTypeError("unroll_region expects callables")
 
     def edit_body(body):
         body = tuple(
@@ -913,24 +862,44 @@ def materialize_region_operations(
     return program.with_body(edit_body(program.body), check=False)
 
 
-def materialize_operation_runs(
+def _unroll_runs(
     program: Program,
-    region,
+    *,
+    regions,
     selector: Callable[[Movement | Compute], bool],
     key: Callable[[Movement | Compute], object],
 ) -> Program:
-    """Unroll and order consecutive selected-operation structural units."""
+    """Unroll and sort consecutive structural runs of selected operations."""
 
     selected = {}
 
-    def selected_unit(node):
+    def selection_status(node):
         key = id(node)
-        if key not in selected:
-            found = _operations_in((node,))
-            selected[key] = bool(found) and all(
-                selector(operation) for operation in found
-            )
-        return selected[key]
+        cached = selected.get(key, ...)
+        if cached is not ...:
+            return cached
+        if isinstance(node, (Movement, Compute)):
+            result = bool(selector(node))
+        else:
+            found = False
+            result = None
+            for body in child_bodies(node):
+                for child in body:
+                    status = selection_status(child)
+                    if status is False:
+                        result = False
+                        break
+                    if status is True:
+                        found = True
+                if result is False:
+                    break
+            if result is not False:
+                result = True if found else None
+        selected[key] = result
+        return result
+
+    def selected_unit(node):
+        return selection_status(node) is True
 
     def edit_body(body, active_region=None):
         rebuilt = []
@@ -946,7 +915,7 @@ def materialize_operation_runs(
             )[0]
             rebuilt.append(node)
         body = tuple(rebuilt)
-        if current_region is not region:
+        if not _in_regions(current_region, regions):
             return body
         output = []
         index = 0
@@ -970,7 +939,7 @@ def materialize_operation_runs(
     return program.with_body(edit_body(program.body), check=False)
 
 
-def extend_region(
+def _append_region(
     program: Program,
     region,
     nodes: tuple[LoopIR, ...],
@@ -979,7 +948,7 @@ def extend_region(
 
     if not isinstance(nodes, tuple) \
             or not all(isinstance(node, LoopIR) for node in nodes):
-        raise IRTypeError("extend_region.nodes must be LoopIR values")
+        raise IRTypeError("append_region.nodes must be LoopIR values")
 
     def edit_body(body):
         body = tuple(
@@ -1003,7 +972,7 @@ def extend_region(
     return program.with_body(edit_body(program.body), check=False)
 
 
-def replace_region_operations(
+def _rewrite_region(
     program: Program,
     region,
     replacements: dict,
@@ -1059,259 +1028,9 @@ def replace_region_operations(
     return program.with_body(edit_body(program.body), check=False)
 
 
-def replace_operation_units_in_last_let(
-    program: Program,
-    region,
-    replacements: dict,
-) -> Program:
-    """Replace whole single-operation units in the final Let of one region.
-
-    A unit may be wrapped by scheduling ``Cond`` nodes.  Replacing the unit,
-    rather than only its leaf operation, lets a later transformation state a
-    new guard without retaining the superseded one.
-    """
-
-    replacements = dict(replacements)
-
-    def replace_units(body):
-        output = []
-        for node in body:
-            present = _operation_identities(node)
-            selected = present & replacements.keys()
-            if isinstance(node, Cond) and len(present) == 1 and selected:
-                output.append(replacements[next(iter(selected))])
-            elif isinstance(node, (Movement, Compute)) \
-                    and node._identity in replacements:
-                output.append(replacements[node._identity])
-            elif isinstance(node, Loop):
-                output.append(Loop(
-                    node.axis,
-                    node.lo,
-                    node.hi,
-                    replace_units(node.body),
-                ))
-            elif isinstance(node, Cond):
-                output.append(Cond(
-                    node.pred,
-                    replace_units(node.then_body),
-                    replace_units(node.else_body),
-                ))
-            elif isinstance(node, Let):
-                output.append(Let(
-                    node.axis,
-                    node.value,
-                    replace_units(node.body),
-                ))
-            elif isinstance(node, Switch):
-                output.append(Switch(
-                    node.expression,
-                    tuple(
-                        (value, replace_units(case))
-                        for value, case in node.cases
-                    ),
-                    replace_units(node.otherwise),
-                ))
-            else:
-                output.append(node)
-        return tuple(output)
-
-    def edit_body(body, active_region=None):
-        rebuilt = []
-        current_region = active_region
-        for node in body:
-            if isinstance(node, Region):
-                current_region = node.tag
-                rebuilt.append(node)
-            elif isinstance(node, Loop):
-                rebuilt.append(Loop(
-                    node.axis,
-                    node.lo,
-                    node.hi,
-                    edit_body(node.body, current_region),
-                ))
-            elif isinstance(node, Cond):
-                rebuilt.append(Cond(
-                    node.pred,
-                    edit_body(node.then_body, current_region),
-                    edit_body(node.else_body, current_region),
-                ))
-            elif isinstance(node, Let):
-                rebuilt.append(Let(
-                    node.axis,
-                    node.value,
-                    edit_body(node.body, current_region),
-                ))
-            elif isinstance(node, Switch):
-                rebuilt.append(Switch(
-                    node.expression,
-                    tuple(
-                        (value, edit_body(case, current_region))
-                        for value, case in node.cases
-                    ),
-                    edit_body(node.otherwise, current_region),
-                ))
-            else:
-                rebuilt.append(node)
-
-        candidates = []
-        segment_region = active_region
-        for index, node in enumerate(rebuilt):
-            if isinstance(node, Region):
-                segment_region = node.tag
-            elif segment_region is region and isinstance(node, Let):
-                candidates.append(index)
-        if candidates:
-            index = candidates[-1]
-            target = rebuilt[index]
-            rebuilt[index] = Let(
-                target.axis,
-                target.value,
-                replace_units(target.body),
-            )
-        return tuple(rebuilt)
-
-    return program.with_body(edit_body(program.body), check=False)
-
-
-def reset_operation_guards(
-    program: Program,
-    region,
-    operations: tuple[Movement | Compute, ...],
-) -> Program:
-    """Reset invariant-axis equality guards for selected operations in one region."""
-
-    identities = {operation._identity for operation in operations}
-
-    def selected_operations(nodes):
-        return [
-            operation
-            for operation in _operations_in(nodes)
-            if operation._identity in identities
-        ]
-
-    def edit_body(body, active_region=None):
-        output = []
-        current_region = active_region
-        for node in body:
-            if isinstance(node, Region):
-                current_region = node.tag
-                output.append(node)
-                continue
-            if isinstance(node, Loop):
-                node = Loop(
-                    node.axis, node.lo, node.hi,
-                    edit_body(node.body, current_region),
-                )
-            elif isinstance(node, Cond):
-                then_body = edit_body(node.then_body, current_region)
-                else_body = edit_body(node.else_body, current_region)
-                then_selected = selected_operations(then_body)
-                else_selected = selected_operations(else_body)
-                if (
-                    current_region is region
-                    and then_selected
-                    and else_selected
-                    and {
-                        operation._identity for operation in then_selected
-                    } == {
-                        operation._identity for operation in else_selected
-                    }
-                ):
-                    output.extend(then_body)
-                    continue
-                predicate = node.pred
-                selected = then_selected
-                if current_region is region and selected:
-                    active_ids = set()
-                    for operation in selected:
-                        if isinstance(operation, Movement):
-                            coordinates = {}
-                            for index, transfer in enumerate(operation.transfers):
-                                tiles = (
-                                    transfer.local_tile,
-                                    operation.effect_for(index).tile,
-                                )
-                                for tile in tiles:
-                                    for coordinate, expression in enumerate(tile.indices):
-                                        coordinates.setdefault(
-                                            (tile.operand, coordinate),
-                                            [],
-                                        ).append(expression)
-                            for expressions in coordinates.values():
-                                free_axes = {
-                                    id(axis): axis
-                                    for expression in expressions
-                                    for axis in expression.free_axes()
-                                }
-                                for axis_id, axis in free_axes.items():
-                                    extent = axis.extent.constant_value
-                                    if extent is None:
-                                        active_ids.add(axis_id)
-                                        continue
-                                    signatures = []
-                                    for value in range(int(extent)):
-                                        environment = {
-                                            other: 0
-                                            for other in free_axes.values()
-                                        }
-                                        environment[axis] = value
-                                        signatures.append(tuple(sorted(
-                                            expression.evaluate(environment)
-                                            for expression in expressions
-                                        )))
-                                    if any(
-                                        signature != signatures[0]
-                                        for signature in signatures[1:]
-                                    ):
-                                        active_ids.add(axis_id)
-                        else:
-                            active_ids.update(
-                                id(axis)
-                                for tile in operation.reads + operation.writes
-                                for expression in tile.indices
-                                for axis in expression.free_axes()
-                            )
-                    guards = tuple(
-                        axis for axis in predicate.free_axes()
-                        if id(axis) not in active_ids
-                    )
-                    bare_guards = tuple(
-                        axis for axis in guards
-                        if _first_touch_value(predicate, axis) is not None
-                    )
-                    if len(bare_guards) == 1:
-                        predicate = bare_guards[0] == 0
-                node = Cond(predicate, then_body, else_body)
-            elif isinstance(node, Let):
-                node = Let(
-                    node.axis, node.value, edit_body(node.body, current_region)
-                )
-            elif isinstance(node, Switch):
-                node = Switch(
-                    node.expression,
-                    tuple(
-                        (value, edit_body(case, current_region))
-                        for value, case in node.cases
-                    ),
-                    edit_body(node.otherwise, current_region),
-                )
-            output.append(node)
-        return tuple(output)
-
-    return program.with_body(edit_body(program.body), check=False)
-
-
 __all__ = [
     "Transform", "compose", "append", "partition_movement",
     "fuse_movements",
-    "materialize_steady_copies",
     "substitute_operation", "rewrite_operation", "pipeline",
-    "suppress_drain",
-    "specialize_first_touch", "defer_single_path_operations",
-    "defer_operations", "materialize_region_operations",
-    "materialize_operation_runs",
-    "prioritize_operations",
-    "extend_region", "replace_region_operations",
-    "replace_operation_units_in_last_let",
-    "reset_operation_guards",
+    "defer", "hoist", "unroll",
 ]

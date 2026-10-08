@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from .expr import TRUE
 from .model import (
+    REGISTER,
     Compute,
     Cond,
     Let,
@@ -19,7 +20,24 @@ from .values import IMMEDIATE
 
 
 def _tile(tile):
-    return f"{tile.operand.name}[{', '.join(value.render() for value in tile.indices)}]"
+    extra_count = len(tile.indices) - len(tile.operand.axes)
+    extra = []
+    for index, value in enumerate(tile.indices[:extra_count]):
+        free_axes = tuple(value.free_axes())
+        name = free_axes[0].name if len(free_axes) == 1 else f"extra{index}"
+        extra.append((name, value))
+    local = (
+        (axis.name, value)
+        for axis, value in zip(
+            tile.operand.axes,
+            tile.indices[extra_count:],
+        )
+    )
+    coordinates = ", ".join(
+        f"{name}={value.render()}"
+        for name, value in (*extra, *local)
+    )
+    return f"{tile.operand.name}[{coordinates}]"
 
 
 def _where(predicate):
@@ -36,25 +54,94 @@ def _render_completion(value):
     return f"{value.name}@{value.counter_scope.name.lower()}"
 
 
+def _transfer_label(transfer):
+    return (
+        "register"
+        if transfer.source is REGISTER or transfer.destination is REGISTER
+        else "local"
+    )
+
+
+def _render_movement(node, indent, out):
+    pad = "  " * indent
+    completion = _render_completion(node.completion)
+    if len(node.transfers) == 1:
+        transfer = node.transfers[0]
+        out.append(
+            f"{pad}{node.op.__name__.lower()} "
+            f"{_transfer_label(transfer)}={_tile(transfer.local_tile)}  "
+            f"{transfer.source.name.lower()} -> "
+            f"{transfer.destination.name.lower()}  "
+            f"completion={completion}"
+        )
+    else:
+        out.append(
+            f"{pad}{node.op.__name__.lower()} completion={completion}"
+        )
+        for transfer in node.transfers:
+            out.append(
+                f"{pad}  {_transfer_label(transfer)}="
+                f"{_tile(transfer.local_tile)}  "
+                f"{transfer.source.name.lower()} -> "
+                f"{transfer.destination.name.lower()}"
+            )
+    for index in range(len(node.transfers)):
+        effect = node.effect_for(index)
+        out.append(
+            f"{pad}  effect={_tile(effect.tile)}"
+            f"{_where(effect.where)}"
+        )
+
+
+def _render_loop(node, indent, out):
+    pad = "  " * indent
+    loops = [node]
+    body = node.body
+    while len(body) == 1 and isinstance(body[0], Loop):
+        loops.append(body[0])
+        body = body[0].body
+    clauses = ", ".join(
+        f"{loop.axis.name} in "
+        f"[{loop.lo.render()}, {loop.hi.render()})"
+        for loop in loops
+    )
+    out.append(f"{pad}for {clauses}")
+    _render_body(body, indent + 1, out)
+
+
+def _render_switch(node, indent, out):
+    pad = "  " * indent
+    out.append(f"{pad}switch {node.expression.render()}")
+    groups = []
+    by_body = {}
+    for value, body in node.cases:
+        lines = []
+        _render_body(body, indent + 2, lines)
+        key = tuple(lines)
+        if key in by_body:
+            groups[by_body[key]][0].append(value)
+        else:
+            by_body[key] = len(groups)
+            groups.append(([value], lines))
+    for values, lines in groups:
+        out.append(
+            f"{pad}  case {','.join(str(value) for value in values)}"
+        )
+        out.extend(lines)
+    if node.otherwise:
+        out.append(f"{pad}  otherwise")
+        _render_body(node.otherwise, indent + 2, out)
+
+
 def _render_body(nodes, indent, out):
     pad = "  " * indent
     for node in nodes:
         if isinstance(node, Region):
-            out.append(f"{pad}@{node.tag.name.lower()}")
+            if out and out[-1]:
+                out.append("")
+            out.append(f"{pad}--- {node.tag.name.lower()} ---")
         elif isinstance(node, Movement):
-            out.append(
-                f"{pad}{node.op.__name__.lower()} "
-                f"completion={_render_completion(node.completion)}"
-            )
-            for index, transfer in enumerate(node.transfers):
-                effect = node.effect_for(index)
-                out.append(
-                    f"{pad}  effect={_tile(effect.tile)} "
-                    f"local={_tile(transfer.local_tile)} "
-                    f"{transfer.source.name.lower()} -> "
-                    f"{transfer.destination.name.lower()}"
-                    f"{_where(effect.where)}"
-                )
+            _render_movement(node, indent, out)
         elif isinstance(node, Compute):
             reads = ", ".join(
                 f"{_tile(value)}@register"
@@ -65,32 +152,28 @@ def _render_body(nodes, indent, out):
                 for value in node.writes
             )
             out.append(
-                f"{pad}{node.op.__name__.lower()} "
-                f"read({reads}) write({writes})"
+                f"{pad}{node.op.__name__.lower()} registers "
+                f"read({reads}) -> write({writes})"
             )
         elif isinstance(node, Loop):
-            out.append(
-                f"{pad}for {node.axis.name} in "
-                f"[{node.lo.render()}, {node.hi.render()})"
-            )
-            _render_body(node.body, indent + 1, out)
+            _render_loop(node, indent, out)
         elif isinstance(node, Cond):
-            out.append(f"{pad}if {node.pred.render()}")
-            _render_body(node.then_body, indent + 1, out)
-            if node.else_body:
+            if not node.then_body and not node.else_body:
+                continue
+            if not node.then_body and node.else_body:
+                out.append(f"{pad}if not ({node.pred.render()})")
+                _render_body(node.else_body, indent + 1, out)
+            else:
+                out.append(f"{pad}if {node.pred.render()}")
+                _render_body(node.then_body, indent + 1, out)
+            if node.then_body and node.else_body:
                 out.append(f"{pad}else")
                 _render_body(node.else_body, indent + 1, out)
         elif isinstance(node, Let):
             out.append(f"{pad}let {node.axis.name} = {node.value.render()}")
             _render_body(node.body, indent + 1, out)
         elif isinstance(node, Switch):
-            out.append(f"{pad}switch {node.expression.render()}")
-            for value, body in node.cases:
-                out.append(f"{pad}  case {value}")
-                _render_body(body, indent + 2, out)
-            if node.otherwise:
-                out.append(f"{pad}  otherwise")
-                _render_body(node.otherwise, indent + 2, out)
+            _render_switch(node, indent, out)
         else:
             out.append(f"{pad}<{type(node).__name__}>")
 
@@ -106,17 +189,15 @@ def render(program: Program) -> str:
         for axis, scope in program.agents
     ) or "-"
     out = [
-        "program",
-        f"  params: {params}",
+        f"program params({params}) agents({agents})",
         f"  axes: {axes}",
-        f"  agents: {agents}",
         "  operands:",
         *(
             f"    {operand.name}[{', '.join(axis.name for axis in operand.axes)}] "
             f"{operand.role.name.lower()}"
             for operand in program.operands
         ),
-        "  body:",
+        "  schedule:",
     ]
     _render_body(program.body, 2, out)
     return "\n".join(out)

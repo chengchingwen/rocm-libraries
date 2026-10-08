@@ -23,12 +23,14 @@ from .loopir import (
     TENSOR_LOAD,
     WAVE,
     Axis,
+    Compare,
     CompletionClass,
     Compute,
     Cond,
     DRAIN,
     Effect,
     Expr,
+    Let,
     Loop,
     Movement,
     Operand,
@@ -40,24 +42,26 @@ from .loopir import (
     WMMA,
     append,
     compose,
-    defer_operations,
-    defer_single_path_operations,
-    extend_region,
+    expr_equivalent,
     find_loop,
-    materialize_region_operations,
-    materialize_operation_runs,
-    materialize_steady_copies,
     operations,
     pipeline,
-    prioritize_operations,
-    replace_region_operations,
-    replace_operation_units_in_last_let,
-    reset_operation_guards,
+    replace,
     rewrite_operation,
     substitute_operation,
-    suppress_drain,
-    specialize_first_touch,
+    unroll,
     walk,
+)
+from .loopir.functional import (
+    _append_region,
+    _defer_loops,
+    _defer_paths,
+    _drop_drain,
+    _hoist_region,
+    _repeat_steady,
+    _rewrite_region,
+    _unroll_region,
+    _unroll_runs,
 )
 from .schedule import (
     Schedule,
@@ -169,26 +173,6 @@ class ThetaTargetProfile:
         placement_environment=None,
         issue_axes=(),
     ):
-        coordinate_key = tuple(sorted(
-            (getattr(key, "name", key), value)
-            for key, value in dict(coordinate).items()
-        ))
-        placement_key = tuple(sorted(
-            (getattr(key, "name", key), value)
-            for key, value in dict(placement_environment or {}).items()
-        ))
-        key = (
-            operand,
-            coordinate_key,
-            int(prefetch_steps),
-            int(copy_phase),
-            placement_key,
-            tuple(issue_axes),
-        )
-        cached = self._register_locations.get(key)
-        if cached is not None:
-            return cached
-
         descriptor = self.theta.op(operand)
         if descriptor.fragment is None:
             return 0, 0, 1
@@ -241,10 +225,25 @@ class ThetaTargetProfile:
             self._register_placement_templates[template_key] = template
         expression, width, carries, positions = template
         bindings = dict(placement_environment or environment)
-        for axis in expression.free_axes():
+        axes = tuple(sorted(
+            expression.free_axes(),
+            key=lambda axis: (axis.name, id(axis)),
+        ))
+        axis_values = []
+        for axis in axes:
             value = bindings.get(axis.name, bindings.get(axis, 0))
             bindings[axis] = value
             bindings[axis.name] = value
+            axis_values.append(int(value))
+        key = (
+            group,
+            template_key,
+            tuple(axis_values),
+            int(copy_phase or 0) if carries else 0,
+        )
+        cached = self._register_locations.get(key)
+        if cached is not None:
+            return cached
         try:
             slot = int(expression.evaluate(bindings))
         except Exception:
@@ -292,22 +291,39 @@ class ThetaTargetProfile:
         return {}
 
     def bulk_bytes(self, operand: str) -> int:
-        descriptor = self.theta.op(operand)
-        return (
-            int(geometry.operand_tile_bytes(self.theta, descriptor))
-            // max(1, int(descriptor.split))
-        )
+        return self._bulk_bytes[operand]
 
     def fragment_regs(self, operand: str) -> int:
-        descriptor = self.theta.op(operand)
-        return (
-            int(geometry.frag_regs(self.theta, descriptor))
-            if descriptor.fragment is not None else 0
-        )
+        return self._fragment_regs[operand]
+
+    @cached_property
+    def _bulk_bytes(self):
+        return {
+            descriptor.name: (
+                int(geometry.operand_tile_bytes(self.theta, descriptor))
+                // max(1, int(descriptor.split))
+            )
+            for descriptor in self.theta.operands
+        }
+
+    @cached_property
+    def _fragment_regs(self):
+        return {
+            descriptor.name: (
+                int(geometry.frag_regs(self.theta, descriptor))
+                if descriptor.fragment is not None else 0
+            )
+            for descriptor in self.theta.operands
+        }
 
     def region_index(self, operand: str, coordinate) -> int:
+        coordinate_key = tuple(sorted(dict(coordinate).items()))
+        key = operand, coordinate_key
+        if key in self._region_indices:
+            return self._region_indices[key]
         values = tuple(self.theta.op(operand).region_of(coordinate))
         if not values:
+            self._region_indices[key] = 0
             return 0
         result = 0
         extents = {
@@ -319,7 +335,12 @@ class ThetaTargetProfile:
             span = max(1, int(descriptor.region_span.get(axis_name, 1)))
             radix = max(1, extents.get(axis_name, 1) // span)
             result = result * radix + int(value)
+        self._region_indices[key] = result
         return result
+
+    @cached_property
+    def _region_indices(self):
+        return {}
 
     @cached_property
     def metadata(self) -> dict:
@@ -1023,7 +1044,7 @@ class _Decoder:
             self._operand_order[descriptor.name],
         )
 
-    def _first_touch_axes(self, descriptor, depth):
+    def _read_guard_axes(self, descriptor, depth):
         varying = set(geometry.varying_axes(self.theta, descriptor))
         repeated = set(self._repeat_read_axes(descriptor))
         values = [
@@ -1039,9 +1060,9 @@ class _Decoder:
         )
         return tuple(dict(values).items())
 
-    def _first_touch_guard(self, node, first_touch, values):
+    def _guard_read(self, node, guard_axes, values):
         body = (node,)
-        for name, step in reversed(first_touch):
+        for name, step in reversed(guard_axes):
             axis = self.axis_by_name[name]
             expression = axis % step if step > 1 else axis
             body = (Cond(expression == int(values.get(name, 0)), body, ()),)
@@ -1099,8 +1120,8 @@ class _Decoder:
         descriptor = self.operation_operand[operation._identity]
         groups = self.operation_groups.get(operation._identity)
         advance, span, position, _replacements = self._read_retiming(operation)
-        first_touch = self._first_touch_axes(descriptor, depth)
-        invariant = {name for name, step in first_touch if step == 0}
+        guard_axes = self._read_guard_axes(descriptor, depth)
+        invariant = {name for name, step in guard_axes if step == 0}
         reload_cycle = self._reload_cycle(descriptor, groups, span)
         remainder = advance % reload_cycle if advance else 0
         late = {
@@ -1129,8 +1150,8 @@ class _Decoder:
             return (
                 Cond(
                     nowrap,
-                    (self._first_touch_guard(operation, first_touch, {}),),
-                    (self._first_touch_guard(operation, first_touch, late),),
+                    (self._guard_read(operation, guard_axes, {}),),
+                    (self._guard_read(operation, guard_axes, late),),
                 ),
                 True,
             )
@@ -1141,7 +1162,7 @@ class _Decoder:
                 descriptor, groups, advance, invariant
             )
         return (
-            self._first_touch_guard(operation, first_touch, anchor),
+            self._guard_read(operation, guard_axes, anchor),
             bool(advance),
         )
 
@@ -1158,15 +1179,15 @@ class _Decoder:
         )
         if depth is None:
             return operation
-        first_touch = self._first_touch_axes(descriptor, depth)
-        invariant = {name for name, step in first_touch if step == 0}
+        guard_axes = self._read_guard_axes(descriptor, depth)
+        invariant = {name for name, step in guard_axes if step == 0}
         anchor = self._read_anchor(
             descriptor,
             groups,
             advance,
             invariant,
         )
-        node = self._first_touch_guard(operation, first_touch, anchor)
+        node = self._guard_read(operation, guard_axes, anchor)
         return Cond(
             position + advance < span,
             (node,),
@@ -1262,9 +1283,15 @@ class _Decoder:
         )
 
     def _read_retiming(self, operation):
+        identity = operation._identity
+        cached = self._read_retiming_cache.get(identity)
+        if cached is not None:
+            return cached
         descriptor = self.operation_operand.get(operation._identity)
         if descriptor is None or not self._operation_runs_ahead(operation):
-            return 0, 1, 0, {}
+            result = 0, 1, 0, {}
+            self._read_retiming_cache[identity] = result
+            return result
         groups = self.operation_groups.get(operation._identity)
         wanted = self.schedule.want(descriptor)
         depth = min(
@@ -1299,7 +1326,13 @@ class _Decoder:
         if outer is not None and outer.name in self.axis_by_name:
             axis = self.axis_by_name[outer.name]
             replacements[axis] = axis + shifted // max(1, int(span))
-        return int(advance), max(1, int(span)), position, replacements
+        result = int(advance), max(1, int(span)), position, replacements
+        self._read_retiming_cache[identity] = result
+        return result
+
+    @cached_property
+    def _read_retiming_cache(self):
+        return {}
 
     def _apply_inner_shifts(self, program):
         current = program
@@ -1433,7 +1466,366 @@ class _Decoder:
         events.sort(key=lambda event: event[:-1])
         return tuple(event[-1] for event in events)
 
-    def build(self):
+    @staticmethod
+    def _guard_value(predicate, axis):
+        if not isinstance(predicate, Compare) or predicate.op != "==":
+            return None
+        axis_expression = axis._as_expr()
+        if expr_equivalent(predicate.lhs, axis_expression):
+            return predicate.rhs.constant_value
+        if expr_equivalent(predicate.rhs, axis_expression):
+            return predicate.lhs.constant_value
+        return None
+
+    def _simplify_short_guards(self, program, selected_operations):
+        identities = {
+            operation._identity
+            for operation in selected_operations
+        }
+
+        def selected(nodes):
+            return [
+                node for node in walk(nodes)
+                if isinstance(node, (Movement, Compute))
+                and node._identity in identities
+            ]
+
+        def edit_body(body, active=None):
+            output = []
+            current = active
+            for node in body:
+                if isinstance(node, Region):
+                    current = node.tag
+                    output.append(node)
+                    continue
+                if isinstance(node, Loop):
+                    node.body = edit_body(node.body, current)
+                elif isinstance(node, Cond):
+                    node.then_body = edit_body(node.then_body, current)
+                    node.else_body = edit_body(node.else_body, current)
+                    then_selected = selected(node.then_body)
+                    else_selected = selected(node.else_body)
+                    if (
+                        current is SHORT
+                        and then_selected
+                        and else_selected
+                        and {
+                            operation._identity
+                            for operation in then_selected
+                        } == {
+                            operation._identity
+                            for operation in else_selected
+                        }
+                    ):
+                        output.extend(node.then_body)
+                        continue
+                    predicate = node.pred
+                    if current is SHORT and then_selected:
+                        active_ids = set()
+                        for operation in then_selected:
+                            if isinstance(operation, Movement):
+                                coordinates = {}
+                                for index, transfer in enumerate(
+                                    operation.transfers
+                                ):
+                                    for tile in (
+                                        transfer.local_tile,
+                                        operation.effect_for(index).tile,
+                                    ):
+                                        for coordinate, expression in enumerate(
+                                            tile.indices
+                                        ):
+                                            coordinates.setdefault(
+                                                (tile.operand, coordinate),
+                                                [],
+                                            ).append(expression)
+                                for expressions in coordinates.values():
+                                    free_axes = {
+                                        id(axis): axis
+                                        for expression in expressions
+                                        for axis in expression.free_axes()
+                                    }
+                                    for axis_id, axis in free_axes.items():
+                                        extent = axis.extent.constant_value
+                                        if extent is None:
+                                            active_ids.add(axis_id)
+                                            continue
+                                        signatures = []
+                                        for value in range(int(extent)):
+                                            environment = {
+                                                other: 0
+                                                for other in free_axes.values()
+                                            }
+                                            environment[axis] = value
+                                            signatures.append(tuple(sorted(
+                                                expression.evaluate(environment)
+                                                for expression in expressions
+                                            )))
+                                        if any(
+                                            signature != signatures[0]
+                                            for signature in signatures[1:]
+                                        ):
+                                            active_ids.add(axis_id)
+                            else:
+                                active_ids.update(
+                                    id(axis)
+                                    for tile in (
+                                        operation.reads + operation.writes
+                                    )
+                                    for expression in tile.indices
+                                    for axis in expression.free_axes()
+                                )
+                        guards = tuple(
+                            axis for axis in predicate.free_axes()
+                            if id(axis) not in active_ids
+                        )
+                        bare = tuple(
+                            axis for axis in guards
+                            if self._guard_value(predicate, axis) is not None
+                        )
+                        if len(bare) == 1:
+                            predicate = bare[0] == 0
+                    node.pred = predicate
+                elif isinstance(node, Let):
+                    node.body = edit_body(node.body, current)
+                elif isinstance(node, Switch):
+                    node.cases = tuple(
+                        (value, edit_body(case, current))
+                        for value, case in node.cases
+                    )
+                    node.otherwise = edit_body(node.otherwise, current)
+                output.append(node)
+            return tuple(output)
+
+        return program.with_body(edit_body(program.body), check=False)
+
+    @staticmethod
+    def _replace_operation_units(body, replacements):
+        output = []
+        for node in body:
+            identities = {
+                nested._identity
+                for nested in walk((node,))
+                if isinstance(nested, (Movement, Compute))
+            }
+            selected = identities & replacements.keys()
+            if isinstance(node, Cond) and len(identities) == 1 and selected:
+                output.append(replacements[next(iter(selected))])
+            elif isinstance(node, (Movement, Compute)) \
+                    and node._identity in replacements:
+                output.append(replacements[node._identity])
+            elif isinstance(node, Loop):
+                node.body = _Decoder._replace_operation_units(
+                    node.body,
+                    replacements,
+                )
+                output.append(node)
+            elif isinstance(node, Cond):
+                node.then_body = _Decoder._replace_operation_units(
+                    node.then_body,
+                    replacements,
+                )
+                node.else_body = _Decoder._replace_operation_units(
+                    node.else_body,
+                    replacements,
+                )
+                output.append(node)
+            elif isinstance(node, Let):
+                node.body = _Decoder._replace_operation_units(
+                    node.body,
+                    replacements,
+                )
+                output.append(node)
+            elif isinstance(node, Switch):
+                node.cases = tuple(
+                    (
+                        value,
+                        _Decoder._replace_operation_units(
+                            case,
+                            replacements,
+                        ),
+                    )
+                    for value, case in node.cases
+                )
+                node.otherwise = _Decoder._replace_operation_units(
+                    node.otherwise,
+                    replacements,
+                )
+                output.append(node)
+            else:
+                output.append(node)
+        return tuple(output)
+
+    def _rewrite_last_drain(self, program, replacements):
+        candidates = []
+
+        def visit(body, active=None):
+            current = active
+            for node in body:
+                if isinstance(node, Region):
+                    current = node.tag
+                    continue
+                if current is DRAIN and isinstance(node, Let):
+                    candidates.append(node)
+                if isinstance(node, (Loop, Let)):
+                    visit(node.body, current)
+                elif isinstance(node, Cond):
+                    visit(node.then_body, current)
+                    visit(node.else_body, current)
+                elif isinstance(node, Switch):
+                    for _value, case in node.cases:
+                        visit(case, current)
+                    visit(node.otherwise, current)
+
+        visit(program.body)
+        if not candidates:
+            return program
+        target = candidates[-1]
+        replacement = Let(
+            target.axis,
+            target.value,
+            self._replace_operation_units(target.body, dict(replacements)),
+        )
+        return replace(program, target, (replacement,))
+
+    def _has_three_half_ring(self, copies):
+        if copies != 3:
+            return False
+        for operand in self.read_operands:
+            if not geometry.vgpr_subdivided(self.theta, operand):
+                continue
+            for group in operand.fragment.groups():
+                buffers = geometry.group_ring_depth(
+                    self.theta,
+                    operand,
+                    group,
+                    self.depths,
+                )
+                positions = geometry.ring_positions(
+                    self.theta,
+                    operand,
+                    group,
+                    buffers,
+                )
+                if buffers == 3 and positions % buffers:
+                    return True
+        return False
+
+    def _unroll_half_plr_shape(self, program, copies):
+        """Expose the three HalfPLR rotations around one unrolled WMMA shape."""
+
+        if not self._has_three_half_ring(copies):
+            return program
+        copy_axis = next(
+            (
+                axis for axis in program.axes
+                if axis.name == "_steady_copy"
+            ),
+            None,
+        )
+        if copy_axis is None:
+            raise RuntimeError("three-half ring requires a steady-copy axis")
+        copy_steps = tuple(
+            node for node in walk(program)
+            if isinstance(node, Let) and node.axis is copy_axis
+        )
+        if len(copy_steps) != copies:
+            raise RuntimeError(
+                "three-half ring requires one Let per steady copy"
+            )
+
+        summation = set(geometry.summation_names(self.theta))
+        first_body = copy_steps[0].body
+        reduction_axes = tuple(
+            self.axis_by_name[axis.name]
+            for axis in self.theta.inner_axes()
+            if axis.name in summation
+        )
+        if not reduction_axes:
+            shape_loops = []
+            seen = set()
+            for node in walk(first_body):
+                if (
+                    isinstance(node, Loop)
+                    and node.lo.constant_value is not None
+                    and node.hi.constant_value is not None
+                    and id(node) not in seen
+                ):
+                    seen.add(id(node))
+                    shape_loops.append(node)
+            if not shape_loops:
+                raise RuntimeError("three-half ring has no finite shape Loop")
+            target = shape_loops[0]
+            residue = 2 * copy_axis % 3
+            dispatch = Switch(
+                residue,
+                tuple((value, (target,)) for value in range(3)),
+            )
+            program = replace(program, target, (dispatch,))
+            for loop in shape_loops:
+                program = unroll(program, loop)
+            return program
+
+        free_loops = []
+        seen = set()
+        for node in walk(first_body):
+            if (
+                isinstance(node, Loop)
+                and node.axis.name not in summation
+                and node.lo.constant_value is not None
+                and node.hi.constant_value is not None
+                and id(node) not in seen
+            ):
+                seen.add(id(node))
+                free_loops.append(node)
+        for loop in free_loops:
+            program = unroll(program, loop)
+
+        reduction_loops = tuple(
+            node for node in walk(copy_steps[0].body)
+            if isinstance(node, Loop)
+            and node.axis in reduction_axes
+        )
+        target = next(
+            (
+                node for axis in reversed(reduction_axes)
+                for node in reduction_loops
+                if node.axis is axis
+            ),
+            None,
+        )
+        if target is None:
+            raise RuntimeError("three-half ring has no reduction shape Loop")
+
+        loop_iters = 1
+        position = Expr.constant(0)
+        stride = 1
+        for axis in reversed(reduction_axes):
+            position = position + stride * axis
+            extent = int(axis.extent.constant_value)
+            stride *= max(1, extent)
+            loop_iters *= max(1, extent)
+        residue = 2 * (copy_axis * loop_iters + position) % 3
+        dispatch = Switch(
+            residue,
+            tuple((value, target.body) for value in range(3)),
+        )
+        return replace(
+            program,
+            target,
+            (
+                Loop(
+                    target.axis,
+                    target.lo,
+                    target.hi,
+                    (dispatch,),
+                ),
+            ),
+        )
+
+    def build(self, *, verify=True):
+        if not isinstance(verify, bool):
+            raise TypeError("decode verification flag must be a bool")
         iteration_tree = self._iteration_tree()
         seed = Program(
             tuple(self.params),
@@ -1452,7 +1844,7 @@ class _Decoder:
             self._apply_pipelines,
         )(seed)
         if self.theta.suppress_no_load_loop:
-            program = suppress_drain(program)
+            program = _drop_drain(program)
         shifted = {
             operation._identity: operation
             for operation in operations(program)
@@ -1465,12 +1857,11 @@ class _Decoder:
             if self._operation_runs_ahead(operation)
         }
         if suppressed:
-            program = replace_operation_units_in_last_let(
+            program = self._rewrite_last_drain(
                 program,
-                DRAIN,
                 suppressed,
             )
-        program = replace_region_operations(
+        program = _rewrite_region(
             program,
             SHORT,
             {
@@ -1479,28 +1870,27 @@ class _Decoder:
                 for operation in operations_for_operand
             },
         )
-        program = reset_operation_guards(
+        program = self._simplify_short_guards(
             program,
-            SHORT,
             tuple(
                 operation
                 for operations_for_operand in self._read_cache.values()
                 for operation in operations_for_operand
             ),
         )
-        program = prioritize_operations(
+        program = _hoist_region(
             program,
-            SHORT,
-            tuple(
+            regions=SHORT,
+            operations=tuple(
                 operation
                 for operations_for_operand in self._read_cache.values()
                 for operation in operations_for_operand
             ),
         )
-        program = prioritize_operations(
+        program = _hoist_region(
             program,
-            SHORT,
-            tuple(
+            regions=SHORT,
+            operations=tuple(
                 operation for operation in operations(program)
                 if isinstance(operation, Movement)
                 and operation.op is TENSOR_LOAD
@@ -1508,34 +1898,31 @@ class _Decoder:
         )
         fills = self._fill_reads()
         if fills:
-            program = extend_region(program, PROLOGUE, fills)
-        program = materialize_region_operations(
+            program = _append_region(program, PROLOGUE, fills)
+        program = _unroll_region(
             program,
-            PROLOGUE,
-            lambda operation: (
+            region=PROLOGUE,
+            selector=lambda operation: (
                 isinstance(operation, Movement)
                 and operation.op is DS_LOAD
             ),
-            self._prefetch_order_key,
+            key=self._prefetch_order_key,
         )
-        program = specialize_first_touch(program, STEADY)
-        program = specialize_first_touch(program, DRAIN)
         in_place_reads = tuple(
             operation for operation in operations(program)
             if isinstance(operation, Movement)
             and operation.op is DS_LOAD
             and self._operation_needs_defer(operation)
         )
-        for tag in (STEADY, DRAIN):
-            program = defer_single_path_operations(
-                program,
-                tag,
-                in_place_reads,
-            )
-        program = defer_operations(
+        program = _defer_paths(
             program,
-            STEADY,
-            tuple(
+            regions=(STEADY, DRAIN),
+            operations=in_place_reads,
+        )
+        program = _defer_loops(
+            program,
+            regions=STEADY,
+            operations=tuple(
                 operation for operation in operations(program)
                 if isinstance(operation, Movement)
                 and operation.op is TENSOR_LOAD
@@ -1545,29 +1932,31 @@ class _Decoder:
                 )
             ),
         )
-        for tag in (PROLOGUE, STEADY, DRAIN, SHORT):
-            program = materialize_operation_runs(
-                program,
-                tag,
-                lambda operation: (
-                    isinstance(operation, Movement)
-                    and operation.op is TENSOR_LOAD
-                ),
-                self._copy_order_key,
-            )
-        program = materialize_steady_copies(
+        program = _unroll_runs(
             program,
-            max(1, int(geometry.ring_trip_copies(
-                self.theta,
-                self.depths,
-            ))),
+            regions=(PROLOGUE, STEADY, DRAIN, SHORT),
+            selector=lambda operation: (
+                isinstance(operation, Movement)
+                and operation.op is TENSOR_LOAD
+            ),
+            key=self._copy_order_key,
         )
+        steady_copies = max(1, int(geometry.ring_trip_copies(
+            self.theta,
+            self.depths,
+        )))
+        program = _repeat_steady(
+            program,
+            steady_copies,
+        )
+        program = self._unroll_half_plr_shape(program, steady_copies)
         if not any(isinstance(node, Region) for node in walk(program)):
             program = program.with_body(
                 (Region(STEADY), *program.body),
                 check=False,
             )
-        program.check()
+        if verify:
+            program.check()
         final_reads = tuple(
             operation for operation in operations(program)
             if isinstance(operation, Movement)
@@ -1628,5 +2017,7 @@ class _Decoder:
         )
 
 
-def decode_theta(theta) -> DecodedSchedule:
-    return _Decoder(theta).build()
+def decode_theta(theta, *, verify=True) -> DecodedSchedule:
+    """Build a schedule, checking its Program unless the caller already did."""
+
+    return _Decoder(theta).build(verify=verify)
