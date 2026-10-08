@@ -66,6 +66,18 @@ def _n_regions(prog, unit):
     return max(1, max((int(own.get(m, 1)) for m in unit), default=1))
 
 
+def _n_movements(prog, unit):
+    """How many copy MOVEMENTS this descriptor issues per summation chunk.
+
+    One region per movement is the ordinary case, and the two counts coincide.  They part when the
+    fuse pattern names several groups for one descriptor: region 0 then rides one cooperative
+    movement and each later region one per member, so the chunk takes more loads than it has
+    regions.  Anything counting loads to place a chunk advance wants THIS, not `_n_regions`.
+    """
+    groups = [g for g in (prog.meta.get("fused_copy_groups") or ()) if set(g) <= set(unit)]
+    return len(groups) if len(groups) > 1 else _n_regions(prog, unit)
+
+
 def _split_copies(prog, blk):
     """[(node, unit, descriptor, flat_region, ...)] for the region-split copy Moves of `blk`, in
  program order.  `descriptor` is the walk key; `unit` stays the members that actually move."""

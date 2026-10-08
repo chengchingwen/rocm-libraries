@@ -508,15 +508,11 @@ class _Decoder:
             axis.name for axis in theta.inner_axes()
             if axis.name not in theta.wave_served_axes()
         ]
-        positions = {name: index for index, name in enumerate(levels)}
+        self._level_positions = {name: index for index, name in enumerate(levels)}
         copy_operands = [
             operand for operand in theta.operands
             if operand.trajectory.shared_fill is not None
         ]
-
-        def read_site(operand):
-            level = geometry.operand_level(theta, operand, DS_LOAD)
-            return positions.get(level, -1)
 
         def copy_priority(operand):
             unit = next(
@@ -527,7 +523,7 @@ class _Decoder:
                 [operand],
             )
             return (
-                min(read_site(member) for member in unit),
+                min(self._read_site(member) for member in unit),
                 sum(
                     geometry.operand_tile_bytes(theta, member)
                     // max(1, member.split)
@@ -693,6 +689,42 @@ class _Decoder:
         self.operation_operand[operation._identity] = descriptor
         return operation
 
+    def _copy_steps(self, key, members, region_count):
+        """`(region, members moving together)` in issue order, one entry per tensor_load.
+
+        ONE fuse group for this unit fuses the whole walk: every region carries every member that
+        owns it, so a member with fewer regions drops off the end.  SEVERAL groups name the steps
+        instead -- the first cooperative, each later one its own movement for the backend to
+        bracket -- issued earlier-read operand first, and a member's region is how many earlier
+        steps already moved it.
+        """
+        by_name = {member.name: member for member in members}
+        groups = [g for g in self.theta.fused_copy_groups if set(g) <= set(key)]
+        if len(groups) < 2:
+            return [(region, [m for m in members if region < max(1, int(m.split))])
+                    for region in range(max(1, int(region_count)))]
+        steps, moved = [], {}
+        for group in groups[:1] + sorted(groups[1:], key=lambda g: min(
+                (self._read_site(by_name[n]), self._operand_order[n])
+                for n in g if n in by_name)):
+            moving = [by_name[n] for n in group
+                      if n in by_name and moved.get(n, 0) < max(1, int(by_name[n].split))]
+            if not moving:
+                continue
+            region = max(moved.get(member.name, 0) for member in moving)
+            steps.append((region, moving))
+            for member in moving:
+                moved[member.name] = region + 1
+        return steps
+
+    def _read_site(self, descriptor):
+        """Where this operand's LDS read sits in the nest; -1 is outside every level.
+
+        Smaller is earlier: an operand read at an outer level is reached before one read inside it.
+        """
+        return self._level_positions.get(
+            geometry.operand_level(self.theta, descriptor, DS_LOAD), -1)
+
     def _copy_completion(self, unit, region):
         key = (
             tuple(unit),
@@ -761,11 +793,9 @@ class _Decoder:
                 continue
             driver = max(members, key=lambda member: max(1, member.split))
             active = set(driver.region_axes)
-            for region in range(max(1, int(region_count))):
+            for region, moving in self._copy_steps(_key, members, region_count):
                 transfers = []
-                for member in members:
-                    if region >= max(1, int(member.split)):
-                        continue
+                for member in moving:
                     movement = member.trajectory.shared_fill
                     local_tile = self._tile(
                         member,

@@ -6,6 +6,7 @@
   TDMFuse=1  {A,MXSA} + {MXSB,B}   paired: each scale on a data tensor
   TDMFuse=2  {A,MXSA,MXSB} + {B}   2/1/1 remainder split, NumWaves==4
   TDMFuse=3  {B,MXSA,MXSB} + {A}   the mirror of 2, same split and wave count
+  TDMFuse=4  {A,B},{A},{B} + {MXSA,MXSB}   0's sets, region 0 fused then one at a time
 
 TDM_FUSE_GROUPING maps stable, name-bearing integers to TDM_GROUPS rows.
 """
@@ -14,7 +15,10 @@ TDM_FUSE_GROUPING maps stable, name-bearing integers to TDM_GROUPS rows.
 class TdmGrouping:
     """One row of the grouping table.
 
-    groups  member tuples, one per descriptor set; member order is wave order.
+    groups  member tuples, one per MOVEMENT, in issue order; member order is wave order.
+            A tuple repeating a tensor already seated is a LATER step of that set's region
+            walk -- the region it moves on its own, the rest of the set NULLed across it.
+            Everything that asks who shares a descriptor takes the first tuple naming it.
     layout  "parity" splits a k-member group by wave index modulo k; "block"
             gives contiguous shares, remainder to the leading members.
     """
@@ -32,10 +36,11 @@ TDM_GROUPS = {
     "paired": TdmGrouping("paired", (("A", "MXSA"), ("MXSB", "B"))),
     "A_MX": TdmGrouping("A_MX", (("A", "MXSA", "MXSB"), ("B",)), layout="block"),
     "B_MX": TdmGrouping("B_MX", (("B", "MXSA", "MXSB"), ("A",)), layout="block"),
+    "AB_first": TdmGrouping("AB_first", (("A", "B"), ("A",), ("B",), ("MXSA", "MXSB"))),
 }
 
 # Baked into shipped solution names, so these integers cannot move.
-TDM_FUSE_GROUPING = {0: "MX_AB", 1: "paired", 2: "A_MX", 3: "B_MX"}
+TDM_FUSE_GROUPING = {0: "MX_AB", 1: "paired", 2: "A_MX", 3: "B_MX", 4: "AB_first"}
 
 
 def tdmBothTensors(ks):
@@ -73,12 +78,26 @@ def _acceptAlways(ks):
     return True
 
 
+def _acceptStaggeredRegions(ks):
+    """AB_first needs a later region to stagger, so both data tensors must be split alike.
+
+    An unsplit member already rides region 0 and is NULLed for the rest, which IS the default
+    row's behaviour -- staggering adds nothing until both members own the same later regions.
+    Only GIR brackets a solo load; off UseLoopModel the row would silently be TDMFuse=0.
+    """
+    from .TDMSplit import split_of
+    if not (ks.get("UseLoopModel") and tdmBothTensors(ks) and ks.get("NumWaves", 1) > 1):
+        return False
+    return split_of(ks, "A")[0] > 1 and split_of(ks, "A")[0] == split_of(ks, "B")[0]
+
+
 # Every mapped row needs an acceptance predicate; tdmGroupingName rejects omissions.
 _GROUPING_ACCEPTED = {
     "MX_AB": _acceptAlways,
     "paired": _acceptPairedSets,
     "A_MX": _acceptSharedScaleSet,
     "B_MX": _acceptSharedScaleSet,
+    "AB_first": _acceptStaggeredRegions,
 }
 
 # The row a declined grouping falls back to, which is also TDMFuse=0's row.

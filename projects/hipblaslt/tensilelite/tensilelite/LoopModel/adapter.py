@@ -13,7 +13,7 @@ from .theta import (AgentAssignment, AgentAxisAssignment, Fragment, Global,
                     RegionLayout, Shared, Trajectory, Operand, Theta, group_labels)
 from .traversal import readahead_level
 from ..Components import TDMSplit as _tdm_split
-from ..Components.TDMFuse import tdmFusedGroups, tdmWavePartition
+from ..Components.TDMFuse import liveGroups, tdmWavePartition, tdmWaveSeparated
 WAVE32 = 32  # gfx1250 wave width
 REG_BYTES = 4  # gfx1250 register width in bytes
 
@@ -155,7 +155,7 @@ def _build_axes(substeps, splits, m_inner, n_inner, order):
 DEFAULTS = {
     "DepthU": 128, "MatrixInstruction": [16, 16, 64, 1], "MIWaveTile": [1, 2],
     "PrefetchGlobalRead": 2, "PrefetchLocalRead": 1, "HalfPLR": 0,
-    "TDMInst": 3, "TDMSplit": [1, 1], "TDMIterateMode": 0,
+    "TDMInst": 3, "TDMSplit": [1, 1], "TDMSplitA": 0, "TDMSplitB": 0, "TDMIterateMode": 0,
     "GlobalReadVectorWidthA": 8, "GlobalReadVectorWidthB": 8,
     "VectorWidthA": 2, "VectorWidthB": 2, "LocalReadVectorWidth": 4,
     "DirectToVgprA": False, "DirectToVgprB": False,
@@ -447,15 +447,29 @@ def _fuse_view(hasMXA, hasMXB, kernel):
             "NumWaves": max(1, int(kernel["NumWaves"])),
             "TDMInst": tdmInst,
             "enableTDMA": bool(tdmInst & 0x01), "enableTDMB": bool(tdmInst & 0x02),
-            "ProblemType": {"MXBlockA": hasMXA, "MXBlockB": hasMXB}}
+            # AB_first accepts on the split and the path, so the view owes both.
+            "UseLoopModel": True,
+            "TDMSplitA": int(kernel.get("TDMSplitA", 0) or 0),
+            "TDMSplitB": int(kernel.get("TDMSplitB", 0) or 0),
+            "ProblemType": {"MXBlockA": hasMXA, "MXBlockB": hasMXB, "Sparse": 0}}
 
 
 def _build_fuse(hasMXA, hasMXB, kernel, operands):
-    """The Phi fusion groups: which operands share one load."""
+    """The Phi fusion pattern: which operands ride each movement, in issue order.
+
+    A tuple with one member is a solo movement, which only a tensor ALREADY seated needs stating
+    -- it is a later step of its set's walk.  A lone newcomer is simply unfused and carries none.
+    """
     view = _fuse_view(hasMXA, hasMXB, kernel)
     present = {operand.name for operand in operands}
-    groups = [[t for t in group if t in present] for group in tdmFusedGroups(view)]
-    return view, [group for group in groups if len(group) > 1]
+    rows = liveGroups(view) if tdmWaveSeparated(view) else ()
+    groups, seated = [], set()
+    for row in rows:
+        members = [t for t in row if t in present]
+        if len(members) > 1 or (members and set(members) <= seated):
+            groups.append(members)
+        seated.update(members)
+    return view, groups
 
 
 def _assign_effects(operands, kernel, nest, splits):
@@ -815,6 +829,8 @@ def _movement_params(kernel, target):
                     or int(kernel.get("TDMInst", 0) or 0)),
         "NumWaves": kernel.get("NumWaves", 1),
         "TDMSplit": _tdm_split.split_factors(kernel) or [1, 1, 1, 1],
+        "TDMSplitA": int(kernel.get("TDMSplitA", 0) or 0),
+        "TDMSplitB": int(kernel.get("TDMSplitB", 0) or 0),
         "TDMSplitWaveRegions": [_tdm_split.wave_region_span(kernel, "A"),
                                 _tdm_split.wave_region_span(kernel, "B")],
         "MXBlockA": int(kernel["ProblemType"].get("MXBlockA", 0) or 0),
