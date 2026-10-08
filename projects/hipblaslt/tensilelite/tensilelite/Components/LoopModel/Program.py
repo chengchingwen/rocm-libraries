@@ -3,26 +3,21 @@
 """Build and cache the finalized GIR program for a LoopModel kernel."""
 
 from ...LoopModel import traversal as geometry
-from ...LoopModel.emit import emit_mainloop
-from ...LoopModel.render import render_theta
+from ...LoopModel.checks import validate_loopir
+from ...LoopModel.decoder import decode_theta
+from ...LoopModel.loopir import required_dependences
+from ...LoopModel.loopir import render as render_loopir
+from ...LoopModel.render import render_geometry
 from ...LoopModel.schedule import Schedule
-from ...Lowering import build_gir, gir_text
+from ...Lowering import gir_text
+from ...Lowering.loopir_to_gir import lower_to_gir
 from ...Lowering.gir import check_plan
 from ...Lowering.gir.analyses import Gl2PrefetchRegions
 from ...Lowering.gir.frame_contract import install_frame_contract
 from ...Lowering.gir.passes import pipeline as gir_pipeline
+from ...Lowering.gir.passes import run_pipeline
 
 from .Theta import loopModelTheta, namingSolution
-
-
-def loopModelLoopCopies(theta, depths) -> int:
-    """Steady blocks one trip unrolls into -- read off the rings, not off a parameter name.
-
-    A ring the trip does not close keeps turning into the next one, so the body is one fixed
-    piece of code only once it is replicated through a whole turn.  `VG=2, VA=3` -- the 1.5
-    buffers HalfPLR used to name -- asks for three; a ring that divides asks for one.
-    """
-    return geometry.ring_trip_copies(theta, depths)
 
 
 def loopModelGirProgram(writer, kernel):
@@ -56,23 +51,28 @@ def loopModelGirProgram(writer, kernel):
             raise ValueError(
                 "UseLoopModel: nonzero PrefetchLocalRead lost all prefetch — "
                 + "; ".join(missing))
-        # PrefetchGL2 is placed by an analysis but is not modeled in theta. GIR only
-        # chooses where its existing issue/increment pair is emitted.
-        mainloop = emit_mainloop(theta)
-        prog = build_gir(
-            theta,
-            mainloop=mainloop,
-            params={Gl2PrefetchRegions.PARAM: kernel["PrefetchGL2"]},
-            pipeline=gir_pipeline(),
-            loop_copies=loopModelLoopCopies(theta, _S),
-        )
+        decoded = decode_theta(theta)
+        ir_violations = validate_loopir(decoded.program, decoded.profile)
+        if ir_violations:
+            raise ValueError(
+                "UseLoopModel: LoopIR validation failed (%d violation(s)) — "
+                "repair the frontend, do not bypass the checker.\n  %s"
+                % (
+                    len(ir_violations),
+                    "\n  ".join(ir_violations[:8]),
+                )
+            )
+        prog = lower_to_gir(decoded.program, decoded.profile)
+        # PrefetchGL2 is a target-side GIR placement parameter, not LoopIR.
+        prog.params[Gl2PrefetchRegions.PARAM] = kernel["PrefetchGL2"]
+        run_pipeline(prog, passes=gir_pipeline())
         violations = check_plan(prog)
         if violations:
             raise ValueError(
                 "UseLoopModel: the GIR plan fails its own semantic check (%d violation(s)) — "
                 "a decoder/lowering defect to repair, do NOT gate it off.\n  %s"
                 % (len(violations), "\n  ".join(violations[:8])))
-    writer._loopModelMainloopCache = (key, mainloop)
+    writer._loopModelMainloopCache = (key, decoded.program)
     writer._loopModelGirCache = (key, prog)
     return prog
 
@@ -88,7 +88,7 @@ def loopModelGirProgramCached(writer):
 
 
 def loopModelIrTextCached(writer):
-    """Render the target-aware theta and LoopIR that produced the cached GIR."""
+    """Render target geometry and the Program that produced the GIR."""
     name = getattr(writer.states, "kernelName", None)
     theta_cache = getattr(writer, "_loopModelThetaCache", None)
     mainloop_cache = getattr(writer, "_loopModelMainloopCache", None)
@@ -101,8 +101,23 @@ def loopModelIrTextCached(writer):
     ):
         return "# LoopModel IR unavailable: this kernel has no cached target-aware theta/IR\n"
     try:
-        theta, _S = theta_cache[1]
-        return render_theta(theta, mainloop_cache[1])
+        theta, _depths = theta_cache[1]
+        program = mainloop_cache[1]
+        kinds = {}
+        for dependence in required_dependences(program):
+            name = dependence.kind.name
+            kinds[name] = kinds.get(name, 0) + 1
+        summary = ", ".join(
+            f"{name}={count}"
+            for name, count in sorted(kinds.items())
+        ) or "none"
+        return (
+            render_geometry(theta)
+            + f"\n  derived_dependences: {summary}"
+            + "\n\n"
+            + render_loopir(program)
+            + "\n"
+        )
     except Exception as exc:
         return f"# LoopModel IR unavailable (cached render error): {exc}\n"
 

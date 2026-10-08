@@ -10,8 +10,66 @@ from fractions import Fraction
 from itertools import product as _iproduct
 from math import ceil, gcd
 
-from .ir import COPY, Expr, READ, Space, TransferCoverage, COVERAGE_VAR, cst
-from .theta import Axis, mode_role, readahead_level_of
+from .loopir import DS_LOAD, REGISTER, SHARED, TENSOR_LOAD, Axis, Expr
+from .theta import mode_role, readahead_level_of
+
+
+@dataclass(frozen=True)
+class TransferCoverage:
+    """Target mapping from logical tiles to one instruction's members."""
+
+    carrier: Expr
+    slot: Expr
+
+    def _axis(self):
+        axes = self.carrier.free_axes() | self.slot.free_axes()
+        if len(axes) != 1:
+            raise RuntimeError("transfer coverage must use exactly one tile axis")
+        return next(iter(axes))
+
+    def carrier_of(self, term: int, env=None) -> int:
+        axis = self._axis()
+        return self.carrier.evaluate({**dict(env or {}), axis: term})
+
+    def slot_of(self, term: int, env=None) -> int:
+        axis = self._axis()
+        return self.slot.evaluate({**dict(env or {}), axis: term})
+
+    def group(self, term: int, extent: int, env=None) -> tuple:
+        carrier = self.carrier_of(term, env)
+        return tuple(
+            unit for unit in range(max(1, extent))
+            if self.carrier_of(unit, env) == carrier
+        )
+
+    def regs(self, term: int, extent: int, env=None) -> int:
+        return len({
+            self.slot_of(unit, env)
+            for unit in self.group(term, extent, env)
+        })
+
+
+def _position(theta, terms, add=0):
+    value = Expr.constant(int(add))
+    for name, coefficient, divisor in terms:
+        axis = name if isinstance(name, Axis) else next(
+            item for item in theta.ord if item.name == name
+        )
+        value = value + int(coefficient) * (
+            axis // max(1, int(divisor))
+        )
+    return value
+
+
+def _digits(theta, terms, add, fields, modulus=0):
+    position = _position(theta, terms, add)
+    value = Expr.constant(0)
+    for coefficient, divisor, extent in fields:
+        digit = position // max(1, int(divisor))
+        if int(extent):
+            digit = digit % int(extent)
+        value = value + int(coefficient) * digit
+    return value % int(modulus) if int(modulus) > 1 else value
 
 
 # --- tile and register arithmetic ------------------------------------------------------------
@@ -25,7 +83,10 @@ def axis_tiles(macro_elems: int, atom_elems: int) -> int:
 # ===========================================================================
 
 def _inner_axes(theta):
-    return [(axis.name, axis.extent) for axis in theta.inner_axes()]
+    return [
+        (axis.name, int(axis.extent.constant_value))
+        for axis in theta.inner_axes()
+    ]
 
 
 def broadcast_axes(theta, operand) -> set:
@@ -40,8 +101,11 @@ def broadcast_axes(theta, operand) -> set:
 def _coverage_candidate_axes(theta, operand):
     bcast = broadcast_axes(theta, operand)
     summation = {axis.name for axis in summation_axes(theta)}
-    return [(axis.name, max(1, axis.extent)) for axis in theta.inner_axes()
-            if axis.name not in bcast and axis.name not in summation]
+    return [
+        (axis.name, max(1, int(axis.extent.constant_value)))
+        for axis in theta.inner_axes()
+        if axis.name not in bcast and axis.name not in summation
+    ]
 
 
 def derive_transfer_coverage(movement):
@@ -50,14 +114,14 @@ def derive_transfer_coverage(movement):
     agents = int(getattr(movement, "agent_group_size", 0) or 0)
     if merged <= 1 and not agents:
         return None
-    tile = COVERAGE_VAR
-    carrier = Expr(digits=(((tile, 1),), 0, ((1, merged, 0),)))
+    tile = Axis("tile", 0)
+    carrier = tile // merged
     if agents > 1:
         if merged % agents:
             return None
-        slot = Expr(digits=(((tile, 1),), 0, ((1, agents, merged // agents),)))
+        slot = (tile // agents) % (merged // agents)
     else:
-        slot = Expr(digits=(((tile, 1),), 0, ((1, 1, merged),)))
+        slot = tile % merged
     return TransferCoverage(carrier=carrier, slot=slot)
 
 def coverage_factors(theta, operand, coverage) -> dict:
@@ -114,29 +178,36 @@ def transfer_coverage(theta, operand, hop) -> dict:
 # ===========================================================================
 
 def free_tiles(theta, operand) -> int:
-    exts = [axis.extent for axis in free_axes(theta, operand)]
+    exts = [int(axis.extent.constant_value) for axis in free_axes(theta, operand)]
     return max(1, product(exts)) if exts else 1
 
 
 def k_tiles(theta) -> int:
-    exts = [axis.extent for axis in summation_axes(theta)]
+    exts = [int(axis.extent.constant_value) for axis in summation_axes(theta)]
     return max(1, product(exts)) if exts else 1
 
 
 def summation_tiles(theta, operand) -> int:
     summation = {axis.name for axis in summation_axes(theta)}
-    exts = [axis.extent for axis in presence_axes(theta, operand) if axis.name in summation]
+    exts = [
+        int(axis.extent.constant_value)
+        for axis in presence_axes(theta, operand)
+        if axis.name in summation
+    ]
     return max(1, product(exts)) if exts else 1
 
 
 def presence_tiles(theta, operand) -> int:
-    exts = [axis.extent for axis in presence_axes(theta, operand)]
+    exts = [
+        int(axis.extent.constant_value)
+        for axis in presence_axes(theta, operand)
+    ]
     return max(1, product(exts)) if exts else 1
 
 
 def wmma_grid(theta) -> tuple:
     inputs = [operand for operand in theta.operands
-              if operand.is_input and any(hop.dst == Space.REGISTER for hop in operand.movements)]
+              if operand.is_input and any(hop.dst is REGISTER for hop in operand.movements)]
     f0 = free_tiles(theta, inputs[0]) if len(inputs) > 0 else 1
     f1 = free_tiles(theta, inputs[1]) if len(inputs) > 1 else 1
     return (f0, f1, k_tiles(theta))
@@ -156,7 +227,13 @@ def frag_regs(theta, operand) -> int:
 
 def _inner_steps(theta):
     axes = theta.inner_axes()
-    ranges = [[(axis.name, value) for value in range(axis.extent)] for axis in axes]
+    ranges = [
+        [
+            (axis.name, value)
+            for value in range(int(axis.extent.constant_value))
+        ]
+        for axis in axes
+    ]
     return [dict(c) for c in _iproduct(*ranges)] if ranges else [dict()]
 
 
@@ -254,13 +331,16 @@ def group_index_expr(theta, operand):
     groups = max(1, len(operand.fragment.groups()))
     modes = grouping_modes(theta, operand)
     if groups <= 1 or not modes:
-        return cst(0)
+        return Expr.constant(0)
     name, extent = modes[0]
     if extent % groups:
         raise RuntimeError(
             f"{operand.name}: grouping extent {extent} is not divisible by {groups} groups")
     # Contiguous ranges, repeated independently in every TDMSplit region.
-    return Expr(carry=(((name, 1),), 0, extent // groups), mod=groups)
+    return (
+        next(axis for axis in theta.ord if axis.name == name)
+        // (extent // groups)
+    ) % groups
 
 
 def shifted_group_index_expr(theta, operand, advance=0):
@@ -270,7 +350,7 @@ def shifted_group_index_expr(theta, operand, advance=0):
     groups = max(1, len(operand.fragment.groups()))
     modes = grouping_modes(theta, operand)
     if groups <= 1 or not modes:
-        return cst(0)
+        return Expr.constant(0)
     name, extent = modes[0]
     if extent % groups:
         raise RuntimeError(
@@ -279,11 +359,11 @@ def shifted_group_index_expr(theta, operand, advance=0):
     strides, _span = axis_strides(theta, varying_axes(theta, operand), extents)
     terms = position_terms(strides, read_coverage(theta, operand))
     divisor = max(1, int(strides.get(name, 1))) * max(1, extent // groups)
-    return Expr(digits=(terms, int(advance), ((1, divisor, groups),)))
+    return (_position(theta, terms, int(advance)) // divisor) % groups
 
 
 def group_index(theta, operand, coord) -> int:
-    return group_index_expr(theta, operand).eval(dict(coord))
+    return group_index_expr(theta, operand).evaluate(dict(coord))
 
 
 def grouping_value(theta, operand, coord) -> int:
@@ -359,7 +439,8 @@ def _scale_presence_digits(theta, operand, grouping, group_extent):
     """An MX scale's digits: every axis it is present on, minus the region the slot selects."""
     region_axes = ((getattr(operand, "region_axes", ()) or ())
                    if _region_count(theta, operand) > 1 else ())
-    return [(axis.name, group_extent if axis.name == grouping else axis.extent, 1,
+    return [(axis.name, group_extent if axis.name == grouping
+             else int(axis.extent.constant_value), 1,
              axis.name == grouping)
             for axis in presence_axes(theta, operand) if axis.name not in region_axes]
 
@@ -566,7 +647,10 @@ def concurrent_regions(theta, operand) -> int:
     revisited on every pass, so all of them are in flight together.
     """
     order = [axis.name for axis in theta.inner_axes()]
-    extents = {axis.name: axis.extent for axis in theta.inner_axes()}
+    extents = {
+        axis.name: int(axis.extent.constant_value)
+        for axis in theta.inner_axes()
+    }
     varying = set(varying_axes(theta, operand))
     invariant = [i for i, name in enumerate(order)
                  if name not in varying and max(1, extents.get(name, 1)) > 1]
@@ -595,7 +679,7 @@ def group_live_peak(theta, operand, group, steps, post_war=True, off=None) -> in
 
 
 def derived_group_reuse_floor(theta, operand, group) -> int:
-    """Reuse floor in prefetch-unit buffers, before the adapter records canonical VA."""
+    """Reuse floor in prefetch-unit buffers, before the adapter records VA."""
     cache = getattr(theta, "_derived_group_reuse_floor_cache", None)
     if cache is None:
         cache = {}
@@ -622,7 +706,7 @@ def derived_group_reuse_floor(theta, operand, group) -> int:
         by_register = {}
         for source, live in intervals.items():
             coord = dict(zip(axes, source))
-            register_key = (slot.eval(coord), unit_tile_index(theta, operand, coord))
+            register_key = (slot.evaluate(coord), unit_tile_index(theta, operand, coord))
             by_register.setdefault(register_key, []).append(live)
         if all(previous[1] < current[0]
                for lives in by_register.values()
@@ -700,7 +784,7 @@ def group_reuse_floor(theta, operand, group, shared_regions=False, charge_lead=T
         by_register = {}
         for source, live in intervals.items():
             coord = dict(zip(axes, source))
-            register_key = (slot.eval(coord), unit_tile_index(theta, operand, coord))
+            register_key = (slot.evaluate(coord), unit_tile_index(theta, operand, coord))
             # CHARGING THE LEAD HERE ASSUMES AN UNANCHORED REFILL.  `reload_anchor` defers the
             # reload past the last reader of the value it overwrites, so the early landing this
             # models does not happen.  The SCHEDULER still wants the charged number -- dropping
@@ -728,7 +812,7 @@ def _raw_read_ahead(theta, operand) -> int:
     axis = prefetch_axis_name(theta, operand)
     if axis is None:
         return 0
-    return max(0, int(theta.off_at(operand.name, READ, axis) or 0))
+    return max(0, int(theta.off_at(operand.name, DS_LOAD, axis) or 0))
 
 
 def _side(operand):
@@ -753,7 +837,10 @@ def requested_read_ahead(theta, operand, depths=None) -> int:
     if not raw:
         return 0
 
-    extents = {axis.name: axis.extent for axis in theta.inner_axes()}
+    extents = {
+        axis.name: int(axis.extent.constant_value)
+        for axis in theta.inner_axes()
+    }
     has_split_region = any(max(1, int(extents.get(axis, 1))) > 1
                            for axis in (getattr(operand, "region_axes", ()) or ()))
     if reloads_whole_set(theta, operand) and not has_split_region:
@@ -775,7 +862,10 @@ def requested_read_ahead(theta, operand, depths=None) -> int:
 
     if reloads_whole_set(theta, operand):
         outer = theta.summation_chunk_name()
-        staged = theta.off_at(operand.name, COPY, outer) if outer is not None else 0
+        staged = (
+            theta.off_at(operand.name, TENSOR_LOAD, outer)
+            if outer is not None else 0
+        )
         per_chunk = Fraction(rotation_unit_tiles(theta, operand),
                              group_prefetch_unit_tiles(theta, operand))
         staged_units = max(0, staged - 1) * per_chunk
@@ -799,9 +889,9 @@ def prefetch_capacity(theta, operand, depths) -> int:
 def _staged_prefetch_cap(theta, operand, want) -> int:
     """Deepest operand PLR whose source chunk the copy/LDS pipeline has staged."""
     outer = theta.summation_chunk_name()
-    if outer is None or not any(hop.dst == Space.SHARED for hop in operand.movements):
+    if outer is None or not any(hop.dst is SHARED for hop in operand.movements):
         return max(0, int(want))
-    copy_offset = theta.off_at(operand.name, COPY, outer)
+    copy_offset = theta.off_at(operand.name, TENSOR_LOAD, outer)
     shared = lds_buffers(theta, operand)
     for steps in range(max(0, int(want)), -1, -1):
         crossed = chunks_crossed(theta, operand, steps)
@@ -826,7 +916,7 @@ def _free_tile_index_seq(theta, operand, steps):
         for j, axis in enumerate(free_axes):
             inner = 1
             for m2 in free_axes[j + 1:]:
-                inner *= m2.extent
+                inner *= int(m2.extent.constant_value)
             idx += step.get(axis.name, 0) * inner
         seq.append(idx)
     return seq
@@ -856,13 +946,16 @@ def resident_free_tiles(theta, operand) -> int:
 
 def lds_buffers(theta, operand) -> int:
     """S_shared: the shared ring buffer depth (per reduction chunk)/."""
-    if not any(hop.dst == Space.SHARED for hop in operand.movements):
+    if not any(hop.dst is SHARED for hop in operand.movements):
         raise RuntimeError(
             f"{operand.name} has no shared placement (hops={[f'{hop.src}->{hop.dst}' for hop in operand.movements]}), "
             f"so S_shared is undefined for it -- the caller should have guarded on the operand "
             f"touching SHARED before asking for a shared-ring depth.")
     outer_var = theta.summation_chunk_name()
-    d = theta.off_at(operand, COPY, outer_var) if outer_var is not None else 0
+    d = (
+        theta.off_at(operand, TENSOR_LOAD, outer_var)
+        if outer_var is not None else 0
+    )
     if operand.lds_buffers:
         return max(1, int(operand.lds_buffers))
     return max(1, max(0, d))  # unstated -> delta (see the docstring's warning)
@@ -922,7 +1015,7 @@ def group_register_positions(theta, operand) -> int:
         free_positions = reduction_positions = 1
         reduction = set(summation_names(theta))
         for axis in presence_axes(theta, operand):
-            extent = max(1, axis.extent)
+            extent = max(1, int(axis.extent.constant_value))
             if axis.name in regions:
                 extent = max(1, extent // max(1, int(region_span.get(axis.name, 1))))
             if axis.name == grouping:
@@ -1015,7 +1108,10 @@ def register_layout(theta, depths) -> dict:
 
 def _region_count(theta, operand) -> int:
     """Storage regions that are factors of this operand's rotation unit."""
-    extents = {axis.name: axis.extent for axis in theta.inner_axes()}
+    extents = {
+        axis.name: int(axis.extent.constant_value)
+        for axis in theta.inner_axes()
+    }
     span = getattr(operand, "region_span", {}) or {}
     rotation = {name for name, _extent in rotation_unit_modes(theta, operand)}
     regions = [max(1, int(extents.get(axis, 1))) // max(1, int(span.get(axis, 1)))
@@ -1127,7 +1223,13 @@ def presence_axes(theta, operand, hop=None):
     constant_over = transfer_broadcast(theta, operand, hop)
     coverage = transfer_coverage(theta, operand, hop)
     return [axis if axis.name not in coverage
-            else Axis(axis.name, max(1, axis.extent // coverage[axis.name]))
+            else Axis(
+                axis.name,
+                max(
+                    1,
+                    int(axis.extent.constant_value) // coverage[axis.name],
+                ),
+            )
             for axis in theta.inner_axes() if axis.name not in constant_over]
 
 
@@ -1138,9 +1240,9 @@ def prefetch_axis_name(theta, operand=None):
     return axis[0] if axis else None
 
 
-def operand_level(theta, operand, role):
+def operand_level(theta, operand, operation):
     chunk = theta.summation_chunk_name()
-    if role == COPY:
+    if operation is TENSOR_LOAD:
         inner = {axis.name for axis in theta.inner_axes()}
         region = next((r for r in getattr(operand, "region_axes", ()) if r in inner), None)
         return region if (region is not None and max(1, operand.split) > 1) else chunk
@@ -1195,7 +1297,7 @@ def ring_axes(theta, operand, group):
 def ring_slot(theta, operand, group, buffers, advance=0, strides=None):
     """Rotation slot of the coordinate reached by ``advance`` physical tile positions."""
     if buffers <= 1:
-        return cst(0)
+        return Expr.constant(0)
     extents = transfer_extents(theta, operand)
     hop = operand.trajectory.shared_read
     if operand.name.startswith("MXS") and hop is not None and hop.coverage is not None:
@@ -1206,16 +1308,16 @@ def ring_slot(theta, operand, group, buffers, advance=0, strides=None):
         walk_strides = strides or axis_strides(theta, varying, extents)[0]
         shifted = _shifted_ring_slot(theta, operand, group, int(advance), walk_strides, buffers,
                                      read_coverage(theta, operand))
-        return shifted if shifted is not None else cst(0)
+        return shifted if shifted is not None else Expr.constant(0)
     varying = varying_axes(theta, operand)
     walk_strides = strides or axis_strides(theta, varying, extents)[0]
     if reloads_whole_set(theta, operand) and len(operand.fragment.groups()) == 1:
         shifted = _shifted_ring_slot(theta, operand, group, int(advance), walk_strides, buffers,
                                      read_coverage(theta, operand))
-        return shifted if shifted is not None else cst(0)
+        return shifted if shifted is not None else Expr.constant(0)
     shifted = _shifted_ring_slot(theta, operand, group, int(advance), walk_strides, buffers,
                                  read_coverage(theta, operand))
-    return shifted if shifted is not None else cst(0)
+    return shifted if shifted is not None else Expr.constant(0)
 
 
 def _summation_ring_axis(theta, operand, group):
@@ -1232,16 +1334,25 @@ def axis_strides(theta, modes=None, extents=None):
     strides, place = {}, 1
     for axis in reversed(axes):  # innermost axis has stride 1
         strides[axis.name] = place
-        place *= (extents or {}).get(axis.name, axis.extent)
+        place *= (extents or {}).get(
+            axis.name,
+            int(axis.extent.constant_value),
+        )
     return strides, place       # place is now the product over `modes`
 
 
 def transfer_extents(theta, operand) -> dict:
     """`{mode: extent}` as the operand's read hop sees them -- its the axes it varies over extents."""
     hop = operand.trajectory.fragment_fill
-    extents = {axis.name: axis.extent for axis in theta.inner_axes()}
+    extents = {
+        axis.name: int(axis.extent.constant_value)
+        for axis in theta.inner_axes()
+    }
     if hop is not None:
-        extents.update({axis.name: axis.extent for axis in presence_axes(theta, operand, hop)})
+        extents.update({
+            axis.name: int(axis.extent.constant_value)
+            for axis in presence_axes(theta, operand, hop)
+        })
     return extents
 
 
@@ -1256,7 +1367,10 @@ def broadcast_width(theta, operand) -> int:
     if not varying:
         return 1
     inner_names = [axis.name for axis in theta.inner_axes()]
-    extents = {axis.name: axis.extent for axis in theta.inner_axes()}
+    extents = {
+        axis.name: int(axis.extent.constant_value)
+        for axis in theta.inner_axes()
+    }
     outermost_varying = min(inner_names.index(name) for name in varying)
     width = 1
     for name in inner_names[:outermost_varying]:
@@ -1270,15 +1384,18 @@ def position_terms(strides, fold=None):
                  for name, coef in strides.items())
 
 
-def _shifted_coord(axis, shift, strides, _reload_span, extents, fold=None):
-    if axis not in strides:
-        return Expr(var=axis)
+def _shifted_coord(theta, axis, shift, strides, _reload_span, extents, fold=None):
+    name = axis.name
+    if name not in strides:
+        return axis
     terms = position_terms(strides, fold)
-    coverage = max(1, int((fold or {}).get(axis, 1)))
-    stride = max(1, strides[axis])
+    coverage = max(1, int((fold or {}).get(name, 1)))
+    stride = max(1, strides[name])
+    extent = max(1, int(extents.get(name, 1)))
+    position = _position(theta, terms, shift)
     if coverage > 1:
-        return Expr(digits=(terms, shift, ((coverage, stride, max(1, extents.get(axis, 1))),)))
-    return Expr(carry=(terms, shift, stride), mod=max(1, extents.get(axis, 1)))
+        return coverage * ((position // stride) % extent)
+    return (position // stride) % extent
 
 
 def _regions_ride_the_ring(theta, operand, group) -> bool:
@@ -1308,9 +1425,12 @@ def regions_lead_the_ring(theta, operand, group) -> bool:
     return min(order.index(name) for name in regions) < min(order.index(name) for name in ring)
 
 
-def _canonical_ring_period(theta, operand) -> int:
-    """Physical VA slots traversed by one chunk under the canonical VG decomposition."""
-    modes = [(axis.name, axis.extent) for axis in presence_axes(theta, operand)]
+def _ring_period(theta, operand) -> int:
+    """Physical VA slots traversed by one chunk under the VG decomposition."""
+    modes = [
+        (axis.name, int(axis.extent.constant_value))
+        for axis in presence_axes(theta, operand)
+    ]
     positions = _covered_positions(theta, operand, modes)
     unit = group_register_positions(theta, operand)
     if positions % max(1, unit):
@@ -1323,7 +1443,7 @@ def _canonical_ring_period(theta, operand) -> int:
 def vgpr_ring_carries(theta, operand, group, buffers) -> bool:
     """Whether one trip advances this VA ring to a different starting phase."""
     if operand.fragment.va_includes_regions or vgpr_group_axis(theta, operand) is not None:
-        period = _canonical_ring_period(theta, operand)
+        period = _ring_period(theta, operand)
         return period % max(1, int(buffers)) != 0
     extents = transfer_extents(theta, operand)
     strides, _span = axis_strides(theta, varying_axes(theta, operand), extents)
@@ -1439,7 +1559,7 @@ def ring_positions(theta, operand, group, buffers) -> int:
     if not vgpr_ring_carries(theta, operand, group, buffers):
         return max(1, int(buffers))
     if operand.fragment.va_includes_regions or vgpr_group_axis(theta, operand) is not None:
-        return _canonical_ring_period(theta, operand)
+        return _ring_period(theta, operand)
     extents = transfer_extents(theta, operand)
     strides, _span = axis_strides(theta, varying_axes(theta, operand), extents)
     _digits, period = _ring_digits(theta, operand, group, strides, buffers)
@@ -1477,10 +1597,13 @@ def _shifted_ring_slot(theta, operand, group, shift, strides, buffers, fold=None
         span = max((max(1, int(stride)) * max(1, int(extents.get(name, 1)))
                     for name, stride in strides.items()), default=1)
         radix = max(1, _region_count(theta, operand))
-        return Expr(
-            digits=(position_terms(strides, fold), int(shift),
-                    region_digits + ((radix, span, 0),)),
-            mod=max(1, buffers))
+        return _digits(
+            theta,
+            position_terms(strides, fold),
+            int(shift),
+            region_digits + ((radix, span, 0),),
+            max(1, buffers),
+        )
     if reloads_whole_set(theta, operand) and group_digit is not None:
         # An all-inner buffer holds every register position outside VG.  Those positions select
         # the unit-index WITHIN a buffer; they must not advance VA.  VG selects the half/quarter
@@ -1498,17 +1621,25 @@ def _shifted_ring_slot(theta, operand, group, shift, strides, buffers, fold=None
             (regions, div, radix),
             (regions * radix, span, 0),
         )
-        return Expr(
-            digits=(position_terms(strides, fold), int(shift), digits),
-            mod=max(1, buffers))
+        return _digits(
+            theta,
+            position_terms(strides, fold),
+            int(shift),
+            digits,
+            max(1, buffers),
+        )
     if operand.fragment.va_includes_regions:
         # Explicit CLR0 VA is one total circular stream.  Every register position inside a
         # buffer is the low part of the extended read order; region and repeated-broadcast axes
         # advance that stream instead of wrapping an individual ring digit early.
         unit = group_register_positions(theta, operand)
-        return Expr(
-            digits=(position_terms(strides, fold), int(shift), ((1, unit, 0),)),
-            mod=max(1, buffers))
+        return _digits(
+            theta,
+            position_terms(strides, fold),
+            int(shift),
+            ((1, unit, 0),),
+            max(1, buffers),
+        )
     uses_subunit_digits = (vgpr_group_axis(theta, operand) is not None
                            or operand.fragment.va_time_shares_regions
                            or vgpr_ring_carries(theta, operand, group, buffers))
@@ -1530,8 +1661,13 @@ def _shifted_ring_slot(theta, operand, group, shift, strides, buffers, fold=None
             digits.extend(_region_digits(theta, operand, strides, width))
         if not digits:
             return None
-        return Expr(digits=(position_terms(strides, fold), shift, tuple(reversed(digits))),
-                    mod=max(1, buffers))
+        return _digits(
+            theta,
+            position_terms(strides, fold),
+            shift,
+            tuple(reversed(digits)),
+            max(1, buffers),
+        )
     digits, _period = _ring_digits(theta, operand, group, strides, buffers)
     if not digits:
         return None
@@ -1541,8 +1677,13 @@ def _shifted_ring_slot(theta, operand, group, shift, strides, buffers, fold=None
     # the slot is the one it always was.
     place, div, _radix = digits[-1]
     digits[-1] = (place, div, 0)
-    return Expr(digits=(position_terms(strides, fold), shift, tuple(reversed(digits))),
-                mod=max(1, buffers))
+    return _digits(
+        theta,
+        position_terms(strides, fold),
+        shift,
+        tuple(reversed(digits)),
+        max(1, buffers),
+    )
 
 
 def _region_digits(theta, operand, strides, place):
@@ -1551,7 +1692,10 @@ def _region_digits(theta, operand, strides, place):
     It rides the shifted position like every other digit, so a lead that reaches the end of a
     region carries into the next one -- which is how a time-shared slot gets refilled.
     """
-    inner = {axis.name: axis.extent for axis in theta.inner_axes()}
+    inner = {
+        axis.name: int(axis.extent.constant_value)
+        for axis in theta.inner_axes()
+    }
     axes = [name for name in (getattr(operand, "region_axes", ()) or ())
             if name in inner and name in strides]
     if not axes or _region_count(theta, operand) <= 1:
@@ -1693,7 +1837,10 @@ def _ring_walk(theta, operand, group, buffers, varying):
     return _RingWalk(
         varying=tuple(varying), varying_strides=varying_strides,
         reload_strides=reload_strides, reload_span=reload_span,
-        extents={axis.name: axis.extent for axis in theta.inner_axes()},
+        extents={
+            axis.name: int(axis.extent.constant_value)
+            for axis in theta.inner_axes()
+        },
         fan_axes=tuple(name for name in varying if name not in summation
                        and name not in ring_names),
         pinned_axes=tuple(name for name in varying if name not in reload_strides),
@@ -1799,7 +1946,10 @@ def reload_anchor(theta, operand, group, buffers, distance):
     found = reload_positions(theta, operand, group, buffers, distance)
     if found is not None:
         return found
-    extents = {axis.name: axis.extent for axis in theta.inner_axes()}
+    extents = {
+        axis.name: int(axis.extent.constant_value)
+        for axis in theta.inner_axes()
+    }
     invariant = {axis.name for axis in theta.inner_axes()} - set(varying_axes(theta, operand))
     at = {name: extents[name] - 1 for name in invariant if max(1, extents.get(name, 1)) > 1}
     if not at or register_reuse_verdict(theta, operand, group, buffers, distance,

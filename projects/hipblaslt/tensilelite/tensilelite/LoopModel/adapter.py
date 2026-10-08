@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from math import gcd as _gcd
 
 from . import traversal as geometry
-from .ir import READ, Space
+from .loopir import DS_LOAD, REGISTER, SHARED, Axis, Effect, Expr
 from .theta import (AgentAssignment, AgentAxisAssignment, Fragment, Global,
-                    RegionLayout, Shared, Trajectory, Axis, Operand, Theta, group_labels)
+                    RegionLayout, Shared, Trajectory, Operand, Theta, group_labels)
 from .traversal import readahead_level
 from ..Components import TDMSplit as _tdm_split
 from ..Components.TDMFuse import tdmFusedGroups, tdmWavePartition
@@ -48,8 +48,8 @@ def _coalesce(kernel):
     return max(1, kernel["LocalReadVectorWidth"] // max(1, kernel["VectorWidthA"]))
 
 
-CANON_NAMES = ["K_split", "K_inner",
-               "M_split", "M_inner", "N_split", "N_inner"]
+AXIS_NAMES = ["K_split", "K_inner",
+              "M_split", "M_inner", "N_split", "N_inner"]
 
 #: tile axis -> its storage-region axis
 INNER_TO_SPLIT = {"K_inner": "K_split", "M_inner": "M_split", "N_inner": "N_split"}
@@ -66,13 +66,6 @@ def _loop_order_word(order):
             f"LoopOrder={order!r}: must be a 3-letter axis order (e.g. 'KMN','NMK') or a "
             f"6-letter word with each of K,M,N twice (first occ=split, second=inner, e.g. "
             f"'KMKNMN'); inner->split orders are not expressible (by design).")
-    return word
-
-
-def canonical_loop_order(order):
-    word = _loop_order_word(order)
-    if all(word[i] == word[i + 1] for i in (0, 2, 4)):
-        return word[0] + word[2] + word[4]
     return word
 
 
@@ -127,8 +120,8 @@ def _word_to_modes(word):
     return roles
 
 
-def _canonical_ord(substeps, splits, m_inner, n_inner, order):
-    """The eight canonical axes with their extents, ordered by the LoopOrder word."""
+def _build_axes(substeps, splits, m_inner, n_inner, order):
+    """Build the six factorized axes in LoopOrder."""
     # K_inner is the longest run both operands can take without changing
     # storage region. K_split counts those runs.
     # kResA and kResB are operand metadata, not loop axes.
@@ -141,7 +134,7 @@ def _canonical_ord(substeps, splits, m_inner, n_inner, order):
         "M_split": max(1, splits.mSplit), "M_inner": max(1, m_inner),
         "N_split": max(1, splits.nSplit), "N_inner": max(1, n_inner),
     }
-    axes = {role: Axis(role, extents[role]) for role in CANON_NAMES}
+    axes = {role: Axis(role, extents[role]) for role in AXIS_NAMES}
     roles = _word_to_modes(_loop_order_word(order))
     def _keep(role):
         # The loop order determines which tile axes exist, regardless of their
@@ -154,7 +147,7 @@ def _canonical_ord(substeps, splits, m_inner, n_inner, order):
     inner_ord = [axes[role] for role in roles if _keep(role)]
     if not inner_ord:  # fully degenerate: keep K_inner as the 1 loop
         inner_ord = [axes["K_inner"]]
-    iter_mode = Axis("iter")  # extent=0 => is_outer (the reduction chunk / LDS-ring axis)
+    iter_mode = Axis("iter", 0)
     axes["iter"] = iter_mode
     ord_ = [iter_mode] + inner_ord
     return ord_, axes, extents
@@ -249,8 +242,7 @@ def _read_params(p):
 
 
 def _read_splits(kernel):
-    """TDMSplit as canonical region extents: per-operand MT, shared DU."""
-    # TDMSplit: [A_MT, B_MT, A_DU, B_DU] -> canonical region extents.
+    """TDMSplit region extents: per-operand MT, shared DU."""
     split_factors = kernel["TDMSplit"]
     if isinstance(split_factors, bool):
         split_factors = [2, 2] if split_factors else [1, 1]
@@ -270,12 +262,12 @@ def _read_splits(kernel):
 
 
 def _build_ord(fanM, fanN, kernel, substeps, splits):
-    """The canonical six-mode loop order for this LoopOrder word, plus each operand's regions."""
+    """The six-mode loop order and each operand's regions."""
     # TDMSplit is a coordinate factorization, independent of which regions a physical wave reads.
     m_inner = _tdm_split.factor_axis(fanM, splits.mSplit, "MIWaveTileA")
     n_inner = _tdm_split.factor_axis(fanN, splits.nSplit, "MIWaveTileB")
     order_word = _loop_order_word(wmma_loop_order(kernel))
-    ord_, canonical_axes, canonical_extents = _canonical_ord(
+    ord_, axes, extents = _build_axes(
         substeps, splits, m_inner, n_inner, order_word)
 
     N_BCAST = {"N_split", "N_inner"}  # A is broadcast over N modes
@@ -283,10 +275,10 @@ def _build_ord(fanM, fanN, kernel, substeps, splits):
     # K_split is a region axis only for the operand that actually splits K.
     aK, bK = max(1, splits.kSplit * splits.kResA), max(1, splits.kSplit * splits.kResB)
     aRegions = tuple(role for role in ("M_split", "K_split")
-                     if canonical_extents[role] > 1 and (role != "K_split" or aK > 1))
+                     if extents[role] > 1 and (role != "K_split" or aK > 1))
     bRegions = tuple(role for role in ("N_split", "K_split")
-                     if canonical_extents[role] > 1 and (role != "K_split" or bK > 1))
-    kSplitExtent = max(1, canonical_extents["K_split"])
+                     if extents[role] > 1 and (role != "K_split" or bK > 1))
+    kSplitExtent = max(1, extents["K_split"])
     span = {"A": {"K_split": max(1, kSplitExtent // aK)} if "K_split" in aRegions else {},
             "B": {"K_split": max(1, kSplitExtent // bK)} if "K_split" in bRegions else {}}
 
@@ -333,7 +325,7 @@ def _build_agent_assignment(movements, nest):
     for _name, _free in agent_inputs.items():
         _sub = int(movements.agent_group_sizes.get(_name, 0) or 0)
         if _sub > 1 and _free:  # sub-wave: the distributed carrier coverage
-            _assign(_free, "subwave", _sub, (_name, READ))
+            _assign(_free, "subwave", _sub, (_name, DS_LOAD))
     assignment = AgentAssignment(
         axis_assignments=tuple(_by_mode[m] for m in sorted(_by_mode)))
 
@@ -471,6 +463,111 @@ def _build_fuse(hasMXA, hasMXB, kernel, operands):
     return view, [group for group in groups if len(group) > 1]
 
 
+def _assign_effects(operands, kernel, nest, splits):
+    """Compile target read grouping into logical Effects.
+
+    Vector widths and wave-tile sizes are consumed here and disappear. LoopIR
+    stores only the resulting tile expression and predicate.
+    """
+
+    mi = list(kernel["MatrixInstruction"])
+    wave_group = list(
+        kernel.get("MIWaveGroup")
+        or (mi[7:9] if len(mi) >= 9 else [1, 1])
+    )
+    wave_group += [1, 1]
+    wave_tile = list(kernel.get("MIWaveTile") or mi[5:7])
+    wave_tile += [1, 1]
+    axis_extent = {
+        axis.name: int(axis.extent.constant_value)
+        for axis in nest.ord_
+    }
+    total_waves = max(1, int(kernel.get("NumWaves", 1) or 1))
+
+    for operand in operands:
+        if operand.name not in ("A", "B", "MXSA", "MXSB"):
+            continue
+        parent = "A" if operand.name.endswith("A") else "B"
+        tile01 = 0 if parent == "A" else 1
+        free_role = "M" if parent == "A" else "N"
+        free_split = (
+            splits.aMT if parent == "A" else splits.bMT
+        ) if operand.name in ("A", "B") else 1
+        reduction_split = (
+            splits.aDU if parent == "A" else splits.bDU
+        ) if operand.name in ("A", "B") else 1
+        width = max(1, int(kernel.get("VectorWidth" + parent, 1) or 1))
+        groups = max(1, int(wave_tile[tile01]) // width)
+        wave_extent = max(1, int(wave_group[tile01]))
+        wave_divisor = 1 if tile01 == 0 else max(1, int(wave_group[0]))
+        wave_sensitive = (
+            operand.trajectory.shared is not None and total_waves > 1
+        )
+
+        def make_effect(
+            tile,
+            wave,
+            region=None,
+            *,
+            free_role=free_role,
+            free_split=free_split,
+            reduction_split=reduction_split,
+            groups=groups,
+            width=width,
+            wave_extent=wave_extent,
+            wave_divisor=wave_divisor,
+            wave_sensitive=wave_sensitive,
+            axis_extent=axis_extent,
+        ):
+            indices = tile.local_indices
+            values = {
+                axis.name: value
+                for axis, value in zip(tile.operand.axes, indices)
+            }
+            semantic = (
+                tile.operand[(wave, *indices)]
+                if wave is not None and wave_sensitive
+                else tile
+            )
+            if region is None or free_split * reduction_split <= 1:
+                return Effect(semantic)
+
+            flat = Expr.constant(0)
+            for name in (free_role + "_split", free_role + "_inner"):
+                if name in values:
+                    flat = flat * axis_extent[name] + values[name]
+            wave_value = (
+                (wave // wave_divisor) % wave_extent
+                if wave is not None and wave_extent > 1
+                else Expr.constant(0)
+            )
+            split_name = free_role + "_split"
+            # A read group is region-pinned exactly when the split divides
+            # numVectorsPerTile. Otherwise wave and vector-group jointly
+            # select the producer region (the odd-G middle group included).
+            if free_split > 1 and (
+                wave_extent <= 1 or groups % free_split == 0
+            ):
+                free_region = (
+                    free_split * values[split_name]
+                ) // axis_extent[split_name]
+            else:
+                free_region = (
+                    free_split * (wave_extent * (flat // width) + wave_value)
+                ) // max(1, wave_extent * groups)
+            reduction_region = Expr.constant(0)
+            if reduction_split > 1 and "K_split" in values:
+                reduction_region = (
+                    reduction_split * values["K_split"]
+                ) // axis_extent["K_split"]
+            return Effect(
+                semantic,
+                free_region * reduction_split + reduction_region == int(region),
+            )
+
+        operand.effect = make_effect
+
+
 def _read_off_requests(kernel, operands, outer_level, copy_depth, read_depth):
     """PrefetchGlobalRead becomes off(copy, iter); PrefetchLocalRead is a per-operand request."""
     read_requests = {}
@@ -479,11 +576,11 @@ def _read_off_requests(kernel, operands, outer_level, copy_depth, read_depth):
         # A scale reads the local-read dials of the tensor it scales, as its ring depth does.
         reads = _per_operand(kernel, "PrefetchLocalRead",
                              _REGISTER_SIDE.get(operand.name, operand.name), read_depth)
-        if operand.movements and operand.movements[0].dst == Space.SHARED and copies > 0:
+        if operand.movements and operand.movements[0].dst is SHARED and copies > 0:
             movement = operand.movements[0]
             movement.destination.offsets[outer_level] = copies
-        if (operand.movements and operand.movements[-1].dst == Space.REGISTER
-                and operand.movements[-1].src == Space.SHARED and reads > 0):
+        if (operand.movements and operand.movements[-1].dst is REGISTER
+                and operand.movements[-1].src is SHARED and reads > 0):
             read_requests[operand.name] = reads
     return read_requests
 
@@ -573,7 +670,7 @@ def _derived_register_depth(theta, operand, cluster, prefetch, vg=1) -> int:
 
 
 def _set_register_depths(theta, kernel):
-    """Set the canonical VG/VA pair consumed by every register calculation.
+    """Set the VG/VA pair consumed by every register calculation.
 
     CLR/PLR and every ``-1`` are resolved here exactly once; no downstream geometry reads them.
     Explicit CLR=1's full outer-loop allocation overrides a stated VA.  An all-inner CLR1 forced
@@ -617,7 +714,7 @@ def _set_register_depths(theta, kernel):
         derived = _derived_register_depth(theta, operand, cluster, prefetch, vg)
         if cluster and cluster_was_forced and has_va:
             # AUTO/all-inner CLR1 may retain VA only when it holds the complete resident set.
-            required = geometry._canonical_ring_period(theta, operand)
+            required = geometry._ring_period(theta, operand)
             depth = max(derived, required, int(asked_va))
         elif cluster:
             # An explicitly requested CLR1 owns the full outer-loop allocation.
@@ -640,7 +737,7 @@ def _set_register_depths(theta, kernel):
 
 
 def params_to_theta(p: dict) -> Theta:
-    """Translate a TensileLite-param dict into a canonical theta point."""
+    """Translate a TensileLite parameter dictionary into Theta."""
     copy_depth, read_depth, elem_bytes, fanM, fanN, kernel, substeps, matrix_instruction = _read_params(p)
     splits = _read_splits(kernel)
     nest = _build_ord(fanM, fanN, kernel, substeps, splits)
@@ -649,6 +746,7 @@ def params_to_theta(p: dict) -> Theta:
     frags = _build_fragments(kernel, matrix_instruction, nest, splits)
     hasMXA, hasMXB, operands = _build_operands(
         configure_read, elem_bytes, frags, movements, kernel, matrix_instruction, nest, splits)
+    _assign_effects(operands, kernel, nest, splits)
     view, groups = _build_fuse(hasMXA, hasMXB, kernel, operands)
     theta = _build_theta(agent_inputs, copy_depth, read_depth, view, groups, kernel, nest,
                          operands, assignment)

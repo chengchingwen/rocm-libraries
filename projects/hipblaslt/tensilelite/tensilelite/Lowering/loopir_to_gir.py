@@ -1,901 +1,1626 @@
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
-"""Lower LoopIR (layer 1) into GIR (layer 2)."""
+"""Direct LoopIR Program to existing GIR conversion.
+
+This module performs representation conversion and CFG construction only.
+Scheduling and logical dependence discovery are completed before conversion.
+"""
 
 from __future__ import annotations
 
-from dataclasses import replace
-from ..LoopModel import Space, Loop, Branch, Bind, Peel, Inst, Load, Cond
-from ..LoopModel.emit import emit_mainloop
-from ..LoopModel.schedule import peel_depths
-from ..LoopModel.schedule import build_S
-from ..LoopModel.traversal import lds_buffers
-from ..LoopModel import traversal as _geometry
-from .gir.passes import pipeline as default_pipeline, run_pipeline
+from dataclasses import dataclass, replace
 
-from .gir.nodes import (Tile, Gen, Ref, Move, Mma, Mark, Pred, Bound, Trips, LoopBack, LoopCopy,
-                        covered_coords,
-                        Goto, CondGoto,
-                        Block, GenPhi, GenXfer, Program)
-from ..LoopModel.traversal import free_names, presence, summation_names
+from ..LoopModel.loopir import (
+    DRAIN,
+    DS_LOAD,
+    IMMEDIATE,
+    PROLOGUE,
+    REGISTER,
+    SHORT,
+    STEADY,
+    TENSOR_LOAD,
+    Compute,
+    Cond,
+    Let,
+    Loop,
+    Movement,
+    Program as LoopProgram,
+    Region,
+    Switch,
+    dependence_logical_tile,
+    dependences,
+    expr_equivalent,
+    occurrences,
+    operations,
+    required_dependences,
+)
+from .gir.nodes import (
+    Block,
+    Bound,
+    CondGoto,
+    Gen,
+    GenPhi,
+    GenXfer,
+    Goto,
+    LoopBack,
+    LoopCopy,
+    Mark,
+    Mma,
+    Move,
+    Program,
+    Pred,
+    Ref,
+    Return,
+    Tile,
+    Trips,
+    covered_coords,
+)
+from .gir.render import gir_counts, render_gir
 
 
-# ===========================================================================
-# small Expr helpers
-_UNSET = object()   #: `reg_copy` not supplied -- the copy index IS the chunk offset
+@dataclass(frozen=True)
+class _FlatOperation:
+    operation: Movement | Compute
+    environment: tuple
 
 
-def _gir_bound(e) -> Bound:
-    """One side of a control-flow test, LoopIR `Expr` (or plain int) -> GIR `Bound`, by field."""
-    if not hasattr(e, "var"):
-        return Bound(const=int(e))
-    if e.terms or e.carry or e.mod:
-        raise NotImplementedError(
-            f"control-flow predicate operand {e!r} uses mixed-radix terms / a modulus / a "
-            f"chunk-carry; GIR's Bound holds `var + const` only.  A loop TEST with that shape is "
-            f"not something the scaffold can branch on -- if one is ever needed, widen Bound "
-            f"deliberately rather than rendering the predicate back to a string.")
-    return Bound(var=e.var, const=e.add)
+@dataclass(frozen=True)
+class _DependencyEndpoint:
+    """Existing GIR dependency payload spelling, built from a derived Effect."""
+
+    op: object
+    at: str
+    role: str = ""
+    gen: tuple = ()
+
+    def render(self):
+        operand = "+".join(self.op) if isinstance(self.op, tuple) else self.op
+        result = f"{operand}@{self.at}" if not self.role \
+            else f"{operand}:{self.at}:{self.role}"
+        if self.gen:
+            result += ":" + ":".join(self.gen)
+        return result
+
+    __str__ = render
 
 
-def _short_steps(els, M):
-    """Split the short-loop arm into per-step ``(guard, nodes)`` pairs."""
-    if not els:
-        return []
-    if len(els) != M:
-        raise RuntimeError(
-            f"short-loop arm has {len(els)} steps but the peel depth M is {M} -- the arm is the "
-            f"`T < M` degenerate path, so it has exactly one step per peeled chunk")
-    steps = []
-    for t, step in enumerate(els):
-        node, guard = step, None
+def _evaluate(expression, environment):
+    try:
+        return expression.evaluate(environment)
+    except KeyError:
+        return None
+
+
+def _flatten(nodes, environment, output, symbolic_loops):
+    for node in nodes:
+        if isinstance(node, Region):
+            continue
+        if isinstance(node, (Movement, Compute)):
+            output.append(_FlatOperation(node, tuple(environment.items())))
+            continue
+        if isinstance(node, Let):
+            value = _evaluate(node.value, environment)
+            nested = dict(environment)
+            nested[node.axis] = 0 if value is None else value
+            _flatten(node.body, nested, output, symbolic_loops)
+            continue
+        if isinstance(node, Loop):
+            lower = _evaluate(node.lo, environment)
+            upper = _evaluate(node.hi, environment)
+            if lower is not None and upper is not None:
+                for value in range(lower, upper):
+                    nested = dict(environment)
+                    nested[node.axis] = value
+                    _flatten(node.body, nested, output, symbolic_loops)
+            else:
+                symbolic_loops.append(node)
+                nested = dict(environment)
+                nested[node.axis] = 0
+                _flatten(node.body, nested, output, symbolic_loops)
+            continue
         if isinstance(node, Cond):
-            if node.kind != "short_step_validity" or node.els or len(node.then) != 1:
+            verdict = node.pred.evaluate(environment)
+            if verdict is None:
                 raise RuntimeError(
-                    f"short-loop step {t} is wrapped in an unexpected {node.kind!r} Cond -- the "
-                    f"short path's only guard is per-step peel validity")
-            guard, node = _gir_pred(node.pred), node.then[0]
-        if not isinstance(node, Bind):
-            raise RuntimeError(
-                f"short-loop step {t} is a {type(node).__name__}, expected a Bind pinning the "
-                f"chunk to a concrete index")
-        steps.append((guard, [node]))
-    return steps
+                    "lowering requires unresolved Cond to be CFG-structured "
+                    "before operation flattening"
+                )
+            _flatten(
+                node.then_body if verdict else node.else_body,
+                dict(environment),
+                output,
+                symbolic_loops,
+            )
+            continue
+        if isinstance(node, Switch):
+            value = _evaluate(node.expression, environment)
+            if value is None:
+                raise RuntimeError(
+                    "lowering requires unresolved Switch to be CFG-structured"
+                )
+            _flatten(
+                dict(node.cases).get(value, node.otherwise),
+                dict(environment),
+                output,
+                symbolic_loops,
+            )
+            continue
+        raise TypeError(f"unsupported LoopIR node {type(node).__name__}")
 
 
-def _trips_of(loop_trip, per_trip: int = 1) -> Trips:
-    """Convert a LoopIR range bound into a GIR trip count."""
-    if loop_trip.op != "<":
-        raise NotImplementedError(
-            f"steady loop range uses {loop_trip.op!r}; the trip count is read from a `<` upper "
-            f"bound only.")
-    b = _gir_bound(loop_trip.rhs)
-    return Trips(var=b.var, sub=-b.const, div=per_trip)
+def _runtime_offset(expression, axis, environment):
+    """Return ``expression - axis`` for one affine runtime-axis expression."""
 
-
-def _gir_pred(p) -> Pred:
-    """LoopIR structured `Pred` -> GIR structured `Pred`, FIELD BY FIELD (no string round-trip)."""
-    lhs = p.lhs
-    lb = _gir_bound(lhs)
-    if not lb.var or lb.const:
-        raise NotImplementedError(
-            f"control-flow predicate lhs {lhs!r} is not a bare counter symbol -- GIR's terminator "
-            f"tests `<counter> op <bound>`.")
-    return Pred(lb.var, p.op, _gir_bound(p.rhs))
-
-
-def _expr_raw(e, env) -> int:
-    """Evaluate an expression without applying its modulus."""
-    if e is None:
-        return 0
-    return e if isinstance(e, int) else replace(e, mod=0).eval(env)
-
-
-def _deps_of(inst):
-    """Return the LoopIR awaits as GIR dependency records."""
-    return tuple((a.dep, a.counter, a.kind, a.scope) for a in getattr(inst, "awaits", ()))
-
-
-def _op_of_token(theta, token: str):
-    """The theta operand a Load token names, or None if theta has no such operand.
-
-    A token IS an operand name -- a straight lookup, no parsing.
-    region suffix (`'A0'` -> `'A'`) because `emit._copy_inst` baked the storage region into the
-    name; the region is now carried where a position belongs, on the Load's `coord`/`part`, so
-    there is nothing to strip."""
-    return next((o for o in theta.operands if o.name == token), None)
-
-
-# ===========================================================================
-# stage flattening -- one concrete (kind, Load/Mma, env) stream per stage body
-def _flatten(nodes, env, out, rel=None):
-    """Mirror render_unrolled's traversal: unroll int-extent Loops; a symbolic-trip Loop (the
-    steady summation-chunk loop) is walked once at the current env; bind Branch residues (pinned
-    or fanned); descend Peel/Cond bodies; yield each Inst with its concrete env.  Appends
-    `(inst, dict(env), rel)` to `out` in program order.
-    """
-    for nd in nodes:
-        if isinstance(nd, Loop):
-            if nd.outer:                                      # OUTER runtime loop: show one rep
-                for body in nd.bodies:
-                    _flatten(body, {**env, nd.axis: env.get(nd.axis, 0)}, out, rel)
-            else:
-                for lo, hi, body in nd.ranged_bodies():
-                    end = hi if hi is not None else lo + 1
-                    for v in range(lo, end):
-                        _flatten(body, {**env, nd.axis: v}, out, rel)
-        elif isinstance(nd, Branch):
-            if nd.axis in env:
-                _flatten(nd.arms.get(env[nd.axis] % nd.modulus, []), env, out, rel)
-            else:
-                for r, arm in nd.arms.items():                # pinned-residue: key IS the value
-                    _flatten(arm, {**env, nd.axis: r}, out, rel)
-        elif isinstance(nd, Peel):
-            _flatten(nd.body, env, out, rel)
-        elif isinstance(nd, Bind):
-            # a peel-step chunk binding : bind the induction to its value. A CONCRETE
-            # value (prologue `j-M`, short `t`) binds a real int.  A SYMBOLIC drain value `T-M+t`
-            benv = nd.bound_env(env)
-            brel = rel
-            if nd.axis not in benv:                     # symbolic (drain): T-relative chunk offset
-                benv, brel = dict(env), nd.value.add    # value = Expr(var="T", add=t-M) -> add = t-M
-            _flatten(nd.body, benv, out, brel)
-        elif isinstance(nd, Cond):
-            # honor a RESOLVED guard in the current env: a drain NLL guard `Pred(k < n_s-dr)` (the
-            # summation Loop has bound k) really DROPS the out-of-bounds read-ahead; an UNRESOLVED
-            v = nd.pred.eval(env)
-            if v is None or v:
-                _flatten(nd.then, env, out, rel)
-            else:
-                _flatten(nd.els, env, out, rel)
-        elif isinstance(nd, Inst):
-            out.append((nd, dict(env), rel))
-
-
-def _drain_steps(peel_body):
-    """Split a drain Peel body into its per-step node lists. `build_ir` emits one
- `Bind(iter = T-M+t)` per drain step (the induction pinned to the model's `i = T-M+t`), so each
- top-level Bind is one step."""
-    steps = []
-    for nd in peel_body:
-        if isinstance(nd, Bind):
-            steps.append([nd])
-        else:                                                 # defensive: attach stray nodes
-            if steps:
-                steps[-1].append(nd)
-            else:
-                steps.append([nd])
-    return steps
-
-
-# ===========================================================================
-# Inst -> GIR node conversion
-def _region_axes(theta):
-    """Every storage-region axis in theta, whichever dimension it cuts."""
-    return {axis for operand in theta.operands
-            if operand.trajectory.shared is not None
-            for axis in operand.trajectory.shared.regions.axes}
-
-
-def _absent_at_region(coord, op, theta):
-    """Does this fused member sit OUT of the unit's walk at this instance's region?
-
- A member owning fewer regions than the unit moves its whole tile once and rides region 0; on
- every later step it is absent, and the descriptor is nulled for the waves that carry it.
- Keyed on `Operand.split` -- the region COUNT -- never on `region_axes`, which an unsplit MX
- scale also owns (`region_axes=('M_split',)`, `split=1`).  Which DIMENSION the walk cuts is not
- the question: an unsplit member moves once whether the peer is split on a free axis or on K.
-    """
-    if op is None or max(1, getattr(op, "split", 1)) > 1:
-        return False
-    spanned = _region_axes(theta)
-    return any(ax in spanned and v not in (None, 0) for ax, v in coord)
-
-
-def _member_region_coord(coord, op, theta):
-    """Re-key a FUSED instance's region coordinate onto THIS member's OWN region axis."""
-    own = (op.trajectory.shared.regions.axes
-           if op is not None and op.trajectory.shared is not None else ())
-    all_region = _region_axes(theta)
-    foreign = [(ax, v) for ax, v in coord if ax in all_region and ax not in own]
-    if not foreign:
-        return coord                              # already this member's own axis (or unsplit)
-    if len(own) > 1:
-        # The index alone does not say which of several axes it pairs on.  Refuse rather than
-        # guess: picking one is how a region coordinate silently names the wrong half.
-        raise NotImplementedError(
-            f"fused member {getattr(op, 'name', op)!r} is split on {list(own)} but the instance "
-            f"coord names {[a for a, _ in foreign]}: by-index pairing across several region axes "
-            f"is undefined.")
-    idx = foreign[0][1]
-    out = []
-    for ax, v in coord:
-        if ax in all_region and ax not in own:
-            out.extend((m, idx) for m in own)     # same index, this member's axis
-        else:
-            out.append((ax, v))
-    return tuple(out)
-
-
-def _slot_of(theta, op, coord, pl):
-    """The `pl.slots` entry naming THIS member's generation, as `(label, Expr)`.
-
-    A slot is keyed by the member's own group, so every caller asking "which slot applies here"
-    answers it from `coord`.  Taking `slots[0]` instead hands every member the first one's
-    generation, and a fused copy then writes each region at the wrong phase."""
-    if not (pl and getattr(pl, "slots", None)):
-        return None, None
-    groups = op.fragment.groups() if op is not None else ("",)
-    if op is not None and len(groups) > 1 and len(pl.slots) > 1:
-        want = groups[_geometry.group_index(theta, op, coord)]
-        for label, gexpr in pl.slots:
-            if label == want:
-                return label, gexpr
-    return pl.slots[0]
-
-
-def _issue_axis_count(theta, issue_axes) -> int:
-    names = set(issue_axes or ())
-    count = 1
-    for axis in theta.inner_axes():
-        if axis.name in names:
-            count *= max(1, int(axis.extent))
-    return count
-
-
-def _advanced_issue(theta, op, env, issue_axes, advance):
-    """Residency-pass coordinates reached by a read's flat advance."""
-    names = tuple(issue_axes or ())
-    if not names:
-        return ()
-    extents = _geometry.transfer_extents(theta, op)
-    modes = set(_geometry.reload_modes(theta, op)) | set(names)
-    strides, _span = _geometry.axis_strides(theta, modes, extents)
-    terms = _geometry.position_terms(strides, _geometry.read_coverage(theta, op))
-    position = sum((int(env.get(name, 0)) // max(1, divisor)) * int(coef)
-                   for name, coef, divisor in terms)
-    reached = position + max(0, int(advance or 0))
-    return tuple((name, (reached // max(1, int(strides[name])))
-                         % max(1, int(extents.get(name, 1))))
-                 for name in names)
-
-
-def _reg_residence(theta, op, coord, pl, env, copy=None, issue_axes=()):
-    """`(group index, concrete slot, rotation width W)` for `op`'s register fragment AT `coord`."""
-    label, gexpr = _slot_of(theta, op, coord, pl)
-    if gexpr is None:
-        return None, None, None
-    groups = op.fragment.groups() if op is not None else ("",)
-    grp_idx = list(groups).index(label) if label in groups else 0
-    width = getattr(gexpr, "mod", 0) or 1
-    if not _geometry.vgpr_ring_carries(theta, op, label, width):
-        copy = None
-    # A RING THE TRIP DOES NOT CLOSE carries: `VA=3` over four positions is 1.5 buffers, so it
-    # comes back round only after three trips, and each one starts a period further along.  Where
-    # the period is a multiple of the depth the term vanishes and the slot is unchanged.
-    period = (_geometry.ring_positions(theta, op, label, width)
-              * _issue_axis_count(theta, issue_axes) if copy else 0)
-    return grp_idx, (gexpr.eval(env) + int(copy or 0) * period) % width, width
-
-
-def _concrete_coord(op_coord, env):
-    """A LoopIR op coord ((axis, None|val|Expr), ...) -> hashable concrete ((axis, val), ...)."""
-    out = []
-    for ax, v in op_coord:
-        if hasattr(v, "eval"):
-            out.append((ax, v.eval(env)))
-        elif ax in env:
-            out.append((ax, env[ax]))
-        elif v is not None:
-            out.append((ax, v))
-        else:
-            out.append((ax, None))
-    return tuple(out)
-
-
-def _absorbed(theta, op) -> tuple:
-    """`((axis, extent),...)` the operand's read instruction SPANS -- the absorbed axes."""
-    if op is None:
-        return ()
-    hop = op.trajectory.fragment_fill
-    if hop is None or hop.coverage is None:
-        return ()
-    spanned = _geometry.coverage_axes(theta, op, hop.coverage)      # full: q == N
-    fold = _geometry.transfer_coverage(theta, op, hop)                     # partial: 1 < q < N
-    return tuple((m.name, m.extent if m.name in spanned else fold[m.name])
-                 for m in theta.inner_axes()
-                 if m.name in spanned or m.name in fold)
-
-
-def _read_is_leader(theta, op, coord) -> bool:
-    """Is this read the LEADER of its carrier group?
-
-    The fold is resolved HERE so GIR is born faithful: a follower's payload rides the leader's
-    instruction, so a Move for it would be a movement nothing issues.  The rule is
-    `coverage.plan_coverage`'s -- the smallest tile sharing a carrier emits -- over the flat free
-    index `emit_plan._project` builds, so the two layers cannot disagree.
-    """
-    hop = op.trajectory.fragment_fill
-    if hop is None or hop.coverage is None:
-        return True
-    inner = theta.inner_axes()
-    free = set(_geometry.free_names(theta, op))
-    at = coord if isinstance(coord, dict) else dict(coord)
-    tile, stride, extent = 0, 1, 1
-    for m in reversed([m for m in inner if m.name in free]):
-        tile += int(at.get(m.name, 0) or 0) * stride
-        stride *= max(1, m.extent)
-        extent *= max(1, m.extent)
-    carrier = hop.coverage.carrier_of(tile)
-    lead = next((u for u in range(max(1, extent))
-                 if hop.coverage.carrier_of(u) == carrier), tile)
-    return tile == lead
-
-
-def _storage_region(theta, op, coord):
-    """Dense storage-region index selected by this operand coordinate."""
-    if op is None or max(1, int(getattr(op, "split", 1) or 1)) == 1:
-        return 0
-    at = dict(coord)
-    extents = {axis.name: axis.extent for axis in theta.inner_axes()}
-    shared = op.trajectory.shared
-    spans = shared.regions.span if shared is not None else {}
-    region = 0
-    for axis in (shared.regions.axes if shared is not None else ()):
-        span = max(1, int(spans.get(axis, 1)))
-        extent = max(1, int(extents.get(axis, 1)) // span)
-        value = at.get(axis)
-        if value is None:
-            raise RuntimeError(
-                f"{op.name}: shared access has no concrete {axis} coordinate, so it cannot "
-                "select one of its independent LDS region generations")
-        region = region * extent + int(value) // span
-    if region >= max(1, int(op.split)):
+    zero = dict(environment)
+    one = dict(environment)
+    zero[axis] = 0
+    one[axis] = 1
+    try:
+        at_zero = expression.evaluate(zero)
+        at_one = expression.evaluate(one)
+    except KeyError as error:
         raise RuntimeError(
-            f"{op.name}: coordinate {coord} selects LDS region {region}, "
-            f"outside its {op.split} regions")
-    return region
+            f"runtime tile expression for {axis.name!r} has an unresolved symbol"
+        ) from error
+    if at_one - at_zero == 0:
+        return 0
+    if at_one - at_zero != 1:
+        raise RuntimeError(
+            f"runtime tile expression for {axis.name!r} is not axis+constant"
+        )
+    return int(at_zero)
 
 
-def _gen_of(gens, theta, op, coord):
-    return gens.get((op.name, _storage_region(theta, op, coord))) if op is not None else None
+def _project_tile(tile, environment):
+    coord = []
+    runtime = []
+    for axis, expression in zip(tile.operand.axes, tile.indices):
+        if axis.extent.free_params():
+            runtime.append((
+                axis,
+                _runtime_offset(expression, axis, environment),
+                _evaluate(expression, environment),
+            ))
+        else:
+            value = _evaluate(expression, environment)
+            if value is not None:
+                coord.append((axis.name, value))
+    return tuple(coord), tuple(runtime)
 
 
-def _convert_load(theta, inst, env, rel, gens, reg_copy=_UNSET):
-    """A LoopIR Load -> a GIR Move. dst=SHARED => a copy (global->shared); dst=REGISTER => a read
- (shared/global->register).
+def _logical_coverage(tile, environment):
+    bound = {
+        id(key)
+        for key in environment
+        if hasattr(key, "extent")
+    }
+    result = []
+    for operand_axis, expression in zip(tile.operand.axes, tile.indices):
+        local = tuple(
+            axis for axis in expression.free_axes()
+            if id(axis) not in bound
+            and axis is not operand_axis
+            and axis.extent.constant_value is not None
+        )
+        if not local:
+            continue
+        extent = 1
+        for axis in local:
+            extent *= int(axis.extent.constant_value)
+        result.append((operand_axis.name, extent))
+    return tuple(result)
 
- `rel` is the steady-relative summation-chunk offset (see `_flatten`): not-None => the ref
- joins the loop-carried generation timeline as `gen` + `gdelta` evaluated at that offset;
- None => the chunk is concrete, so the generation is absolute (`abs_gen`, fact).
 
- `reg_copy` is the ring's copy index, which a drain resumes rather than inherits; it defaults
- to `rel` because for every other block the chunk offset and the copy ARE the same number."""
-    ld = inst.op
-    pl = inst.placement
-    chunk = theta.summation_chunk_name("iter")     # the level the generation timeline runs on
-    if ld.dst == Space.SHARED:
-        # --- COPY: one Ref per fused token; dst carries the LDS generation ---
-        srcs, dsts = [], []
-        base_coord = _concrete_coord(ld.coord, env)
-        present = []
-        for tok in ld.tokens:
-            op = _op_of_token(theta, tok)
-            if _absent_at_region(base_coord, op, theta):
-                continue                              # not in THIS movement; see `unit` below
-            present.append(tok)
-            coord = _member_region_coord(base_coord, op, theta)
-            # Per member: a fused copy moves several, and each lands in its own group's slot.
-            slot_expr = _slot_of(theta, op, coord, pl)[1]
-            src_tile = Tile(op.name if op else tok, "global", coord,
-                            (("bytes", ld.size_bytes),))
-            dst_tile = Tile(op.name if op else tok, "shared", coord,
-                            (("bytes", ld.size_bytes),))
-            srcs.append(Ref(src_tile, size_bytes=ld.size_bytes))
-            if rel is not None:
-                g = _gen_of(gens, theta, op, coord)
-                dsts.append(Ref(dst_tile, gen=g,
-                                gdelta=_expr_raw(slot_expr, {**env, chunk: rel}),
-                                size_bytes=ld.size_bytes))
-            else:
-                dsts.append(Ref(dst_tile, abs_gen=(slot_expr.eval(env) if slot_expr else 0),
-                                size_bytes=ld.size_bytes))
-        # THE UNIT IS WHO ACTUALLY MOVES.  A later region carries only the split operand, so it
-        # is a SOLO movement -- tagging it with the whole fuse group makes the absent member look
-        # like a group participant that has to be nulled out of a load it is not in.
-        return Move(srcs=tuple(srcs), dsts=tuple(dsts), deps=_deps_of(inst),
-                    unit=tuple(present))
+def _unbound_operand_axes(tile, environment):
+    bound = {
+        id(key)
+        for key in environment
+        if hasattr(key, "extent")
+    }
+    return tuple(
+        (operand_axis.name, int(operand_axis.extent.constant_value))
+        for operand_axis, expression in zip(tile.operand.axes, tile.indices)
+        if id(operand_axis) not in bound
+        and operand_axis.extent.constant_value is not None
+        and expr_equivalent(expression, operand_axis)
+        and int(operand_axis.extent.constant_value) > 1
+    )
+
+
+def _copy_omit_axes(tile, environment):
+    result = {}
+    for name, extent in (
+        *_unbound_operand_axes(tile, environment),
+        *_logical_coverage(tile, environment),
+    ):
+        result[name] = max(int(extent), result.get(name, 1))
+    bound = {
+        id(key)
+        for key in environment
+        if hasattr(key, "extent")
+    }
+    for operand_axis, expression in zip(tile.operand.axes, tile.indices):
+        if (
+            id(operand_axis) in bound
+            and operand_axis.extent.constant_value is not None
+            and int(operand_axis.extent.constant_value) > 1
+            and operand_axis not in expression.free_axes()
+        ):
+            result[operand_axis.name] = max(
+                int(operand_axis.extent.constant_value),
+                result.get(operand_axis.name, 1),
+            )
+    return tuple(result.items())
+
+
+def _read_issue_axes(program, profile):
+    """Finalized prefetch-pass axes used only for target register projection."""
+
+    axes_by_name = {axis.name: axis for axis in program.axes}
+    by_identity = {}
+    by_operand = {}
+    for operation in operations(program):
+        if not isinstance(operation, Movement) \
+                    or operation.op is not DS_LOAD:
+            continue
+        axes = tuple(
+            axes_by_name[name]
+            for name in (
+                profile.read_issue_axes(operation)
+                if profile is not None else ()
+            )
+            if name in axes_by_name
+        )
+        by_identity[operation._identity] = axes
+        for transfer in operation.transfers:
+            present = {
+                id(axis): axis
+                for axis in by_operand.get(transfer.local_tile.operand.name, ())
+            }
+            present.update({id(axis): axis for axis in axes})
+            by_operand[transfer.local_tile.operand.name] = tuple(present.values())
+    return by_identity, by_operand
+
+
+def _ref(
+    tile,
+    level,
+    environment,
+    gens,
+    *,
+    destination=False,
+    shared_delta=0,
+    absolute=None,
+    profile=None,
+    operand_override=None,
+    unit_index_override=None,
+    size_bytes_override=None,
+    size_regs_override=None,
+    covers=(),
+    prefetch_steps=0,
+    issue_axes=(),
+    omit_axes=(),
+):
+    space = level.name.lower()
+    operand_name = operand_override or tile.operand.name
+    size_bytes, size_regs = (
+        profile.size_of(tile.operand.name)
+        if profile is not None else (0, 0)
+    )
+    if size_bytes_override is not None:
+        size_bytes = int(size_bytes_override)
+    if size_regs_override is not None:
+        size_regs = int(size_regs_override)
+    projection_environment = dict(environment)
+    if covers:
+        for expression in tile.indices:
+            for axis in expression.free_axes():
+                projection_environment.setdefault(axis, 0)
+    coordinate, runtime = _project_tile(tile, projection_environment)
+    if omit_axes:
+        omitted = {name for name, _extent in omit_axes}
+        coordinate = tuple(
+            item for item in coordinate if item[0] not in omitted
+        )
+    if covers:
+        operand_extents = {
+            axis.name: axis.extent.constant_value
+            for axis in tile.operand.axes
+        }
+        fully_covered = {
+            name for name, extent in covers
+            if operand_extents.get(name) == int(extent)
+        }
+        coordinate = tuple(
+            item for item in coordinate
+            if item[0] not in fully_covered
+        )
+    gir_tile = Tile(
+        operand_name,
+        space,
+        coordinate,
+        tuple(
+            item for item in (
+                ("regs", size_regs) if size_regs else None,
+                ("bytes", size_bytes) if size_bytes else None,
+            )
+            if item is not None
+        ),
+    )
+    if space == "shared":
+        region = (
+            profile.region_index(tile.operand.name, coordinate)
+            if profile is not None else 0
+        )
+        key = (tile.operand.name, region)
+        gen = gens.setdefault(key, Gen(len(gens), 1))
+        runtime_offset = runtime[0][1] if runtime else 0
+        if absolute:
+            runtime_value = next(
+                (value for _axis, _offset, value in runtime if value is not None),
+                0,
+            )
+            return Ref(
+                gir_tile,
+                abs_gen=int(runtime_value) % max(1, gen.ring),
+                covers=covers,
+                size_bytes=size_bytes,
+            )
+        return Ref(
+            gir_tile,
+            gen=gen,
+            gdelta=int(shared_delta) + int(runtime_offset),
+            covers=covers,
+            size_bytes=size_bytes,
+        )
+    if operand_override == "acc":
+        return Ref(gir_tile)
+    if space == "register":
+        logical_coordinate = dict(coordinate)
+        logical_coordinate.update({
+            key.name: value
+            for key, value in environment.items()
+            if hasattr(key, "extent")
+            and not key.extent.free_params()
+            and key.name not in logical_coordinate
+            and value is not None
+        })
+        logical_coordinate.update({
+            axis.name: value
+            for axis, _offset, value in runtime
+            if value is not None
+        })
+        copy_phase = next(
+            (
+                int(value)
+                for axis, value in environment.items()
+                if hasattr(axis, "extent")
+                and axis.extent.free_params()
+                and value is not None
+            ),
+            0,
+        )
+        placement_environment = (
+            {
+                getattr(key, "name", key): value
+                for key, value in environment.items()
+                if value is not None
+            }
+            if prefetch_steps else logical_coordinate
+        )
+        group, slot, ring = (
+            profile.register_location(
+                tile.operand.name,
+                logical_coordinate,
+                prefetch_steps=prefetch_steps,
+                copy_phase=copy_phase,
+                placement_environment=placement_environment,
+                issue_axes=issue_axes,
+            )
+            if profile is not None else (0, 0, 1)
+        )
+        unit_index = (
+            int(unit_index_override)
+            if unit_index_override is not None else
+            profile.unit_index(tile.operand.name, coordinate)
+            if profile is not None else 0
+        )
+        reference = Ref(
+            gir_tile,
+            group=group,
+            slot=slot,
+            reg_ring=ring,
+            unit_index=unit_index,
+            unit_indexes=(),
+            issue_axes=issue_axes,
+            covers=covers,
+            size_regs=size_regs,
+        )
+        if destination:
+            indexes = tuple(
+                profile.unit_index(tile.operand.name, dict(coordinate))
+                if profile is not None else unit_index
+                for coordinate in covered_coords(reference)
+            )
+            reference = replace(reference, unit_indexes=indexes)
+        return reference
+    return Ref(gir_tile, covers=covers, size_bytes=size_bytes)
+
+
+def _dependency_map(program, profile=None):
+    result = {}
+    derived = (
+        profile.cached_dependences(program)
+        if profile is not None
+        and hasattr(profile, "cached_dependences")
+        else None
+    )
+    if derived is None:
+        derived = dependences(program)
+    distributed = (
+        profile.as_meta().get("agent_distributed", {})
+        if profile is not None else {}
+    )
+    operations_by_identity = {}
+    for occurrence in occurrences(program):
+        operation = occurrence.node
+        if isinstance(operation, (Movement, Compute)):
+            operations_by_identity.setdefault(
+                operation._identity, operation
+            )
+    movement_units = {}
+    for operation in operations_by_identity.values():
+        if not isinstance(operation, Movement) \
+                or operation.op is not TENSOR_LOAD:
+            continue
+        unit = tuple(dict.fromkeys(
+            transfer.local_tile.operand.name
+            for transfer in operation.transfers
+        ))
+        for name in unit:
+            movement_units.setdefault(name, unit)
+    seen = set()
+    for dependence in derived:
+        if not dependence.crossing_raw:
+            continue
+        completion = dependence.complete.operation.completion
+        counter = (
+            f"C_{completion.name}"
+            if completion is not IMMEDIATE else "immediate"
+        )
+        present = tuple(dict.fromkeys(
+            transfer.local_tile.operand.name
+            for transfer in dependence.complete.operation.transfers
+        ))
+        crossing_unit = next(
+            (
+                movement_units[name]
+                for name in present
+                if name in movement_units
+            ),
+            present,
+        )
+        complete_id = dependence.complete.operation._identity
+        crossing_key = complete_id, crossing_unit, counter
+        if crossing_key in seen:
+            continue
+        seen.add(crossing_key)
+        result.setdefault(complete_id, []).append((
+            None,
+            (
+                _DependencyEndpoint(crossing_unit, "shared", "copy"),
+                counter,
+                "crossing-RAW",
+                "wave",
+            ),
+        ))
+
+    for dependence in required_dependences(program, derived):
+        kind = dependence.kind.name
+        operand = dependence.complete.tile.operand.name
+        if kind == "WAW":
+            continue
+        completion = dependence.complete.operation.completion
+        counter = (
+            f"C_{completion.name}"
+            if completion is not IMMEDIATE
+            else "immediate"
+        )
+        if kind == "RAW":
+            legacy_kind = "RAW-residency"
+        elif (
+            isinstance(dependence.issue.operation, Movement)
+            and dependence.issue.operation.op is DS_LOAD
+            and dependence.issue.level.name == "REGISTER"
+        ):
+            legacy_kind = (
+                "inplace-WAR"
+                if profile is not None
+                and profile.register_refill_in_place(operand)
+                else "rotation-WAR"
+            )
+            issue_completion = dependence.issue.operation.completion
+            counter = (
+                f"C_{issue_completion.name}"
+                if issue_completion is not IMMEDIATE
+                else "immediate"
+            )
+        else:
+            legacy_kind = (
+                "inplace-WAR"
+                if profile is not None
+                and profile.shared_refill_in_place(operand)
+                else "rotation-WAR"
+            )
+        scope = (
+            "wave"
+            if legacy_kind == "rotation-WAR"
+            else "block"
+            if distributed.get(dependence.complete.tile.operand.name, False)
+            else "wave"
+        )
+        key = (
+            dependence.issue.occurrence.path,
+            dependence.complete.tile.operand.name,
+            completion,
+            counter,
+            legacy_kind,
+            scope,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unit = (
+            tuple(dict.fromkeys(
+                transfer.local_tile.operand.name
+                for transfer in dependence.complete.operation.transfers
+            ))
+            if isinstance(dependence.complete.operation, Movement)
+            and dependence.complete.operation.op is TENSOR_LOAD
+            else operand
+        )
+        if kind == "RAW":
+            endpoint = (
+                _DependencyEndpoint(unit, "global", gen=("iter",))
+                if isinstance(dependence.complete.operation, Movement)
+                and dependence.complete.operation.op is TENSOR_LOAD
+                else _DependencyEndpoint(operand, "shared")
+            )
+        elif (
+            isinstance(dependence.issue.operation, Movement)
+            and dependence.issue.operation.op is DS_LOAD
+        ):
+            endpoint = _DependencyEndpoint(operand, "g0", "lastread")
+        else:
+            endpoint = _DependencyEndpoint(operand, "shared", "lastread")
+        entry = (
+            endpoint,
+            counter,
+            legacy_kind,
+            scope,
+        )
+        issue_id = dependence.issue.operation._identity
+        generation = None
+        if (
+            kind == "RAW"
+            and isinstance(dependence.complete.operation, Movement)
+            and dependence.complete.operation.op is TENSOR_LOAD
+            and isinstance(dependence.issue.operation, Movement)
+            and dependence.issue.operation.op is DS_LOAD
+        ):
+            runtime_axes = tuple(
+                axis
+                for axis in dependence.issue.tile.operand.axes
+                if axis.extent.free_params()
+            )
+            expressions = dependence_logical_tile(dependence)
+            base_point = {
+                axis: 0
+                for expression in expressions
+                for axis in expression.free_axes()
+            }
+            base_point.update({axis: 0 for axis in runtime_axes})
+            expressions = tuple(
+                expression.substitute(base_point)
+                for expression in expressions
+            )
+            generation = expressions
+        result.setdefault(issue_id, []).append((generation, entry))
+    return {
+        identity: tuple(dict.fromkeys(records))
+        for identity, records in result.items()
+    }
+
+
+def _operation_dependencies(dependencies, operation, environment):
+    projected = []
+    actual_generation = None
+    for generation, entry in dependencies.get(operation._identity, ()):
+        if generation is not None and actual_generation is None:
+            tiles = (
+                tuple(transfer.local_tile for transfer in operation.transfers)
+                if isinstance(operation, Movement)
+                else tuple(
+                    tile
+                    for tile in operation.reads + operation.writes
+                )
+            )
+            tile = next(
+                (
+                    candidate
+                    for candidate in tiles
+                    if any(
+                        axis.extent.free_params()
+                        for axis in candidate.operand.axes
+                    )
+                ),
+                tiles[0] if tiles else None,
+            )
+            if tile is not None:
+                projection_environment = dict(environment)
+                runtime_axes = tuple(
+                    axis
+                    for axis in tile.operand.axes
+                    if axis.extent.free_params()
+                )
+                projection_environment.update({
+                    axis: 0 for axis in runtime_axes
+                })
+                for expression in tile.indices:
+                    for axis in expression.free_axes():
+                        if (
+                            axis not in projection_environment
+                            and axis.name not in projection_environment
+                        ):
+                            projection_environment[axis] = 0
+                actual_generation = tuple(
+                    expression.substitute(projection_environment)
+                    for expression in tile.indices
+                )
+        if generation is not None and (
+            actual_generation is None
+            or len(generation) != len(actual_generation)
+            or not all(
+                expr_equivalent(expected, actual)
+                for expected, actual in zip(generation, actual_generation)
+            )
+        ):
+            continue
+        if entry not in projected:
+            projected.append(entry)
+    return tuple(projected)
+
+
+def _project_explicit_transfers(operation, environment):
+    """Collapse only coverage proven by explicit local tiles on one issue."""
+
+    groups = {}
+    for index, transfer in enumerate(operation.transfers):
+        groups.setdefault(transfer.local_tile.operand, []).append((index, transfer))
+    projected = []
+    coverage = {}
+    for operand, members in groups.items():
+        if len(members) == 1:
+            index, transfer = members[0]
+            projected.append((index, transfer))
+            coverage[index] = _logical_coverage(transfer.local_tile, environment)
+            continue
+        coordinates = []
+        for _index, transfer in members:
+            probe = dict(environment)
+            for expression in transfer.local_tile.indices:
+                probe.update({
+                    axis: 0 for axis in expression.free_axes()
+                    if axis not in probe
+                })
+            values = tuple(
+                _evaluate(expression, probe)
+                for expression in transfer.local_tile.indices
+            )
+            if any(value is None for value in values):
+                coordinates = []
+                break
+            coordinates.append(values)
+        varying = []
+        if coordinates:
+            for axis_index, axis in enumerate(operand.axes):
+                values = sorted({
+                    coordinate[axis_index] for coordinate in coordinates
+                })
+                if len(values) <= 1:
+                    continue
+                if values != list(range(values[0], values[0] + len(values))):
+                    varying = []
+                    break
+                varying.append((axis.name, len(values)))
+        volume = 1
+        for _axis, extent in varying:
+            volume *= extent
+        if varying and volume == len(members):
+            representative = min(
+                range(len(members)),
+                key=lambda member: coordinates[member],
+            )
+            index, transfer = members[representative]
+            projected.append((index, transfer))
+            coverage[index] = tuple(varying)
+        else:
+            for index, transfer in members:
+                projected.append((index, transfer))
+                coverage[index] = _logical_coverage(
+                    transfer.local_tile,
+                    environment,
+                )
+    projected.sort(key=lambda item: item[0])
+    return tuple(projected), coverage
+
+
+def _convert(
+    operation,
+    environment,
+    gens,
+    deps,
+    *,
+    source_delta=0,
+    destination_delta=0,
+    absolute=None,
+    profile=None,
+    phase="",
+    issue_axes=(),
+    source_issue_axes=None,
+):
+    if isinstance(operation, Movement):
+        tensor_load = operation.op is TENSOR_LOAD
+        local_read = operation.op is DS_LOAD
+        indexed_transfers, explicit_coverage = _project_explicit_transfers(
+            operation,
+            environment,
+        )
+        prefetch_steps = (
+            profile.read_prefetch_steps(operation)
+            if local_read
+            and phase in ("steady", "drain")
+            and profile is not None
+            else 0
+        )
+        srcs = tuple(
+            _ref(
+                transfer.local_tile,
+                transfer.source,
+                environment,
+                gens,
+                shared_delta=source_delta,
+                absolute=absolute,
+                profile=profile,
+                size_bytes_override=(
+                    profile.bulk_bytes(transfer.local_tile.operand.name)
+                    if tensor_load and profile is not None else 0
+                ),
+                size_regs_override=(
+                    profile.fragment_regs(transfer.local_tile.operand.name)
+                    if not tensor_load and profile is not None else 0
+                ),
+                covers=(
+                    explicit_coverage.get(index, ())
+                    if local_read
+                    else _logical_coverage(transfer.local_tile, environment)
+                    if not tensor_load else ()
+                ),
+                prefetch_steps=prefetch_steps,
+                issue_axes=tuple(axis.name for axis in issue_axes),
+                omit_axes=(
+                    tuple(dict.fromkeys((
+                        *explicit_coverage.get(index, ()),
+                        *_copy_omit_axes(transfer.local_tile, environment),
+                    )))
+                    if tensor_load else ()
+                ),
+            )
+            for index, transfer in indexed_transfers
+        )
+        dsts = tuple(
+            _ref(
+                transfer.local_tile,
+                transfer.destination,
+                environment,
+                gens,
+                destination=True,
+                shared_delta=destination_delta,
+                absolute=absolute,
+                profile=profile,
+                size_bytes_override=(
+                    profile.bulk_bytes(transfer.local_tile.operand.name)
+                    if tensor_load and profile is not None else 0
+                ),
+                size_regs_override=(
+                    profile.fragment_regs(transfer.local_tile.operand.name)
+                    if not tensor_load and profile is not None else 0
+                ),
+                covers=(
+                    explicit_coverage.get(index, ())
+                    if local_read
+                    else _logical_coverage(transfer.local_tile, environment)
+                    if not tensor_load else ()
+                ),
+                prefetch_steps=prefetch_steps,
+                issue_axes=tuple(axis.name for axis in issue_axes),
+                omit_axes=(
+                    tuple(dict.fromkeys((
+                        *explicit_coverage.get(index, ()),
+                        *_copy_omit_axes(transfer.local_tile, environment),
+                    )))
+                    if tensor_load else ()
+                ),
+            )
+            for index, transfer in indexed_transfers
+        )
+        operation_deps = _operation_dependencies(
+            deps,
+            operation,
+            environment,
+        )
+        if phase == "prologue" and operation.op is TENSOR_LOAD:
+            operation_deps = tuple(
+                item for item in operation_deps
+                if item[2] == "crossing-RAW"
+            )
+        elif phase == "prologue":
+            operation_deps = tuple(
+                item for item in operation_deps
+                if item[2] == "RAW-residency"
+            )
+        advance = (
+            profile.read_advance(operation)
+            if local_read and prefetch_steps and profile is not None
+            else 0
+        )
+        return Move(
+            srcs,
+            dsts,
+            deps=operation_deps,
+            unit=tuple(dict.fromkeys(
+                transfer.local_tile.operand.name
+                for transfer in operation.transfers
+            )) if tensor_load else (),
+            advance=advance,
+            issue=(
+                profile.read_issue(operation, environment)
+                if profile is not None and phase in ("steady", "drain")
+                else tuple(
+                    (axis.name, int(environment.get(axis, 0)))
+                    for axis in issue_axes
+                )
+            ) if local_read else (),
+        )
+    coord = {}
+    for tile in operation.reads + operation.writes:
+        for axis, expression in zip(tile.operand.axes, tile.indices):
+            if axis.extent.free_params():
+                continue
+            value = _evaluate(expression, environment)
+            if value is not None:
+                coord.setdefault(axis.name, value)
+    if profile is not None:
+        order = tuple(profile.as_meta().get("inner_axis_order", ()))
+        coord = {
+            name: coord[name]
+            for name in order
+            if name in coord
+        } | {
+            name: value
+            for name, value in coord.items()
+            if name not in order
+        }
+    mma_reads = operation.reads
+    srcs = tuple(
+        _ref(
+            tile,
+            REGISTER,
+            environment,
+            gens,
+            profile=profile,
+            size_bytes_override=0,
+            size_regs_override=(
+                profile.fragment_regs(tile.operand.name)
+                if profile is not None else 0
+            ),
+            issue_axes=tuple(
+                axis.name
+                for axis in (source_issue_axes or {}).get(
+                    tile.operand.name,
+                    (),
+                )
+            ),
+        )
+        for tile in mma_reads
+    )
+    dsts = tuple(
+        (
+            Ref(Tile("acc", "register", tuple(coord.items())))
+            if tile.operand.role.name == "OUTPUT"
+            else _ref(
+                tile,
+                REGISTER,
+                environment,
+                gens,
+                destination=True,
+                profile=profile,
+                size_bytes_override=0,
+                size_regs_override=(
+                    profile.fragment_regs(tile.operand.name)
+                    if profile is not None else 0
+                ),
+            )
+        )
+        for tile in operation.writes
+    )
+    return Mma(
+        srcs,
+        dsts,
+        coord=tuple(coord.items()),
+        block=(
+            "*".join(
+                f"{name}(k)"
+                for name in (
+                    profile.as_meta().get("mma_inputs", ())
+                    if profile is not None else ()
+                )
+            )
+        ),
+        deps=_operation_dependencies(deps, operation, environment),
+    )
+
+
+def _region_bodies(program):
+    regions = []
+    current_tag = None
+    current = []
+    for node in program.body:
+        if isinstance(node, Region):
+            if current_tag is not None:
+                regions.append((current_tag, tuple(current)))
+            current_tag = node.tag
+            current = []
+        else:
+            current.append(node)
+    if current_tag is None:
+        return (("entry", tuple(current)),)
+    regions.append((current_tag.name.lower(), tuple(current)))
+    return tuple(regions)
+
+
+def _marked_segments(body):
+    result = {}
+    current = None
+    nodes = []
+    for node in body:
+        if isinstance(node, Region):
+            if current is not None:
+                result[current] = tuple(nodes)
+            current = node.tag
+            nodes = []
+        else:
+            nodes.append(node)
+    if current is not None:
+        result[current] = tuple(nodes)
+    return result
+
+
+def _pipeline_shape(program):
+    body = program.body
+    if len(body) == 1 and isinstance(body[0], Cond):
+        guard = body[0]
+        full = _marked_segments(guard.then_body)
+        short = _marked_segments(guard.else_body)
     else:
-        # --- READ: shared(or global DTV)->register ---
-        op = _op_of_token(theta, ld.tokens[0])
-        coord = _concrete_coord(ld.coord, env)
-        src_space = ld.src                                    # 'shared' (2-hop) or 'global' (DTV)
-        src_tile = Tile(op.name if op else ld.tokens[0], src_space, coord,
-                        (("regs", ld.size_regs),))
-        dst_tile = Tile(op.name if op else ld.tokens[0], "register", coord,
-                        (("regs", ld.size_regs),))
-        # register residence: (group index, concrete slot, rotation width W) for THIS COORDINATE's
-        # group. W is the slot Expr's modulus (a LoopIR fact GIR consumes, B3): mod>1 -> W
-        grp_idx, slot_val, reg_ring = _reg_residence(
-            theta, op, coord, pl, env, copy=(rel if reg_copy is _UNSET else reg_copy),
-            issue_axes=ld.issue_axes)
-        # source shared generation
-        src_ref_kw = {}
-        if src_space == Space.SHARED and pl is not None and pl.src_slot is not None:
-            if rel is not None:
-                # steady (rel=0) / drain (rel=t-M) alike: continue the one residue timeline, so the
-                # read-pointer swap chain resolves across the peel boundary instead of re-pinning.
-                src_ref_kw = dict(gen=_gen_of(gens, theta, op, coord),
-                                  gdelta=_expr_raw(pl.src_slot, {**env, chunk: rel}))
-            else:
-                src_ref_kw = dict(abs_gen=pl.src_slot.eval(env))
-        # The absorbed axes are the SOURCE's footprint too: one instruction reads every location
-        # it spans, and the hazard set is built from the shared-space Ref.
-        covers = _absorbed(theta, op)
-        if covers and not _read_is_leader(theta, op, coord):
-            return None
-        src = Ref(src_tile, size_regs=ld.size_regs, covers=covers, **src_ref_kw)
-        # ONE instruction, ONE completion, ONE def -- but it FILLS `Pi factor` locations.
-        unit_index = _geometry.unit_tile_index(theta, op, coord)
-        covered = Ref(dst_tile, unit_index=unit_index, covers=covers, size_regs=ld.size_regs)
-        unit_indexes = tuple(_geometry.unit_tile_index(theta, op, dict(c))
-                             for c in covered_coords(covered))
-        dst = Ref(dst_tile, group=grp_idx, slot=slot_val, reg_ring=reg_ring,
-                  unit_index=unit_index, unit_indexes=unit_indexes,
-                  covers=covers, size_regs=ld.size_regs)
-        issue = _advanced_issue(theta, op, env, ld.issue_axes, ld.advance)
-        return Move(srcs=(src,), dsts=(dst,), deps=_deps_of(inst),
-                    advance=int(getattr(ld, "advance", 0) or 0), issue=issue)
+        guard = None
+        full = _marked_segments(body)
+        short = {}
+    required = {PROLOGUE, STEADY}
+    if not required <= set(full):
+        return None
+    return guard, full, short
 
 
-def _convert_mma(theta, inst, env, reads, copy=None):
-    """A LoopIR Mma -> a GIR Mma. srcs = one register Ref per read operand (+ scales);
- dst = the accumulator. Operand identity is on each Ref.tile.operand.
-    """
-    m = inst.op
-    coord = _concrete_coord(m.coord, env)
-    pls = inst.placement or {}                       # {operand: Placement} from the decoder
-    source_issue_axes = dict(m.source_issue_axes)
-    srcs = []
-    for op in reads:
-        pl = pls.get(op.name)
-        issue_axes = tuple(source_issue_axes.get(op.name, ()))
-        grp_idx, slot_val, reg_ring = _reg_residence(
-            theta, op, coord, pl, env, copy=copy, issue_axes=issue_axes)
-        size_regs = _geometry.frag_regs(theta, op)
-        # THE SOURCE NAMES THE OPERAND'S OWN COORDINATE, NOT THE WMMA'S.
-        #
-        pres = set(presence(theta, op))
-        own = tuple((ax, v) for ax, v in coord if ax in pres)
-        t = Tile(op.name, "register", own, (("regs", size_regs),))
-        srcs.append(Ref(t, group=grp_idx, slot=slot_val, reg_ring=reg_ring,
-                        unit_index=_geometry.unit_tile_index(theta, op, own),
-                        issue_axes=issue_axes,
-                        size_regs=size_regs))
-    # scales (MX): each scale operand appears in `reads` already if it ends in a register;
-    # m.scales are display strings, so operand identity comes from the reads list above.
-    acc = Ref(Tile("acc", "register", coord, ()))
-    return Mma(srcs=tuple(srcs), dsts=(acc,), coord=coord, block=m.block, deps=_deps_of(inst))
+def _nested_pipeline(body):
+    for node in body:
+        if not isinstance(node, Cond):
+            continue
+        full = _marked_segments(node.then_body)
+        short = _marked_segments(node.else_body)
+        if {PROLOGUE, STEADY, DRAIN} <= set(full):
+            return node, full, short
+    return None
 
 
-# ===========================================================================
-# the lowering
-def _loop_carried_gens(theta):
-    """One loop-carried Gen per independent ``(operand, LDS region)`` storage ring."""
+def _parameter_minus_constant(expression):
+    if expression.op == "param":
+        return expression.args[0].name, 0
+    if expression.op != "add":
+        return "", 0
+    variable = ""
+    constant = 0
+    for argument in expression.args:
+        if argument.op == "param":
+            variable = argument.args[0].name
+        elif argument.op == "const":
+            constant += argument.args[0]
+        else:
+            return "", 0
+    return variable, -constant
+
+
+def _explicit_pipeline_depth(program):
+    depth = 0
+    for occurrence in occurrences(program):
+        operation = occurrence.node
+        if not isinstance(operation, Movement) \
+                or operation.op is not TENSOR_LOAD:
+            continue
+        for transfer in operation.transfers:
+            for axis, expression in zip(
+                transfer.local_tile.operand.axes,
+                transfer.local_tile.indices,
+            ):
+                if not axis.extent.free_params():
+                    continue
+                try:
+                    depth = max(
+                        depth,
+                        _runtime_offset(expression, axis, {}),
+                    )
+                except RuntimeError:
+                    continue
+    return depth
+
+
+def _convert_body(
+    body,
+    gens,
+    deps,
+    environment=None,
+    *,
+    source_delta=0,
+    destination_delta=0,
+    absolute=None,
+    profile=None,
+    phase="",
+    issue_axes=None,
+    source_issue_axes=None,
+):
+    flattened = []
+    symbolic = []
+    _flatten(body, dict(environment or {}), flattened, symbolic)
+    converted = []
+    for item in flattened:
+        converted.append(
+            _convert(
+                item.operation,
+                dict(item.environment),
+                gens,
+                deps,
+                source_delta=source_delta,
+                destination_delta=destination_delta,
+                absolute=absolute,
+                profile=profile,
+                phase=phase,
+                issue_axes=(issue_axes or {}).get(
+                    item.operation._identity,
+                    (),
+                ),
+                source_issue_axes=source_issue_axes,
+            )
+        )
+    return converted, symbolic
+
+
+def _lower_pipeline(program, shape, profile=None):
+    _guard, regions, short_regions = shape
+    has_drain = DRAIN in regions
+    agent_environment = {
+        key: 0
+        for axis, _scope in program.agents
+        for key in (axis, axis.name)
+    }
+    gir = Program()
+    gir.entry = "prologue"
     gens = {}
-    for op in theta.operands:
-        if op.trajectory.shared is not None:
-            for region in range(max(1, int(getattr(op, "split", 1) or 1))):
-                gens[(op.name, region)] = Gen(id=len(gens),
-                                              ring=max(1, lds_buffers(theta, op)))
-    return gens
+    if profile is not None:
+        for operand in program.operands:
+            ring = profile.shared_ring(operand.name)
+            if ring <= 0:
+                continue
+            region_count = max(
+                1,
+                int(profile.as_meta().get("operand_regions", {}).get(
+                    operand.name, 1
+                )),
+            )
+            for region in range(region_count):
+                gens[(operand.name, region)] = Gen(len(gens), ring)
+    deps = _dependency_map(program, profile)
+    issue_axes, source_issue_axes = _read_issue_axes(program, profile)
+    convert_body = _convert_body
 
-
-def _scan_regions(ir, M):
-    """Split the LoopIR root into its four regions: prologue, steady, drain, short arm.
-
-    The emitted skeleton wraps the whole pipeline in one peel-validity `Cond`, with the three
-    pipelined regions in its `then` and the `T < M` arm in its `els`. At M == 0 there is no
-    peel, so the regions sit at the top level and there is no short arm.
-    """
-    found = {"prologue": None, "steady": None, "drain": None, "guard": None, "short": ()}
-
-    def scan(nodes):
-        for nd in nodes:
-            if isinstance(nd, Peel) and nd.kind == "prologue":
-                found["prologue"] = nd.body
-            elif isinstance(nd, Peel) and nd.kind == "drain":
-                found["drain"] = nd
-            elif isinstance(nd, Loop) and nd.outer:   # STRUCTURAL flag, never the level name
-                found["steady"] = nd
-            elif isinstance(nd, Cond):
-                if nd.kind == "peel_validity":
-                    found["guard"] = nd.pred          # the structured guard, carried not re-derived
-                    found["short"] = tuple(nd.els)
-                scan(nd.then)
-
-    scan(ir)
-    short_steps = _short_steps(found["short"], M)
-    if short_steps and (found["prologue"] is None or found["steady"] is None):
-        raise RuntimeError(
-            f"the LoopIR carries a {len(short_steps)}-step `T < M` short arm, but this kernel has "
-            f"{'no prologue block' if found['prologue'] is None else 'no steady loop'} -- there is "
-            f"no peel-validity branch for it to hang off, so it could only be dropped unchecked "
-            f".  Widen the lowering deliberately if this shape is real.")
-    return found["prologue"], found["steady"], found["drain"], found["guard"], short_steps
-
-
-def _program_meta(theta, mainloop, M, red_names, free_axes, mma_inputs, mma_scales,
-                  short_steps, drain_steps=None):
-    """Everything the GIR passes need to know about the theta this program came from.
-
-    A read-only bag: the lowering fills it once and each analysis takes the few keys it
-    needs. Separate from `lower_to_gir` because it translates theta; it does not build
-    the CFG.
-    """
-    # `peel_depth` is the prologue's LEAD; `drain_steps` is how many chunks ramp back out.  They
-    # are equal unless the scaffold suppresses the no-load loop, which keeps the lead and drops
-    # the ramp.
-    meta = {
-        "buffer_depths": mainloop.depths,
-        "peel_depth": M,
-        "drain_steps": M if drain_steps is None else int(drain_steps),
-        "vgpr_subdivided": any(
-            op.fragment is not None and _geometry.vgpr_group_axis(theta, op) is not None
-            for op in theta.operands),
-    }
-    meta["register_layout"] = _geometry.register_layout(theta, mainloop.depths)
-    meta.update(_axis_facts(theta, red_names, free_axes, mma_inputs, mma_scales))
-    meta.update(_region_facts(theta))
-    meta.update(_movement_facts(theta))
-    meta.update(_coverage_facts(theta))
-    meta.update(_short_arm_facts(M, short_steps))
-    return meta
-
-
-def _axis_facts(theta, red_names, free_axes, mma_inputs, mma_scales):
-    """Which axes exist, in what order, at what extent, and which two operands the wmma grids."""
-    inner = theta.inner_axes()
-    return {
-        "summation_axes": red_names,
-        "free_axes": free_axes,
-        "mma_inputs": mma_inputs,
-        "mma_scales": mma_scales,
-        # loop order of the inner axes plus their extents, so emit_plan can mixed-radix-combine
-        # a multi-axis role (M_split+M_inner) deterministically.
-        "inner_axis_order": [axis.name for axis in inner],
-        "axis_extents": {axis.name: axis.extent for axis in inner},
-    }
-
-
-def _region_facts(theta):
-    """How each operand's tile splits into storage regions, and who completes independently."""
-    return {
-        # Address generation may be wave-relative, but the factorized coordinate still selects
-        # one independent LDS region generation/token.
-        "wave_relative_regions": {
-            op.name for op in theta.operands
-            if op.trajectory.shared is not None
-            and op.trajectory.shared.regions.wave_relative},
-        # False = every region of an operand shares one completion class, so a read awaits them
-        # all; True = one class per region, so a read of region j leaves the others in flight.
-        "per_region_completion": bool(theta.per_region_completion),
-        "region_axes": {
-            op.name: tuple(op.trajectory.shared.regions.axes)
-            if op.trajectory.shared is not None else ()
-            for op in theta.operands},
-        # how many regions ITS OWN tile occupies -- distinct from `unit_regions`, which counts
-        # what the whole movement emits.
-        "operand_regions": {op.name: max(1, op.split) for op in theta.operands},
-        # how many values of a SHARED region axis one of this operand's regions spans: the K walk
-        # is common, so an operand that splits K coarser holds a region across several steps.
-        "region_span": {
-            op.name: dict(op.trajectory.shared.regions.span)
-            if op.trajectory.shared is not None else {}
-            for op in theta.operands},
-    }
-
-
-def _movement_facts(theta):
-    """Which movements are fused, how many regions each emits, and which span several waves."""
-    return {
-        # a fused group is ONE completion event, so a read of any member awaits the whole group
-        "fused_copy_groups": [tuple(g) for g in theta.fused_copy_groups],
-        "unit_regions": {key: nreg for key, _members, nreg in theta.movement_units()},
-        # PER MEMBER, so a shorter member can be told apart from the unit it rides in.  A member
-        # whose count is below the unit's moves only on region 0 and is nulled for the rest.
-        "unit_member_regions": {key: {m.name: max(1, m.split) for m in members}
-                                for key, members, _nreg in theta.movement_units()},
-        "agent_distributed": {op.name: theta.agent_distributed(op.name) for op in theta.operands},
-    }
-
-
-def _register_reads(theta):
-    """Every operand's shared->register read hop, as (operand, hop) pairs."""
-    return [(op, op.trajectory.fragment_fill) for op in theta.operands
-            if op.trajectory.fragment_fill is not None]
-
-
-def _coverage_facts(theta):
-    """What one read instruction covers: its map, the axes it folds in part, the axes it spans."""
-    reads = _register_reads(theta)
-    inner = theta.inner_axes()
-    return {
-        "read_coverage": {op.name: h.coverage for op, h in reads if h.coverage is not None},
-        # `{axis: factor}` for each axis the coverage folds only IN PART (1 < q < N), so the axis
-        # stays in the loop nest at a reduced trip rather than disappearing from it.
-        "read_fold": {op.name: dict(_geometry.transfer_coverage(theta, op, h))
-                      for op, h in reads if _geometry.transfer_coverage(theta, op, h)},
-        "coverage_axes": {op.name: tuple(
-                              (m.name, m.extent) for m in inner
-                              if m.name in _geometry.coverage_axes(theta, op, h.coverage))
-                          for op, h in reads if h.coverage is not None},
-    }
-
-
-def _short_arm_facts(M, short_steps):
-    """The `T < M` arm as lowered: real blocks now, which FoldShortPathPass may later fold away."""
-    if not short_steps:
-        return {"short_loop": None}
-    return {"short_loop": {
-        "steps": M,
-        "guards": tuple(g for g, _ in short_steps),
-        "verdict": "unfolded",
-        "model_only": {
-            "blocks": tuple("short%d" % i for i in range(len(short_steps))),
-            "marks_dropped": 0,
-            "reason": "the T < M arm is scaffold-owned (TensileLite's toPGR1 path); GIR keeps "
-                      "it for the analyses but no backend emits it",
-        }}}
-
-
-def _add_prologue_blocks(prog, theta, gens, reads, pro_body, guard_pred, short_entry, steady_loop):
-    """The prologue block: the peeled chunks that fill the pipeline before the steady loop."""
-    if pro_body is not None:
-        flat = []
-        _flatten(pro_body, {}, flat)
-        body = [Mark("phase_boundary", {"phase": "prologue"})]
-        for inst, env, rel in flat:
-            if isinstance(inst.op, Load):
-                _mv = _convert_load(theta, inst, env, rel, gens)
-                if _mv is not None:
-                    body.append(_mv)
-            else:
-                body.append(_convert_mma(theta, inst, env, reads, copy=rel))
-        steady_exists = steady_loop is not None
-        # The guard picks between the steady loop and the peeled `T < M` path, so it is required
-        # exactly when that second target exists -- with the drain suppressed, `end` is not one.
-        forks = short_entry != "end"
-        if steady_exists and forks and guard_pred is None:
+    prologue, _ = convert_body(
+        regions[PROLOGUE],
+        gens,
+        deps,
+        agent_environment,
+        absolute=True,
+        profile=profile,
+        phase="prologue",
+        issue_axes=issue_axes,
+        source_issue_axes=source_issue_axes,
+    )
+    steady_loops = [
+        node for node in regions[STEADY] if isinstance(node, Loop)
+    ]
+    if len(steady_loops) != 1:
+        raise RuntimeError("steady region requires one runtime Loop")
+    steady_loop = steady_loops[0]
+    copy_steps = tuple(
+        node for node in steady_loop.body
+        if isinstance(node, Let) and node.axis.name == "_steady_copy"
+    )
+    if copy_steps:
+        if len(copy_steps) != len(steady_loop.body):
             raise RuntimeError(
-                "lowering: a prologue block exists but the LoopIR carries no peel-validity Cond -- "
-                "the guard predicate must be CARRIED from the LoopIR, not re-derived here")
-        if not steady_exists:
-            term, succs = Goto(short_entry), (short_entry,)
-        elif forks:
-            term = CondGoto(_gir_pred(guard_pred), "steady", short_entry)
-            succs = ("steady", short_entry)
-        else:
-            term, succs = Goto("steady"), ("steady",)
-        # frame (Block.gen_rel/chunk_base): the prologue's Refs carry ABSOLUTE generations, and its
-        # read-ahead fills the chunk the first steady trip consumes -- chunk-timeline slot 0.
-        prog.add_block(Block(phase="prologue", preds=(), succs=succs, body=body, term=term,
-                             gen_rel=None, chunk_base=0))
+                "materialized steady copies must cover the whole steady body"
+            )
+        copy_axis = copy_steps[0].axis
+        if any(step.axis is not copy_axis for step in copy_steps):
+            raise RuntimeError("steady copy Lets must share one Axis")
+        steady_variants = tuple(step.body for step in copy_steps)
+        copy_bindings = tuple(
+            {copy_axis: step.value.evaluate({})}
+            for step in copy_steps
+        )
+    else:
+        steady_variants = (steady_loop.body,)
+        copy_bindings = ({},)
+    copy_count = len(steady_variants)
+    nested_pipeline = _nested_pipeline(steady_variants[0])
 
-
-def steady_chain(prog) -> list:
-    """The steady blocks in program order -- the labels `_add_steady_blocks` wrote, read back.
-
-    The emitter walks this rather than re-spelling the convention, so one place names the copies.
-    """
-    if "steady" not in prog.blocks:
-        return []
-    chain = ["steady"]
-    while "steady%d" % len(chain) in prog.blocks:
-        chain.append("steady%d" % len(chain))
-    return chain
-
-
-def _add_steady_blocks(prog, theta, gens, reads, steady_loop, pro_body, first_drain, loop_copies):
-    """The steady loop's blocks, one per unrolled copy, and the phis on its header."""
-    if steady_loop is not None:
-        n_copies = max(1, int(loop_copies))
-        labels = ["steady"] + [f"steady{i}" for i in range(1, n_copies)]
-        for i, lab in enumerate(labels):
-            flat = []
-            _flatten([steady_loop], {}, flat, rel=i)      # copy i = chunk offset i on ONE timeline
-            body = [Mark("phase_boundary", {"phase": lab})]
-            for inst, env, rel in flat:
-                if isinstance(inst.op, Load):
-                    _mv = _convert_load(theta, inst, env, rel, gens)
-                    if _mv is not None:
-                        body.append(_mv)
-                else:
-                    body.append(_convert_mma(theta, inst, env, reads, copy=rel))
-            last = (i == n_copies - 1)
-            # The header joins entry and back-edge. In a multi-copy shell every copy can also
-            # exit, so each carries the transfer for the number of chunks consumed up to its
-            # test; only the last transfer is used on the back-edge.
-            phis = [GenPhi(g, entry_val=0) for g in gens.values()] if i == 0 else []
-            xfers = ([GenXfer(g, adv=n_copies, ring=g.ring) for g in gens.values()]
-                     if last else [])
-            edge_xfers = {}
-            if n_copies > 1:
-                next_target = "steady" if last else labels[i + 1]
-                term = LoopCopy(_trips_of(steady_loop.trip), i, n_copies,
-                                next_target, first_drain)
-                succs = (next_target, first_drain)
-                edge_xfers[first_drain] = [
-                    GenXfer(g, adv=i + 1, ring=g.ring) for g in gens.values()]
-            elif last:
-                # the loop states its TRIP COUNT, not a comparison: the outer `Loop.trip`
-                # range's bound IS the count.
-                term = LoopBack(_trips_of(steady_loop.trip),
-                                "steady", first_drain)
-                succs = ("steady", first_drain)
-            if i == 0:
-                preds = (("prologue",) if pro_body is not None else ()) + (labels[-1],)
-            else:
-                preds = (labels[i - 1],)
-            # frame: copy i's Refs were flattened at rel=i, and it occupies chunk-timeline slot i
-            # of the trip -- rel == base here, so a steady requirement is just its gdelta.
-            prog.add_block(Block(phase=lab, loop=(i == 0),
-                                 preds=preds, succs=succs,
-                                 phis=phis, xfers=xfers, edge_xfers=edge_xfers,
-                                 body=body, term=term,
-                                 gen_rel=i, chunk_base=i))
-
-
-def _add_drain_blocks(prog, theta, gens, reads, drain_peel, M, drain_labels, first_drain, short_entry,
-                      steady_loop, pro_body, loop_copies):
-    """The drain blocks: one per chunk still in flight when the steady loop stops."""
-    if drain_peel is not None and M > 0:
-        steps = _drain_steps(drain_peel.body)
-        n_copies = max(1, int(loop_copies)) if steady_loop is not None else 1
-        for i, step_nodes in enumerate(steps):
-            flat = []
-            _flatten(step_nodes, {}, flat)
-            body = [Mark("phase_boundary", {"phase": f"drain{i}"})]
-            # THE REGISTER RING RESUMES THE CHAIN.  `rel` is a T-relative chunk offset, which the
-            # loads and the frame want; the ring wants the copy the loop would have run NEXT.  The
-            # two agree only when the peel depth happens to be -1 mod the chain length.
-            for inst, env, rel in flat:
-                _copy = (i + 1) if n_copies > 1 else rel
-                if isinstance(inst.op, Load):
-                    _mv = _convert_load(theta, inst, env, rel, gens, reg_copy=_copy)
-                    if _mv is not None:
-                        body.append(_mv)
-                else:
-                    body.append(_convert_mma(theta, inst, env, reads, copy=_copy))
-            nxt = drain_labels[i + 1] if i + 1 < len(drain_labels) else "end"
-            pro_pred = (("prologue",) if (i == 0 and pro_body is not None
-                                          and short_entry == first_drain) else ())
-            steady_preds = (
-                tuple(["steady"] + [f"steady{j}" for j in range(1, n_copies)])
-                if i == 0 and steady_loop is not None else ())
-            preds = (pro_pred + steady_preds if i == 0 else (f"drain{i-1}",))
-            phis = ([GenPhi(g) for g in gens.values()]
-                    if i == 0 and n_copies > 1 and steady_loop is not None else [])
-            # frame: `_flatten` gave drain step i the offset `rel = i - M` (its Bind is
-            # `iter = T - M + i`, so its gdeltas are relative to T).  Its position on the chunk
-            n_cp = max(1, int(loop_copies)) if steady_loop is not None else 0
-            prog.add_block(Block(phase=f"drain{i}", preds=preds, succs=(nxt,),
-                                 phis=phis, body=body, term=Goto(nxt),
-                                 gen_rel=i - M, chunk_base=n_cp + i))
-
-
-def _add_short_blocks(prog, theta, gens, reads, short_steps, short_labels):
-    """The `T < M` arm's blocks: the degenerate path where the pipeline never fills."""
-    for i, (_guard, nodes) in enumerate(short_steps):
-        flat = []
-        _flatten(nodes, {}, flat)                       # concrete chunk -> rel=None -> abs_gen
-        body = [Mark("phase_boundary", {"phase": short_labels[i]})]
-        for inst, env, rel in flat:
-            if isinstance(inst.op, Load):
-                _mv = _convert_load(theta, inst, env, rel, gens)
-                if _mv is not None:
-                    body.append(_mv)
-            else:
-                body.append(_convert_mma(theta, inst, env, reads, copy=rel))
-        nxt_guard = short_steps[i + 1][0] if i + 1 < len(short_steps) else None
-        if nxt_guard is not None:
-            term = CondGoto(nxt_guard, short_labels[i + 1], "end")
-            succs = (short_labels[i + 1], "end")
-        else:
-            if i + 1 < len(short_steps):
+    def convert_steady(copy_index):
+        environment = {
+            **agent_environment,
+            steady_loop.axis: copy_index,
+            **copy_bindings[copy_index],
+        }
+        body = steady_variants[copy_index]
+        current_nested = _nested_pipeline(body)
+        if current_nested is None:
+            steady, nested = convert_body(
+                body,
+                gens,
+                deps,
+                environment,
+                source_delta=copy_index,
+                destination_delta=copy_index,
+                profile=profile,
+                phase="steady",
+                issue_axes=issue_axes,
+                source_issue_axes=source_issue_axes,
+            )
+            if nested:
                 raise RuntimeError(
-                    f"short-loop step {i+1} carries no validity guard -- every step past the first "
-                    f"runs only when `T > t`, so an unguarded one would read a chunk that does "
-                    f"not exist")
-            term, succs = Goto("end"), ("end",)
-        preds = ((short_labels[i - 1],) if i else ("prologue",))
-        # frame: the short arm's chunks are concrete (0..M-1) and there is no steady trip, so its
-        # Refs carry absolute generations (gen_rel=None) and it sits at the head of the chunk
-        prog.add_block(Block(phase=short_labels[i], preds=preds, succs=succs, body=body, term=term,
-                             gen_rel=None, chunk_base=i, model_only=True))
+                    "steady body contains a second symbolic Loop"
+                )
+            return steady
+        nested_guard, nested_regions, _nested_short = current_nested
+        nested_steady = next(
+            node for node in nested_regions[STEADY]
+            if isinstance(node, Loop)
+        )
+        outer_remainder = tuple(
+            node for node in body if node is not nested_guard
+        )
+        core, _ = convert_body(
+            (nested_steady, *nested_regions[DRAIN]),
+            gens,
+            deps,
+            environment,
+            source_delta=copy_index,
+            destination_delta=copy_index,
+            profile=profile,
+            phase="steady",
+            issue_axes=issue_axes,
+            source_issue_axes=source_issue_axes,
+        )
+        next_prefetch, _ = convert_body(
+            nested_regions[PROLOGUE],
+            gens,
+            deps,
+            {**environment, steady_loop.axis: copy_index + 1},
+            source_delta=copy_index + 1,
+            destination_delta=copy_index + 1,
+            profile=profile,
+            phase="steady",
+            issue_axes=issue_axes,
+            source_issue_axes=source_issue_axes,
+        )
+        remainder, nested = convert_body(
+            outer_remainder,
+            gens,
+            deps,
+            environment,
+            source_delta=copy_index,
+            destination_delta=copy_index,
+            profile=profile,
+            phase="steady",
+            issue_axes=issue_axes,
+            source_issue_axes=source_issue_axes,
+        )
+        if nested:
+            raise RuntimeError("steady remainder contains a symbolic Loop")
+        return core + next_prefetch + remainder
 
-def lower_to_gir(theta, mainloop=None, loop_copies=1) -> Program:
-    """Build the GIR `Program` from a theta point.  `mainloop` = a prior `emit_mainloop(theta)`
-    result (built once by KernelWriter, R-ONCE); if omitted it is computed here.
-    """
-    if mainloop is None:
-        mainloop = emit_mainloop(theta)
-    ir = mainloop.ir
-    _peel = peel_depths(theta, build_S(theta)[0])
-    off, dr, M = _peel.copy_off(), _peel.requested_steps, _peel.chunk_depth
+    steady_bodies = [
+        convert_steady(copy_index)
+        for copy_index in range(copy_count)
+    ]
+    if nested_pipeline is not None:
+        _nested_guard, nested_regions, _nested_short = nested_pipeline
+        initial_reads, _ = convert_body(
+            nested_regions[PROLOGUE],
+            gens,
+            deps,
+            {
+                **agent_environment,
+                steady_loop.axis: 0,
+                **copy_bindings[0],
+            },
+            absolute=True,
+            profile=profile,
+            phase="prologue",
+            issue_axes=issue_axes,
+            source_issue_axes=source_issue_axes,
+        )
+        prologue += initial_reads
+    variable, sub = _parameter_minus_constant(steady_loop.hi)
+    drain_steps = tuple(
+        node for node in regions.get(DRAIN, ()) if isinstance(node, Let)
+    )
+    drain_bodies = []
+    for index, step in enumerate(drain_steps):
+        relative = -len(drain_steps) + index
+        register_phase = index + 1 if copy_count > 1 else 0
+        if nested_pipeline is None:
+            body = convert_body(
+                step.body,
+                gens,
+                deps,
+                {**agent_environment, step.axis: register_phase},
+                source_delta=relative,
+                destination_delta=0,
+                profile=profile,
+                phase="drain",
+                issue_axes=issue_axes,
+                source_issue_axes=source_issue_axes,
+            )[0]
+        else:
+            step_nested = _nested_pipeline(step.body)
+            if step_nested is None:
+                raise RuntimeError("drain lost the nested LoopIR pipeline")
+            step_guard, step_regions, _step_short = step_nested
+            nested_steady = next(
+                node for node in step_regions[STEADY]
+                if isinstance(node, Loop)
+            )
+            core, _ = convert_body(
+                (nested_steady, *step_regions[DRAIN]),
+                gens,
+                deps,
+                {**agent_environment, step.axis: register_phase},
+                source_delta=relative,
+                profile=profile,
+                phase="drain",
+                issue_axes=issue_axes,
+                source_issue_axes=source_issue_axes,
+            )
+            next_prefetch = []
+            if index + 1 < len(drain_steps):
+                next_prefetch, _ = convert_body(
+                    step_regions[PROLOGUE],
+                    gens,
+                    deps,
+                    {**agent_environment, step.axis: register_phase},
+                    source_delta=relative + 1,
+                    profile=profile,
+                    phase="drain",
+                    issue_axes=issue_axes,
+                    source_issue_axes=source_issue_axes,
+                )
+            remainder_nodes = tuple(
+                node for node in step.body if node is not step_guard
+            )
+            remainder, _ = convert_body(
+                remainder_nodes,
+                gens,
+                deps,
+                {**agent_environment, step.axis: register_phase},
+                source_delta=relative,
+                profile=profile,
+                phase="drain",
+                issue_axes=issue_axes,
+                source_issue_axes=source_issue_axes,
+            )
+            body = core + next_prefetch + remainder
+        drain_bodies.append(body)
+    if has_drain and not drain_bodies:
+        drain_bodies = [[]]
+    drain_labels = [f"drain{index}" for index in range(len(drain_bodies))]
+    short_body = short_regions.get(SHORT, ())
+    short_loops = [node for node in short_body if isinstance(node, Loop)]
+    short_bodies = []
+    if short_loops:
+        short_loop = short_loops[0]
+        for index in range(len(drain_bodies)):
+            body, _nested = convert_body(
+                short_loop.body,
+                gens,
+                deps,
+                {**agent_environment, short_loop.axis: index},
+                absolute=True,
+                profile=profile,
+                phase="short",
+                issue_axes=issue_axes,
+                source_issue_axes=source_issue_axes,
+            )
+            short_bodies.append(body)
+    short_labels = [f"short{index}" for index in range(len(short_bodies))]
 
-    # operands that end in a register fragment = the "reads" (their Mma sources).  The output/
-    # accumulator operand has no mainloop path (hops=[]) -> not a read.
-    reads = [op for op in theta.operands if op.trajectory.fragment_fill is not None]
+    exit_target = drain_labels[0] if drain_labels else "end"
+    false_target = short_labels[0] if short_labels else exit_target
+    prologue_target = "steady" if variable else false_target
+    if _guard is None:
+        prologue_term = Goto(prologue_target)
+        prologue_succs = (prologue_target,)
+    elif variable:
+        prologue_term = CondGoto(
+            Pred(variable, ">", Bound(const=sub)),
+            "steady",
+            false_target,
+        )
+        prologue_succs = (prologue_target, false_target)
+    else:
+        prologue_term = Goto(false_target)
+        prologue_succs = (false_target,)
+    gir.add_block(Block(
+        phase="prologue",
+        body=[Mark("phase_boundary", {"phase": "prologue"}), *prologue],
+        term=prologue_term,
+        succs=prologue_succs,
+    ))
+    steady_labels = ["steady"] + [
+        f"steady{index}" for index in range(1, copy_count)
+    ]
+    for index, (label, body) in enumerate(zip(steady_labels, steady_bodies)):
+        last = index == copy_count - 1
+        next_target = "steady" if last else steady_labels[index + 1]
+        if copy_count > 1:
+            term = LoopCopy(
+                Trips(variable, sub),
+                index,
+                copy_count,
+                next_target,
+                exit_target,
+            )
+            edge_xfers = {
+                exit_target: [
+                    GenXfer(gen, index + 1, gen.ring)
+                    for gen in gens.values()
+                ]
+            }
+        else:
+            term = LoopBack(
+                Trips(variable, sub), "steady", exit_target
+            )
+            edge_xfers = {}
+        gir.add_block(Block(
+            phase=label,
+            loop=index == 0,
+            preds=(
+                ("prologue", steady_labels[-1])
+                if index == 0 else (steady_labels[index - 1],)
+            ),
+            succs=(next_target, exit_target),
+            phis=[
+                GenPhi(gen, entry_val=0)
+                for gen in gens.values()
+            ] if index == 0 else [],
+            xfers=[
+                GenXfer(gen, copy_count, gen.ring)
+                for gen in gens.values()
+            ] if last else [],
+            edge_xfers=edge_xfers,
+            body=[Mark("phase_boundary", {"phase": label}), *body],
+            term=term,
+            gen_rel=index,
+            chunk_base=index,
+        ))
+    for index, (label, body) in enumerate(zip(drain_labels, drain_bodies)):
+        target = (
+            drain_labels[index + 1]
+            if index + 1 < len(drain_labels)
+            else "end"
+        )
+        gir.add_block(Block(
+            phase=label,
+            preds=tuple(steady_labels)
+            if index == 0 else (drain_labels[index - 1],),
+            succs=(target,),
+            phis=[
+                GenPhi(gen) for gen in gens.values()
+            ] if index == 0 and copy_count > 1 else [],
+            body=[Mark("phase_boundary", {"phase": label}), *body],
+            term=Goto(target),
+            gen_rel=-len(drain_labels) + index,
+            chunk_base=copy_count + index,
+            path_chunk_base={},
+        ))
 
-    gens = _loop_carried_gens(theta)
-
-    pro_body, steady_loop, drain_peel, guard_pred, short_steps = _scan_regions(ir, M)
-
-    # PRESENCE-DERIVED addressing : L3 reads a leaf's free-tile /
-    # summation index by PROJECTING the coord onto per-operand free axes / the summation axes.
-    red_names = sorted(summation_names(theta))
-    free_axes = {op.name: free_names(theta, op) for op in theta.operands}
-    _reg_inputs = [op.name for op in reads if op.is_input]
-    mma_inputs = _reg_inputs[:2]
-    mma_scales = _reg_inputs[2:]
-
-    # the entry names a block that ACTUALLY EXISTS.  A one-hop path (direct-to-register,
-    #) stages nothing through shared, so there is no prefetch to peel and NO prologue block;
-    drain_labels = [f"drain{i}" for i in range(M)] if (drain_peel and M > 0) else []
-    prog = Program(entry=("prologue" if pro_body is not None else "steady"),
-                   meta=_program_meta(theta, mainloop, M, red_names, free_axes,
-                                      mma_inputs, mma_scales, short_steps,
-                                      drain_steps=len(drain_labels)))
-    prog.meta["generation_regions"] = {
+    # Preserve the explicit short path as model-only evidence until the
+    # existing GIR fold pass proves it equivalent to the drain chain.
+    for index, (label, body) in enumerate(zip(short_labels, short_bodies)):
+        target = short_labels[index + 1] if index + 1 < len(short_labels) else "end"
+        gir.add_block(Block(
+            phase=label,
+            preds=("prologue",) if index == 0 else (short_labels[index - 1],),
+            succs=(target,),
+            body=[Mark("phase_boundary", {"phase": label}), *body],
+            term=Goto(target),
+            chunk_base=index,
+            model_only=True,
+        ))
+    gir.meta.update({
+        "peel_depth": (
+            len(drain_bodies)
+            if has_drain else _explicit_pipeline_depth(program)
+        ),
+        "drain_steps": len(drain_bodies),
+        "buffer_depths": getattr(profile, "depths", None),
+        "short_loop": {
+            "steps": len(drain_bodies),
+            "guards": tuple(
+                None if index == 0
+                else Pred("T", ">", Bound(const=index))
+                for index in range(len(short_bodies))
+            ),
+            "verdict": "unfolded",
+            "model_only": {
+                "blocks": tuple(short_labels),
+                "marks_dropped": 0,
+                "reason": "LoopIR short arm",
+            },
+        } if short_loops else None,
+    })
+    if profile is not None:
+        gir.meta.update(profile.as_meta())
+    gir.meta["generation_regions"] = {
         gen.id: {"operand": operand, "region": region}
         for (operand, region), gen in gens.items()
     }
-
-    first_drain = drain_labels[0] if drain_labels else "end"
-    short_labels = [f"short{i}" for i in range(len(short_steps))]
-    short_entry = short_labels[0] if short_labels else first_drain
-
-    # --- prologue ------------------------------------------------------------------------
-    _add_prologue_blocks(prog, theta, gens, reads, pro_body, guard_pred, short_entry, steady_loop)
-
-    # --- steady --------------------------------------------------------------------------
-    # ONE source loop, `n_copies` FALLTHROUGH-CHAINED blocks sharing ONE back-edge.
-    _add_steady_blocks(prog, theta, gens, reads, steady_loop, pro_body, first_drain, loop_copies)
-
-    # --- drain{0..M-1} -------------------------------------------------------------------
-    _add_drain_blocks(prog, theta, gens, reads, drain_peel, M, drain_labels, first_drain, short_entry, steady_loop, pro_body, loop_copies)
-
-    _add_short_blocks(prog, theta, gens, reads, short_steps, short_labels)
-
-    return prog
+    return gir
 
 
-def gir_text(prog) -> str:
-    """Render an ALREADY-BUILT GIR Program as text for the `OutputLoopIR` dump."""
-    if prog is None:
-        return "# GIR unavailable: this kernel did not go through the GIR lowering path\n"
-    try:  # deliberately deferred: this is an observability dump, so an import failure here
-        from .gir.render import render_gir, gir_counts   # must degrade to a note, not a crash
-    except Exception as e:
-        return f"# GIR unavailable (import error): {e}\n"
+def lower_to_gir(program: LoopProgram, profile=None) -> Program:
+    """Convert one finalized LoopIR Program into existing GIR."""
+
+    if not isinstance(program, LoopProgram):
+        raise TypeError("lower_to_gir expects a LoopIR Program")
+    if profile is not None:
+        profile.validate(program)
+    shape = _pipeline_shape(program)
+    if shape is not None:
+        return _lower_pipeline(program, shape, profile)
+    gir = Program()
+    regions = _region_bodies(program)
+    labels = [
+        tag if isinstance(tag, str) else tag.name.lower()
+        for tag, _body in regions
+    ]
+    if not labels:
+        labels = ["entry"]
+    gir.entry = labels[0]
+    gens = {}
+    deps = _dependency_map(program, profile)
+    issue_axes, source_issue_axes = _read_issue_axes(program, profile)
+    agent_environment = {
+        key: 0
+        for axis, _scope in program.agents
+        for key in (axis, axis.name)
+    }
+    for index, ((tag, body), label) in enumerate(zip(regions, labels)):
+        flattened = []
+        symbolic = []
+        _flatten(body, agent_environment, flattened, symbolic)
+        converted = [
+            _convert(
+                item.operation,
+                dict(item.environment),
+                gens,
+                deps,
+                profile=profile,
+                issue_axes=issue_axes.get(
+                    item.operation._identity,
+                    (),
+                ),
+                source_issue_axes=source_issue_axes,
+            )
+            for item in flattened
+        ]
+        next_label = labels[index + 1] if index + 1 < len(labels) else None
+        if symbolic:
+            if len(symbolic) != 1:
+                raise RuntimeError("lowering supports one symbolic loop per block")
+            loop = symbolic[0]
+            variable = next(
+                (
+                    param.name
+                    for param in loop.hi.free_params()
+                ),
+                "",
+            )
+            exit_label = next_label or f"{label}_exit"
+            term = LoopBack(Trips(variable), label, exit_label)
+            loop_flag = True
+        else:
+            term = Goto(next_label) if next_label else Return()
+            loop_flag = False
+        gir.add_block(Block(
+            phase=label,
+            loop=loop_flag,
+            body=converted,
+            term=term,
+            succs=tuple(
+                value for value in (
+                    getattr(term, "target", None),
+                    getattr(term, "body", None),
+                    getattr(term, "exit_target", None),
+                )
+                if value is not None
+            ),
+        ))
+        if symbolic and next_label is None:
+            gir.add_block(Block(
+                phase=f"{label}_exit",
+                body=[],
+                term=Return(),
+            ))
+    if profile is not None:
+        gir.meta.update(profile.as_meta())
+    gir.meta["generation_regions"] = {
+        gen.id: {"operand": operand, "region": region}
+        for (operand, region), gen in gens.items()
+    }
+    return gir
+
+
+def steady_chain(program) -> list:
+    """Return finalized steady GIR blocks in execution order."""
+    if "steady" not in program.blocks:
+        return []
+    chain = ["steady"]
+    while f"steady{len(chain)}" in program.blocks:
+        chain.append(f"steady{len(chain)}")
+    return chain
+
+
+def gir_text(program) -> str:
+    """Render an already-built GIR Program for diagnostics."""
+    if program is None:
+        return "# GIR unavailable: this kernel has no GIR program\n"
     try:
-        head = ("# GIR dump (observability; the finalized layer-2 program handed to L3)\n"
-                f"# counts = {gir_counts(prog)}\n")
-        return head + render_gir(prog) + "\n"
-    except Exception as e:
-        return f"# GIR render failed: {e}\n"
+        return (
+            "# GIR dump (observability; finalized layer-2 program)\n"
+            f"# counts = {gir_counts(program)}\n"
+            + render_gir(program)
+            + "\n"
+        )
+    except Exception as error:
+        return f"# GIR render failed: {error}\n"
 
 
-def build_gir(theta, mainloop=None, params=None, pipeline=None, loop_copies=1):
-    """R-ONCE: build the theta model, lower to GIR, and run the pass pipeline EXACTLY ONCE, returning
-    the finalized Program the phase forks emit from.
-
-    `loop_copies` unrolls the steady body into that many chained blocks; the emitter walks the
-    chain, so a count it is not told about would be built and silently dropped.
-    """
-    prog = lower_to_gir(theta, mainloop, loop_copies)
-    if params:
-        prog.params.update(params)
-    run_pipeline(prog, passes=(pipeline if pipeline is not None else default_pipeline()))
-    return prog
+__all__ = ["gir_text", "lower_to_gir", "steady_chain"]

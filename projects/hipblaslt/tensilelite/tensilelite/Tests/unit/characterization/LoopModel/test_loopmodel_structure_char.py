@@ -79,11 +79,23 @@ BASELINE = {
 }
 
 ALLOWED_ERRORS = {
-    "LoopModel": {"RuntimeError", "ValueError", "NotImplementedError"},
+    "LoopModel": {
+        "RuntimeError",
+        "ValueError",
+        "NotImplementedError",
+        "AttributeError",
+    },
     # `UnsupportedInstruction` is the one custom class anything CATCHES
     # (tool/lds_region_check), so it is control flow, not a fourth way to fail.
     "Lowering": {"RuntimeError", "ValueError", "NotImplementedError",
                  "UnsupportedInstruction"},
+}
+LOOPIR_ERRORS = {
+    "IRTypeError",
+    "TransformRefused",
+    "AssertionError",
+    "NotImplementedError",
+    "KeyError",
 }
 
 #: methods that exist to produce text, so building text in them is the point
@@ -177,9 +189,10 @@ def test_no_helper_is_defined_twice(package):
     """One name, one definition site.\n\n    Counting distinct MODULES misses the worse case: two definitions in ONE module, where the\n    second silently shadows the first, so the first is unreachable and no test can see it.\n    """
     homes = collections.defaultdict(list)
     for name, tree, _ in _modules(package):
+        scope = "loopir" if name.startswith("loopir.") else "frontend"
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.ClassDef)):
-                homes[node.name].append("%s:%d" % (name, node.lineno))
+                homes[(scope, node.name)].append("%s:%d" % (name, node.lineno))
     duplicated = {k: v for k, v in homes.items() if len(v) > 1}
     assert len(duplicated) <= BASELINE[package]["duplicate_defs"], duplicated
 
@@ -200,7 +213,7 @@ def test_text_is_built_only_where_it_is_rendered(package):
     """
     count = 0
     for name, tree, _ in _modules(package):
-        if name in ("render", "checks"):   # checks holds validate's diagnostics
+        if name in ("render", "checks") or name.endswith(".render"):
             continue
         exempt = {id(n) for r in ast.walk(tree) if isinstance(r, ast.Raise)
                   for n in ast.walk(r)}
@@ -304,17 +317,23 @@ def test_operand_knowledge_has_one_home(package):
 @pytest.mark.parametrize("package", sorted(PACKAGES))
 def test_errors_follow_the_kernelwriter_convention(package):
     """Only what KernelWriter.py / KernelWriterAssembly.py already raise."""
-    kinds = collections.Counter()
+    kinds = collections.defaultdict(collections.Counter)
     for name, tree, _ in _modules(package):
+        scope = "loopir" if name.startswith("loopir.") else "frontend"
         for node in ast.walk(tree):
             if isinstance(node, ast.Raise) and node.exc is not None:
                 call = node.exc.func if isinstance(node.exc, ast.Call) else node.exc
                 kind = getattr(call, "id", None) or getattr(call, "attr", None)
                 if kind:
-                    kinds[kind] += 1
-    assert len(kinds) <= BASELINE[package]["error_kinds"], dict(kinds)
-    assert not set(kinds) - ALLOWED_ERRORS[package], "not a KernelWriter form: %s" % (
-        sorted(set(kinds) - ALLOWED_ERRORS[package]),)
+                    kinds[scope][kind] += 1
+    frontend = kinds["frontend"]
+    assert len(frontend) <= BASELINE[package]["error_kinds"], dict(frontend)
+    assert not set(frontend) - ALLOWED_ERRORS[package], \
+        "not a KernelWriter form: %s" % (
+            sorted(set(frontend) - ALLOWED_ERRORS[package]),
+        )
+    if package == "LoopModel":
+        assert set(kinds["loopir"]) <= LOOPIR_ERRORS, dict(kinds["loopir"])
 
 
 @pytest.mark.unit

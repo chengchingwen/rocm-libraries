@@ -35,7 +35,7 @@ def loopModelSteadyPhase(writer, kernel, loopCopy) -> str:
   if not 0 <= int(loopCopy) < len(chain):
     raise RuntimeError(
         "UseLoopModel: unrolled loop copy %s has no GIR steady block -- the chain is %r.  The "
-        "scaffold's loop-copy count and `loopModelLoopCopies` have to name the same number."
+        "scaffold copy count must match LoopIR's derived steady ring period."
         % (loopCopy, chain))
   return chain[int(loopCopy)]
 

@@ -1,7 +1,7 @@
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
-"""UseLoopModel lowering: LoopIR to GIR and the associated analyses."""
+"""LoopIR to GIR lowering and diagnostics."""
 
-from .loopir_to_gir import build_gir, gir_text, lower_to_gir, steady_chain
+from .loopir_to_gir import gir_text, lower_to_gir, steady_chain
 
-__all__ = ["build_gir", "gir_text", "lower_to_gir", "steady_chain"]
+__all__ = ["gir_text", "lower_to_gir", "steady_chain"]
