@@ -45,7 +45,9 @@ def loopModelGirProgram(writer, kernel):
 
     theta, _S = loopModelTheta(writer, kernel)
     with namingSolution(writer, kernel):
-        decoded = decode_theta(theta)
+        # The explicit checker below is the single verification point. Avoid
+        # repeating its structural/profile checks in decode and lowering.
+        decoded = decode_theta(theta, verify=False)
         plans = decoded.profile.schedule
         missing = []
         for operand in theta.operands:
@@ -86,6 +88,7 @@ def loopModelGirProgram(writer, kernel):
             decoded.program,
             decoded.profile,
             include_dependencies=include_dependencies,
+            verify=False,
         )
         # PrefetchGL2 is a target-side GIR placement parameter, not LoopIR.
         prog.params[Gl2PrefetchRegions.PARAM] = kernel["PrefetchGL2"]

@@ -1674,43 +1674,105 @@ def _ring_walk(theta, operand, group, buffers, varying):
         ring=ring, buffers=buffers)
 
 
-def _register_timeline(theta, operand, group, buffers, distance, at=None):
-    """Walk TRIPS_WALKED trips, recording when each register is read and when it is loaded."""
+def _build_register_timeline(
+    theta,
+    operand,
+    group,
+    buffers,
+    distance,
+    at,
+):
+    """Build one register timeline with trip-invariant placement computed once."""
+
     varying = varying_axes(theta, operand)
     if not varying or not distance:
         return None
     walk = _ring_walk(theta, operand, group, buffers, varying)
     steps = _inner_steps(theta)
     per_trip = len(steps)
-    events = {}
     labels = operand.fragment.groups()
     group_number = labels.index(group) if group in labels else 0
-    for trip in range(TRIPS_WALKED):
-        loaded_positions = set()
-        for index, step in enumerate(steps):
-            time = trip * per_trip + index
-            coord = {name: step.get(name, 0) for name in walk.varying}
-            pinned = tuple(coord[name] for name in walk.pinned_axes)
-            reload_position = walk.reload_position(coord)
-            if group_index(theta, operand, coord) == group_number:
-                events.setdefault(walk.register_of(coord), []).append(
-                    Event(time, False, Generation(trip, reload_position, pinned)))
-
-            if at and any(step.get(name, 0) != value for name, value in at.items()):
-                continue
+    loaded_positions = set()
+    static_steps = []
+    for index, step in enumerate(steps):
+        coord = {
+            name: step.get(name, 0)
+            for name in walk.varying
+        }
+        pinned = tuple(coord[name] for name in walk.pinned_axes)
+        reload_position = walk.reload_position(coord)
+        read = (
+            (walk.register_of(coord), reload_position, pinned)
+            if group_index(theta, operand, coord) == group_number
+            else None
+        )
+        load = None
+        if not at or all(
+            step.get(name, 0) == value
+            for name, value in at.items()
+        ):
             position = walk.position(coord)
-            if position in loaded_positions:
-                continue  # first touch of this position issues the one read
-            loaded_positions.add(position)
+            if position not in loaded_positions:
+                loaded_positions.add(position)
+                reached = reload_position + distance
+                target = walk.advanced(coord, reached)
+                if group_index(theta, operand, target) == group_number:
+                    load = walk.register_of(target), reached, pinned
+        static_steps.append((index, read, load))
 
-            reached = reload_position + distance
-            target = walk.advanced(coord, reached)
-            if group_index(theta, operand, target) != group_number:
-                continue
-            events.setdefault(walk.register_of(target), []).append(
-                Event(time, True, Generation(trip + reached // max(1, walk.reload_span),
-                                             reached % max(1, walk.reload_span), pinned)))
-    return RegisterTimeline(events, tuple(steps), per_trip)
+    events = {}
+    reload_span = max(1, walk.reload_span)
+    for trip in range(TRIPS_WALKED):
+        for index, read, load in static_steps:
+            time = trip * per_trip + index
+            if read is not None:
+                register, position, pinned = read
+                events.setdefault(register, []).append(Event(
+                    time,
+                    False,
+                    Generation(trip, position, pinned),
+                ))
+            if load is not None:
+                register, reached, pinned = load
+                events.setdefault(register, []).append(Event(
+                    time,
+                    True,
+                    Generation(
+                        trip + reached // reload_span,
+                        reached % reload_span,
+                        pinned,
+                    ),
+                ))
+    return RegisterTimeline(
+        {
+            register: tuple(register_events)
+            for register, register_events in events.items()
+        },
+        tuple(steps),
+        per_trip,
+    )
+
+
+def _register_timeline(theta, operand, group, buffers, distance, at=None):
+    """Return the cached timeline for one fixed Theta placement request."""
+
+    key = (
+        operand.name,
+        group,
+        int(buffers),
+        int(distance),
+        tuple(sorted((at or {}).items())),
+    )
+    if key not in theta._register_timeline_cache:
+        theta._register_timeline_cache[key] = _build_register_timeline(
+            theta,
+            operand,
+            group,
+            buffers,
+            distance,
+            at,
+        )
+    return theta._register_timeline_cache[key]
 
 
 def _uses_before_load(timeline):

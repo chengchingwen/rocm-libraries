@@ -54,6 +54,69 @@ raise SystemExit(repr(loaded) if loaded else 0)
     subprocess.run([sys.executable, "-c", script], check=True)
 
 
+def test_public_functional_api_contains_primitives_not_decoder_policy():
+    for name in (
+        "rewrite",
+        "replace",
+        "insert",
+        "append",
+        "substitute_operation",
+        "rewrite_operation",
+        "defer",
+        "hoist",
+        "unroll",
+        "pipeline",
+    ):
+        assert hasattr(loopir, name)
+    for name in (
+        "resolve_constant_loop_conditions",
+        "move_guarded_operations_to_end",
+        "unroll_and_sort_operation_runs",
+        "rewrite_last_let",
+        "append_region",
+        "simplify_guards",
+    ):
+        assert not hasattr(loopir, name)
+    assert not any(name.startswith("_") for name in loopir.__all__)
+
+
+def test_scheduling_primitives_target_explicit_ast_nodes():
+    program, _wave, load0, load1, reads = _g3_program()
+    root = program.body
+    assert loopir.defer(program, root, (load0,)).body == (
+        root[0],
+        load1,
+        *reads,
+        load0,
+    )
+
+    program, _wave, load0, load1, reads = _g3_program()
+    root = program.body
+    assert loopir.hoist(program, root, (reads[-1],)).body == (
+        reads[-1],
+        root[0],
+        load0,
+        load1,
+        *reads[:-1],
+    )
+
+    axis = loopir.Axis("shape", 2)
+    loop = loopir.Loop(axis, 0, 2, (reads[0],))
+    program = loopir.Program(
+        (),
+        (*program.axes, axis),
+        program.operands,
+        (loop,),
+        program.agents,
+    )
+    loopir.unroll(program, loop)
+    assert tuple(
+        node.value.constant_value
+        for node in program.body
+        if isinstance(node, loopir.Let)
+    ) == (0, 1)
+
+
 def _g3_program():
     wave = loopir.Axis("wave", 2)
     tile = loopir.Axis("tile", 3)
@@ -189,6 +252,77 @@ def test_dependence_repr_does_not_embed_program_subtrees():
         len(repr(dependence))
         for dependence in loopir.dependences(program)
     ) < 4096
+
+
+def test_loopir_render_is_local_first_effect_last_with_named_axes():
+    program, _wave, _load0, _load1, _reads = _g3_program()
+    text = loopir.render(program)
+    assert text.index("local=A[tile=tile]") < text.index(
+        "effect=A[wave=wave, tile=tile]"
+    )
+    assert text.index("register=A[tile=0]") < text.index(
+        "effect=A[wave=wave, tile=0]"
+    )
+    assert "case " not in text
+
+
+def test_ordinary_schedule_keeps_guards_without_switches():
+    from Tensile.LoopModel import adapter
+    from Tensile.LoopModel.decoder import decode_theta
+
+    decoded = decode_theta(adapter.params_to_theta({
+        "MIWaveTile": [2, 2],
+        "MatrixInstruction": [16, 16, 128, 1, 1, 2, 2, 2, 2],
+        "DepthU": 128,
+        "ElemBytes": 1,
+        "LoopOrder": "KMN",
+        "PrefetchGlobalRead": 2,
+        "PrefetchLocalRead": 1,
+    }))
+    nodes = tuple(loopir.walk(decoded.program))
+    assert any(isinstance(node, loopir.Cond) for node in nodes)
+    assert not any(isinstance(node, loopir.Switch) for node in nodes)
+
+
+def test_three_half_ring_has_one_logical_rotation_switch():
+    from Tensile.LoopModel import adapter
+    from Tensile.LoopModel.decoder import decode_theta
+
+    decoded = decode_theta(adapter.params_to_theta({
+        "MIWaveTile": [2, 2],
+        "MatrixInstruction": [16, 16, 128, 1, 1, 2, 2, 2, 2],
+        "DepthU": 128,
+        "ElemBytes": 1,
+        "LoopOrder": "NKM",
+        "PrefetchGlobalRead": 2,
+        "PrefetchLocalRead": 2,
+        "VgprGroupA": 2,
+        "VgprAllocA": 3,
+    }))
+    switches = tuple(
+        node for node in loopir.walk(decoded.program)
+        if isinstance(node, loopir.Switch)
+    )
+    assert len({id(node) for node in switches}) == 1
+    switch = switches[0]
+    assert tuple(value for value, _body in switch.cases) == (0, 1, 2)
+    assert "_steady_copy" in switch.expression.render()
+    assert switch.expression.render().endswith("%3")
+    for _value, body in switch.cases:
+        sequence = tuple(
+            node for node in loopir.walk(body)
+            if isinstance(node, (loopir.Movement, loopir.Compute))
+        )
+        last_compute = max(
+            index for index, node in enumerate(sequence)
+            if isinstance(node, loopir.Compute)
+        )
+        assert any(
+            index > last_compute
+            and isinstance(node, loopir.Movement)
+            and node.op is loopir.DS_LOAD
+            for index, node in enumerate(sequence)
+        )
 
 
 def test_loopir_dependence_vocabulary_is_raw_and_war_only():
@@ -1299,7 +1433,7 @@ def test_cached_loopir_text_keeps_target_prefetch_and_vgpr_header():
     assert "register_depths:" in text
     assert "vgpr read_mode" in text
     assert "derived_dependences:" in text
-    assert "\nprogram\n" in text
+    assert "\nprogram params(" in text
 
 
 def test_two_chunk_global_prefetch_lowers_to_valid_gir():

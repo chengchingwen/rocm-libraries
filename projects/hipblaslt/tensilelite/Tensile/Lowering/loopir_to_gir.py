@@ -188,6 +188,33 @@ def _project_tile(tile, environment):
     return tuple(coord), tuple(runtime)
 
 
+def _project_reference(tile, environment, covers=(), omit_axes=()):
+    """Project one logical tile once for both sides of a Movement."""
+
+    projection_environment = environment
+    if covers:
+        projection_environment = dict(environment)
+        for expression in tile.indices:
+            for axis in expression.free_axes():
+                projection_environment.setdefault(axis, 0)
+    coordinate, runtime = _project_tile(tile, projection_environment)
+    omitted = {name for name, _extent in omit_axes}
+    if covers:
+        operand_extents = {
+            axis.name: axis.extent.constant_value
+            for axis in tile.operand.axes
+        }
+        omitted.update(
+            name for name, extent in covers
+            if operand_extents.get(name) == int(extent)
+        )
+    if omitted:
+        coordinate = tuple(
+            item for item in coordinate if item[0] not in omitted
+        )
+    return coordinate, runtime
+
+
 def _logical_coverage(tile, environment):
     bound = {
         id(key)
@@ -298,34 +325,15 @@ def _ref(
     prefetch_steps=0,
     issue_axes=(),
     omit_axes=(),
+    projection=None,
 ):
     space = level.name.lower()
     size_bytes = int(size_bytes_override or 0)
     size_regs = int(size_regs_override or 0)
-    projection_environment = dict(environment)
-    if covers:
-        for expression in tile.indices:
-            for axis in expression.free_axes():
-                projection_environment.setdefault(axis, 0)
-    coordinate, runtime = _project_tile(tile, projection_environment)
-    if omit_axes:
-        omitted = {name for name, _extent in omit_axes}
-        coordinate = tuple(
-            item for item in coordinate if item[0] not in omitted
-        )
-    if covers:
-        operand_extents = {
-            axis.name: axis.extent.constant_value
-            for axis in tile.operand.axes
-        }
-        fully_covered = {
-            name for name, extent in covers
-            if operand_extents.get(name) == int(extent)
-        }
-        coordinate = tuple(
-            item for item in coordinate
-            if item[0] not in fully_covered
-        )
+    coordinate, runtime = (
+        _project_reference(tile, environment, covers, omit_axes)
+        if projection is None else projection
+    )
     gir_tile = Tile(
         tile.operand.name,
         space,
@@ -995,6 +1003,42 @@ def _convert(
             and profile is not None
             else 0
         )
+        issue_axis_names = tuple(axis.name for axis in issue_axes)
+        projected_transfers = []
+        for index, transfer in indexed_transfers:
+            covers = (
+                explicit_coverage.get(index, ())
+                if local_read
+                else _logical_coverage(transfer.local_tile, environment)
+                if not tensor_load else ()
+            )
+            omit_axes = (
+                tuple(dict.fromkeys((
+                    *explicit_coverage.get(index, ()),
+                    *_copy_omit_axes(transfer.local_tile, environment),
+                )))
+                if tensor_load else ()
+            )
+            size_bytes = (
+                profile.bulk_bytes(transfer.local_tile.operand.name)
+                if tensor_load and profile is not None else 0
+            )
+            size_regs = (
+                profile.fragment_regs(transfer.local_tile.operand.name)
+                if not tensor_load and profile is not None else 0
+            )
+            projected_transfers.append((
+                transfer,
+                covers,
+                size_bytes,
+                size_regs,
+                _project_reference(
+                    transfer.local_tile,
+                    environment,
+                    covers,
+                    omit_axes,
+                ),
+            ))
         srcs = tuple(
             _ref(
                 transfer.local_tile,
@@ -1004,31 +1048,15 @@ def _convert(
                 shared_delta=source_delta,
                 absolute=absolute,
                 profile=profile,
-                size_bytes_override=(
-                    profile.bulk_bytes(transfer.local_tile.operand.name)
-                    if tensor_load and profile is not None else 0
-                ),
-                size_regs_override=(
-                    profile.fragment_regs(transfer.local_tile.operand.name)
-                    if not tensor_load and profile is not None else 0
-                ),
-                covers=(
-                    explicit_coverage.get(index, ())
-                    if local_read
-                    else _logical_coverage(transfer.local_tile, environment)
-                    if not tensor_load else ()
-                ),
+                size_bytes_override=size_bytes,
+                size_regs_override=size_regs,
+                covers=covers,
                 prefetch_steps=prefetch_steps,
-                issue_axes=tuple(axis.name for axis in issue_axes),
-                omit_axes=(
-                    tuple(dict.fromkeys((
-                        *explicit_coverage.get(index, ()),
-                        *_copy_omit_axes(transfer.local_tile, environment),
-                    )))
-                    if tensor_load else ()
-                ),
+                issue_axes=issue_axis_names,
+                projection=projection,
             )
-            for index, transfer in indexed_transfers
+            for transfer, covers, size_bytes, size_regs, projection
+            in projected_transfers
         )
         dsts = tuple(
             _ref(
@@ -1040,31 +1068,15 @@ def _convert(
                 shared_delta=destination_delta,
                 absolute=absolute,
                 profile=profile,
-                size_bytes_override=(
-                    profile.bulk_bytes(transfer.local_tile.operand.name)
-                    if tensor_load and profile is not None else 0
-                ),
-                size_regs_override=(
-                    profile.fragment_regs(transfer.local_tile.operand.name)
-                    if not tensor_load and profile is not None else 0
-                ),
-                covers=(
-                    explicit_coverage.get(index, ())
-                    if local_read
-                    else _logical_coverage(transfer.local_tile, environment)
-                    if not tensor_load else ()
-                ),
+                size_bytes_override=size_bytes,
+                size_regs_override=size_regs,
+                covers=covers,
                 prefetch_steps=prefetch_steps,
-                issue_axes=tuple(axis.name for axis in issue_axes),
-                omit_axes=(
-                    tuple(dict.fromkeys((
-                        *explicit_coverage.get(index, ()),
-                        *_copy_omit_axes(transfer.local_tile, environment),
-                    )))
-                    if tensor_load else ()
-                ),
+                issue_axes=issue_axis_names,
+                projection=projection,
             )
-            for index, transfer in indexed_transfers
+            for transfer, covers, size_bytes, size_regs, projection
+            in projected_transfers
         )
         operation_deps = _operation_dependencies(
             deps,
@@ -1709,16 +1721,20 @@ def lower_to_gir(
     profile=None,
     *,
     include_dependencies=True,
+    verify=True,
 ) -> Program:
-    """Convert one finalized LoopIR Program into existing GIR."""
+    """Convert finalized LoopIR to GIR, optionally checking its preconditions."""
 
     if not isinstance(program, LoopProgram):
         raise TypeError("lower_to_gir expects a LoopIR Program")
     if not isinstance(include_dependencies, bool):
         raise TypeError("include_dependencies must be a bool")
-    program.check()
-    if profile is not None:
-        profile.validate(program)
+    if not isinstance(verify, bool):
+        raise TypeError("lower_to_gir.verify must be a bool")
+    if verify:
+        program.check()
+        if profile is not None:
+            profile.validate(program)
     shape = _pipeline_shape(program)
     if shape is not None:
         return _lower_pipeline(

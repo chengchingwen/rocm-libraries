@@ -142,23 +142,32 @@ Program -> Program
 
 The core set includes:
 
+- `rewrite`
+- `replace`
+- `insert`
 - `append`
 - `partition_movement`
 - `fuse_movements`
+- `substitute_operation`
 - `rewrite_operation`
+
+Scheduling operations are named as scheduling actions:
+
 - `pipeline`
-- `defer_operations`
-- `prioritize_operations`
-- region extension/replacement
-- finite operation-run materialization
+- `defer`
+- `hoist`
+- `unroll`
 
 `compose(*transforms)` combines them left to right. Transformations mutate and
 return the same `Program`; semantic operation values remain immutable and
 preserve hidden logical identity where one operation gains multiple structural
 occurrences.
 
-Theta decoding uses the same API. It does not directly manufacture a private schedule object for
-lowering to interpret.
+Theta decoding selects concrete bodies, loops, and operation occurrences, then
+uses these primitives. Region choice, “last drain Let”, guard policy, ordering
+keys, and HalfPLR recognition remain decoder policy rather than public LoopIR
+APIs. Lowering does not reinterpret them or make additional scheduling
+decisions.
 
 Target projection facts are finalized against that exact Program. A later rewrite that changes a
 read tile while preserving its operation identity must re-finalize the decoded schedule; lowering

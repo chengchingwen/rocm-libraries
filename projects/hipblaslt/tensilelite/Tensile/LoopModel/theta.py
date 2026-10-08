@@ -443,6 +443,12 @@ class Theta:
     # The scaffold folds the drain into the steady loop and clamps the overrun loads, so the
     # model must say the same: all T chunks in the loop, no peeled ramp-out.
     suppress_no_load_loop: bool = False
+    _register_timeline_cache: dict = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self):
         """The axis nest is fixed at construction, so split it here rather than on every read.
