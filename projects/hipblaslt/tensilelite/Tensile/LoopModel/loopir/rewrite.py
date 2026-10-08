@@ -47,24 +47,23 @@ def _rebuild_children(node: Node, edit_body) -> tuple[Node, bool]:
     if isinstance(node, Loop):
         body = edit_body(node.body)
         changed = body is not node.body
-        return (
-            Loop(
-                node.axis, node.lo, node.hi, body,
-            ) if changed else node,
-            changed,
-        )
+        if changed:
+            node.body = body
+        return node, changed
     if isinstance(node, Cond):
         then_body = edit_body(node.then_body)
         else_body = edit_body(node.else_body)
         changed = then_body is not node.then_body or else_body is not node.else_body
-        return (
-            Cond(node.pred, then_body, else_body) if changed else node,
-            changed,
-        )
+        if changed:
+            node.then_body = then_body
+            node.else_body = else_body
+        return node, changed
     if isinstance(node, Let):
         body = edit_body(node.body)
         changed = body is not node.body
-        return Let(node.axis, node.value, body) if changed else node, changed
+        if changed:
+            node.body = body
+        return node, changed
     if isinstance(node, Switch):
         cases = tuple((value, edit_body(body)) for value, body in node.cases)
         otherwise = edit_body(node.otherwise)
@@ -72,10 +71,10 @@ def _rebuild_children(node: Node, edit_body) -> tuple[Node, bool]:
             new_body is not old_body
             for (_value, new_body), (_old_value, old_body) in zip(cases, node.cases)
         )
-        return (
-            Switch(node.expression, cases, otherwise) if changed else node,
-            changed,
-        )
+        if changed:
+            node.cases = cases
+            node.otherwise = otherwise
+        return node, changed
     return node, False
 
 
@@ -83,7 +82,7 @@ def rewrite(
     program: Program,
     rule: Callable[[Node], Node | tuple[Node, ...]],
 ) -> Program:
-    """Apply one post-order rule recursively and return a new immutable Program."""
+    """Apply one post-order rule recursively, mutating and returning Program."""
 
     if not isinstance(program, Program):
         raise IRTypeError("rewrite expects a Program")

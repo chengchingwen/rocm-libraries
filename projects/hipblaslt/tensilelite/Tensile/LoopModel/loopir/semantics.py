@@ -765,9 +765,6 @@ def _constant_candidates(effect, index, constants):
 def dependences(program: Program) -> tuple[Dependence, ...]:
     """Derive completion-to-issue RAW/WAR relations from Program effects."""
 
-    cached = program._analysis.get("dependences")
-    if cached is not None:
-        return cached
     all_effects = effects(program)
     domains = {
         id(effect): effect_domain(effect)
@@ -847,7 +844,6 @@ def dependences(program: Program) -> tuple[Dependence, ...]:
                 if domain is not None:
                     result.append(Dependence(complete, issue, domain))
     result = tuple(result)
-    program._analysis["dependences"] = result
     return result
 
 
@@ -913,17 +909,8 @@ def required_dependences(
 ) -> tuple[Dependence, ...]:
     """Derived completion-to-issue waits after logical completion coalescing."""
 
-    cached_derived = program._analysis.get("dependences")
-    cached_required = program._analysis.get("required_dependences")
     if derived is None:
-        if cached_required is not None:
-            return cached_required
         derived = dependences(program)
-        cache_result = True
-    else:
-        cache_result = derived is cached_derived
-        if cache_result and cached_required is not None:
-            return cached_required
     waiters = {}
     result = []
     operation_regions = {}
@@ -1022,8 +1009,6 @@ def required_dependences(
             result.append(dependence)
             prior.append(dependence)
     result = tuple(result)
-    if cache_result:
-        program._analysis["required_dependences"] = result
     return result
 
 

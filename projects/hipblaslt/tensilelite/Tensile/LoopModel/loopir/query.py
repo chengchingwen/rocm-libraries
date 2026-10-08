@@ -28,7 +28,7 @@ Path = tuple[tuple[str, int], ...]
 
 @dataclass(frozen=True)
 class Occurrence:
-    """One structural node occurrence in one immutable Program."""
+    """One structural node occurrence in one Program snapshot."""
 
     node: Node = field(repr=False)
     path: Path
