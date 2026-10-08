@@ -35,10 +35,10 @@ class GirFrameContractImportPass final : public Pass {
 
     PreservedAnalyses run(Function& function, PassContext&, AnalysisManager&) override {
         if (!contract || !contract->loaded)
-            report_fatal_error(
+            STINKY_UNREACHABLE(
                 "GIR frame pipeline enabled but the module carries no frame contract");
         if (actionTagCount == 0)
-            report_fatal_error(
+            STINKY_UNREACHABLE(
                 "GIR frame contract imported but rocisa conversion produced no action tags");
         function.setStructMetaData<GirFrameContract>(kGirFrameContractKey, contract);
         return PreservedAnalyses::none();

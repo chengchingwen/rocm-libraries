@@ -176,9 +176,9 @@ PotentialMap buildPotentials(Function& function, const GirFrameAnalysis::Result&
 
         const GirHazardFenceCover cover = enclosingFences(frames, hazard, alsoFences);
         if (!cover.hasHazardPath)
-            report_fatal_error("Cross-agent GIR hazard has no exact frame-graph path");
+            STINKY_UNREACHABLE("Cross-agent GIR hazard has no exact frame-graph path");
         if (cover.hasUnfencedPath)
-            report_fatal_error("Cross-agent GIR hazard has an unfenced exact frame-graph path");
+            STINKY_UNREACHABLE("Cross-agent GIR hazard has an unfenced exact frame-graph path");
         for (const GirHazardFenceOwner& owner : cover.owners)
             addPotential(owner.anchor, owner.anchorNode.frame, owner.producerToAnchorGap);
     }
@@ -602,7 +602,7 @@ RequirementMap simulate(Function& function, const GirFrameAnalysis::Result& fram
 int& counterField(WaitCountSpec& spec, CounterKind counter) {
     if (counter == CK_DS) return spec.dsCount;
     if (counter == CK_Tensor) return spec.tensorCount;
-    report_fatal_error("GIR frame wait plan asked for an unsupported counter field");
+    STINKY_UNREACHABLE("GIR frame wait plan asked for an unsupported counter field");
 }
 
 void tightenField(WaitCountSpec& spec, CounterKind counter, int wait) {
@@ -737,7 +737,7 @@ RequirementMap closeDecisions(Function& function, const GirFrameAnalysis::Result
         if (next == decisions) return requirements;
         decisions = std::move(next);
     }
-    report_fatal_error("GIR finite-frame counter flow did not close at its frame-node bound");
+    STINKY_UNREACHABLE("GIR finite-frame counter flow did not close at its frame-node bound");
 }
 
 WaitInsertionPlan materializePlan(const DecisionMap& decisions,
@@ -787,11 +787,12 @@ void validateNoRedundantWaits(Function& function, WaitInsertionPlan& plan) {
             int& bound = upperBound[counter];
             if (bound >= 0 && wait >= bound) {
                 if (validate)
-                    report_fatal_error(
-                        std::string("GIR counter flow produced redundant ") +
-                        (counter == CK_DS ? "dscnt" : "tensorcnt") +
-                        " wait=" + std::to_string(wait) + " after bound=" + std::to_string(bound) +
-                        " in " + (anchor ? anchor->getParent()->getLabel() : block.getLabel()));
+                    STINKY_UNREACHABLE(
+                        (std::string("GIR counter flow produced redundant ") +
+                         (counter == CK_DS ? "dscnt" : "tensorcnt") +
+                         " wait=" + std::to_string(wait) + " after bound=" + std::to_string(bound) +
+                         " in " + (anchor ? anchor->getParent()->getLabel() : block.getLabel()))
+                            .c_str());
                 return;
             }
             if (bound < 0 || wait < bound) bound = wait;
@@ -1022,7 +1023,7 @@ WaitInsertionPlan buildGirFrameWaitPlan(
         auto decision = decisions.find(site);
         if (decision == decisions.end() || decision->second == WaitCountSpec::kUnused ||
             decision->second > summary.strictest)
-            report_fatal_error("GIR finite-frame counter flow produced an unsafe wait decision");
+            STINKY_UNREACHABLE("GIR finite-frame counter flow produced an unsafe wait decision");
     }
     for (const auto& [site, wait] : decisions) {
         if (wait == WaitCountSpec::kUnused) continue;

@@ -148,14 +148,14 @@ HazardState walkHazards(const GirFrameNode& node,
                     for (const auto& [prior, distance] : slot->second.reads) {
                         auto occurrence = registry.find(prior);
                         if (occurrence == registry.end())
-                            report_fatal_error(
+                            STINKY_UNREACHABLE(
                                 "GirFrameHazardAnalysis lost a live reader occurrence");
                         (*emit)(*occurrence->second, *touch, distance);
                     }
                 for (const auto& [prior, distance] : slot->second.writes) {
                     auto occurrence = registry.find(prior);
                     if (occurrence == registry.end())
-                        report_fatal_error("GirFrameHazardAnalysis lost a live writer occurrence");
+                        STINKY_UNREACHABLE("GirFrameHazardAnalysis lost a live writer occurrence");
                     (*emit)(*occurrence->second, *touch, distance);
                 }
             }
@@ -438,7 +438,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         if (!text || text->empty()) return result;
         std::string problem;
         parsed = parseGirFrameContract(*text, &problem);
-        if (!parsed) report_fatal_error("GirFrameAnalysis: " + problem);
+        if (!parsed) STINKY_UNREACHABLE(("GirFrameAnalysis: " + problem).c_str());
         encoded = parsed.get();
     }
     if (!encoded->loaded) return result;
@@ -470,7 +470,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
                 if (fresh) {
                     for (const GirAccessData& touch : action->accesses) {
                         if (touch.ring < 1)
-                            report_fatal_error("GirFrameAnalysis: access ring must be positive");
+                            STINKY_UNREACHABLE("GirFrameAnalysis: access ring must be positive");
                         spec->second.accesses.push_back(result.contract.accesses.size());
                         result.contract.accesses.push_back(GirAccessSpec{
                             action->actionId, touch.isWrite, touch.genId, touch.ring, touch.gdelta,
@@ -491,7 +491,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         }
     }
     if (!result.contract.actions.empty() && result.actionInstructions.empty())
-        report_fatal_error(
+        STINKY_UNREACHABLE(
             "GirFrameAnalysis: frame contract imported but no GirActionData survived lowering");
 
     struct IncomingValue {
@@ -537,7 +537,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
 
     for (const GirFrameIncomingSpec& incoming : result.contract.incomings) {
         if (!result.contract.generations.contains(incoming.genId))
-            report_fatal_error("GirFrameAnalysis: INCOMING names unknown generation");
+            STINKY_UNREACHABLE("GirFrameAnalysis: INCOMING names unknown generation");
         auto destinations = anchorEntries.find(incoming.destinationAction);
         const bool source = realizedAnchors.contains(incoming.sourceAction);
         const bool destination = destinations != anchorEntries.end();
@@ -547,9 +547,9 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         if (!source && !destination) continue;
         if (!namedActions.contains(incoming.sourceAction) ||
             !namedActions.contains(incoming.destinationAction))
-            report_fatal_error("GirFrameAnalysis: INCOMING names unknown action");
+            STINKY_UNREACHABLE("GirFrameAnalysis: INCOMING names unknown action");
         if (!source || !destination)
-            report_fatal_error(
+            STINKY_UNREACHABLE(
                 "GirFrameAnalysis: INCOMING action anchor has no physical realization");
         const int ring = result.contract.generations.at(incoming.genId).ring;
         int value = incoming.value % ring;
@@ -558,7 +558,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
             auto [stored, inserted] = incomingValues[block][incoming.sourceAction].emplace(
                 incoming.genId, IncomingValue{value, incoming.relative});
             if (!inserted && stored->second != IncomingValue{value, incoming.relative})
-                report_fatal_error(
+                STINKY_UNREACHABLE(
                     "GirFrameAnalysis: conflicting INCOMING values for physical block");
         }
     }
@@ -611,7 +611,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         } else if (chosen && !tied) {
             genLoops[genId] = chosen;
         } else if (!votes.empty()) {
-            report_fatal_error("GirFrameAnalysis: generation maps ambiguously to ST loops");
+            STINKY_UNREACHABLE("GirFrameAnalysis: generation maps ambiguously to ST loops");
         } else if (std::any_of(result.contract.incomings.begin(), result.contract.incomings.end(),
                                [genId](const GirFrameIncomingSpec& in) {
                                    return in.genId == genId && in.relative;
@@ -619,7 +619,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
             // Dropping it silently leaves its phase at 0 for the whole function, so every access
             // collapses onto `gdelta % ring` and distinct buffers alias onto one storage id.
             // A generation rotates exactly when a relative incoming advances it; a guard has none.
-            report_fatal_error("GirFrameAnalysis: rotating generation maps to no ST loop");
+            STINKY_UNREACHABLE("GirFrameAnalysis: rotating generation maps to no ST loop");
         }
     }
 
@@ -684,7 +684,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
             GirFrameNode next = advanceNode(node, succ);
             if (frameSets[succ].insert({next.frame, next.incomingAction}).second) {
                 if (++stateCount > kMaxFrameStates)
-                    report_fatal_error("GirFrameAnalysis: finite frame graph exceeds bound");
+                    STINKY_UNREACHABLE("GirFrameAnalysis: finite frame graph exceeds bound");
                 work.push_back(std::move(next));
             }
         }
@@ -723,7 +723,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
                 int generation = access.absoluteGeneration;
                 if (generation < 0) {
                     if (access.genId < 0)
-                        report_fatal_error(
+                        STINKY_UNREACHABLE(
                             "GirFrameAnalysis: relative shared access has no generation");
                     generation = frame.phaseOf(access.genId) + access.gdelta;
                 }
@@ -878,7 +878,7 @@ GirFrameHazardAnalysis::Result GirFrameHazardAnalysis::run(Function& function,
     for (const GirAccessOccurrence& occurrence : frames.occurrences) {
         LiveTouchKey key{occurrence.frame, {occurrence.inst, occurrence.accessIndex}};
         if (!registry.emplace(key, &occurrence).second)
-            report_fatal_error("GirFrameHazardAnalysis found a duplicate dynamic touch");
+            STINKY_UNREACHABLE("GirFrameHazardAnalysis found a duplicate dynamic touch");
         occurrences[{occurrence.block, occurrence.frame}].push_back(&occurrence);
     }
     for (auto& [node, touches] : occurrences) {
