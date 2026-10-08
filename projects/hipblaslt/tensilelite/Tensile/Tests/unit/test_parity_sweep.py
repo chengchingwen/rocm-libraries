@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 """ULM parity sweep — the DYNAMIC half of `LoopModel/docs/PARITY_LEDGER.md`."""
 
+import inspect
 import itertools
 
 import pytest
@@ -11,9 +12,22 @@ sys.path.insert(0, os.path.dirname(__file__))
 from gir_fixtures import mi_inputs
 from Tensile.LoopModel import adapter
 from Tensile.LoopModel.adapter import kernel_to_params
-from Tensile.Lowering.loopir_to_gir import build_gir
+from Tensile.LoopModel.decoder import decode_theta
+from Tensile.Lowering.loopir_to_gir import lower_to_gir
+from Tensile.Lowering.gir.passes import pipeline as gir_pipeline
+from Tensile.Lowering.gir.passes import run_pipeline
 from Tensile.Lowering.gir.verify_dataflow import check_plan
 from Tensile.Lowering.gir.analyses.region_increment import walk_violations
+
+
+def build_gir(theta, loop_copies=None):
+    decoded = decode_theta(theta)
+    program = lower_to_gir(decoded.program, decoded.profile)
+    run_pipeline(program, passes=gir_pipeline())
+    if loop_copies is not None:
+        from Tensile.Lowering import steady_chain
+        assert len(steady_chain(program)) == max(1, int(loop_copies))
+    return program
 
 
 class _Bytes:
@@ -155,26 +169,15 @@ def test_pgr3_decode_plan_is_clean():
 # loop_copies: GIR unrolls the steady body into a chain, and the emitter walks
 # it. A count the emitter is not told about would be built and dropped (#410).
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("copies", [1, 2, 3])
-def test_steady_chain_is_built_and_readable(copies):
-    from Tensile.Lowering import steady_chain
-    k = _kernel(_mxf8(), _mi("fp8", (2, 2), (2, 2)), 2, 1, "KMN", 0, 0, 1)
-    k["SuppressNoLoadLoop"] = copies > 1
-    prog = build_gir(adapter.params_to_theta(kernel_to_params(k)), loop_copies=copies)
-    chain = steady_chain(prog)
-    assert chain == ["steady"] + ["steady%d" % i for i in range(1, copies)]
-    # Every physical copy decrements/tests the counter; only the last continuation is a back-edge.
-    assert all(prog.blocks[c].body for c in chain)
-    terms = [type(prog.blocks[c].term).__name__ for c in chain]
-    assert terms == (["LoopBack"] if copies == 1 else ["LoopCopy"] * copies)
-    assert not check_plan(prog)
+def test_loop_copy_count_is_not_a_lowering_input():
+    assert "loop_copies" not in inspect.signature(lower_to_gir).parameters
 
 
 @pytest.mark.parametrize("vg,va,copies", [(-1, -1, 1), (2, 4, 1), (2, 2, 1), (2, 3, 3)])
 def test_loop_copies_are_read_off_the_rings_not_off_a_parameter(vg, va, copies):
     """A ring the trip closes needs one block; `VG=2, VA=3` -- 1.5 buffers -- needs three."""
-    from Tensile.Components.LoopModel.Program import loopModelLoopCopies
-    from Tensile.LoopModel.schedule import BufferDepths
+    from Tensile.LoopModel.decoder import decode_theta
+    from Tensile.LoopModel.loopir import Let, walk
     k = _kernel(_mxf8(), _mi("fp8", (4, 4), (1, 1)), 1, 0, "KMN", 0, 0, 1)
     k["ClusterLocalRead"] = 0
     for side in ("A", "B"):
@@ -182,7 +185,12 @@ def test_loop_copies_are_read_off_the_rings_not_off_a_parameter(vg, va, copies):
         k["VgprGroup" + side] = vg if side == "A" else -1
         k["VgprAlloc" + side] = va if side == "A" else -1
     theta = adapter.params_to_theta(kernel_to_params(k))
-    assert loopModelLoopCopies(theta, BufferDepths(theta, include_shared=False)) == copies
+    program = decode_theta(theta).program
+    steps = tuple(
+        node for node in walk(program)
+        if isinstance(node, Let) and node.axis.name == "_steady_copy"
+    )
+    assert (len(steps) or 1) == copies
 
 
 def test_three_copy_frame_contract_has_backedge_incoming_and_guard_requirements():
@@ -306,8 +314,8 @@ def test_deep_b_ring_keeps_full_plr_and_a_complete_three_copy_frame(vg, va, plr)
             (anchors["steady2"], anchors["steady"])} <= required_edges
 
 
-def test_the_covering_invariant_runs_on_an_unrolled_loop():
-    """Per-copy exits preserve the remainder: an n-copy shell still covers exactly T-M."""
+def test_the_covering_invariant_uses_the_derived_steady_period():
+    """The materialized steady period covers exactly T."""
     from Tensile.Lowering.gir.analysis import AnalysisManager
     from Tensile.Lowering.gir.analyses.loop_shape import (
         Linear, LoopShape, reduction_coverage_violations)
@@ -315,16 +323,15 @@ def test_the_covering_invariant_runs_on_an_unrolled_loop():
     k = _kernel(_mxf8(), _mi("fp8", (2, 2), (2, 2)), 2, 1, "KMN", 0, 0, 1)
     k["SuppressNoLoadLoop"] = True
     th = adapter.params_to_theta(kernel_to_params(k))
-    for copies in (1, 2, 3):
-        prog = build_gir(th, loop_copies=copies)
-        loops = AnalysisManager().get(LoopShape(), prog)
-        steady = [lp for lp in loops if lp.header == "steady"]
-        assert steady, f"no steady loop at loop_copies={copies}"
-        lp = steady[0]
-        assert lp.per_trip == 1
-        assert lp.trips == Linear(1, 0)
-        assert lp.covers == lp.trips
-        assert not reduction_coverage_violations(prog, loops), copies
+    prog = build_gir(th)
+    loops = AnalysisManager().get(LoopShape(), prog)
+    steady = [lp for lp in loops if lp.header == "steady"]
+    assert steady
+    lp = steady[0]
+    assert lp.per_trip == 1
+    assert lp.trips == Linear(1, 0)
+    assert lp.covers == lp.trips
+    assert not reduction_coverage_violations(prog, loops)
 
 
 # ---------------------------------------------------------------------------
@@ -543,19 +550,6 @@ def test_halfplr_lowers_drain_free_over_its_three_copies(half_plr):
     assert not cov and not plan
 
 
-def test_a_drain_emitted_under_suppression_is_a_structural_error():
-    """The P1 arm that keeps the two halves of the fix honest: the IR must not build both."""
-    from Tensile.LoopModel.checks import _check_root_shape
-    from Tensile.LoopModel.ir import Loop, Peel
-
-    ir = [Peel(kind="prologue", axis="iter", k=2, body=[]),
-          Loop(axis="iter", trip=None, outer=True, bodies=[[]]),
-          Peel(kind="drain", axis="iter", k=2, body=[])]
-    errs = []
-    _check_root_shape(errs, ir, no_drain=True)
-    assert errs and "suppresses the no-load loop" in errs[0]
-
-
 # ---------------------------------------------------------------------------
 # A region that LEADS the ring cannot also separate generations.  `ring_block_width`
 # gives each region a share of the depth; when that share falls to one slot the
@@ -593,7 +587,8 @@ def test_the_shallow_half_keeps_a_ring_digit_when_the_region_leads():
     assert op.fragment.ring_depths == {"g0": 3}
     assert g.split_unit_divisor(th, op) == 2
     slot = g.ring_slot(th, op, "g0", g.group_ring_depth(th, op, "g0", depths))
-    assert slot is not None and slot.digits[2]
+    assert slot is not None
+    assert "M_split" in {axis.name for axis in slot.free_axes()}
 
 
 @pytest.mark.parametrize("wio, sb", [(1, 0), (2, 0), (5, 0), (5, 1), (6, 0), (6, 1)])
@@ -736,15 +731,22 @@ def test_gir_semantic_checker_failure_is_always_a_value_error(monkeypatch):
         "VgprGroupB": -1,
         "VgprAllocB": -1,
     }
-    fake_prog = SimpleNamespace()
+    fake_prog = SimpleNamespace(params={})
 
     monkeypatch.setattr(
         program, "loopModelTheta",
         lambda *_args: (SimpleNamespace(operands=[]), object()))
-    monkeypatch.setattr(program, "emit_mainloop", lambda *_args: object())
-    monkeypatch.setattr(program, "loopModelLoopCopies", lambda *_args: 1)
+    monkeypatch.setattr(
+        program,
+        "decode_theta",
+        lambda *_args: SimpleNamespace(program=object(), profile=object()),
+    )
+    monkeypatch.setattr(program, "validate_loopir", lambda *_args: [])
     monkeypatch.setattr(program, "gir_pipeline", lambda: ())
-    monkeypatch.setattr(program, "build_gir", lambda *_args, **_kwargs: fake_prog)
+    monkeypatch.setattr(
+        program, "lower_to_gir", lambda *_args, **_kwargs: fake_prog
+    )
+    monkeypatch.setattr(program, "run_pipeline", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(program, "check_plan", lambda _prog: ["deliberate checker finding"])
 
     with pytest.raises(ValueError, match="semantic check"):

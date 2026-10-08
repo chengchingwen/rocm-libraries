@@ -8,8 +8,11 @@ complete: a theta authored this way emits the LoopIR the adapter's does for the 
 """
 
 from Tensile.LoopModel import (
-    Axis, Fragment, Global, Operand, Shared, Theta, Trajectory, render_theta,
+    Axis, Fragment, Global, Operand, Shared, Theta, Trajectory,
+    render_geometry,
 )
+from Tensile.LoopModel.decoder import decode_theta
+from Tensile.LoopModel.loopir import render
 
 
 def staged(name, free_axis, broadcast_axes, copy_ahead=1, read_ahead=0):
@@ -49,7 +52,8 @@ def main():
                          ("KMN, PGR2, PLR1", gemm(pgr=2, plr=1))):
         print("=" * 78)
         print(label)
-        print(render_theta(theta))
+        print(render_geometry(theta))
+        print(render(decode_theta(theta).program))
 
 
 if __name__ == "__main__":

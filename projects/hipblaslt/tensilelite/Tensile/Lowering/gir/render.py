@@ -10,7 +10,6 @@ compiler reads it back.
 from __future__ import annotations
 
 from .nodes import Move, Mma, Mark, Goto, CondGoto, CondChain, LoopBack, LoopCopy, Return
-from ...LoopModel.ir import OBLIGATION_KINDS
 from .analysis import AnalysisManager
 from .analyses.frame_map import FrameMap
 
@@ -71,7 +70,12 @@ def _dep_str(inst):
         return ""
     parts = []
     for dep, counter, kind, scope in deps:
-        mark = "" if kind in OBLIGATION_KINDS else " !UNKNOWN-KIND"
+        mark = "" if kind in (
+            "RAW-residency",
+            "crossing-RAW",
+            "rotation-WAR",
+            "inplace-WAR",
+        ) else " !UNKNOWN-KIND"
         # `scope` is load-bearing: a "block" dep asserts this edge needs a cross-wave fence, and
         # `verify.check_block_scope_covered` fails the build when no hazard edge backs the claim.
         sc = "" if scope == "wave" else f"/{scope}"

@@ -139,16 +139,22 @@ def decode(kernel):
     is captured rather than propagated, so a config that legitimately refuses still pins a golden.
     """
     from Tensile.LoopModel import adapter
-    from Tensile.LoopModel.emit import emit_mainloop
+    from Tensile.LoopModel.decoder import decode_theta
+    from Tensile.LoopModel.loopir import dependences
     from Tensile.LoopModel.render import render_ir
-    from Tensile.Lowering import build_gir
+    from Tensile.Lowering import lower_to_gir
+    from Tensile.Lowering.gir.passes import pipeline, run_pipeline
     from Tensile.Lowering.gir.render import render_gir
     try:
         theta = adapter.params_to_theta(adapter.kernel_to_params(kernel))
-        emitted = emit_mainloop(theta)
-        obligations = _emitted(emitted, "obligations", "ledger")
-        ledger = "\n".join(repr(o) for o in sorted(obligations, key=repr))
-        return render_ir(_emitted(emitted, "ir")), render_gir(build_gir(theta)), ledger
+        decoded = decode_theta(theta)
+        edges = "\n".join(
+            repr(edge)
+            for edge in sorted(dependences(decoded.program), key=repr)
+        )
+        gir = lower_to_gir(decoded.program, decoded.profile)
+        run_pipeline(gir, passes=pipeline())
+        return render_ir(decoded.program), render_gir(gir), edges
     except Exception as exc:                       # a refusal is behaviour worth pinning
         return ("%s: %s" % (type(exc).__name__, str(exc).split("\n")[0]),) * 3
 
@@ -203,7 +209,12 @@ def _semantic_value(value, identities=None):
     if dataclasses.is_dataclass(value):
         tag = _SEMANTIC_TAGS.get(type(value).__name__, type(value).__name__)
         fields = tuple(
-            recur(getattr(value, item.name))
+            identities.setdefault(
+                id(getattr(value, item.name)),
+                len(identities),
+            )
+            if item.name == "_identity"
+            else recur(getattr(value, item.name))
             for item in dataclasses.fields(value)
             if item.name not in _DISPLAY_FIELDS
         )
@@ -223,23 +234,89 @@ def _semantic_value(value, identities=None):
     return repr(value)
 
 
+def _effect_domain_value(domain):
+    return (
+        tuple(
+            (axis.name, lower.render(), upper.render())
+            for axis, lower, upper in domain.loops
+        ),
+        tuple(
+            (axis.name, value.render())
+            for axis, value in domain.bindings
+        ),
+        tuple(predicate.render() for predicate in domain.predicates),
+        tuple(axis.name for axis in domain.local_axes),
+        tuple((axis.name, scope.name) for axis, scope in domain.agent_axes),
+    )
+
+
+def _dependence_value(dependence, identities):
+    def effect(value):
+        operation = value.operation
+        endpoint = value.endpoint
+        endpoint_value = tuple(
+            (item.name, getattr(endpoint, item.name))
+            for item in dataclasses.fields(endpoint)
+        )
+        return (
+            identities[id(operation._identity)],
+            value.occurrence.path,
+            type(endpoint).__name__,
+            endpoint_value,
+            value.kind.name,
+            value.level.name,
+            value.tile.operand.name,
+            tuple(expression.render() for expression in value.tile.indices),
+            value.predicate.render(),
+        )
+
+    domain = dependence.domain
+    return (
+        dependence.kind.name,
+        effect(dependence.complete),
+        effect(dependence.issue),
+        _effect_domain_value(domain.complete_domain),
+        _effect_domain_value(domain.issue_domain),
+        tuple(
+            (equality.complete.render(), equality.issue.render())
+            for equality in domain.equalities
+        ),
+        tuple(
+            (constraint.axis.name, constraint.distance)
+            for constraint in domain.iteration_constraints
+        ),
+        domain.conservative,
+    )
+
+
+def _dependence_values(program):
+    from Tensile.LoopModel.loopir import dependences, operations
+
+    identities = {
+        id(operation._identity): index
+        for index, operation in enumerate(operations(program))
+    }
+    return tuple(
+        _dependence_value(dependence, identities)
+        for dependence in dependences(program)
+    )
+
+
 def semantic_digest(kernel):
     """Hash schedule, LoopIR, ledger, and GIR structure independent of rendering."""
     from Tensile.LoopModel import adapter
-    from Tensile.LoopModel.emit import emit_mainloop
-    from Tensile.Lowering import build_gir
+    from Tensile.LoopModel.decoder import decode_theta
+    from Tensile.Lowering import lower_to_gir
+    from Tensile.Lowering.gir.passes import pipeline, run_pipeline
     try:
         theta = adapter.params_to_theta(adapter.kernel_to_params(kernel))
-        emitted = emit_mainloop(theta)
-        program = build_gir(theta, mainloop=emitted)
+        decoded = decode_theta(theta)
+        program = lower_to_gir(decoded.program, decoded.profile)
+        run_pipeline(program, passes=pipeline())
         value = (
-            _emitted(emitted, "depths", "S"),
-            _emitted(emitted, "minimum_depths", "floor"),
-            _emitted(emitted, "ir"),
-            _emitted(emitted, "obligations", "ledger"),
-            _emitted(emitted, "obligations_discharged", "ledger_empty"),
-            _emitted(emitted, "undischarged"),
-            _emitted(emitted, "tensor_instructions_per_iteration", "tensor_per_kiter"),
+            decoded.profile.depths,
+            decoded.program,
+            _dependence_values(decoded.program),
             program,
         )
     except Exception as exc:

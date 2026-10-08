@@ -8,8 +8,8 @@ from dataclasses import dataclass, field, replace
 from itertools import product
 
 from . import traversal as geometry
-from .ir import COPY, Expr, Placement, REVERSE, Space
-from .theta import group_labels, path_direction
+from .loopir import TENSOR_LOAD
+from .theta import group_labels
 from .traversal import (CLOBBER, _divisors, _inner_steps, _summation_ring_axis,
                         axis_strides, broadcast_width, chunks_crossed,
                         coverage_tile_cap, free_axes, group_live_peak,
@@ -82,7 +82,7 @@ def copy_must_be_first(theta, operand, depths, plans=None):
     prefetch_steps = plans.want(operand)
     crossed = max((chunks_crossed(theta, operand, plans.steps(operand, group, prefetch_steps))
                    for group in operand.fragment.groups()), default=0)
-    copy_offset = theta.off_at(operand.name, COPY, outer)
+    copy_offset = theta.off_at(operand.name, TENSOR_LOAD, outer)
     # Equality can lead only when the copy lands in a different LDS slot.  At S_shared <= off it
     # wraps onto the slab still being read and remains a WAR that must trail the reads.
     distinct_slot = lds_buffers(theta, operand) > copy_offset
@@ -115,7 +115,7 @@ def chunk_crossing_violations(theta, depths, plans=None):
             crossed = chunks_crossed(theta, operand, steps)
             if crossed <= 0:
                 continue
-            copy_offset = theta.off_at(operand.name, COPY, outer)
+            copy_offset = theta.off_at(operand.name, TENSOR_LOAD, outer)
             need = crossed if copy_must_be_first(theta, operand, depths, plans) else crossed + 1
             if copy_offset < need:
                 bad.append((operand.name, steps, crossed, copy_offset, need))
@@ -148,14 +148,14 @@ class PeelDepths:
 
     def copy_off(self) -> dict:
         return {name: depth for (name, role, level), depth in self.offsets.items()
-                if role == COPY and level == self.chunk}
+                if role is TENSOR_LOAD and level == self.chunk}
 
 
 def _read_offsets(theta):
     """Every non-zero `off` theta carries, split by sign: forward peels and rejected deferrals."""
     offsets, deferrals = {}, {}
     for operand in theta.operands:
-        if operand.movements and path_direction(operand) == REVERSE:
+        if operand.movements and operand.is_output:
             raise RuntimeError(
                 f"operand {operand.name!r} has a REVERSE trajectory "
                 f"({[f'{h.src}->{h.dst}' for h in operand.movements]}): its hops run register->shared"
@@ -164,11 +164,11 @@ def _read_offsets(theta):
                 f"read-back leg, so a role-keyed peel would look correct and run backwards.")
         for hop in operand.movements:
             for axis in theta.ord:
-                depth = theta.off_at(operand, hop.role, axis.name)
+                depth = theta.off_at(operand, hop.op, axis.name)
                 if depth > 0:
-                    offsets[(operand.name, hop.role, axis.name)] = depth
+                    offsets[(operand.name, hop.op, axis.name)] = depth
                 elif depth < 0:
-                    deferrals[(operand.name, hop.role, axis.name)] = depth
+                    deferrals[(operand.name, hop.op, axis.name)] = depth
     return offsets, deferrals
 
 
@@ -203,7 +203,7 @@ def peel_depths(theta, depths, plans=None):
 class BoundaryHoist:
     """One cross-level boundary term."""
     op: str
-    role: str
+    role: object
     level: str
     home: str
     delta: int
@@ -232,7 +232,14 @@ def boundary_hoists(theta, pd):
             continue  # (3) unrolled home -> ordinary prefetch
         out.append(BoundaryHoist(op=opname, role=role, level=level, home=home, delta=delta,
                                  coords=_leading_inner_coords(home, delta)))
-    return sorted(out, key=lambda hop: (names.index(hop.level), hop.op, hop.role))
+    return sorted(
+        out,
+        key=lambda hop: (
+            names.index(hop.level),
+            hop.op,
+            hop.role.__name__,
+        ),
+    )
 
 
 def _all_varying_coords(theta, operand, varying):
@@ -240,7 +247,10 @@ def _all_varying_coords(theta, operand, varying):
     axes = [axis for axis in theta.inner_axes() if axis.name in varying]
     names = [axis.name for axis in axes]
     return [dict(zip(names, values))
-            for values in product(*[range(max(1, axis.extent)) for axis in axes])]
+            for values in product(*[
+                range(max(1, int(axis.extent.constant_value)))
+                for axis in axes
+            ])]
 
 def preloaded_tiles(theta, operand, prefetch_steps, depths=None, plans=None):
     """The leading physical tiles covered by the realized operand prefetch."""
@@ -413,9 +423,12 @@ def _read_placement(theta, operand, depths, prefetch_steps=0, groups=None, plans
         # The source generation is the chunk the read's position falls in, whatever the ring
         # rotates on: a shift past the reload span reads the NEXT chunk's LDS buffer.
         carried = position_terms(strides, read_coverage(theta, operand))
-        src_slot = Expr(var=outer_var, mod=max(1, lds_depth),
-                        carry=(carried, shift, reload_span))
-    return Placement(space=Space.REGISTER, slots=tuple(slots), src_slot=src_slot)
+        outer_axis = next(axis for axis in theta.ord if axis.name == outer_var)
+        src_slot = (
+            outer_axis
+            + geometry._position(theta, carried, shift) // reload_span
+        ) % max(1, lds_depth)
+    return tuple(slots), src_slot
 
 
 def resolve_coverage(theta, depths=None) -> dict:
@@ -425,18 +438,27 @@ def resolve_coverage(theta, depths=None) -> dict:
 
 
 def _generation_map(theta, operand, depths, prefetch_steps):
-    placement = _read_placement(theta, operand, depths, prefetch_steps=prefetch_steps)
+    slots, source = _read_placement(
+        theta,
+        operand,
+        depths,
+        prefetch_steps=prefetch_steps,
+    )
     varying = list(presence_axes(theta, operand))
     chunk = theta.summation_chunk_name()
     out = {}
-    for combo in product(*[range(max(1, axis.extent)) for axis in varying]):
+    for combo in product(*[
+        range(max(1, int(axis.extent.constant_value)))
+        for axis in varying
+    ]):
         env = {chunk: 0}
         env.update({axis.name: v for axis, v in zip(varying, combo)})
-        source = placement.src_slot
-        generation = source.eval(env) if hasattr(source, "eval") else source
-        slots = tuple(slot.eval(env) if hasattr(slot, "eval") else slot
-                      for _group, slot in placement.slots)
-        out[tuple(zip((axis.name for axis in varying), combo))] = (generation, slots)
+        generation = source.evaluate(env) if source is not None else source
+        values = tuple(slot.evaluate(env) for _group, slot in slots)
+        out[tuple(zip((axis.name for axis in varying), combo))] = (
+            generation,
+            values,
+        )
     return out, varying
 
 
@@ -445,7 +467,10 @@ def transfer_coverage_axes(theta, operand, hop, depths) -> tuple:
     cap = coverage_tile_cap(theta, operand, hop)
     if cap <= 1:
         return ()
-    free = [axis for axis in free_axes(theta, operand) if axis.extent > 1]
+    free = [
+        axis for axis in free_axes(theta, operand)
+        if int(axis.extent.constant_value) > 1
+    ]
     if not free:
         return ()
     steps = theta.off_of(operand, hop, prefetch_axis_name(theta, operand))
@@ -456,18 +481,25 @@ def transfer_coverage_axes(theta, operand, hop, depths) -> tuple:
         inner = free[-depth]  # the one that may take a factor
         outer_width = 1
         for axis in whole:
-            outer_width *= max(1, axis.extent)
+            outer_width *= max(1, int(axis.extent.constant_value))
         if outer_width > cap:
             break
         room = cap // outer_width
-        factor = max((f for f in _divisors(inner.extent) if f <= room), default=1)
+        inner_extent = int(inner.extent.constant_value)
+        factor = max(
+            (f for f in _divisors(inner_extent) if f <= room),
+            default=1,
+        )
         if factor <= 1 and not whole:
             break  # nothing to merge at this depth
-        candidate = tuple([(axis.name, axis.extent) for axis in whole]
+        candidate = tuple([
+            (axis.name, int(axis.extent.constant_value))
+            for axis in whole
+        ]
                           + ([(inner.name, factor)] if factor > 1 else []))
         if is_uniform_over(generations, candidate) and outer_width * factor > covered:
             best, covered = candidate, outer_width * factor
-        if factor < inner.extent:
+        if factor < inner_extent:
             break
     return best
 
@@ -656,7 +688,7 @@ class BufferDepths:
 
 
 def derive_S(theta) -> BufferDepths:
-    """Derive canonical per-region VA onto fragment placements."""
+    """Derive per-region VA onto fragment placements."""
     steps = _inner_steps(theta)
     for operand in theta.operands:
         if operand.is_output:

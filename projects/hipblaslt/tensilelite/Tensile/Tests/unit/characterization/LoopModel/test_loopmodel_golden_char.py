@@ -79,6 +79,20 @@ def test_matrix_digest(order):
         pytest.skip("goldens for %s written" % order)
 
 
+def test_semantic_value_normalizes_loopir_identities():
+    from Tensile.LoopModel.loopir import Axis, Operand, Program
+
+    def program():
+        axis = Axis("tile", 1)
+        operand = Operand("A", (axis,))
+        return Program((), (axis,), (operand,), ())
+
+    first = repr(matrix._semantic_value(program()))
+    second = repr(matrix._semantic_value(program()))
+    assert first == second
+    assert "0x" not in first
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("name", sorted(REPRESENTATIVE))
 def test_representative_ir(name):

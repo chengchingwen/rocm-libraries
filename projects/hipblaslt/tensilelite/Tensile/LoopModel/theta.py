@@ -5,23 +5,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from .ir import COPY, FORWARD, HOP_COUNTER, READ, REVERSE, STORE, Space
+from .loopir import (
+    DS_LOAD,
+    GLOBAL,
+    GLOBAL_LOAD,
+    REGISTER,
+    SHARED,
+    STORE,
+    TENSOR_LOAD,
+    Axis,
+)
 
 
 def group_labels(count: int) -> tuple:
     """Register groups are indexed, not named: group i is `g{i}` for every count."""
     return tuple(f"g{i}" for i in range(count))
-
-@dataclass(frozen=True)
-class Axis:
-    """One tiled traversal axis: a name and its extent."""
-    name: str
-    extent: int = 0  # static trip count; >0 = inner (unrolled), 0 = outer (runtime loop)
-
-    @property
-    def is_outer(self) -> bool:
-        return self.extent == 0
-
 
 @dataclass
 class Fragment:
@@ -43,7 +41,7 @@ class Fragment:
     va_includes_regions: bool = False #: explicit CLR0 VA is the total, not per-region, count
     va_time_shares_regions: bool = False #: that VA is reused when regions execute sequentially
 
-    space = Space.REGISTER
+    space = REGISTER
 
     def __post_init__(self):
         if isinstance(self.parts, int):
@@ -100,7 +98,7 @@ class Global:
     kind: str = "load"
     offsets: dict = field(default_factory=dict)
 
-    space = Space.GLOBAL
+    space = GLOBAL
 
 
 @dataclass
@@ -114,7 +112,7 @@ class Shared:
     kind: str = "tdm"
     offsets: dict = field(default_factory=dict)
 
-    space = Space.SHARED
+    space = SHARED
 
 
 @dataclass(frozen=True)
@@ -150,7 +148,7 @@ class Movement:
     @property
     def kind(self) -> str:
         return getattr(self.destination, "kind", None) or (
-            "tdm" if (self.src, self.dst) == (Space.GLOBAL, Space.SHARED) else "load")
+            "tdm" if self.op is TENSOR_LOAD else "load")
 
     @property
     def split(self) -> int:
@@ -158,18 +156,25 @@ class Movement:
 
     @property
     def is_bulk(self) -> bool:
-        return self.kind == "tdm"
+        return self.op is TENSOR_LOAD
 
     @property
-    def role(self) -> str:
-        try:
-            return HOP_ROLE[(self.src, self.dst)]
-        except KeyError:
-            raise RuntimeError(f"movement {self.src}->{self.dst} has no operation role") from None
-
-    @property
-    def counter(self):
-        return HOP_COUNTER[(self.src, self.dst)]
+    def op(self):
+        if (self.src, self.dst) == (GLOBAL, SHARED):
+            return TENSOR_LOAD
+        if (self.src, self.dst) == (SHARED, REGISTER):
+            return DS_LOAD
+        if (self.src, self.dst) == (GLOBAL, REGISTER):
+            return GLOBAL_LOAD
+        if (self.src, self.dst) in (
+            (REGISTER, SHARED),
+            (SHARED, GLOBAL),
+            (REGISTER, GLOBAL),
+        ):
+            return STORE
+        raise RuntimeError(
+            f"movement {self.src}->{self.dst} has no LoopIR operation"
+        )
 
     @property
     def offsets(self) -> dict:
@@ -240,35 +245,6 @@ class Trajectory:
         self._derive()
 
 
-# --------------------------------------------------------------------------- The OP-CLASS role
-
-HOP_ROLE = {
-    (Space.GLOBAL,   Space.SHARED):   COPY,
-    (Space.SHARED,   Space.REGISTER): READ,
-    (Space.GLOBAL,   Space.REGISTER): READ,
-    (Space.REGISTER, Space.SHARED):   STORE,
-    (Space.SHARED,   Space.GLOBAL):   STORE,
-    (Space.REGISTER, Space.GLOBAL):   STORE,
-}
-
-
-# --------------------------------------------------------------------------- TRAJECTORY SENSE --
-
-_SPACE_RANK = {Space.GLOBAL: 0, Space.SHARED: 1, Space.REGISTER: 2}
-
-
-def path_direction(op) -> str:
-    """Return the trajectory's direction."""
-    sense = REVERSE if op.is_output else FORWARD
-    ranks = [_SPACE_RANK.get(placement.space) for placement in op.trajectory.placements]
-    net = [b - a for a, b in zip(ranks, ranks[1:]) if a is not None and b is not None]
-    if net and ((sense == FORWARD) != (sum(net) > 0)):
-        raise RuntimeError(
-            f"operand {op.name!r} is role={op.role!r}, but its trajectory "
-            f"{[placement.space for placement in op.trajectory.placements]} runs the other way")
-    return sense
-
-
 @dataclass
 class Operand:
     """Tensor identity and its placement trajectory."""
@@ -277,6 +253,7 @@ class Operand:
     trajectory: Trajectory
     elem_bytes: int = 2
     role: str = "input"
+    effect: object = None
 
     @property
     def is_output(self) -> bool:
@@ -342,6 +319,23 @@ class Operand:
 
     def has_bulk(self) -> bool:
         return any(movement.is_bulk for movement in self.movements)
+
+    def validate_trajectory(self):
+        ranks = {GLOBAL: 0, SHARED: 1, REGISTER: 2}
+        values = [
+            ranks.get(placement.space)
+            for placement in self.trajectory.placements
+        ]
+        delta = sum(
+            right - left
+            for left, right in zip(values, values[1:])
+            if left is not None and right is not None
+        )
+        if delta and ((delta > 0) == self.is_output):
+            raise RuntimeError(
+                f"operand {self.name!r} is role={self.role!r}, but its "
+                "trajectory runs the other way"
+            )
 
 
 # ---  ------------------------------------------------------------------------------------------------
@@ -437,8 +431,12 @@ def readahead_level_of(inner, region_names, broadcast_names=(), rotation_regions
         return None
     span = 1
     for axis in inner[at + 1:]:
-        span *= max(1, int(axis.extent))
-    return inner[at].name, max(1, int(inner[at].extent)), span
+        span *= max(1, int(axis.extent.constant_value))
+    return (
+        inner[at].name,
+        max(1, int(inner[at].extent.constant_value)),
+        span,
+    )
 
 
 @dataclass(frozen=True)
@@ -486,9 +484,20 @@ class Theta:
         nest, which runs this again.
         """
         self.ord = tuple(self.ord)
-        self.inner = tuple(axis for axis in self.ord if not axis.is_outer)
-        self.outer = tuple(axis for axis in self.ord if axis.is_outer)
-        extents = {axis.name: max(1, int(axis.extent)) for axis in self.inner}
+        for operand in self.operands:
+            operand.validate_trajectory()
+        self.inner = tuple(
+            axis for axis in self.ord
+            if axis.extent.constant_value != 0
+        )
+        self.outer = tuple(
+            axis for axis in self.ord
+            if axis.extent.constant_value == 0
+        )
+        extents = {
+            axis.name: max(1, int(axis.extent.constant_value))
+            for axis in self.inner
+        }
         self._inner_axes = tuple(axis for axis in self.inner
                                  if extents[axis.name] > 1
                                  or extents.get(self._TILE_REGION.get(axis.name, ""), 1) > 1)
@@ -588,8 +597,13 @@ class Theta:
         broadcast = frozenset({name for name in declared if name in walked}
                               | {name for name in self.wave_served_axes() if name in walked})
         presence = tuple(axis for axis in self._inner_axes if axis.name not in broadcast)
-        return broadcast, presence, tuple((axis.name, max(1, int(axis.extent)))
-                                          for axis in presence)
+        return broadcast, presence, tuple(
+            (
+                axis.name,
+                max(1, int(axis.extent.constant_value)),
+            )
+            for axis in presence
+        )
 
     def _derive_summation_names(self, presence) -> frozenset:
         """The axes the output is NOT present on: the reduction axes."""
@@ -644,20 +658,23 @@ class Theta:
     def free_extent(self, mode_name):
         for axis in self.ord:
             if axis.name == mode_name:
-                return axis.extent
+                return int(axis.extent.constant_value)
         return 1
 
-    def off_at(self, opname, role, level_name) -> int:
+    def off_at(self, opname, operation, level_name) -> int:
         operand = self.op(opname) if isinstance(opname, str) else opname
-        movement = next((item for item in operand.movements if item.role == role), None)
+        movement = next(
+            (item for item in operand.movements if item.op is operation),
+            None,
+        )
         return int(movement.offsets.get(level_name, 0)) if movement is not None else 0
 
     def off_of(self, operand, hop, level_name) -> int:
-        return self.off_at(operand, hop.role, level_name)
+        return self.off_at(operand, hop.op, level_name)
 
     def movement_offsets(self) -> dict:
         return {
-            (operand.name, movement.role, level): int(depth)
+            (operand.name, movement.op, level): int(depth)
             for operand in self.operands
             for movement in operand.movements
             for level, depth in movement.offsets.items()
