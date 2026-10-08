@@ -123,14 +123,10 @@ def loopModelTarget(writer, kernel):
     ReadPhi / ReadRho  the carrier group as the two numbers naming it: Φ, the movement instances
                        one cooperative instruction merges, and ρ, the sub-agent span they are
                        distributed over.  θ derives the carrier/slot map from them.
-    RegisterBudget     the hardware ceiling less RESERVE, θ's footprint being A/B/C/MXS only.
 
   Every input is read at the FIRST θ build, `loopModelRegBuffers` from `_initKernel`, so it comes
   from the Solution or from pure geometry rather than from later `writer.states` fields.
   """
-  _regCaps = getattr(writer.states, "regCaps", None) or {}
-  _maxVgpr = int(_regCaps.get("MaxVgpr", 0) or 0)
-
   elems, phi, rho = {}, {}, {}
   pt = kernel["ProblemType"]
   for tc, tile01, mx in (("MXSA", 0, "MXBlockA"), ("MXSB", 1, "MXBlockB")):
@@ -154,6 +150,4 @@ def loopModelTarget(writer, kernel):
     partner = 2 if span else 0
     phi[tc] = int(tiles)
     rho[tc] = int(partner)
-  _RESERVE = 32                                     # G2L staging, addresses, temporaries
-  return {"ReadVectorElems": elems, "ReadPhi": phi, "ReadRho": rho,
-          "RegisterBudget": (_maxVgpr - _RESERVE) if _maxVgpr else None}
+  return {"ReadVectorElems": elems, "ReadPhi": phi, "ReadRho": rho}

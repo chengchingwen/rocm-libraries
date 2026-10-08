@@ -15,9 +15,8 @@ __all__ = [
     "MmaShape", "plan_transfers", "mma_shape",
     "frag_regs", "free_tiles", "k_tiles",
     "operand_buffer_regs", "load_regs", "operand_tile_bytes",
-    "operand_generations", "operand_footprint_regs",
-    "render_ir", "render_geometry",
-    "render_schedule", "render_operand_facts",
+    "operand_footprint_regs",
+    "render_geometry", "render_schedule", "render_operand_facts",
     "validate_loopir", "agent_assignment_consistency",
     "DecodedSchedule", "ThetaTargetProfile", "decode_theta",
     "traversal",
@@ -33,13 +32,11 @@ _MODULE_EXPORTS = {
     "traversal": (
         "MmaShape", "plan_transfers", "mma_shape", "frag_regs", "free_tiles",
         "k_tiles", "group_live_peak", "group_ring_size", "operand_buffer_regs",
-        "load_regs", "operand_tile_bytes", "operand_generations",
-        "operand_footprint_regs",
+        "load_regs", "operand_tile_bytes", "operand_footprint_regs",
     ),
     "checks": ("validate_loopir", "agent_assignment_consistency"),
     "render": (
-        "render_ir", "render_geometry", "render_schedule",
-        "render_operand_facts",
+        "render_geometry", "render_schedule", "render_operand_facts",
     ),
     "decoder": ("DecodedSchedule", "ThetaTargetProfile", "decode_theta"),
 }

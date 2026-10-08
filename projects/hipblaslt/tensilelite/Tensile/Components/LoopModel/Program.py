@@ -2,13 +2,13 @@
 # SPDX-License-Identifier: MIT
 """Build and cache the finalized GIR program for a LoopModel kernel."""
 
+from ...Common.GlobalParameters import globalParameters
 from ...LoopModel import traversal as geometry
 from ...LoopModel.checks import validate_loopir
 from ...LoopModel.decoder import decode_theta
 from ...LoopModel.loopir import required_dependences
 from ...LoopModel.loopir import render as render_loopir
 from ...LoopModel.render import render_geometry
-from ...LoopModel.schedule import Schedule
 from ...Lowering import gir_text
 from ...Lowering.loopir_to_gir import lower_to_gir
 from ...Lowering.gir import check_plan
@@ -23,13 +23,24 @@ from .Theta import loopModelTheta, namingSolution
 def loopModelGirProgram(writer, kernel):
     """Build and cache the finalized GIR program for one kernel."""
     key = getattr(writer.states, "kernelName", None) or id(kernel)
+    verify_ir = bool(globalParameters.get("LoopModelIRVerify", True))
+    include_dependencies = verify_ir or bool(
+        globalParameters.get("OutputLoopIR", False)
+    )
     cache = getattr(writer, "_loopModelGirCache", None)
     if cache is not None and cache[0] == key:
-        return cache[1]
+        cached_verified = cache[2] if len(cache) > 2 else True
+        cached_dependencies = cache[3] if len(cache) > 3 else True
+        if (
+            (not verify_ir or cached_verified)
+            and (not include_dependencies or cached_dependencies)
+        ):
+            return cache[1]
 
     theta, _S = loopModelTheta(writer, kernel)
     with namingSolution(writer, kernel):
-        plans = Schedule(theta, _S)
+        decoded = decode_theta(theta)
+        plans = decoded.profile.schedule
         missing = []
         for operand in theta.operands:
             if operand.name not in ("A", "B") or operand.trajectory.shared_read is None:
@@ -51,29 +62,51 @@ def loopModelGirProgram(writer, kernel):
             raise ValueError(
                 "UseLoopModel: nonzero PrefetchLocalRead lost all prefetch — "
                 + "; ".join(missing))
-        decoded = decode_theta(theta)
-        ir_violations = validate_loopir(decoded.program, decoded.profile)
-        if ir_violations:
-            raise ValueError(
-                "UseLoopModel: LoopIR validation failed (%d violation(s)) — "
-                "repair the frontend, do not bypass the checker.\n  %s"
-                % (
-                    len(ir_violations),
-                    "\n  ".join(ir_violations[:8]),
-                )
+        if verify_ir:
+            ir_violations = validate_loopir(
+                decoded.program,
+                decoded.profile,
             )
-        prog = lower_to_gir(decoded.program, decoded.profile)
+            if ir_violations:
+                raise ValueError(
+                    "UseLoopModel: LoopIR validation failed (%d violation(s)) — "
+                    "repair the frontend, do not bypass the checker.\n  %s"
+                    % (
+                        len(ir_violations),
+                        "\n  ".join(ir_violations[:8]),
+                    )
+                )
+        prog = lower_to_gir(
+            decoded.program,
+            decoded.profile,
+            include_dependencies=include_dependencies,
+        )
         # PrefetchGL2 is a target-side GIR placement parameter, not LoopIR.
         prog.params[Gl2PrefetchRegions.PARAM] = kernel["PrefetchGL2"]
-        run_pipeline(prog, passes=gir_pipeline())
-        violations = check_plan(prog)
-        if violations:
-            raise ValueError(
-                "UseLoopModel: the GIR plan fails its own semantic check (%d violation(s)) — "
-                "a decoder/lowering defect to repair, do NOT gate it off.\n  %s"
-                % (len(violations), "\n  ".join(violations[:8])))
-    writer._loopModelMainloopCache = (key, decoded.program)
-    writer._loopModelGirCache = (key, prog)
+        run_pipeline(
+            prog,
+            passes=gir_pipeline(),
+            verify=verify_ir,
+        )
+        if verify_ir:
+            violations = check_plan(prog)
+            if violations:
+                raise ValueError(
+                    "UseLoopModel: the GIR plan fails its own semantic check (%d violation(s)) — "
+                    "a decoder/lowering defect to repair, do NOT gate it off.\n  %s"
+                    % (len(violations), "\n  ".join(violations[:8])))
+    kinds = {}
+    if include_dependencies:
+        for dependence in required_dependences(decoded.program):
+            kind = dependence.kind.name
+            kinds[kind] = kinds.get(kind, 0) + 1
+    writer._loopModelMainloopCache = (key, decoded.program, kinds)
+    writer._loopModelGirCache = (
+        key,
+        prog,
+        verify_ir,
+        include_dependencies,
+    )
     return prog
 
 
@@ -103,10 +136,13 @@ def loopModelIrTextCached(writer):
     try:
         theta, _depths = theta_cache[1]
         program = mainloop_cache[1]
-        kinds = {}
-        for dependence in required_dependences(program):
-            name = dependence.kind.name
-            kinds[name] = kinds.get(name, 0) + 1
+        if len(mainloop_cache) > 2:
+            kinds = mainloop_cache[2]
+        else:
+            kinds = {}
+            for dependence in required_dependences(program):
+                kind = dependence.kind.name
+                kinds[kind] = kinds.get(kind, 0) + 1
         summary = ", ".join(
             f"{name}={count}"
             for name, count in sorted(kinds.items())

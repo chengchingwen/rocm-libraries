@@ -292,8 +292,6 @@ def _ref(
     shared_delta=0,
     absolute=None,
     profile=None,
-    operand_override=None,
-    unit_index_override=None,
     size_bytes_override=None,
     size_regs_override=None,
     covers=(),
@@ -302,15 +300,8 @@ def _ref(
     omit_axes=(),
 ):
     space = level.name.lower()
-    operand_name = operand_override or tile.operand.name
-    size_bytes, size_regs = (
-        profile.size_of(tile.operand.name)
-        if profile is not None else (0, 0)
-    )
-    if size_bytes_override is not None:
-        size_bytes = int(size_bytes_override)
-    if size_regs_override is not None:
-        size_regs = int(size_regs_override)
+    size_bytes = int(size_bytes_override or 0)
+    size_regs = int(size_regs_override or 0)
     projection_environment = dict(environment)
     if covers:
         for expression in tile.indices:
@@ -336,7 +327,7 @@ def _ref(
             if item[0] not in fully_covered
         )
     gir_tile = Tile(
-        operand_name,
+        tile.operand.name,
         space,
         coordinate,
         tuple(
@@ -373,8 +364,6 @@ def _ref(
             covers=covers,
             size_bytes=size_bytes,
         )
-    if operand_override == "acc":
-        return Ref(gir_tile)
     if space == "register":
         logical_coordinate = dict(coordinate)
         logical_coordinate.update({
@@ -420,8 +409,6 @@ def _ref(
             if profile is not None else (0, 0, 1)
         )
         unit_index = (
-            int(unit_index_override)
-            if unit_index_override is not None else
             profile.unit_index(tile.operand.name, coordinate)
             if profile is not None else 0
         )
@@ -449,25 +436,15 @@ def _ref(
 
 def _dependency_map(program, profile=None):
     result = {}
-    derived = (
-        profile.cached_dependences(program)
-        if profile is not None
-        and hasattr(profile, "cached_dependences")
-        else None
-    )
-    if derived is None:
-        derived = dependences(program)
+    derived = dependences(program)
+    required = required_dependences(program, derived)
     distributed = (
         profile.as_meta().get("agent_distributed", {})
         if profile is not None else {}
     )
     operations_by_identity = {}
-    for occurrence in occurrences(program):
-        operation = occurrence.node
-        if isinstance(operation, (Movement, Compute)):
-            operations_by_identity.setdefault(
-                operation._identity, operation
-            )
+    for operation in operations(program):
+        operations_by_identity[operation._identity] = operation
     movement_units = {}
     for operation in operations_by_identity.values():
         if not isinstance(operation, Movement) \
@@ -515,11 +492,9 @@ def _dependency_map(program, profile=None):
             ),
         ))
 
-    for dependence in required_dependences(program, derived):
+    for dependence in required:
         kind = dependence.kind.name
         operand = dependence.complete.tile.operand.name
-        if kind == "WAW":
-            continue
         completion = dependence.complete.operation.completion
         counter = (
             f"C_{completion.name}"
@@ -755,6 +730,92 @@ def _project_explicit_transfers(operation, environment):
     return tuple(projected), coverage
 
 
+def _convert_compute(
+    operation,
+    environment,
+    gens,
+    deps,
+    profile,
+    source_issue_axes,
+):
+    coord = {}
+    for tile in operation.reads + operation.writes:
+        for axis, expression in zip(tile.operand.axes, tile.indices):
+            if axis.extent.free_params():
+                continue
+            value = _evaluate(expression, environment)
+            if value is not None:
+                coord.setdefault(axis.name, value)
+    if profile is not None:
+        order = tuple(profile.as_meta().get("inner_axis_order", ()))
+        coord = {
+            name: coord[name]
+            for name in order
+            if name in coord
+        } | {
+            name: value
+            for name, value in coord.items()
+            if name not in order
+        }
+    srcs = tuple(
+        _ref(
+            tile,
+            REGISTER,
+            environment,
+            gens,
+            profile=profile,
+            size_bytes_override=0,
+            size_regs_override=(
+                profile.fragment_regs(tile.operand.name)
+                if profile is not None else 0
+            ),
+            issue_axes=tuple(
+                axis.name
+                for axis in (source_issue_axes or {}).get(
+                    tile.operand.name,
+                    (),
+                )
+            ),
+        )
+        for tile in operation.reads
+    )
+    dsts = tuple(
+        (
+            Ref(Tile("acc", "register", tuple(coord.items())))
+            if tile.operand.role.name == "OUTPUT"
+            else _ref(
+                tile,
+                REGISTER,
+                environment,
+                gens,
+                destination=True,
+                profile=profile,
+                size_bytes_override=0,
+                size_regs_override=(
+                    profile.fragment_regs(tile.operand.name)
+                    if profile is not None else 0
+                ),
+            )
+        )
+        for tile in operation.writes
+    )
+    return Mma(
+        srcs,
+        dsts,
+        coord=tuple(coord.items()),
+        block=(
+            "*".join(
+                f"{name}(k)"
+                for name in (
+                    profile.as_meta().get("mma_inputs", ())
+                    if profile is not None else ()
+                )
+            )
+        ),
+        deps=_operation_dependencies(deps, operation, environment),
+    )
+
+
 def _convert(
     operation,
     environment,
@@ -892,82 +953,13 @@ def _convert(
                 )
             ) if local_read else (),
         )
-    coord = {}
-    for tile in operation.reads + operation.writes:
-        for axis, expression in zip(tile.operand.axes, tile.indices):
-            if axis.extent.free_params():
-                continue
-            value = _evaluate(expression, environment)
-            if value is not None:
-                coord.setdefault(axis.name, value)
-    if profile is not None:
-        order = tuple(profile.as_meta().get("inner_axis_order", ()))
-        coord = {
-            name: coord[name]
-            for name in order
-            if name in coord
-        } | {
-            name: value
-            for name, value in coord.items()
-            if name not in order
-        }
-    mma_reads = operation.reads
-    srcs = tuple(
-        _ref(
-            tile,
-            REGISTER,
-            environment,
-            gens,
-            profile=profile,
-            size_bytes_override=0,
-            size_regs_override=(
-                profile.fragment_regs(tile.operand.name)
-                if profile is not None else 0
-            ),
-            issue_axes=tuple(
-                axis.name
-                for axis in (source_issue_axes or {}).get(
-                    tile.operand.name,
-                    (),
-                )
-            ),
-        )
-        for tile in mma_reads
-    )
-    dsts = tuple(
-        (
-            Ref(Tile("acc", "register", tuple(coord.items())))
-            if tile.operand.role.name == "OUTPUT"
-            else _ref(
-                tile,
-                REGISTER,
-                environment,
-                gens,
-                destination=True,
-                profile=profile,
-                size_bytes_override=0,
-                size_regs_override=(
-                    profile.fragment_regs(tile.operand.name)
-                    if profile is not None else 0
-                ),
-            )
-        )
-        for tile in operation.writes
-    )
-    return Mma(
-        srcs,
-        dsts,
-        coord=tuple(coord.items()),
-        block=(
-            "*".join(
-                f"{name}(k)"
-                for name in (
-                    profile.as_meta().get("mma_inputs", ())
-                    if profile is not None else ()
-                )
-            )
-        ),
-        deps=_operation_dependencies(deps, operation, environment),
+    return _convert_compute(
+        operation,
+        environment,
+        gens,
+        deps,
+        profile,
+        source_issue_axes,
     )
 
 
@@ -1114,7 +1106,180 @@ def _convert_body(
     return converted, symbolic
 
 
-def _lower_pipeline(program, shape, profile=None):
+def _finish_pipeline(
+    program,
+    gir,
+    gens,
+    profile,
+    guard,
+    prologue,
+    steady_bodies,
+    drain_bodies,
+    short_bodies,
+    variable,
+    sub,
+    has_drain,
+    has_short_loop,
+):
+    copy_count = len(steady_bodies)
+    drain_labels = [
+        f"drain{index}" for index in range(len(drain_bodies))
+    ]
+    short_labels = [
+        f"short{index}" for index in range(len(short_bodies))
+    ]
+    exit_target = drain_labels[0] if drain_labels else "end"
+    false_target = short_labels[0] if short_labels else exit_target
+    prologue_target = "steady" if variable else false_target
+    if guard is None:
+        prologue_term = Goto(prologue_target)
+        prologue_succs = (prologue_target,)
+    elif variable:
+        prologue_term = CondGoto(
+            Pred(variable, ">", Bound(const=sub)),
+            "steady",
+            false_target,
+        )
+        prologue_succs = (prologue_target, false_target)
+    else:
+        prologue_term = Goto(false_target)
+        prologue_succs = (false_target,)
+    gir.add_block(Block(
+        phase="prologue",
+        body=[Mark("phase_boundary", {"phase": "prologue"}), *prologue],
+        term=prologue_term,
+        succs=prologue_succs,
+    ))
+
+    steady_labels = ["steady"] + [
+        f"steady{index}" for index in range(1, copy_count)
+    ]
+    for index, (label, body) in enumerate(
+        zip(steady_labels, steady_bodies)
+    ):
+        last = index == copy_count - 1
+        next_target = "steady" if last else steady_labels[index + 1]
+        if copy_count > 1:
+            term = LoopCopy(
+                Trips(variable, sub),
+                index,
+                copy_count,
+                next_target,
+                exit_target,
+            )
+            edge_xfers = {
+                exit_target: [
+                    GenXfer(gen, index + 1, gen.ring)
+                    for gen in gens.values()
+                ]
+            }
+        else:
+            term = LoopBack(
+                Trips(variable, sub), "steady", exit_target
+            )
+            edge_xfers = {}
+        gir.add_block(Block(
+            phase=label,
+            loop=index == 0,
+            preds=(
+                ("prologue", steady_labels[-1])
+                if index == 0 else (steady_labels[index - 1],)
+            ),
+            succs=(next_target, exit_target),
+            phis=[
+                GenPhi(gen, entry_val=0)
+                for gen in gens.values()
+            ] if index == 0 else [],
+            xfers=[
+                GenXfer(gen, copy_count, gen.ring)
+                for gen in gens.values()
+            ] if last else [],
+            edge_xfers=edge_xfers,
+            body=[Mark("phase_boundary", {"phase": label}), *body],
+            term=term,
+            gen_rel=index,
+            chunk_base=index,
+        ))
+
+    for index, (label, body) in enumerate(
+        zip(drain_labels, drain_bodies)
+    ):
+        target = (
+            drain_labels[index + 1]
+            if index + 1 < len(drain_labels)
+            else "end"
+        )
+        gir.add_block(Block(
+            phase=label,
+            preds=tuple(steady_labels)
+            if index == 0 else (drain_labels[index - 1],),
+            succs=(target,),
+            phis=[
+                GenPhi(gen) for gen in gens.values()
+            ] if index == 0 and copy_count > 1 else [],
+            body=[Mark("phase_boundary", {"phase": label}), *body],
+            term=Goto(target),
+            gen_rel=-len(drain_labels) + index,
+            chunk_base=copy_count + index,
+            path_chunk_base={},
+        ))
+
+    for index, (label, body) in enumerate(
+        zip(short_labels, short_bodies)
+    ):
+        target = (
+            short_labels[index + 1]
+            if index + 1 < len(short_labels)
+            else "end"
+        )
+        gir.add_block(Block(
+            phase=label,
+            preds=("prologue",)
+            if index == 0 else (short_labels[index - 1],),
+            succs=(target,),
+            body=[Mark("phase_boundary", {"phase": label}), *body],
+            term=Goto(target),
+            chunk_base=index,
+            model_only=True,
+        ))
+
+    gir.meta.update({
+        "peel_depth": (
+            len(drain_bodies)
+            if has_drain else _explicit_pipeline_depth(program)
+        ),
+        "drain_steps": len(drain_bodies),
+        "buffer_depths": getattr(profile, "depths", None),
+        "short_loop": {
+            "steps": len(drain_bodies),
+            "guards": tuple(
+                None if index == 0
+                else Pred("T", ">", Bound(const=index))
+                for index in range(len(short_bodies))
+            ),
+            "verdict": "unfolded",
+            "model_only": {
+                "blocks": tuple(short_labels),
+                "marks_dropped": 0,
+                "reason": "LoopIR short arm",
+            },
+        } if has_short_loop else None,
+    })
+    if profile is not None:
+        gir.meta.update(profile.as_meta())
+    gir.meta["generation_regions"] = {
+        gen.id: {"operand": operand, "region": region}
+        for (operand, region), gen in gens.items()
+    }
+    return gir
+
+
+def _lower_pipeline(
+    program,
+    shape,
+    profile=None,
+    include_dependencies=True,
+):
     _guard, regions, short_regions = shape
     has_drain = DRAIN in regions
     agent_environment = {
@@ -1138,7 +1303,10 @@ def _lower_pipeline(program, shape, profile=None):
             )
             for region in range(region_count):
                 gens[(operand.name, region)] = Gen(len(gens), ring)
-    deps = _dependency_map(program, profile)
+    deps = (
+        _dependency_map(program, profile)
+        if include_dependencies else {}
+    )
     issue_axes, source_issue_axes = _read_issue_axes(program, profile)
     convert_body = _convert_body
 
@@ -1350,7 +1518,6 @@ def _lower_pipeline(program, shape, profile=None):
         drain_bodies.append(body)
     if has_drain and not drain_bodies:
         drain_bodies = [[]]
-    drain_labels = [f"drain{index}" for index in range(len(drain_bodies))]
     short_body = short_regions.get(SHORT, ())
     short_loops = [node for node in short_body if isinstance(node, Loop)]
     short_bodies = []
@@ -1369,163 +1536,58 @@ def _lower_pipeline(program, shape, profile=None):
                 source_issue_axes=source_issue_axes,
             )
             short_bodies.append(body)
-    short_labels = [f"short{index}" for index in range(len(short_bodies))]
-
-    exit_target = drain_labels[0] if drain_labels else "end"
-    false_target = short_labels[0] if short_labels else exit_target
-    prologue_target = "steady" if variable else false_target
-    if _guard is None:
-        prologue_term = Goto(prologue_target)
-        prologue_succs = (prologue_target,)
-    elif variable:
-        prologue_term = CondGoto(
-            Pred(variable, ">", Bound(const=sub)),
-            "steady",
-            false_target,
-        )
-        prologue_succs = (prologue_target, false_target)
-    else:
-        prologue_term = Goto(false_target)
-        prologue_succs = (false_target,)
-    gir.add_block(Block(
-        phase="prologue",
-        body=[Mark("phase_boundary", {"phase": "prologue"}), *prologue],
-        term=prologue_term,
-        succs=prologue_succs,
-    ))
-    steady_labels = ["steady"] + [
-        f"steady{index}" for index in range(1, copy_count)
-    ]
-    for index, (label, body) in enumerate(zip(steady_labels, steady_bodies)):
-        last = index == copy_count - 1
-        next_target = "steady" if last else steady_labels[index + 1]
-        if copy_count > 1:
-            term = LoopCopy(
-                Trips(variable, sub),
-                index,
-                copy_count,
-                next_target,
-                exit_target,
-            )
-            edge_xfers = {
-                exit_target: [
-                    GenXfer(gen, index + 1, gen.ring)
-                    for gen in gens.values()
-                ]
-            }
-        else:
-            term = LoopBack(
-                Trips(variable, sub), "steady", exit_target
-            )
-            edge_xfers = {}
-        gir.add_block(Block(
-            phase=label,
-            loop=index == 0,
-            preds=(
-                ("prologue", steady_labels[-1])
-                if index == 0 else (steady_labels[index - 1],)
-            ),
-            succs=(next_target, exit_target),
-            phis=[
-                GenPhi(gen, entry_val=0)
-                for gen in gens.values()
-            ] if index == 0 else [],
-            xfers=[
-                GenXfer(gen, copy_count, gen.ring)
-                for gen in gens.values()
-            ] if last else [],
-            edge_xfers=edge_xfers,
-            body=[Mark("phase_boundary", {"phase": label}), *body],
-            term=term,
-            gen_rel=index,
-            chunk_base=index,
-        ))
-    for index, (label, body) in enumerate(zip(drain_labels, drain_bodies)):
-        target = (
-            drain_labels[index + 1]
-            if index + 1 < len(drain_labels)
-            else "end"
-        )
-        gir.add_block(Block(
-            phase=label,
-            preds=tuple(steady_labels)
-            if index == 0 else (drain_labels[index - 1],),
-            succs=(target,),
-            phis=[
-                GenPhi(gen) for gen in gens.values()
-            ] if index == 0 and copy_count > 1 else [],
-            body=[Mark("phase_boundary", {"phase": label}), *body],
-            term=Goto(target),
-            gen_rel=-len(drain_labels) + index,
-            chunk_base=copy_count + index,
-            path_chunk_base={},
-        ))
-
-    # Preserve the explicit short path as model-only evidence until the
-    # existing GIR fold pass proves it equivalent to the drain chain.
-    for index, (label, body) in enumerate(zip(short_labels, short_bodies)):
-        target = short_labels[index + 1] if index + 1 < len(short_labels) else "end"
-        gir.add_block(Block(
-            phase=label,
-            preds=("prologue",) if index == 0 else (short_labels[index - 1],),
-            succs=(target,),
-            body=[Mark("phase_boundary", {"phase": label}), *body],
-            term=Goto(target),
-            chunk_base=index,
-            model_only=True,
-        ))
-    gir.meta.update({
-        "peel_depth": (
-            len(drain_bodies)
-            if has_drain else _explicit_pipeline_depth(program)
-        ),
-        "drain_steps": len(drain_bodies),
-        "buffer_depths": getattr(profile, "depths", None),
-        "short_loop": {
-            "steps": len(drain_bodies),
-            "guards": tuple(
-                None if index == 0
-                else Pred("T", ">", Bound(const=index))
-                for index in range(len(short_bodies))
-            ),
-            "verdict": "unfolded",
-            "model_only": {
-                "blocks": tuple(short_labels),
-                "marks_dropped": 0,
-                "reason": "LoopIR short arm",
-            },
-        } if short_loops else None,
-    })
-    if profile is not None:
-        gir.meta.update(profile.as_meta())
-    gir.meta["generation_regions"] = {
-        gen.id: {"operand": operand, "region": region}
-        for (operand, region), gen in gens.items()
-    }
-    return gir
+    return _finish_pipeline(
+        program,
+        gir,
+        gens,
+        profile,
+        _guard,
+        prologue,
+        steady_bodies,
+        drain_bodies,
+        short_bodies,
+        variable,
+        sub,
+        has_drain,
+        bool(short_loops),
+    )
 
 
-def lower_to_gir(program: LoopProgram, profile=None) -> Program:
+def lower_to_gir(
+    program: LoopProgram,
+    profile=None,
+    *,
+    include_dependencies=True,
+) -> Program:
     """Convert one finalized LoopIR Program into existing GIR."""
 
     if not isinstance(program, LoopProgram):
         raise TypeError("lower_to_gir expects a LoopIR Program")
+    if not isinstance(include_dependencies, bool):
+        raise TypeError("include_dependencies must be a bool")
+    program.check()
     if profile is not None:
         profile.validate(program)
     shape = _pipeline_shape(program)
     if shape is not None:
-        return _lower_pipeline(program, shape, profile)
+        return _lower_pipeline(
+            program,
+            shape,
+            profile,
+            include_dependencies,
+        )
     gir = Program()
     regions = _region_bodies(program)
     labels = [
         tag if isinstance(tag, str) else tag.name.lower()
         for tag, _body in regions
     ]
-    if not labels:
-        labels = ["entry"]
     gir.entry = labels[0]
     gens = {}
-    deps = _dependency_map(program, profile)
+    deps = (
+        _dependency_map(program, profile)
+        if include_dependencies else {}
+    )
     issue_axes, source_issue_axes = _read_issue_axes(program, profile)
     agent_environment = {
         key: 0

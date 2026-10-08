@@ -31,7 +31,7 @@ CASES = {
 }
 
 
-def _table(order, key, plr):
+def _table(order, key, _plr):
     from Tensile.LoopModel import adapter
     from Tensile.LoopModel.schedule import build_S
     from Tensile.LoopModel.render import render_schedule
@@ -41,7 +41,7 @@ def _table(order, key, plr):
     except RuntimeError as exc:              # PLR is faithful: no S carries it, so no kernel
         return "%s\n  REFUSED: %s" % (key, str(exc).split(" -- ")[0])
     depths, _ = build_S(theta)
-    return "%s\n%s" % (key, render_schedule(Schedule(theta, depths, plr)))
+    return "%s\n%s" % (key, render_schedule(Schedule(theta, depths)))
 
 
 @pytest.mark.unit
@@ -74,7 +74,7 @@ def test_a_refused_prefetch_is_reported_not_hidden():
     theta = adapter.params_to_theta(adapter.kernel_to_params(
         matrix.find("MNK", "mxf8 MNK w4 0/0 plr1 pgr1 du128")))
     depths, _ = build_S(theta)
-    schedule = Schedule(theta, depths, 1)
+    schedule = Schedule(theta, depths)
     plans = [(op, g, schedule.plan(op, g)) for op, g in schedule.operands()]
     assert plans, "no register operands -- the check went vacuous"
     shortfalls = 0

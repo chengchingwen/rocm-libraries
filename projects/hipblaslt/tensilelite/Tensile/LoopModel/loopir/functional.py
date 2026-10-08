@@ -33,6 +33,7 @@ from .model import (
     Switch,
     Tile,
     Transfer,
+    child_bodies,
     same_operation,
 )
 from .rewrite import insert, replace, rewrite
@@ -259,6 +260,77 @@ def substitute_operation(operation, replacements):
     """Return one operation with Axis expressions substituted, preserving identity."""
 
     return _substitute_operation(operation, dict(replacements))
+
+
+def _operations_in(nodes):
+    return tuple(
+        operation
+        for node in nodes
+        for operation in (
+            (node,)
+            if isinstance(node, (Movement, Compute))
+            else _operations_in(
+                tuple(
+                    item
+                    for body in child_bodies(node)
+                    for item in body
+                )
+            )
+        )
+    )
+
+
+def _operation_identities(node):
+    return {
+        operation._identity
+        for operation in _operations_in((node,))
+    }
+
+
+def _flatten_finite(nodes, bindings):
+    output = []
+    for node in nodes:
+        if isinstance(node, (Movement, Compute)):
+            output.append(_substitute_operation(node, bindings))
+        elif isinstance(node, Let):
+            value = node.value.substitute(bindings)
+            if value.constant_value is None:
+                raise TransformRefused("materialized Let is not constant")
+            output.extend(_flatten_finite(
+                node.body,
+                {**bindings, node.axis: value.constant_value},
+            ))
+        elif isinstance(node, Loop):
+            lower = node.lo.substitute(bindings)
+            upper = node.hi.substitute(bindings)
+            if lower.constant_value is None or upper.constant_value is None:
+                raise TransformRefused("materialized Loop is not finite")
+            for value in range(lower.constant_value, upper.constant_value):
+                output.extend(_flatten_finite(
+                    node.body,
+                    {**bindings, node.axis: value},
+                ))
+        elif isinstance(node, Cond):
+            predicate = node.pred.substitute(bindings)
+            verdict = predicate.evaluate({})
+            if verdict is None:
+                raise TransformRefused("materialized Cond is unresolved")
+            output.extend(_flatten_finite(
+                node.then_body if verdict else node.else_body,
+                bindings,
+            ))
+        elif isinstance(node, Switch):
+            expression = node.expression.substitute(bindings)
+            if expression.constant_value is None:
+                raise TransformRefused("materialized Switch is unresolved")
+            output.extend(_flatten_finite(
+                dict(node.cases).get(
+                    expression.constant_value,
+                    node.otherwise,
+                ),
+                bindings,
+            ))
+    return tuple(output)
 
 
 def rewrite_operation(
@@ -606,7 +678,7 @@ def specialize_first_touch(program: Program, region=None) -> Program:
             output.append(node)
         return tuple(output)
 
-    return program.with_body(edit_body(program.body))
+    return program.with_body(edit_body(program.body), check=False)
 
 
 def defer_single_path_operations(
@@ -716,7 +788,7 @@ def defer_single_path_operations(
             index = stop
         return tuple(output)
 
-    return program.with_body(edit_body(program.body))
+    return program.with_body(edit_body(program.body), check=False)
 
 
 def defer_operations(
@@ -734,29 +806,8 @@ def defer_operations(
     if not identities:
         return program
 
-    def operation_identities(node):
-        if isinstance(node, (Movement, Compute)):
-            return {node._identity}
-        result = set()
-        if isinstance(node, Loop):
-            children = (node.body,)
-        elif isinstance(node, Cond):
-            children = (node.then_body, node.else_body)
-        elif isinstance(node, Let):
-            children = (node.body,)
-        elif isinstance(node, Switch):
-            children = tuple(case for _value, case in node.cases) + (
-                node.otherwise,
-            )
-        else:
-            children = ()
-        for child in children:
-            for item in child:
-                result.update(operation_identities(item))
-        return result
-
     def selected_unit(node):
-        present = operation_identities(node)
+        present = _operation_identities(node)
         return bool(present) and present <= identities
 
     def edit_body(body, active_region=None):
@@ -807,7 +858,7 @@ def defer_operations(
             output.append(rebuilt)
         return tuple(output)
 
-    return program.with_body(edit_body(program.body))
+    return program.with_body(edit_body(program.body), check=False)
 
 
 def prioritize_operations(
@@ -821,29 +872,8 @@ def prioritize_operations(
     if not identities:
         return program
 
-    def operation_identities(node):
-        if isinstance(node, (Movement, Compute)):
-            return {node._identity}
-        children = ()
-        if isinstance(node, Loop):
-            children = (node.body,)
-        elif isinstance(node, Cond):
-            children = (node.then_body, node.else_body)
-        elif isinstance(node, Let):
-            children = (node.body,)
-        elif isinstance(node, Switch):
-            children = tuple(case for _value, case in node.cases) + (
-                node.otherwise,
-            )
-        return {
-            identity
-            for child in children
-            for item in child
-            for identity in operation_identities(item)
-        }
-
     def selected_unit(node):
-        present = operation_identities(node)
+        present = _operation_identities(node)
         return bool(present) and present <= identities
 
     def edit_body(body, active_region=None):
@@ -887,7 +917,7 @@ def prioritize_operations(
             + tuple(item for item in output if not selected_unit(item))
         )
 
-    return program.with_body(edit_body(program.body))
+    return program.with_body(edit_body(program.body), check=False)
 
 
 def materialize_region_operations(
@@ -904,63 +934,6 @@ def materialize_region_operations(
 
     if not callable(selector) or not callable(key):
         raise IRTypeError("materialize_region_operations expects callables")
-
-    def operations_in(nodes):
-        result = []
-        for node in nodes:
-            if isinstance(node, (Movement, Compute)):
-                result.append(node)
-            elif isinstance(node, Loop):
-                result.extend(operations_in(node.body))
-            elif isinstance(node, Cond):
-                result.extend(operations_in(node.then_body))
-                result.extend(operations_in(node.else_body))
-            elif isinstance(node, Let):
-                result.extend(operations_in(node.body))
-            elif isinstance(node, Switch):
-                for _value, case in node.cases:
-                    result.extend(operations_in(case))
-                result.extend(operations_in(node.otherwise))
-        return result
-
-    def flatten(nodes, bindings):
-        output = []
-        for node in nodes:
-            if isinstance(node, (Movement, Compute)):
-                output.append(_substitute_operation(node, bindings))
-            elif isinstance(node, Let):
-                value = node.value.substitute(bindings)
-                if value.constant_value is None:
-                    raise TransformRefused("materialized Let is not constant")
-                flatten_bindings = {**bindings, node.axis: value.constant_value}
-                output.extend(flatten(node.body, flatten_bindings))
-            elif isinstance(node, Loop):
-                lower = node.lo.substitute(bindings)
-                upper = node.hi.substitute(bindings)
-                if lower.constant_value is None or upper.constant_value is None:
-                    raise TransformRefused("materialized Loop is not finite")
-                for value in range(lower.constant_value, upper.constant_value):
-                    output.extend(flatten(node.body, {**bindings, node.axis: value}))
-            elif isinstance(node, Cond):
-                predicate = node.pred.substitute(bindings)
-                verdict = predicate.evaluate({})
-                if verdict is None:
-                    raise TransformRefused("materialized Cond is unresolved")
-                output.extend(flatten(
-                    node.then_body if verdict else node.else_body,
-                    bindings,
-                ))
-            elif isinstance(node, Switch):
-                expression = node.expression.substitute(bindings)
-                if expression.constant_value is None:
-                    raise TransformRefused("materialized Switch is unresolved")
-                output.extend(flatten(
-                    dict(node.cases).get(expression.constant_value, node.otherwise),
-                    bindings,
-                ))
-            elif isinstance(node, Region):
-                continue
-        return tuple(output)
 
     def edit_body(body):
         rebuilt = []
@@ -1003,16 +976,16 @@ def materialize_region_operations(
             while stop < len(body) and not isinstance(body[stop], Region):
                 stop += 1
             segment = body[index + 1:stop]
-            found = operations_in(segment)
+            found = _operations_in(segment)
             if found and all(selector(operation) for operation in found):
-                materialized = flatten(segment, {})
+                materialized = _flatten_finite(segment, {})
                 output.extend(sorted(materialized, key=key))
             else:
                 output.extend(segment)
             index = stop
         return tuple(output)
 
-    return program.with_body(edit_body(program.body))
+    return program.with_body(edit_body(program.body), check=False)
 
 
 def materialize_operation_runs(
@@ -1023,72 +996,9 @@ def materialize_operation_runs(
 ) -> Program:
     """Unroll and order consecutive selected-operation structural units."""
 
-    def operations_in(node):
-        if isinstance(node, (Movement, Compute)):
-            return (node,)
-        children = ()
-        if isinstance(node, Loop):
-            children = (node.body,)
-        elif isinstance(node, Cond):
-            children = (node.then_body, node.else_body)
-        elif isinstance(node, Let):
-            children = (node.body,)
-        elif isinstance(node, Switch):
-            children = tuple(case for _value, case in node.cases) + (
-                node.otherwise,
-            )
-        return tuple(
-            operation
-            for child in children
-            for item in child
-            for operation in operations_in(item)
-        )
-
     def selected_unit(node):
-        found = operations_in(node)
+        found = _operations_in((node,))
         return bool(found) and all(selector(operation) for operation in found)
-
-    def flatten(nodes, bindings):
-        output = []
-        for node in nodes:
-            if isinstance(node, (Movement, Compute)):
-                output.append(_substitute_operation(node, bindings))
-            elif isinstance(node, Let):
-                value = node.value.substitute(bindings)
-                if value.constant_value is None:
-                    raise TransformRefused("materialized Let is not constant")
-                output.extend(flatten(
-                    node.body,
-                    {**bindings, node.axis: value.constant_value},
-                ))
-            elif isinstance(node, Loop):
-                lower = node.lo.substitute(bindings)
-                upper = node.hi.substitute(bindings)
-                if lower.constant_value is None or upper.constant_value is None:
-                    raise TransformRefused("materialized Loop is not finite")
-                for value in range(lower.constant_value, upper.constant_value):
-                    output.extend(flatten(
-                        node.body,
-                        {**bindings, node.axis: value},
-                    ))
-            elif isinstance(node, Cond):
-                predicate = node.pred.substitute(bindings)
-                verdict = predicate.evaluate({})
-                if verdict is None:
-                    raise TransformRefused("materialized Cond is unresolved")
-                output.extend(flatten(
-                    node.then_body if verdict else node.else_body,
-                    bindings,
-                ))
-            elif isinstance(node, Switch):
-                expression = node.expression.substitute(bindings)
-                if expression.constant_value is None:
-                    raise TransformRefused("materialized Switch is unresolved")
-                output.extend(flatten(
-                    dict(node.cases).get(expression.constant_value, node.otherwise),
-                    bindings,
-                ))
-        return tuple(output)
 
     def edit_body(body, active_region=None):
         rebuilt = []
@@ -1137,7 +1047,7 @@ def materialize_operation_runs(
             while stop < len(body) and selected_unit(body[stop]):
                 stop += 1
             try:
-                materialized = flatten(body[index:stop], {})
+                materialized = _flatten_finite(body[index:stop], {})
             except TransformRefused:
                 output.extend(body[index:stop])
             else:
@@ -1145,7 +1055,7 @@ def materialize_operation_runs(
             index = stop
         return tuple(output)
 
-    return program.with_body(edit_body(program.body))
+    return program.with_body(edit_body(program.body), check=False)
 
 
 def extend_region(
@@ -1196,7 +1106,7 @@ def extend_region(
             output.extend(nodes)
         return tuple(output)
 
-    return program.with_body(edit_body(program.body))
+    return program.with_body(edit_body(program.body), check=False)
 
 
 def replace_region_operations(
@@ -1252,7 +1162,7 @@ def replace_region_operations(
                 ))
         return tuple(output)
 
-    return program.with_body(edit_body(program.body))
+    return program.with_body(edit_body(program.body), check=False)
 
 
 def replace_operation_units_in_last_let(
@@ -1269,31 +1179,10 @@ def replace_operation_units_in_last_let(
 
     replacements = dict(replacements)
 
-    def identities(node):
-        if isinstance(node, (Movement, Compute)):
-            return {node._identity}
-        children = ()
-        if isinstance(node, Loop):
-            children = (node.body,)
-        elif isinstance(node, Cond):
-            children = (node.then_body, node.else_body)
-        elif isinstance(node, Let):
-            children = (node.body,)
-        elif isinstance(node, Switch):
-            children = tuple(case for _value, case in node.cases) + (
-                node.otherwise,
-            )
-        return {
-            identity
-            for child in children
-            for item in child
-            for identity in identities(item)
-        }
-
     def replace_units(body):
         output = []
         for node in body:
-            present = identities(node)
+            present = _operation_identities(node)
             selected = present & replacements.keys()
             if isinstance(node, Cond) and len(present) == 1 and selected:
                 output.append(replacements[next(iter(selected))])
@@ -1387,7 +1276,7 @@ def replace_operation_units_in_last_let(
             )
         return tuple(rebuilt)
 
-    return program.with_body(edit_body(program.body))
+    return program.with_body(edit_body(program.body), check=False)
 
 
 def reset_operation_guards(
@@ -1400,24 +1289,11 @@ def reset_operation_guards(
     identities = {operation._identity for operation in operations}
 
     def selected_operations(nodes):
-        found = []
-        for node in nodes:
-            if isinstance(node, (Movement, Compute)) and node._identity in identities:
-                found.append(node)
-            children = ()
-            if isinstance(node, Loop):
-                children = (node.body,)
-            elif isinstance(node, Cond):
-                children = (node.then_body, node.else_body)
-            elif isinstance(node, Let):
-                children = (node.body,)
-            elif isinstance(node, Switch):
-                children = tuple(case for _value, case in node.cases) + (
-                    node.otherwise,
-                )
-            for child in children:
-                found.extend(selected_operations(child))
-        return found
+        return [
+            operation
+            for operation in _operations_in(nodes)
+            if operation._identity in identities
+        ]
 
     def edit_body(body, active_region=None):
         output = []
@@ -1528,7 +1404,7 @@ def reset_operation_guards(
             output.append(node)
         return tuple(output)
 
-    return program.with_body(edit_body(program.body))
+    return program.with_body(edit_body(program.body), check=False)
 
 
 __all__ = [

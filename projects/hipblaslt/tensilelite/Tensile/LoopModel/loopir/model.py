@@ -493,6 +493,72 @@ def operation_tiles(operation: Movement | Compute) -> tuple[Tile, ...]:
     return operation.reads + operation.writes
 
 
+def _check_program(
+    params: tuple[Param, ...],
+    axes: tuple[Axis, ...],
+    operands: tuple[Operand, ...],
+    body: tuple[LoopIR, ...],
+    agents: tuple[tuple[Axis, Scope], ...],
+):
+    if not all(isinstance(value, Param) for value in params):
+        raise IRTypeError("Program.params must contain Param values")
+    if not all(isinstance(value, Operand) for value in operands):
+        raise IRTypeError("Program.operands must contain Operand values")
+    if not all(
+        isinstance(value, tuple)
+        and len(value) == 2
+        and isinstance(value[0], Axis)
+        and isinstance(value[1], Scope)
+        for value in agents
+    ):
+        raise IRTypeError(
+            "Program.agents must contain (Axis, Scope) pairs"
+        )
+    for values, name in (
+        (params, "params"),
+        (axes, "axes"),
+        (operands, "operands"),
+    ):
+        names = [value.name for value in values]
+        if len(names) != len(set(names)):
+            raise IRTypeError(f"Program.{name} contains duplicate names")
+    agent_axes = tuple(axis for axis, _scope in agents)
+    if len({id(axis) for axis in agent_axes}) != len(agent_axes):
+        raise IRTypeError("Program.agents must not repeat an Axis")
+    declaration_names = (
+        [value.name for value in params]
+        + [value.name for value in axes]
+        + [value.name for value in agent_axes]
+        + [value.name for value in operands]
+    )
+    if len(declaration_names) != len(set(declaration_names)):
+        raise IRTypeError("Program declaration names must be globally unique")
+    declared_axes = {
+        id(value) for value in (*axes, *agent_axes)
+    }
+    declared_operands = {id(value) for value in operands}
+    for operand in operands:
+        if any(id(axis) not in declared_axes for axis in operand.axes):
+            raise IRTypeError(f"Operand {operand.name!r} uses undeclared axes")
+    for operation in _operations_in(body):
+        for tile in operation_tiles(operation):
+            if id(tile.operand) not in declared_operands:
+                raise IRTypeError(
+                    f"operation uses undeclared operand {tile.operand.name!r}"
+                )
+            free = {
+                axis
+                for expression in tile.indices
+                for axis in expression.free_axes()
+            }
+            if {id(axis) for axis in free} - declared_axes:
+                raise IRTypeError("operation tile uses undeclared axes")
+    agent_ids = {id(axis) for axis in agent_axes}
+    for node in _walk_nodes(body):
+        if isinstance(node, Loop) and id(node.axis) in agent_ids:
+            raise IRTypeError("Program agent axes cannot be bound by Loop")
+
+
 @dataclass(frozen=True, eq=False, init=False)
 class Program:
     params: tuple[Param, ...]
@@ -515,76 +581,61 @@ class Program:
         params = _tuple(params, "Program.params")
         axes = _axes(axes, "Program.axes")
         operands = _tuple(operands, "Program.operands")
-        if not all(isinstance(value, Param) for value in params):
-            raise IRTypeError("Program.params must contain Param values")
-        if not all(isinstance(value, Operand) for value in operands):
-            raise IRTypeError("Program.operands must contain Operand values")
         agents = _tuple(agents, "Program.agents")
-        if not all(
-            isinstance(value, tuple)
-            and len(value) == 2
-            and isinstance(value[0], Axis)
-            and isinstance(value[1], Scope)
-            for value in agents
-        ):
-            raise IRTypeError(
-                "Program.agents must contain (Axis, Scope) pairs"
-            )
-        for values, name in (
-            (params, "params"),
-            (axes, "axes"),
-            (operands, "operands"),
-        ):
-            names = [value.name for value in values]
-            if len(names) != len(set(names)):
-                raise IRTypeError(f"Program.{name} contains duplicate names")
-        agent_axes = tuple(axis for axis, _scope in agents)
-        if len({id(axis) for axis in agent_axes}) != len(agent_axes):
-            raise IRTypeError("Program.agents must not repeat an Axis")
-        declaration_names = (
-            [value.name for value in params]
-            + [value.name for value in axes]
-            + [value.name for value in agent_axes]
-            + [value.name for value in operands]
-        )
-        if len(declaration_names) != len(set(declaration_names)):
-            raise IRTypeError("Program declaration names must be globally unique")
-        declared_axes = {
-            id(value) for value in (*axes, *agent_axes)
-        }
-        declared_operands = {id(value) for value in operands}
-        for operand in operands:
-            if any(id(axis) not in declared_axes for axis in operand.axes):
-                raise IRTypeError(f"Operand {operand.name!r} uses undeclared axes")
-        for operation in _operations_in(_body(body, "Program.body")):
-            for tile in operation_tiles(operation):
-                if id(tile.operand) not in declared_operands:
-                    raise IRTypeError(
-                        f"operation uses undeclared operand {tile.operand.name!r}"
-                    )
-                free = set(axis for expression in tile.indices for axis in expression.free_axes())
-                if {id(axis) for axis in free} - declared_axes:
-                    raise IRTypeError("operation tile uses undeclared axes")
-        agent_ids = {id(axis) for axis in agent_axes}
-        for node in _walk_nodes(_body(body, "Program.body")):
-            if isinstance(node, Loop) and id(node.axis) in agent_ids:
-                raise IRTypeError("Program agent axes cannot be bound by Loop")
+        body = _body(body, "Program.body")
+        _check_program(params, axes, operands, body, agents)
         object.__setattr__(self, "params", params)
         object.__setattr__(self, "axes", axes)
         object.__setattr__(self, "operands", operands)
-        object.__setattr__(self, "body", _body(body, "Program.body"))
+        object.__setattr__(self, "body", body)
         object.__setattr__(self, "agents", agents)
         object.__setattr__(self, "_identity", _identity or object())
+        object.__setattr__(self, "_checked", True)
+        object.__setattr__(self, "_analysis", {})
 
-    def with_body(self, body: tuple[LoopIR, ...]) -> "Program":
-        return Program(
-            self.params,
-            self.axes,
-            self.operands,
-            body,
-            self.agents,
-            _identity=self._identity,
-        )
+    def check(self) -> "Program":
+        """Check declarations and every stored node, returning this Program."""
+
+        if not getattr(self, "_checked", False):
+            _check_program(
+                self.params,
+                self.axes,
+                self.operands,
+                self.body,
+                self.agents,
+            )
+            object.__setattr__(self, "_checked", True)
+        return self
+
+    def with_body(
+        self,
+        body: tuple[LoopIR, ...],
+        *,
+        check: bool = True,
+    ) -> "Program":
+        """Return a body replacement, optionally deferring the whole-tree check."""
+
+        body = _body(body, "Program.body")
+        if not isinstance(check, bool):
+            raise IRTypeError("Program.with_body.check must be a bool")
+        if check:
+            _check_program(
+                self.params,
+                self.axes,
+                self.operands,
+                body,
+                self.agents,
+            )
+        result = object.__new__(Program)
+        object.__setattr__(result, "params", self.params)
+        object.__setattr__(result, "axes", self.axes)
+        object.__setattr__(result, "operands", self.operands)
+        object.__setattr__(result, "body", body)
+        object.__setattr__(result, "agents", self.agents)
+        object.__setattr__(result, "_identity", self._identity)
+        object.__setattr__(result, "_checked", check)
+        object.__setattr__(result, "_analysis", {})
+        return result
 
 
 def _operations_in(body):

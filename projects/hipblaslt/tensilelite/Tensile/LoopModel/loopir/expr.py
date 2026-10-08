@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Mapping
 
@@ -135,6 +136,14 @@ class Expr(_ExpressionOperand):
         if not valid:
             raise IRTypeError(f"malformed {self.op!r} expression")
 
+        object.__setattr__(self, "_free_axes", None)
+        object.__setattr__(self, "_free_params", None)
+        object.__setattr__(self, "_linear_terms", None)
+        object.__setattr__(self, "_linear_constant", None)
+        object.__setattr__(self, "_equivalence_key", None)
+        object.__setattr__(self, "_affine", None)
+        object.__setattr__(self, "_affine_computed", False)
+
     @staticmethod
     def constant(value: int) -> "Expr":
         if not isinstance(value, int) or isinstance(value, bool):
@@ -156,33 +165,141 @@ class Expr(_ExpressionOperand):
     def _as_expr(self) -> "Expr":
         return self
 
+    def __deepcopy__(self, memo):
+        result = Expr(self.op, deepcopy(self.args, memo))
+        memo[id(self)] = result
+        return result
+
+    def __reduce__(self):
+        return Expr, (self.op, self.args)
+
+    def _equivalence(self):
+        if self._equivalence_key is not None:
+            return self._equivalence_key
+
+        terms = {}
+        constant = 0
+        if self.op == "const":
+            constant = self.args[0]
+        elif self.op in ("param", "axis"):
+            terms[(self.op, id(self.args[0]))] = 1
+        elif self.op == "add":
+            for argument in self.args:
+                argument._equivalence()
+                constant += argument._linear_constant
+                for key, coefficient in argument._linear_terms:
+                    terms[key] = terms.get(key, 0) + coefficient
+        elif self.op == "mul":
+            coefficient, argument = self.args
+            argument._equivalence()
+            constant = coefficient * argument._linear_constant
+            terms = {
+                key: coefficient * value
+                for key, value in argument._linear_terms
+            }
+        else:
+            argument, divisor = self.args
+            terms[(self.op, argument._equivalence(), divisor)] = 1
+        normalized = tuple(sorted(
+            (
+                (key, coefficient)
+                for key, coefficient in terms.items()
+                if coefficient
+            ),
+            key=repr,
+        ))
+        key = ("linear", normalized, constant)
+        object.__setattr__(self, "_linear_terms", normalized)
+        object.__setattr__(self, "_linear_constant", constant)
+        object.__setattr__(self, "_equivalence_key", key)
+        return key
+
+    def _affine_form(self):
+        if self._affine_computed:
+            return self._affine
+
+        if self.op == "const":
+            affine = ((), self.args[0])
+        elif self.op == "axis":
+            affine = (((self.args[0], 1),), 0)
+        elif self.op == "add":
+            arguments = tuple(
+                argument._affine_form()
+                for argument in self.args
+            )
+            if any(argument is None for argument in arguments):
+                affine = None
+            else:
+                coefficients = {}
+                constant = 0
+                for terms, add in arguments:
+                    constant += add
+                    for axis, coefficient in terms:
+                        coefficients[axis] = \
+                            coefficients.get(axis, 0) + coefficient
+                affine = (
+                    tuple(sorted(
+                        coefficients.items(),
+                        key=lambda item: id(item[0]),
+                    )),
+                    constant,
+                )
+        elif self.op == "mul":
+            coefficient, argument = self.args
+            nested = argument._affine_form()
+            if nested is None:
+                affine = None
+            else:
+                terms, constant = nested
+                affine = (
+                    tuple(
+                        (axis, coefficient * value)
+                        for axis, value in terms
+                    ),
+                    coefficient * constant,
+                )
+        else:
+            affine = None
+
+        object.__setattr__(self, "_affine", affine)
+        object.__setattr__(self, "_affine_computed", True)
+        return affine
+
     @property
     def constant_value(self) -> int | None:
         return self.args[0] if self.op == "const" else None
 
     def free_axes(self) -> frozenset[Axis]:
-        if self.op == "axis":
-            return frozenset((self.args[0],))
-        if self.op in ("const", "param"):
-            return frozenset()
-        return frozenset(
-            axis
-            for arg in self.args
-            if isinstance(arg, Expr)
-            for axis in arg.free_axes()
-        )
+        if self._free_axes is None:
+            if self.op == "axis":
+                value = frozenset((self.args[0],))
+            elif self.op in ("const", "param"):
+                value = frozenset()
+            else:
+                value = frozenset(
+                    axis
+                    for argument in self.args
+                    if isinstance(argument, Expr)
+                    for axis in argument.free_axes()
+                )
+            object.__setattr__(self, "_free_axes", value)
+        return self._free_axes
 
     def free_params(self) -> frozenset[Param]:
-        if self.op == "param":
-            return frozenset((self.args[0],))
-        if self.op in ("const", "axis"):
-            return frozenset()
-        return frozenset(
-            param
-            for arg in self.args
-            if isinstance(arg, Expr)
-            for param in arg.free_params()
-        )
+        if self._free_params is None:
+            if self.op == "param":
+                value = frozenset((self.args[0],))
+            elif self.op in ("const", "axis"):
+                value = frozenset()
+            else:
+                value = frozenset(
+                    param
+                    for argument in self.args
+                    if isinstance(argument, Expr)
+                    for param in argument.free_params()
+                )
+            object.__setattr__(self, "_free_params", value)
+        return self._free_params
 
     def evaluate(self, bindings: Mapping[object, int]) -> int:
         if self.op == "const":
@@ -374,12 +491,34 @@ class Compare(Pred):
         object.__setattr__(self, "op", op)
         object.__setattr__(self, "lhs", as_expr(lhs))
         object.__setattr__(self, "rhs", as_expr(rhs))
+        object.__setattr__(
+            self,
+            "_free_axes",
+            self.lhs.free_axes() | self.rhs.free_axes(),
+        )
+        object.__setattr__(
+            self,
+            "_free_params",
+            self.lhs.free_params() | self.rhs.free_params(),
+        )
+
+    def __deepcopy__(self, memo):
+        result = Compare(
+            self.op,
+            deepcopy(self.lhs, memo),
+            deepcopy(self.rhs, memo),
+        )
+        memo[id(self)] = result
+        return result
+
+    def __reduce__(self):
+        return Compare, (self.op, self.lhs, self.rhs)
 
     def free_axes(self) -> frozenset[Axis]:
-        return self.lhs.free_axes() | self.rhs.free_axes()
+        return self._free_axes
 
     def free_params(self) -> frozenset[Param]:
-        return self.lhs.free_params() | self.rhs.free_params()
+        return self._free_params
 
     def evaluate(self, bindings: Mapping[object, int]) -> bool | None:
         try:
@@ -416,12 +555,34 @@ class And(Pred):
         if len(values) < 2:
             raise IRTypeError("And requires at least two predicates")
         object.__setattr__(self, "operands", values)
+        object.__setattr__(
+            self,
+            "_free_axes",
+            frozenset(
+                axis for item in values for axis in item.free_axes()
+            ),
+        )
+        object.__setattr__(
+            self,
+            "_free_params",
+            frozenset(
+                param for item in values for param in item.free_params()
+            ),
+        )
+
+    def __deepcopy__(self, memo):
+        result = And(*(deepcopy(item, memo) for item in self.operands))
+        memo[id(self)] = result
+        return result
+
+    def __reduce__(self):
+        return And, self.operands
 
     def free_axes(self) -> frozenset[Axis]:
-        return frozenset(axis for item in self.operands for axis in item.free_axes())
+        return self._free_axes
 
     def free_params(self) -> frozenset[Param]:
-        return frozenset(param for item in self.operands for param in item.free_params())
+        return self._free_params
 
     def evaluate(self, bindings: Mapping[object, int]) -> bool | None:
         values = tuple(item.evaluate(bindings) for item in self.operands)
@@ -445,12 +606,34 @@ class Or(Pred):
         if len(values) < 2:
             raise IRTypeError("Or requires at least two predicates")
         object.__setattr__(self, "operands", values)
+        object.__setattr__(
+            self,
+            "_free_axes",
+            frozenset(
+                axis for item in values for axis in item.free_axes()
+            ),
+        )
+        object.__setattr__(
+            self,
+            "_free_params",
+            frozenset(
+                param for item in values for param in item.free_params()
+            ),
+        )
+
+    def __deepcopy__(self, memo):
+        result = Or(*(deepcopy(item, memo) for item in self.operands))
+        memo[id(self)] = result
+        return result
+
+    def __reduce__(self):
+        return Or, self.operands
 
     def free_axes(self) -> frozenset[Axis]:
-        return frozenset(axis for item in self.operands for axis in item.free_axes())
+        return self._free_axes
 
     def free_params(self) -> frozenset[Param]:
-        return frozenset(param for item in self.operands for param in item.free_params())
+        return self._free_params
 
     def evaluate(self, bindings: Mapping[object, int]) -> bool | None:
         values = tuple(item.evaluate(bindings) for item in self.operands)
@@ -471,12 +654,22 @@ class Not(Pred):
 
     def __init__(self, operand):
         object.__setattr__(self, "operand", as_pred(operand))
+        object.__setattr__(self, "_free_axes", self.operand.free_axes())
+        object.__setattr__(self, "_free_params", self.operand.free_params())
+
+    def __deepcopy__(self, memo):
+        result = Not(deepcopy(self.operand, memo))
+        memo[id(self)] = result
+        return result
+
+    def __reduce__(self):
+        return Not, (self.operand,)
 
     def free_axes(self) -> frozenset[Axis]:
-        return self.operand.free_axes()
+        return self._free_axes
 
     def free_params(self) -> frozenset[Param]:
-        return self.operand.free_params()
+        return self._free_params
 
     def evaluate(self, bindings: Mapping[object, int]) -> bool | None:
         value = self.operand.evaluate(bindings)
@@ -508,47 +701,4 @@ def expr_equivalent(left, right) -> bool:
 
 
 def _expr_key(value: Expr):
-    terms, constant = _linear_key(value)
-    return (
-        "linear",
-        tuple(sorted(terms.items(), key=repr)),
-        constant,
-    )
-
-
-def _linear_key(value: Expr):
-    if value.op == "const":
-        return {}, value.args[0]
-    if value.op in ("param", "axis"):
-        return {(value.op, id(value.args[0])): 1}, 0
-    if value.op == "add":
-        terms, constant = {}, 0
-        for argument in value.args:
-            nested, add = _linear_key(argument)
-            constant += add
-            for key, coefficient in nested.items():
-                terms[key] = terms.get(key, 0) + coefficient
-        return {
-            key: coefficient
-            for key, coefficient in terms.items()
-            if coefficient
-        }, constant
-    if value.op == "mul":
-        nested, constant = _linear_key(value.args[1])
-        coefficient = value.args[0]
-        return (
-            {
-                key: coefficient * item
-                for key, item in nested.items()
-                if coefficient * item
-            },
-            coefficient * constant,
-        )
-    if value.op in ("floordiv", "mod"):
-        atom = (
-            value.op,
-            _expr_key(value.args[0]),
-            value.args[1],
-        )
-        return {atom: 1}, 0
-    raise AssertionError(value.op)
+    return value._equivalence()

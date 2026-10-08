@@ -236,8 +236,9 @@ Dependence(
 )
 ```
 
-The endpoint determines read/write role, so RAW/WAR/WAW are derived properties. A dependence has
-no authored kind, edge ID, fence, distance, or scheduling label.
+The endpoint determines read/write role, so RAW and WAR are derived properties. Physical
+write-after-write reuse belongs to GIR's target-level buffer analysis; LoopIR does not derive a
+logical WAW edge. A dependence has no authored kind, edge ID, fence, distance, or scheduling label.
 
 The relation equates semantic tile expressions under both effects' loop, binding, predicate, local
 bulk, and agent domains. Consequently split regions, fused issues, and per-wave partitions produce

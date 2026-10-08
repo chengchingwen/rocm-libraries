@@ -22,8 +22,6 @@ from .loopir import (
     Region,
     Switch,
     dependences,
-    effect_domain,
-    effects,
     operations,
     required_dependences,
     walk,
@@ -129,16 +127,13 @@ def validate_loopir(program, profile=None):
         raise ValueError("validate_loopir expects a LoopIR Program")
     errors = []
     try:
+        program.check()
         _check_phases(program, errors)
         _check_effect_partitions(program, errors)
-        for effect in effects(program):
-            effect_domain(effect)
+        if profile is not None:
+            profile.validate(program)
         derived = dependences(program)
         required_dependences(program, derived)
-        if profile is not None:
-            if hasattr(profile, "cache_dependences"):
-                profile.cache_dependences(program, derived)
-            profile.validate(program)
     except Exception as error:
         errors.append("%s: %s" % (type(error).__name__, error))
     return errors

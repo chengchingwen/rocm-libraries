@@ -74,14 +74,6 @@ def _digits(theta, terms, add, fields, modulus=0):
 
 # --- tile and register arithmetic ------------------------------------------------------------
 
-# ===========================================================================
-
-def axis_tiles(macro_elems: int, atom_elems: int) -> int:
-    return max(1, n_tiles(macro_elems, atom_elems))
-
-
-# ===========================================================================
-
 def _inner_axes(theta):
     return [
         (axis.name, int(axis.extent.constant_value))
@@ -237,42 +229,9 @@ def _inner_steps(theta):
     return [dict(c) for c in _iproduct(*ranges)] if ranges else [dict()]
 
 
-def readahead_level(theta, op=None):
-    """The level is a property of `ord`, not of an operand: every read walks the same nest.
-
- `op` is accepted so call sites read the same either way, and ignored: an operand INVARIANT over
- the level is the whole-set case, which `reloads_whole_set` answers, not a different level."""
+def readahead_level(theta):
+    """The shared read-ahead level of this loop nest."""
     return theta.readahead_level()
-
-
-def _varying_modes(theta, operand):
-    """The operand's physical tile modes in ``ord`` order.
-
-    A read coverage changes how many instructions move those tiles; it does not change the
-    prefetch or rotation unit that owns them.  Keep the physical extents here and apply the
-    coverage only when naming a covered register position.
-    """
-    return list(theta.geometry(operand).varying)
-
-
-def global_outer_role(theta):
-    """Outermost logical role in ``ord``: a TDMSplit region factor selects storage, not order."""
-    return theta.global_outer_role()
-
-
-def _role_modes(theta, operand):
-    """The operand's varying modes that order its rotation: a split axis selects storage."""
-    return list(theta.geometry(operand).role_modes)
-
-
-def operand_outer_role(theta, operand):
-    """Outermost logical role this operand varies on."""
-    return theta.geometry(operand).outer_role
-
-
-def operand_inner_role(theta, operand):
-    """Innermost logical role this operand varies on: the prefetch-unit axis."""
-    return theta.geometry(operand).inner_role
 
 
 def unit_enumerator_modes(theta, operand):
@@ -309,24 +268,6 @@ def grouping_extent(theta, operand) -> int:
     return product(extent for _name, extent in grouping_modes(theta, operand))
 
 
-def _mode_terms(theta, operand, modes):
-    terms, stride = [], 1
-    fold = read_coverage(theta, operand)
-    for name, extent in reversed(modes):
-        terms.append((name, stride, max(1, int(fold.get(name, 1)))))
-        stride *= extent
-    return tuple(reversed(terms))
-
-
-def grouping_terms(theta, operand):
-    """The one axis whose contiguous ranges form register groups."""
-    return _mode_terms(theta, operand, grouping_modes(theta, operand))
-
-
-def unit_enumerator_terms(theta, operand):
-    return _mode_terms(theta, operand, unit_enumerator_modes(theta, operand))
-
-
 def group_index_expr(theta, operand):
     groups = max(1, len(operand.fragment.groups()))
     modes = grouping_modes(theta, operand)
@@ -343,45 +284,8 @@ def group_index_expr(theta, operand):
     ) % groups
 
 
-def shifted_group_index_expr(theta, operand, advance=0):
-    """Register-group index of the read-order coordinate reached by ``advance``."""
-    if not advance:
-        return group_index_expr(theta, operand)
-    groups = max(1, len(operand.fragment.groups()))
-    modes = grouping_modes(theta, operand)
-    if groups <= 1 or not modes:
-        return Expr.constant(0)
-    name, extent = modes[0]
-    if extent % groups:
-        raise RuntimeError(
-            f"{operand.name}: grouping extent {extent} is not divisible by {groups} groups")
-    extents = transfer_extents(theta, operand)
-    strides, _span = axis_strides(theta, varying_axes(theta, operand), extents)
-    terms = position_terms(strides, read_coverage(theta, operand))
-    divisor = max(1, int(strides.get(name, 1))) * max(1, extent // groups)
-    return (_position(theta, terms, int(advance)) // divisor) % groups
-
-
 def group_index(theta, operand, coord) -> int:
     return group_index_expr(theta, operand).evaluate(dict(coord))
-
-
-def grouping_value(theta, operand, coord) -> int:
-    return _flat_modes(theta, operand, grouping_modes(theta, operand), coord)
-
-
-def unit_enumerator_value(theta, operand, coord) -> int:
-    return _flat_modes(theta, operand, unit_enumerator_modes(theta, operand), coord)
-
-
-def _flat_modes(theta, operand, modes, coord) -> int:
-    at = dict(coord)
-    fold = read_coverage(theta, operand)
-    value, stride = 0, 1
-    for name, extent in reversed(modes):
-        value += (int(at.get(name, 0) or 0) // max(1, int(fold.get(name, 1)))) * stride
-        stride *= extent
-    return value
 
 
 def _region_span_of(operand, name) -> int:
@@ -665,7 +569,7 @@ def concurrent_regions(theta, operand) -> int:
     return max(1, live)
 
 
-def group_live_peak(theta, operand, group, steps, post_war=True, off=None) -> int:
+def group_live_peak(theta, operand, group, post_war=True, off=None) -> int:
     """Rotation units simultaneously live in one group."""
     if off is None:
         if post_war:
@@ -904,9 +808,6 @@ def _staged_prefetch_cap(theta, operand, want) -> int:
     return 0
 
 
-_reg_read_off = requested_read_ahead      # the old name, kept for the sweep that still uses it
-
-
 def _free_tile_index_seq(theta, operand, steps):
     free = set(free_names(theta, operand))
     free_axes = [axis for axis in theta.inner_axes() if axis.name in free]
@@ -927,7 +828,7 @@ def resident_free_tiles(theta, operand) -> int:
     T = len(steps)
     if T == 0:
         return 1
-    off = _reg_read_off(theta, operand)
+    off = requested_read_ahead(theta, operand)
     seq = _free_tile_index_seq(theta, operand, steps)
     if not any(seq):  # operand has no own free mode -> 1 tile
         return 1
@@ -970,20 +871,6 @@ class MmaShape:
     @property
     def count(self) -> int:
         return self.m_tiles * self.n_tiles * self.k_tiles
-
-
-# ===========================================================================
-
-def operand_generations(operand, depths) -> int:
-    """sum over register rate-groups of the group's depth (generation count) -- from derive_S."""
-    groups = depths.groups_of(operand.name)
-    return sum(groups.values()) if groups else 1
-
-
-def group_regs(theta, operand, group) -> int:
-    """Register width of ONE reuse group = its share of the fragment's registers."""
-    nslots = operand.fragment.total_slots() or 1
-    return max(1, frag_regs(theta, operand) * operand.fragment.size_of(group) // nslots)
 
 
 def group_register_positions(theta, operand) -> int:
@@ -1071,17 +958,6 @@ def split_unit_divisor(theta, operand) -> int:
                // max(1, prefetch_unit_tiles(theta, operand)))
 
 
-def region_positions(theta, operand) -> int:
-    """Ring positions this operand's regions contribute -- they are loop coordinates like any
-    other, so they are POSITIONS, never a factor applied to a depth after the fact.
-
-    EXEMPTING THE ALL-INNER OPERAND IS WRONG, measured: "it rereads the whole set so the regions
-    are inside one position" sounds right and breaks 60 of 384 baseline cells.  Rereading the
-    set does not make two regions' values share a slot; they are still live together.
-    """
-    return max(1, _region_count(theta, operand))
-
-
 def group_ring_depth(theta, operand, group, depths) -> int:
     """Physical slots for VA, sharing only when an outer region finishes before the ring turns."""
     depth = max(1, int(depths.get(operand.name, group)))
@@ -1167,11 +1043,6 @@ def n_tiles(n: int, t: int) -> int:
     return max(1, tile_split(n, t)[1])
 
 
-def per_tile(n: int, t: int) -> int:
-    """The per-tile extent = `tile_split(n,t)[0]` = t (divisible)."""
-    return max(1, tile_split(n, t)[0])
-
-
 def product(extents) -> int:
     """Size of a `Layout(tuple(extents))` = product of the extents."""
     p = 1
@@ -1236,7 +1107,7 @@ def presence_axes(theta, operand, hop=None):
 # --- the axes it varies over --------------------------------------------------------------
 
 def prefetch_axis_name(theta, operand=None):
-    axis = readahead_level(theta, operand)
+    axis = readahead_level(theta)
     return axis[0] if axis else None
 
 
@@ -1248,14 +1119,6 @@ def operand_level(theta, operand, operation):
         return region if (region is not None and max(1, operand.split) > 1) else chunk
     varying = varying_axes(theta, operand)
     return varying[-1] if varying else chunk
-
-
-def group_block_coverage(theta, operand) -> int:
-    """Level values one read covers, so the partition interleaves BLOCKS a read cannot straddle."""
-    grouping_mode = getattr(getattr(operand, "fragment", None), "grouping_mode", None)
-    if grouping_mode is None:
-        return 1
-    return max(1, int((read_coverage(theta, operand) or {}).get(grouping_mode, 1) or 1))
 
 
 def varying_axes(theta, operand):
@@ -1396,18 +1259,6 @@ def _shifted_coord(theta, axis, shift, strides, _reload_span, extents, fold=None
     if coverage > 1:
         return coverage * ((position // stride) % extent)
     return (position // stride) % extent
-
-
-def _regions_ride_the_ring(theta, operand, group) -> bool:
-    """Is a region axis read ahead across INSIDE a ring axis, so two regions are in flight?"""
-    if not requested_read_ahead(theta, operand):
-        return False
-    order = [axis.name for axis in theta.inner_axes()]
-    ring = [order.index(name) for name, _extent in ring_axes(theta, operand, group)
-            if name in order]
-    outermost = min(ring) if ring else len(order)
-    return any(name in order and order.index(name) > outermost
-               for name in (getattr(operand, "region_axes", ()) or ()))
 
 
 def regions_lead_the_ring(theta, operand, group) -> bool:
@@ -1707,30 +1558,6 @@ def _region_digits(theta, operand, strides, place):
         digits.append((place, max(1, strides[name]) * width, count))
         place *= count
     return digits
-
-
-def coverage_tile_cap(theta, operand, hop) -> int:
-    if hop.is_bulk or not hop.vector_elems:
-        return 1
-    per_fragment = max(1, int(operand.frag_elems))
-    return max(1, int(hop.vector_elems) // per_fragment)
-
-
-def _divisors(value: int):
-    value = max(1, int(value))
-    return [d for d in range(value, 0, -1) if value % d == 0]
-
-
-def is_uniform_over(generations, axes) -> bool:
-    """Is the generation map constant within each block of `axes`?"""
-    block = dict(axes)
-    seen = {}
-    for coord, generation in generations.items():
-        key = tuple((name, value // block[name] if name in block else value)
-                    for name, value in coord)
-        if seen.setdefault(key, generation) != generation:
-            return False
-    return True
 
 
 # --- registers -------------------------------------------------------------
