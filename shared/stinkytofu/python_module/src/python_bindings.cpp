@@ -655,8 +655,26 @@ NB_MODULE(_stinkytofu, m) {
             "Set memory token IDs for LDS dependency tracking (forwarded to MemTokenData)")
         .def(
             "set_gir_action",
-            [](LogicalInstruction& inst, uint64_t actionId) { inst.giraction = actionId; },
-            nb::arg("action_id"), "Set stable GIR semantic action id")
+            [](LogicalInstruction& inst, const nb::dict& data) {
+                const int kind = nb::cast<int>(data["kind"]);
+                if (kind < static_cast<int>(GirActionKind::Other) ||
+                    kind > static_cast<int>(GirActionKind::WaitCnt))
+                    throw nb::value_error("invalid GIR action kind");
+                std::vector<GirAccessData> accesses;
+                for (nb::handle item : nb::cast<nb::sequence>(data["accesses"])) {
+                    const nb::dict access = nb::cast<nb::dict>(item);
+                    accesses.push_back(GirAccessData{
+                        nb::cast<bool>(access["is_write"]), nb::cast<int>(access["operand"]),
+                        nb::cast<int>(access["ring"]), nb::cast<int>(access["gen"]),
+                        nb::cast<int>(access["gdelta"]), nb::cast<int>(access["absolute"]),
+                        nb::cast<bool>(access["cross_agent"])});
+                }
+                inst.giraction =
+                    GirActionData{nb::cast<uint64_t>(data["action_id"]),
+                                  nb::cast<uint64_t>(data["anchor_action"]),
+                                  static_cast<GirActionKind>(kind), std::move(accesses)};
+            },
+            nb::arg("data"), "Set complete GIR semantic action data")
         .def(
             "set_swaitcnt",
             [](LogicalInstruction& inst, int vlcnt, int vscnt, int dlcnt, int dscnt, int kmcnt) {

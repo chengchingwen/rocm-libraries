@@ -156,7 +156,7 @@ namespace rocisa
         std::string                   instStr;
         bool                          outputInlineAsm;
         std::shared_ptr<MemTokenData> m_memToken;
-        // Stable GIR semantic action identity. Semantic facts are transported separately.
+        // Complete GIR semantic action record carried with every physical realization.
         std::shared_ptr<GirActionData> m_girAction;
 
         Instruction(InstType instType, const std::string& comment = "")

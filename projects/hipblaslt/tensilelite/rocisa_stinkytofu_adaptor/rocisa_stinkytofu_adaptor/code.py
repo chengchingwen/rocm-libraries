@@ -70,16 +70,28 @@ def _forward_true16(rocisa_item: Any, logical: Any) -> None:
 
 
 def _forward_gir_action(rocisa_item: Any, logical: Any) -> None:
-    """Copy stable GIR action identity onto logical instructions."""
+    """Copy the complete GIR action record onto logical instructions."""
     getter = getattr(rocisa_item, "getGirActionData", None)
     data = getter() if callable(getter) else None
     if data is None:
         return
+    if not isinstance(data, dict):
+        raise TypeError(
+            "getGirActionData() must return the full GIR action mapping; "
+            "a bare action id would discard anchor, kind, and access facts"
+        )
+    required = {"action_id", "anchor_action", "kind", "accesses"}
+    missing = required.difference(data)
+    if missing:
+        raise ValueError(
+            "getGirActionData() is missing GIR action fields: "
+            + ", ".join(sorted(missing))
+        )
     targets = logical if isinstance(logical, list) else (logical,)
     for inst in targets:
         setter = getattr(inst, "set_gir_action", None)
         if callable(setter):
-            setter(int(data))
+            setter(data)
 
 
 # Synthetic instruction-group name that marks the DAG-scheduler region spanning
