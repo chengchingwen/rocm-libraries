@@ -18,6 +18,13 @@ from ...Lowering.gir.passes import run_pipeline
 
 from .Theta import loopModelTheta, namingSolution
 
+def _valuAllocation(writer):
+    """Each operand's `ValuAlloc` as vgprAllocationImplClassic sized it.
+
+    Empty before allocation has run, which leaves the dump on theta's footprint.
+    """
+    return dict(getattr(writer.states, "loopModelValuAlloc", {}) or {})
+
 
 def loopModelGirProgram(writer, kernel):
     """Build and cache the finalized GIR program for one kernel."""
@@ -147,7 +154,7 @@ def loopModelIrTextCached(writer):
             for name, count in sorted(kinds.items())
         ) or "none"
         return (
-            render_geometry(theta)
+            render_geometry(theta, _valuAllocation(writer))
             + f"\n  derived_dependences: {summary}"
             + "\n\n"
             + render_loopir(program)

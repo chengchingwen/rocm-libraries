@@ -47,7 +47,7 @@ def _geometry_unit_table(lines, theta, depths):
         )
 
 
-def _geometry_operand_table(lines, depths, requested_steps, theta):
+def _geometry_operand_table(lines, depths, requested_steps, theta, allocated=None):
     plans = Schedule(theta, depths)
     lines.append(
         "  operand role   axes               free ktiles fragregs tileB reads "
@@ -59,7 +59,12 @@ def _geometry_operand_table(lines, depths, requested_steps, theta):
         tile_bytes = geometry.operand_tile_bytes(theta, operand)
         read = operand.trajectory.shared_read
         reads = geometry.plan_transfers(theta, operand, read) if read else 0
-        vgpr = geometry.operand_footprint_regs(theta, operand, depths)
+        # The footprint is what theta's own ring would occupy.  When the writer
+        # has sized this operand, that allocation is the register count the
+        # kernel really has, and the one a reader of the dump needs.
+        vgpr = (allocated or {}).get(operand.name)
+        if vgpr is None:
+            vgpr = geometry.operand_footprint_regs(theta, operand, depths)
         axes = ",".join(presence(theta, operand)) or "-"
         shared_depth = depths.shared(operand.name, default=0)
         register_depths = (
@@ -149,7 +154,30 @@ def _region_and_agent_lines(theta):
     return lines
 
 
-def render_geometry(theta) -> str:
+def _valu_alloc_table(lines, valu):
+    """The writer's PU * VA / VG statement, one row per operand.
+
+    Theta's own footprint answers a different question -- what its ring would
+    occupy -- so the terms the kernel was actually sized by are spelled out
+    rather than left to be inferred from the product.
+    """
+    lines.append(
+        "  valu_alloc (PU * VA / VG):  op   pu_tiles pu_regs  vg   va  buffer  total"
+    )
+    for operand, alloc in sorted(valu.items()):
+        lines.append(
+            f"  {'':26s}{operand:5s}{alloc.puTiles:9d}{alloc.puRegs:8d}"
+            f"{alloc.vg:4d}{alloc.va:5d}{alloc.perBuffer:8d}{alloc.total:7d}"
+        )
+
+
+def render_geometry(theta, valu=None) -> str:
+    """The derived sizing tables for `theta`.
+
+    `valu` is the writer's Valu allocation, `{operand: ValuAlloc}`.  Without it
+    the `vgpr` column falls back to theta's own footprint, which is what a
+    standalone theta has and not what a kernel allocates.
+    """
     depths, _minimum = build_S(theta)
     shape = geometry.mma_shape(theta)
 
@@ -192,7 +220,10 @@ def render_geometry(theta) -> str:
         f"count={shape.count}"
     )
     _geometry_unit_table(lines, theta, depths)
-    _geometry_operand_table(lines, depths, requested, theta)
+    allocated = {op: alloc.total for op, alloc in (valu or {}).items()}
+    _geometry_operand_table(lines, depths, requested, theta, allocated)
+    if valu:
+        _valu_alloc_table(lines, valu)
     _geometry_ring_table(lines, depths, requested, theta)
     lines.extend(_region_and_agent_lines(theta))
     return "\n".join(lines)

@@ -282,6 +282,8 @@ class StateValues:
   # UseLoopModel: physical Valu-ring allocation per operand, derived from the same θ/S.
   loopModelValuVgprs: dict                = field(default_factory=dict)
   loopModelRegisterLayout: dict           = field(default_factory=dict)
+  # UseLoopModel: {tensorChar: ValuAlloc} as vgprAllocationImplClassic sized it.
+  loopModelValuAlloc: dict                = field(default_factory=dict)
   numVgprBufferPackA: int                = 0
   numVgprBufferPackB: int                = 0
   numVgprBufferPackMXSA: int             = 0
@@ -8484,23 +8486,21 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
         # The scaffold product above (wave tile, RAP, InnerUnroll, HalfPLR)
         # does not modify that number.
         if kernel["UseLoopModel"]:
-          for tc, state, bpe, bufName in (
-              ("A", self.states.a, tensorParametersA["bpe"], "numVgprBufferA"),
-              ("B", self.states.b, tensorParametersB["bpe"], "numVgprBufferB")):
-            perBuffer, va = operandValuPuVaVg(self, kernel, tc, bpe)
-            state.numVgprValuPerBlock = perBuffer
-            state.numVgprValu = perBuffer * va
-            setattr(self.states, bufName, va)
+          operands = [("A", self.states.a, tensorParametersA["bpe"], "numVgprBufferA"),
+                      ("B", self.states.b, tensorParametersB["bpe"], "numVgprBufferB")]
           if kernel["ProblemType"]["MXBlockA"]:
-            perBuffer, va = operandValuPuVaVg(self, kernel, "MXSA", None)
-            self.states.mxsa.numVgprValuPerBlock = perBuffer
-            self.states.mxsa.numVgprValu = perBuffer * va
-            self.states.numVgprBufferMXSA = va
+            operands.append(("MXSA", self.states.mxsa, None, "numVgprBufferMXSA"))
           if kernel["ProblemType"]["MXBlockB"]:
-            perBuffer, va = operandValuPuVaVg(self, kernel, "MXSB", None)
-            self.states.mxsb.numVgprValuPerBlock = perBuffer
-            self.states.mxsb.numVgprValu = perBuffer * va
-            self.states.numVgprBufferMXSB = va
+            operands.append(("MXSB", self.states.mxsb, None, "numVgprBufferMXSB"))
+          # The terms, not just the product: the IR dump states the formula.
+          # Replaced, never accumulated -- one writer sizes many kernels.
+          self.states.loopModelValuAlloc = {}
+          for tc, state, bpe, bufName in operands:
+            alloc = operandValuPuVaVg(self, kernel, tc, bpe)
+            state.numVgprValuPerBlock = alloc.perBuffer
+            state.numVgprValu = alloc.total
+            setattr(self.states, bufName, alloc.va)
+            self.states.loopModelValuAlloc[tc] = alloc
 
       else: # mac instruction
         valuBlocksA = (1 + kernel["PrefetchLocalRead"]) * kernel["InnerUnroll"]

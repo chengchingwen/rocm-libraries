@@ -2,13 +2,32 @@
 # SPDX-License-Identifier: MIT
 """Derive LoopModel Valu-ring register allocation from cached theta and S."""
 
+from typing import NamedTuple
+
 from ...LoopModel import traversal as _geometry
 
 from ..TDMSplit import AXIS_DU, AXIS_MT, split_of
 from .Theta import loopModelTheta
 
 
-def operandValuPuVaVg(writer, kernel, tc, bpe):
+class ValuAlloc(NamedTuple):
+  """One operand's Valu allocation and the terms it is made of.
+
+  ``perBuffer * va`` is the size; the rest is the same statement spelled out,
+  for the IR dump and for anyone asking why the size is what it is.
+  """
+  perBuffer: int    #: registers in one buffer -- the prefetch unit after VG
+  va: int           #: VA, the buffer count
+  puTiles: int      #: PU in instruction tiles, after a TDMSplit that cut it
+  puRegs: int       #: PU in registers, before VG divides it
+  vg: int           #: VG, the divisor of the unit
+
+  @property
+  def total(self) -> int:
+    return self.perBuffer * self.va
+
+
+def operandValuPuVaVg(writer, kernel, tc, bpe) -> ValuAlloc:
   """Registers in one buffer, and the buffer count, for one UseLoopModel operand.
 
   The operand's final Valu size is ``perBuffer * va``, which is PU * VA / VG.
@@ -93,8 +112,8 @@ def operandValuPuVaVg(writer, kernel, tc, bpe):
   packing = ((writer.states.packDTVA or writer.states.convDTVA) if side == "A"
              else (writer.states.packDTVB or writer.states.convDTVB))
   if direct and not packing:
-    return 0, va
-  return perBuffer, va
+    return ValuAlloc(0, va, pu, puRegs, vg)
+  return ValuAlloc(perBuffer, va, pu, puRegs, vg)
 
 
 def operandNumVgprBuffer(writer, tc):
