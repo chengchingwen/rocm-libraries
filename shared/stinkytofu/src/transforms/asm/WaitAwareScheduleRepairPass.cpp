@@ -199,9 +199,8 @@ void repairBlock(BasicBlock& bb, const GirFrameHazardAnalysis::Result& girHazard
 
     auto flushSegment = [&]() {
         if (segment.empty()) return;
-        const std::vector<StinkyInstruction*> repaired =
-            repairSegment(segment, anchors, girHazards, girFrames, passCtx, slotsToMovePastAnchor,
-                          pinPrefetches);
+        const std::vector<StinkyInstruction*> repaired = repairSegment(
+            segment, anchors, girHazards, girFrames, passCtx, slotsToMovePastAnchor, pinPrefetches);
         for (StinkyInstruction* inst : repaired) emitInstWithWaits(output, inst, anchors);
         segment.clear();
     };
@@ -255,7 +254,7 @@ void validateFrameOrderAfterRepair(const GirFrameHazardAnalysis::Result& hazards
         auto consumer = positions.find(hazard.consumer);
         if (producer != positions.end() && consumer != positions.end() &&
             producer->second >= consumer->second)
-            report_fatal_error("WaitAwareScheduleRepairPass violated a required GIR frame hazard");
+            STINKY_UNREACHABLE("WaitAwareScheduleRepairPass violated a required GIR frame hazard");
     }
 }
 

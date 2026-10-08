@@ -965,9 +965,10 @@ void validateGirFrameHazardOrder(const GirFrameHazardAnalysis::Result& hazards, 
         if (producer == orderIndex.end() || consumer == orderIndex.end()) continue;
         if (orderBlock[hazard.producer] == orderBlock[hazard.consumer] &&
             producer->second >= consumer->second)
-            report_fatal_error(std::string("GIR frame hazard: the ") + when +
-                               " order inverts a required same-trip edge in " +
-                               orderBlock[hazard.producer]->getLabel());
+            STINKY_UNREACHABLE((std::string("GIR frame hazard: the ") + when +
+                                " order inverts a required same-trip edge in " +
+                                orderBlock[hazard.producer]->getLabel())
+                                   .c_str());
     }
 }
 

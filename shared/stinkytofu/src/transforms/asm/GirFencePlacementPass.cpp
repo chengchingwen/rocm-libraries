@@ -280,7 +280,7 @@ GirRawPlacementPlan rawMarkers(const FrameCFG& cfg, const GirFrameHazardAnalysis
         const Counter counter = std::get<2>(group);
         auto body = bodies.find(block);
         if (body == bodies.end() || byDeadline.empty())
-            report_fatal_error("GirFencePlacementPass: RAW consumer block has no frame body");
+            STINKY_UNREACHABLE("GirFencePlacementPass: RAW consumer block has no frame body");
         const std::vector<StinkyInstruction*>& instructions = *body->second;
 
         const auto legalAt = [block](const GirFrameHazard& hazard, size_t slot) {
@@ -291,7 +291,7 @@ GirRawPlacementPlan rawMarkers(const FrameCFG& cfg, const GirFrameHazardAnalysis
             if (slot >= instructions.size() ||
                 !std::all_of(edges.begin(), edges.end(),
                              [&](const GirFrameHazard* hazard) { return legalAt(*hazard, slot); }))
-                report_fatal_error("GirFencePlacementPass: RAW has no legal consumer deadline");
+                STINKY_UNREACHABLE("GirFencePlacementPass: RAW has no legal consumer deadline");
         }
 
         auto deadline = byDeadline.rbegin();
@@ -300,7 +300,7 @@ GirRawPlacementPlan rawMarkers(const FrameCFG& cfg, const GirFrameHazardAnalysis
         std::vector<const GirFrameHazard*> cluster = deadline->second;
         const auto flush = [&] {
             if (clusterLow >= instructions.size())
-                report_fatal_error("GirFencePlacementPass: RAW deadline is outside its block");
+                STINKY_UNREACHABLE("GirFencePlacementPass: RAW deadline is outside its block");
             const StinkyInstruction* marker = instructions[clusterLow];
             plan.markers.insert(marker);
             if (counter == Counter::Tensor) plan.tensorMarkers.insert(marker);
@@ -540,7 +540,7 @@ class GirFencePlacementPass final : public StinkyInstPass {
         const HwInstDesc* signalDesc = getMCIDByUOp(GFX::s_barrier_signal, archId);
         const HwInstDesc* waitDesc = getMCIDByUOp(GFX::s_barrier_wait, archId);
         if (!signalDesc || !waitDesc)
-            report_fatal_error("GirFencePlacementPass: no workgroup barrier on this architecture");
+            STINKY_UNREACHABLE("GirFencePlacementPass: no workgroup barrier on this architecture");
 
         const NodesByKey byKey = collectNodes(frames);
         // ONE program, decided over once.  Every phase below reads this CFG and writes only
@@ -595,7 +595,7 @@ class GirFencePlacementPass final : public StinkyInstPass {
                                   violating, slot, markers);
                 const StinkyInstruction* marker = cfg.body[node][slot];
                 if (!markers.insert(marker).second)
-                    report_fatal_error("GirFencePlacementPass failed to converge");
+                    STINKY_UNREACHABLE("GirFencePlacementPass failed to converge");
                 for (size_t h : violating) markerKinds[marker].insert(hazards.hazards[h].kind);
             }
 
@@ -607,7 +607,7 @@ class GirFencePlacementPass final : public StinkyInstPass {
                 if (!passCtx.shouldProcessBasicBlock(*hazard.consumerBlock)) continue;
                 const GirHazardFenceCover cover = enclosingFences(frames, hazard, marked);
                 if (!cover.hasHazardPath)
-                    report_fatal_error(
+                    STINKY_UNREACHABLE(
                         "GirFencePlacementPass found no exact frame path for a GIR hazard");
                 if (!cover.hasUnfencedPath) continue;
                 size_t index = 0;
@@ -692,7 +692,7 @@ class GirFencePlacementPass final : public StinkyInstPass {
                         std::any_of(kinds->second.begin(), kinds->second.end(),
                                     [](GirHazardKind kind) { return kind != GirHazardKind::RAW; });
                     if (!reintroducedForNonRaw)
-                        report_fatal_error(
+                        STINKY_UNREACHABLE(
                             "GirFencePlacementPass reintroduced an unwaited/unowned marker");
                 }
                 continue;
@@ -705,14 +705,14 @@ class GirFencePlacementPass final : public StinkyInstPass {
             break;
         }
         if (!waitAwareShrinkConverged)
-            report_fatal_error("GirFencePlacementPass wait-aware shrink failed to converge");
+            STINKY_UNREACHABLE("GirFencePlacementPass wait-aware shrink failed to converge");
 
         for (const auto& [marker, kinds] : markerKinds) {
             if (!kinds.contains(GirHazardKind::RAW)) continue;
             auto wait = finalVirtualWaits.anchorWaits.find(const_cast<StinkyInstruction*>(marker));
             if (wait == finalVirtualWaits.anchorWaits.end() ||
                 wait->second.tensorCount == waitcnt::WaitCountSpec::kUnused)
-                report_fatal_error("GirFencePlacementPass stamped RAW without a tensorcnt");
+                STINKY_UNREACHABLE("GirFencePlacementPass stamped RAW without a tensorcnt");
         }
 
         // A pure WAR marker is movable toward its tensor consumer. If the next WAR-owning marker
@@ -728,7 +728,7 @@ class GirFencePlacementPass final : public StinkyInstPass {
                     const HazardKinds& kinds = markerKinds.at(inst);
                     if (kinds.contains(GirHazardKind::WAR)) {
                         if (earlierPureWar && !tensorIssued)
-                            report_fatal_error("GirFencePlacementPass left mergeable WAR barriers");
+                            STINKY_UNREACHABLE("GirFencePlacementPass left mergeable WAR barriers");
                         earlierPureWar = kinds.size() == 1
                                              ? inst
                                              : static_cast<const StinkyInstruction*>(nullptr);
@@ -751,7 +751,7 @@ class GirFencePlacementPass final : public StinkyInstPass {
             wait->addSrcReg(StinkyRegister(kWorkgroupBarrierId));
             auto kinds = markerKinds.find(target);
             if (kinds == markerKinds.end() || kinds->second.empty())
-                report_fatal_error("GirFencePlacementPass: barrier has no hazard-kind stamp");
+                STINKY_UNREACHABLE("GirFencePlacementPass: barrier has no hazard-kind stamp");
             wait->addModifier<CommentData>(CommentData{fenceStamp(kinds->second)});
         }
 
