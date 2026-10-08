@@ -1263,9 +1263,15 @@ validParameters = { # we need to make sure this matches develop
     #      wave 2, MXSB on wave 3, B on every wave. NumWaves==4.
     #   3  {B,MXSA,MXSB} + {A}, the mirror of 2: B on waves 0-1, MXSA on
     #      wave 2, MXSB on wave 3, A on every wave. NumWaves==4.
+    #   4  0's sets, but only storage region 0 rides one cooperative load.
+    #      With TDMSplitA/B both splitting in two the walk is A0B0, then the
+    #      earlier-read operand's region 1 alone, then the other's -- each solo
+    #      load with the absent member's descriptor NULLed across it.  Needs
+    #      both data tensors split into the same number of regions, and
+    #      UseLoopModel (GIR owns the region walk).
     #
     # This list and Components/TDMFuse.TDM_FUSE_GROUPING must name the same integers.
-    "TDMFuse": [0, 1, 2, 3],
+    "TDMFuse": [0, 1, 2, 3, 4],
     # In-device layout of the MX scale tensors (MXSA/MXSB).
     # User-facing values:
     #   "NoSwizzle":       no swizzling; plain row/column layout (this is the default

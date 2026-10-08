@@ -434,6 +434,8 @@ class Theta:
     ord: tuple  # the full permutation of looped axes, outer -> inner
     reg_bytes: int = 4
     lanes: int = 32
+    #: who shares one movement.  ONE entry per unit fuses every region of its walk; SEVERAL name
+    #: the steps of that walk, the first cooperative and each later one its own movement.
     fused_copy_groups: list = field(default_factory=list)
     agent_assignment: AgentAssignment = field(default_factory=AgentAssignment)
     wave_count: int = 1

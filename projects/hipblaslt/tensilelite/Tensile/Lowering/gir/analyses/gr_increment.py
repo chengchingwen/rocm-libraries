@@ -15,7 +15,7 @@ from .cfg import BackEdges, successors
 from .swap_regions import _unemitted_edges
 # IMPORTED, not re-derived: a second reading of how many regions a movement has is exactly
 # how this analysis and the walk that produces the copies would drift apart.
-from .region_increment import _n_regions, _canonical_unit, walk_ref
+from .region_increment import _n_movements, _canonical_unit, walk_ref
 
 
 def _copy_of(inst, prog):
@@ -110,7 +110,8 @@ class GrIncrementRegions(Analysis):
         on the path both arms take.
         """
         blk = prog.blocks[lab]
-        nreg = max(1, _n_regions(prog, unit))
+        # LOADS per chunk, which is only the region count while each region is its own movement.
+        nmov = max(1, _n_movements(prog, unit))
         out = []
         for inst in blk.body:
             if isinstance(inst, Mark) and inst.kind == "chunk_pin":
@@ -120,7 +121,7 @@ class GrIncrementRegions(Analysis):
             acc = _copy_of(inst, prog)
             if acc is None or acc[0] != unit:
                 continue
-            c = _chunk_of(blk, acc[1], peel_seq=npeel // nreg)
+            c = _chunk_of(blk, acc[1], peel_seq=npeel // nmov)
             if getattr(acc[1], "gen", None) is None:
                 npeel += 1                       # this unit's next peel LOAD (see above)
             if c is not None:

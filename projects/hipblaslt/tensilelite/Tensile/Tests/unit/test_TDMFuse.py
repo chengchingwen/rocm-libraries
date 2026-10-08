@@ -217,7 +217,12 @@ def _derive(gfx1250_iim, assembler, capsys, **overrides):
     return sol, capsys.readouterr().out
 
 
-@pytest.mark.parametrize("fuse", sorted(TDM_FUSE_GROUPING))
+# `_derive` builds an MX-F4 problem off UseLoopModel.  AB_first needs BOTH, so it cannot derive
+# here at all -- its walk is asserted by test_ab_first_walk, which is where the row's behaviour is.
+_ROWS_ON_THIS_PROBLEM = sorted(set(TDM_FUSE_GROUPING) - {4})
+
+
+@pytest.mark.parametrize("fuse", _ROWS_ON_THIS_PROBLEM)
 def test_solution_accepts_each_grouping_at_equal_pair(
         _gp_gfx1250, gfx1250_iim, assembler, capsys, fuse):
     sol, out = _derive(gfx1250_iim, assembler, capsys, TDMFuse=fuse)
@@ -232,7 +237,7 @@ def test_solution_accepts_paired_at_divergent_pair(
     assert sol.get("Valid") is True, out
 
 
-@pytest.mark.parametrize("fuse", sorted(TDM_FUSE_GROUPING))
+@pytest.mark.parametrize("fuse", _ROWS_ON_THIS_PROBLEM)
 def test_solution_accepts_stagger(_gp_gfx1250, gfx1250_iim, assembler, capsys, fuse):
     sol, out = _derive(gfx1250_iim, assembler, capsys, TDMFuse=fuse, StaggerU=32)
     assert sol.get("Valid") is True, out
@@ -306,7 +311,7 @@ def ks(fuse=3, **over):
     return state
 
 
-@pytest.mark.parametrize("fuse", [-3, -1, 4, 5, 6, 7, 8])
+@pytest.mark.parametrize("fuse", [-3, -1, 5, 6, 7, 8])
 def test_an_unmapped_integer_raises_instead_of_resolving(fuse):
     """An integer no row claims must raise, not fall back."""
     with pytest.raises(ValueError, match="names no grouping"):
@@ -600,3 +605,34 @@ def _incrementText(state):
     mod = w.tdmSetupIncrementWaveSeparated(
         state, {"tensorChar": "A"}, {"tensorChar": "B"})
     return str(mod)
+
+
+# --- AB_first (TDMFuse=4): region 0 fused, every later region one member at a time -------------
+
+_AB_FIRST = {"NumWaves": 4, "TDMInst": 3, "MIWaveTile": [2, 2],
+             "TDMSplit": [2, 2, 1, 1], "TDMSplitA": 1, "TDMSplitB": 1}
+
+
+def _walk(fuse, loopOrder):
+    """The movement steps of the A/B unit as `[(region, members)]`."""
+    from gir_fixtures import BF16_NT_KMN_PLR0, theta
+    from Tensile.LoopModel.decoder import _Decoder
+    th = theta({**BF16_NT_KMN_PLR0, **_AB_FIRST, "TDMFuse": fuse, "LoopOrder": loopOrder})
+    key, members, regions = th.movement_units()[0]
+    return [(region, [m.name for m in moving])
+            for region, moving in _Decoder(th)._copy_steps(key, members, regions)]
+
+
+def test_ab_first_walk():
+    """Both tensors split in two: one cooperative load, then each region 1 on its own."""
+    assert _walk(4, "KMN") == [(0, ["A", "B"]), (1, ["A"]), (1, ["B"])]
+
+
+def test_ab_first_issues_the_earlier_read_operand_first():
+    """Which solo load leads is the loop order's answer, not the table's member order."""
+    assert _walk(4, "KNM") == [(0, ["A", "B"]), (1, ["B"]), (1, ["A"])]
+
+
+def test_the_default_row_fuses_every_region():
+    """The same split under TDMFuse=0 keeps both members on both loads."""
+    assert _walk(0, "KMN") == [(0, ["A", "B"]), (1, ["A", "B"])]
