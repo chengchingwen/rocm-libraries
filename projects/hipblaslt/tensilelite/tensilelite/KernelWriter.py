@@ -7308,7 +7308,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
                                # implementation owns tagged tensorcnt.
                                "EnableWaitCntInsertion": enableWaitCntInsertion,
                                "DisableTensorcntInsertion": bool(kernel["UseLoopModel"]),
-                               "lockDsReadOrder": not bool(kernel["UseLoopModel"]),
+                               "LockDsReadOrder": not bool(kernel["UseLoopModel"]),
                                # Fences, memory tokens and numeric waits are all StinkyTofu's under
                                # ULM, derived after scheduling from the frame contract GIR exports.
                                "EnableGirFramePipeline": bool(kernel["UseLoopModel"]),
