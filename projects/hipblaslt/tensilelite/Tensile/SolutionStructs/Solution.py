@@ -56,10 +56,10 @@ from ..Components.DecouplePGR import pgrLevelsForTensors, ldsBlocksForPgrLevel, 
                                        resolvePrefetchGlobalReadSpecialValues
 from ..Components.TDMFuse import tdmBothTensors, tdmFusedGroups, tdmGroupingAccepted, \
                                        tdmGroupingName, tdmPapRejectReason
+from ..Components.LoopModel import Order, Registers
 from ..Common.TypeValidationErrors import ConfigTypeError
 from ..CustomKernels import isCustomKernelConfig, supportsUserSgprKernargPreload, validateCustomPersistentArgs
 from ..Components import TDMSplit
-from ..LoopModel.adapter import loop_order_of, wmma_loop_order
 from ..SolutionStructs.LdsPadding import get_fp4_mt_config, get_fp8_mt_config, get_mxs_mt_config, \
                                                get_fp16_mt_config, get_fp32_mt_config, get_metadata_mt_config, \
                                                get_fp4_valid_blocks, get_fp8_valid_blocks, \
@@ -258,90 +258,6 @@ def localReadPair(state, base):
     return False, scalar, scalar
   return True, scalar if a is None or int(a) == -1 else a, \
       scalar if b is None or int(b) == -1 else b
-
-
-def collapseEqualPair(state, base):
-  """Drop a per-operand pair that says nothing the scalar does not.
-
-  BOTH sides must name the same real value.  An absent side is not a value: reading it as the
-  scalar made `PrefetchLocalReadB=3` beside a scalar of 3 look equal, so the one level the caller
-  did set was collapsed away before the cap could refuse it.
-  """
-  a, b = state.get(base + "A"), state.get(base + "B")
-  if a is None or b is None or a != b or int(a) == -1:
-    return
-  for suffix in ("A", "B"):
-    state.pop(base + suffix, None)
-  state[base] = a
-
-
-WOO_AXIS = {1: "M", 2: "N", 3: "K"}
-
-def tdmSplitAxis(state, tc):
-  """The axis `TDMSplit<tc>` divides, or None: 1 splits the tile axis, 2 splits DepthU."""
-  split = 1 if state.get("TDMSplit") else int(state.get("TDMSplit" + tc, 0) or 0)
-  if split == 1:
-    return "M" if tc == "A" else "N"
-  return "K" if split == 2 else None
-
-def wmmaOuterOrderOf(state):
-  """Derive `WmmaOuterOrder` from the splits: the one live split axis leads the nest.
-
-  No split leaves the order to `WmmaInnerOrder` alone (0).  One split side hoists its own axis.
-  Two sides hoist the heavier one -- inner extent x element bytes, which is how much data the
-  outer loop keeps live -- so the bigger operand is the one that stops being re-read.
-  """
-  waveTile = state["MIWaveTile"]
-  kIters = max(1, state["DepthU"] // max(1, state["MatrixInstruction"][2]))
-  weight = {}
-  for tc, tile in (("A", waveTile[0]), ("B", waveTile[1])):
-    axis = tdmSplitAxis(state, tc)
-    if axis is None:
-      continue
-    bpe = state["ProblemType"]["DataType%s" % tc].numBytes()
-    extent = kIters if axis == "K" else max(1, tile)
-    weight[axis] = max(weight.get(axis, 0), extent * bpe)
-  if not weight:
-    return 0
-  # A tie keeps the earlier axis, matching the A-then-B, tile-then-DepthU order of everything else.
-  order = ["M", "N", "K"]
-  axis = max(weight, key=lambda a: (weight[a], -order.index(a)))
-  return next(k for k, v in WOO_AXIS.items() if v == axis)
-
-
-#: the axes an operand varies over -- its read-ahead is measured along ITS OWN outermost one
-_READ_AHEAD_AXES = {"A": ("M", "K"), "B": ("N", "K")}
-
-
-def loopModelReadAheadCap(state, tc=None) -> int:
-  """Most VG-sized buffers a ULM read may run ahead: ``VG * outer-loop trips``.
-
-  A is measured on its outermost M/K loop and B on its outermost N/K loop. TDMSplit halves the
-  trip count of the axis it cuts before VG converts those trips to buffer steps.
-  """
-  order = wmma_loop_order(state)
-  def _group(side):
-    value = state.get("VgprGroup" + side)
-    return int(value) if value is not None and int(value) != -1 else 1
-  def _split(side):
-    return 1 if state.get("TDMSplit") else int(state.get("TDMSplit" + side, 0) or 0)
-  def _tile(index, side):
-    whole = max(1, state["MIWaveTile"][index])
-    trips = whole // 2 if _split(side) == 1 and not whole % 2 else whole
-    return max(1, trips * _group(side))
-  ktrips = max(1, state["LoopIters"])
-  if tc in ("A", "B") and _split(tc) == 2 and not ktrips % 2:
-    ktrips //= 2
-  extent = {"K": max(1, ktrips * (_group(tc) if tc in ("A", "B") else 1)),
-            "M": _tile(0, "A"),
-            "N": _tile(1, "B")}
-  mine = _READ_AHEAD_AXES.get(tc)
-  if mine is not None:
-    order = [a for a in order if a in mine]
-  # Skip degenerate axes, as `readahead_level_of` does: an extent of 1 is not the axis PLR walks.
-  outermost = next((a for a in order if extent.get(a, 1) > 1),
-                   next((a for a in order if a in extent), "K"))
-  return max(0, extent[outermost])
 
 
 def _disableRuntimeStaggerU(state):
@@ -996,11 +912,12 @@ class Solution(collections.abc.Mapping):
       state["TDMSplitA"] = 1
       state["TDMSplitB"] = 1
 
-    try:
-      loop_order_of(state.get("WmmaInnerOrder", 1), state.get("WmmaOuterOrder", 0))
-    except ValueError as e:
-      reject(state, printRejectionReason, str(e))
-      return
+    if "LoopOrder" not in state:
+      try:
+        Order.calculate(state)
+      except (RuntimeError, ValueError) as error:
+        reject(state, printRejectionReason, str(error))
+        return
 
     # The traversal order is only meaningful on the LoopModel path.  Naming a non-default one off
     # that path is a no-op that would spawn redundant, mis-deduped baseline kernels, so reject it.
@@ -2307,92 +2224,25 @@ class Solution(collections.abc.Mapping):
           % (state["PrefetchGlobalRead"], dcpPgrA, dcpPgrB, dcpPinned))
       state["PrefetchGlobalRead"] = dcpPinned
 
-    # `WmmaOuterOrder` -1 DERIVES from the splits; any other value is a force that must name an
-    # axis a TDMSplit actually divides.  Hoisting an unsplit axis leaves every split at extent 1,
-    # so the order collapses to the one `WmmaInnerOrder` alone spells and would emit a duplicate
-    # kernel under a name claiming a different schedule.  Off the LoopModel path there is no nest
-    # to order, so -1 is simply 0.
-    if int(state.get("WmmaOuterOrder", -1)) == -1:
-      state["WmmaOuterOrder"] = wmmaOuterOrderOf(state) if state.get("UseLoopModel") else 0
-    elif int(state["WmmaOuterOrder"]):
-      _wooAxis = WOO_AXIS[int(state["WmmaOuterOrder"])]
-      if _wooAxis not in (tdmSplitAxis(state, "A"), tdmSplitAxis(state, "B")):
-        reject(state, printRejectionReason,
-               "WmmaOuterOrder=%d hoists the %s split outermost, but TDMSplitA=%s/TDMSplitB=%s "
-               "do not split %s (A splits %s, B splits %s).  Name the axis that is split, set "
-               "WmmaOuterOrder=-1 to derive it, or use 0."
-               % (int(state["WmmaOuterOrder"]), _wooAxis, state.get("TDMSplitA"),
-                  state.get("TDMSplitB"), _wooAxis,
-                  tdmSplitAxis(state, "A"), tdmSplitAxis(state, "B")))
-        return
+    try:
+      Order.calculate(state)
+    except (RuntimeError, ValueError) as error:
+      reject(state, printRejectionReason, str(error))
+      return
 
-    # Local read is per operand, the way the global side already is: an equal pair collapses
-    # onto the scalar, and AUTO takes the value the operand's position implies.
-    for _base in ("PrefetchLocalRead", "ClusterLocalRead"):
-      collapseEqualPair(state, _base)
-    _statedVgpr = {}
-    for _tc in ("A", "B"):
-      _vg = state.get("VgprGroup" + _tc)
-      _va = state.get("VgprAlloc" + _tc)
-      _hasVg = _vg is not None and int(_vg) != -1
-      _hasVa = _va is not None and int(_va) != -1
-      _statedVgpr[_tc] = _hasVg or _hasVa
-    # Resolve CLR before the kernel is named.  The outermost tile axis decides whether an
-    # operand is all-inner; VG/VA then sizes that same ring, rather than selecting a second
-    # allocation path.  In particular, an explicit VA is legal for all-inner when it is large
-    # enough -- the adapter validates that size against the forced full-buffer requirement.
-    _cluster = {}
-    if state.get("UseLoopModel"):
-      _lrOuter = wmma_loop_order(state)[0]
-      _clScalar = int(state.get("ClusterLocalRead", 0) or 0)
-      for _tc, _walks in (("A", ("M", "K")), ("B", ("N", "K"))):
-        _key = "ClusterLocalRead" + _tc
-        _asked = state.get(_key)
-        _auto = _asked is None or int(_asked) == -1
-        _asked = (0 if _auto and _statedVgpr[_tc] else _clScalar) if _auto else int(_asked)
-        if _lrOuter not in _walks:
-          if _asked != 1:
-            state["_ClusterLocalReadForced" + _tc] = True
-          _asked = 1
-        _cluster[_tc] = _asked
-    if _cluster:
-      if _cluster["A"] == _cluster["B"]:
-        state["ClusterLocalRead"] = _cluster["A"]
-        for _tc in ("A", "B"):
-          state.pop("ClusterLocalRead" + _tc, None)
-      else:
-        state["ClusterLocalReadA"], state["ClusterLocalReadB"] = _cluster["A"], _cluster["B"]
-        state["ClusterLocalRead"] = min(_cluster["A"], _cluster["B"])
-    # VgprGroup / VgprAlloc: the allocation as a fraction of the prefetch unit.  VG divides one
-    # buffer's SIZE, VA counts the buffers, so `prefetch_unit * VA / VG` is the whole statement.
-    # Only theta can honour that, because only there is the prefetch unit the model's to move.
-    for _tc in ("A", "B"):
-      _vg, _va = state.get("VgprGroup" + _tc), state.get("VgprAlloc" + _tc)
-      _asked = [name for name, value in (
-          ("VgprGroup" + _tc, _vg), ("VgprAlloc" + _tc, _va))
-          if value is not None and int(value) != -1]
-      if _asked and not state.get("UseLoopModel"):
-        reject(state, printRejectionReason,
-               "%s is UseLoopModel-only: off that path the prefetch unit is fixed by the "
-               "scaffold, so VgprGroup/VgprAlloc could only resize the allocation under a unit "
-               "they do not control.  Leave them at -1." % ", ".join(_asked))
-        return
-      # VG=1 divides nothing, so the parity requirement is the same one legacy HalfPLR carries:
-      # a half-buffer of an odd tile count has no whole-tile half.  `MIWaveTileA/B` are not
-      # written yet here; the pair is.
-      _wt = state["MIWaveTile"][0 if _tc == "A" else 1]
-      if _vg is not None and int(_vg) > 1 and int(_wt) % int(_vg):
-        reject(state, printRejectionReason,
-               "VgprGroup%s=%d does not divide MIWaveTile%s=%d, so one buffer is not a whole "
-               "number of tiles." % (_tc, int(_vg), _tc, int(_wt)))
-        return
-      # Any stated ring can leave the back edge at a nonzero phase (VA need not divide the trip
-      # even when VG=1). A shared drain entry cannot represent every copy-exit phase.
-      if _asked:
-        state["SuppressNoLoadLoop"] = True
-
-    # PrefetchLocalReadA/B stay AUTO here: deriving them needs `LoopIters`, which
-    # `assignProblemIndependentDerivedParameters` has not written yet.
+    statedLoopModelRegisters = [
+        name
+        for side in ("A", "B")
+        for name in ("VgprGroup" + side, "VgprAlloc" + side)
+        if state.get(name) is not None and int(state[name]) != -1
+    ]
+    if statedLoopModelRegisters and not state.get("UseLoopModel"):
+      reject(state, printRejectionReason,
+             "%s is UseLoopModel-only: leave it at -1"
+             % ", ".join(statedLoopModelRegisters))
+      return
+    if statedLoopModelRegisters:
+      state["SuppressNoLoadLoop"] = True
 
     Solution.assignProblemIndependentDerivedParameters(state, printRejectionReason, isaInfoMap)
     # A REJECTION IN THE CALL ABOVE MUST STOP US HERE.  It signals one by returning early, and 49
@@ -3137,7 +2987,7 @@ class Solution(collections.abc.Mapping):
     #  - The "NoLoad" loop is only generated if PrefetchGlobalRead>0
     #  - And Suppress does not work if GSU>1 for some reason
     if state["SuppressNoLoadLoop"]:
-      _vgprLoopModel = state.get("UseLoopModel") and any(_statedVgpr.values())
+      _vgprLoopModel = state.get("UseLoopModel", False)
       _supportedPgr = state["PrefetchGlobalRead"] == 1 or (
           _vgprLoopModel and state["PrefetchGlobalRead"] > 0)
       if not (bufferLoad and _supportedPgr
@@ -4162,15 +4012,10 @@ class Solution(collections.abc.Mapping):
     # numVgprBuffer blocks of each. Mirrors vgprAllocationImplClassic. The MX
     # TileSpan halving is deliberately not modelled: leaving it out overstates R,
     # which understates k, and only the understating direction is safe here.
-    # A CLUSTERED operand holds one buffer per k-tile; an unclustered one holds only the
-    # read-ahead depth plus the value in use.  `_localReadBuffers` asks per operand, so a pair
-    # that differs is not averaged into one wrong number.
+    # Registers.py already calculated each operand's VA from CLR/PLR/VG.
+    # Re-deriving it here was a second owner and could price a different ring.
     def _localReadBuffers(tc):
-      _cl, _clA, _clB = localReadPair(state, "ClusterLocalRead")
-      _pl, _plA, _plB = localReadPair(state, "PrefetchLocalRead")
-      cluster = (_clA if tc == "A" else _clB) if _cl else state["ClusterLocalRead"]
-      prefetch = (_plA if tc == "A" else _plB) if _pl else state["PrefetchLocalRead"]
-      return state["LoopIters"] if cluster else prefetch + 1
+      return int(state["VgprAlloc" + tc])
     numVgprBuffer = max(_localReadBuffers("A"), _localReadBuffers("B"))
     macA = problemType.get("MacDataTypeA") or problemType["DataType"]
     bpeA = bpr * macA.numRegisters()
@@ -7323,35 +7168,11 @@ class Solution(collections.abc.Mapping):
       state["ClusterLocalRead"] = 0
       state["PrefetchLocalRead"] = 0
     if state.get("UseLoopModel", False):
-      # -1 DERIVES, anything else STANDS.  `PrefetchLocalRead` is the request and each operand
-      # runs ahead along its own outermost axis, so under MNK one scalar gives A and B different
-      # answers.  A level the caller named is used as it is; only one the axis cannot reach is
-      # refused, because the extra ring slot would be written and read by nothing.
-      _plr = {}
-      for _tc in ("A", "B"):
-        _cap = loopModelReadAheadCap(state, _tc)
-        _named = state.get("PrefetchLocalRead" + _tc)
-        if _named is None or int(_named) == -1:
-          _plr[_tc] = min(int(state["PrefetchLocalRead"]), _cap)
-          continue
-        if int(_named) > _cap:
-          reject(state, printRejectionReason,
-                 "PrefetchLocalRead%s=%d exceeds %d, the most %s can run ahead along its own "
-                 "outermost axis: the extra ring slot is never written or read.  Lower it, set "
-                 "it to -1 to derive it, or raise the tile so the axis has more values."
-                 % (_tc, int(_named), _cap, _tc))
-          return
-        _plr[_tc] = int(_named)
-      if _plr["A"] == _plr["B"]:                 # one answer: the scalar says it, the pair goes
-        state["PrefetchLocalRead"] = _plr["A"]
-        for _tc in ("A", "B"):
-          state.pop("PrefetchLocalRead" + _tc, None)
-      else:
-        # The scalar stays in the name beside the pair, so PIN it to the pair -- two requests
-        # deriving one schedule would carry two names.  PLR is capped DOWNWARD, so the operand
-        # that kept the request is the max.
-        state["PrefetchLocalReadA"], state["PrefetchLocalReadB"] = _plr["A"], _plr["B"]
-        state["PrefetchLocalRead"] = max(_plr["A"], _plr["B"])
+      try:
+        Registers.calculate(state)
+      except RuntimeError as error:
+        reject(state, printRejectionReason, str(error))
+        return
     if not state["EnableMatrixInstruction"]:
       state["ClusterLocalRead"] = 0
       # dot2: allow PLR=1

@@ -13,6 +13,7 @@ from .theta import (AgentAssignment, AgentAxisAssignment, Fragment, Global,
                     RegionLayout, Shared, Trajectory, Operand, Theta, group_labels)
 from .traversal import readahead_level
 from ..Components import TDMSplit as _tdm_split
+from ..Components.LoopModel import Order
 from ..Components.TDMFuse import liveGroups, tdmWavePartition, tdmWaveSeparated
 WAVE32 = 32  # gfx1250 wave width
 REG_BYTES = 4  # gfx1250 register width in bytes
@@ -47,113 +48,12 @@ def _mx_frag_elems(kernel, free_mi, mxblock):
 AXIS_NAMES = ["K_split", "K_inner",
               "M_split", "M_inner", "N_split", "N_inner"]
 
-#: tile axis -> its storage-region axis
-INNER_TO_SPLIT = {"K_inner": "K_split", "M_inner": "M_split", "N_inner": "N_split"}
-
-
-# ---------------------------------------------------------------------------
-def _loop_order_word(order):
-    """Normalize a LoopOrder param to a 6-letter axis word (each of K,M,N twice)."""
-    word = str(order).upper()
-    if len(word) == 3 and sorted(word) == ["K", "M", "N"]:
-        word = "".join(c * 2 for c in word)  # "kmn" -> "kkmmnn"
-    if len(word) != 6 or sorted(word) != ["K", "K", "M", "M", "N", "N"]:
-        raise ValueError(
-            f"LoopOrder={order!r}: must be a 3-letter axis order (e.g. 'KMN','NMK') or a "
-            f"6-letter word with each of K,M,N twice (first occ=split, second=inner, e.g. "
-            f"'KMKNMN'); inner->split orders are not expressible (by design).")
-    return word
-
-
-#: `WmmaInnerOrder` is an index into this: the order the TILE axes nest in, innermost last.
-#: The numbering is the one `Common/ValidParameters.py` documents.
-WMMA_INNER_ORDERS = ("KMN", "KNM", "MNK", "MKN", "NMK", "NKM")
-
-#: `WmmaOuterOrder` names the axis whose SPLIT sits outermost; 0 keeps each split beside its tile.
-WMMA_OUTER_AXES = (None, "M", "N", "K")
-
-
-def wmma_loop_order(params) -> str:
-    """The traversal word for a solution.
-
-    `WmmaInnerOrder`/`WmmaOuterOrder` are the parameters; `LoopOrder` is accepted only as a
-    direct spelling for hand-built thetas, which is what the unit fixtures pass.
-    """
-    if "WmmaInnerOrder" in params or "WmmaOuterOrder" in params:
-        return loop_order_of(params.get("WmmaInnerOrder", 1), params.get("WmmaOuterOrder", 0))
-    return params.get("LoopOrder", "KMN")
-
-
-def loop_order_of(inner_order: int, outer_order: int) -> str:
-    """The loop-order word `WmmaInnerOrder` and `WmmaOuterOrder` name.
-
-    `outer_order` 0 keeps every split beside the tile it divides, which is the 3-letter order.
-    Otherwise that axis's split leads and the rest follow in tile order; at most two splits are
-    ever live, so naming the outer one fixes the traversal and the third's position is free.
-    """
-    try:
-        inner = WMMA_INNER_ORDERS[int(inner_order) - 1]
-    except (IndexError, TypeError, ValueError):
-        raise ValueError(
-            f"WmmaInnerOrder={inner_order!r} must be 1..{len(WMMA_INNER_ORDERS)} "
-            f"({', '.join(WMMA_INNER_ORDERS)})")
-    if not 0 <= int(outer_order) < len(WMMA_OUTER_AXES):
-        raise ValueError(f"WmmaOuterOrder={outer_order!r} must be 0..{len(WMMA_OUTER_AXES) - 1}")
-    outer = WMMA_OUTER_AXES[int(outer_order)]
-    if outer is None:
-        return inner
-    return outer + "".join(a for a in inner if a != outer) + inner
-
-
-def _word_to_modes(word):
-    AXIS = {"K": "K", "M": "M", "N": "N"}
-    seen = set()
-    roles = []
-    for c in word:
-        axis = AXIS[c]
-        roles.append(f"{axis}_split" if axis not in seen else f"{axis}_inner")
-        seen.add(axis)
-    return roles
-
-
-def _build_axes(substeps, splits, m_inner, n_inner, order):
-    """Build the six factorized axes in LoopOrder."""
-    # K_inner is the longest run both operands can take without changing
-    # storage region. K_split counts those runs.
-    # kResA and kResB are operand metadata, not loop axes.
-    a_regions = max(1, splits.kSplit * splits.kResA)
-    b_regions = max(1, splits.kSplit * splits.kResB)
-    k_inner = _gcd(max(1, substeps // a_regions), max(1, substeps // b_regions))
-    extents = {
-        "K_inner": max(1, k_inner),
-        "K_split": max(1, substeps // max(1, k_inner)),
-        "M_split": max(1, splits.mSplit), "M_inner": max(1, m_inner),
-        "N_split": max(1, splits.nSplit), "N_inner": max(1, n_inner),
-    }
-    axes = {role: Axis(role, extents[role]) for role in AXIS_NAMES}
-    roles = _word_to_modes(_loop_order_word(order))
-    def _keep(role):
-        # The loop order determines which tile axes exist, regardless of their
-        # extents, so keep every tile axis in the nest.
-        if role in INNER_TO_SPLIT:
-            return True
-        return extents[role] > 1
-    # ord carries only the shared link. Each operand keeps its own residual
-    # region information rather than adding it to the shared nest.
-    inner_ord = [axes[role] for role in roles if _keep(role)]
-    if not inner_ord:  # fully degenerate: keep K_inner as the 1 loop
-        inner_ord = [axes["K_inner"]]
-    iter_mode = Axis("iter", 0)
-    axes["iter"] = iter_mode
-    ord_ = [iter_mode] + inner_ord
-    return ord_, axes, extents
-
-
 # --- build -----------------------------------------------------------------
 
 
 DEFAULTS = {
     "DepthU": 128, "MatrixInstruction": [16, 16, 64, 1], "MIWaveTile": [1, 2],
+    "LoopOrder": "KMN",
     "PrefetchGlobalRead": 2, "PrefetchLocalRead": 1, "HalfPLR": 0,
     "TDMInst": 3, "TDMSplit": [1, 1], "TDMSplitA": 0, "TDMSplitB": 0, "TDMIterateMode": 0,
     "GlobalReadVectorWidthA": 8, "GlobalReadVectorWidthB": 8,
@@ -258,24 +158,32 @@ def _read_splits(kernel):
 
 def _build_ord(fanM, fanN, kernel, substeps, splits):
     """The six-mode loop order and each operand's regions."""
-    # TDMSplit is a coordinate factorization, independent of which regions a physical wave reads.
-    m_inner = _tdm_split.factor_axis(fanM, splits.mSplit, "MIWaveTileA")
-    n_inner = _tdm_split.factor_axis(fanN, splits.nSplit, "MIWaveTileB")
-    order_word = _loop_order_word(wmma_loop_order(kernel))
-    ord_, axes, extents = _build_axes(
-        substeps, splits, m_inner, n_inner, order_word)
+    params = dict(kernel)
+    params["LoopIters"] = substeps
+    params["MIWaveTileA"] = fanM
+    params["MIWaveTileB"] = fanN
+    shape = Order.axes(params)
+    axis_values = shape["axes"]
+
+    extents = {name: 1 for name in AXIS_NAMES}
+    extents.update({
+        str(name): max(1, int(extent))
+        for name, extent in axis_values
+    })
+    axes = {name: Axis(name, extents[name]) for name in AXIS_NAMES}
+    iter_mode = Axis("iter", 0)
+    axes["iter"] = iter_mode
+    ord_ = [iter_mode] + [
+        axes[str(name)] for name, _extent in axis_values
+    ]
+    m_inner = extents["M_inner"]
+    n_inner = extents["N_inner"]
 
     N_BCAST = {"N_split", "N_inner"}  # A is broadcast over N modes
     M_BCAST = {"M_split", "M_inner"}  # B is broadcast over M modes
-    # K_split is a region axis only for the operand that actually splits K.
-    aK, bK = max(1, splits.kSplit * splits.kResA), max(1, splits.kSplit * splits.kResB)
-    aRegions = tuple(role for role in ("M_split", "K_split")
-                     if extents[role] > 1 and (role != "K_split" or aK > 1))
-    bRegions = tuple(role for role in ("N_split", "K_split")
-                     if extents[role] > 1 and (role != "K_split" or bK > 1))
-    kSplitExtent = max(1, extents["K_split"])
-    span = {"A": {"K_split": max(1, kSplitExtent // aK)} if "K_split" in aRegions else {},
-            "B": {"K_split": max(1, kSplitExtent // bK)} if "K_split" in bRegions else {}}
+    aRegions = shape["regions"]["A"]
+    bRegions = shape["regions"]["B"]
+    span = shape["span"]
 
     return Ord(ord_, M_BCAST, N_BCAST, aRegions, bRegions, m_inner, n_inner, span)
 
@@ -582,7 +490,7 @@ def _read_off_requests(kernel, operands, outer_level, copy_depth, read_depth):
     read_requests = {}
     for operand in operands:
         copies = _per_operand(kernel, "PrefetchGlobalRead", operand.name, copy_depth)
-        # A scale reads the local-read dials of the tensor it scales, as its ring depth does.
+        # A scale reads the local-read parameters of the tensor it scales.
         reads = _per_operand(kernel, "PrefetchLocalRead",
                              _REGISTER_SIDE.get(operand.name, operand.name), read_depth)
         if operand.movements and operand.movements[0].dst is SHARED and copies > 0:
@@ -619,8 +527,18 @@ def _with_copy_shares(assignment, agent_inputs, shares):
             if entries else assignment)
 
 
-def _build_theta(agent_inputs, copy_depth, read_depth, view, groups, kernel, nest, operands,
-                 assignment):
+def _build_theta(
+    agent_inputs,
+    copy_depth,
+    read_depth,
+    view,
+    groups,
+    kernel,
+    nest,
+    operands,
+    assignment,
+    validate_register_depths,
+):
     """The retime matrix `off`, the copy-side wave partition, and the assembled Theta."""
     waves = max(1, int(kernel["NumWaves"]))
     read_requests = _read_off_requests(
@@ -637,6 +555,8 @@ def _build_theta(agent_inputs, copy_depth, read_depth, view, groups, kernel, nes
             operand.fragment.grouping_mode = geometry.grouping_mode_name(theta, operand)
     _set_register_depths(theta, kernel)
     _place_read_offsets(theta, read_requests)
+    if validate_register_depths:
+        _validate_register_depths(theta, kernel)
     return theta
 
 
@@ -644,108 +564,175 @@ def _build_theta(agent_inputs, copy_depth, read_depth, view, groups, kernel, nes
 _REGISTER_SIDE = {"A": "A", "MXSA": "A", "B": "B", "MXSB": "B"}
 
 
-def _derived_register_depth(theta, operand, cluster, prefetch, vg=1) -> int:
-    """Translate CLR/PLR into VA once, before register geometry consumes it.
-
-    CLR=0 allocates the value in use plus the requested prefetched buffers.  CLR=1 owns the
-    complete outer-loop resident set; because VA counts buffers after VG subdivides one prefetch
-    unit, each resident unit contributes ``VG`` buffers.
-    """
-    if cluster:
-        if geometry.reloads_whole_set(theta, operand):
-            # One buffer is already a full rotation unit for an all-inner operand.
-            resident = 1
-        else:
-            group = operand.fragment.groups()[0]
-            rotation = {name for name, _extent in geometry.rotation_unit_modes(theta, operand)}
-            regions = set(getattr(operand, "region_axes", ()) or ()) & rotation
-            resident = max(1, geometry.product(
-                extent for name, extent in geometry.ring_axes(theta, operand, group)
-                if name not in regions))
-        return max(1, resident * max(1, int(vg)))
-    if geometry.vgpr_subdivided(theta, operand):
-        return max(1, int(prefetch) + 1)
-    group = operand.fragment.groups()[0]
-    rotation = {name for name, _extent in geometry.rotation_unit_modes(theta, operand)}
-    regions = set(getattr(operand, "region_axes", ()) or ()) & rotation
-    ring = [max(1, int(extent))
-            for name, extent in geometry.ring_axes(theta, operand, group)
-            if name not in regions]
-    positions = max(1, geometry.product(ring) if ring else 1)
-    want = max(max(1, int(prefetch) + 1),
-               geometry.derived_group_reuse_floor(theta, operand, group))
-    return next((width for width in range(want, positions + 1)
-                 if positions % width == 0), positions)
-
-
 def _set_register_depths(theta, kernel):
-    """Set the VG/VA pair consumed by every register calculation.
+    """Apply the register values calculated by LoopModel.Registers."""
 
-    CLR/PLR and every ``-1`` are resolved here exactly once; no downstream geometry reads them.
-    Explicit CLR=1's full outer-loop allocation overrides a stated VA.  An all-inner CLR1 forced
-    from AUTO may retain a stated VA when it is at least that large.  With CLR=0, a stated VA
-    overrides the derived ``PLR + 1`` value.
+    def value(base, side):
+        result = kernel.get(base + side)
+        if result is None or int(result) == -1:
+            raise RuntimeError(
+                "%s%s was not calculated before theta construction"
+                % (base, side))
+        return int(result)
 
-    VG divides one prefetch unit. VA counts its per-region buffers; physical region slots are
-    derived from that pair by `group_ring_depth`.
-    """
     for operand in theta.operands:
         if not (operand.movements and operand.fragment):
             continue
         side = _REGISTER_SIDE.get(operand.name)
         if side is None:
             continue
-        asked_vg = kernel.get("VgprGroup" + side)
-        asked_va = kernel.get("VgprAlloc" + side)
-        has_vg = asked_vg is not None and int(asked_vg) != -1
-        has_va = asked_va is not None and int(asked_va) != -1
-        named_cluster = kernel.get("ClusterLocalRead" + side)
-        cluster_is_auto = named_cluster is None or int(named_cluster) == -1
-        requested_cluster = (0 if cluster_is_auto and (has_vg or has_va)
-                             else int(kernel.get("ClusterLocalRead", 0) or 0)
-                             if cluster_is_auto else int(named_cluster))
-        all_inner = geometry.reloads_whole_set(theta, operand)
-        cluster_was_forced = bool(kernel.get("_ClusterLocalReadForced" + side, False)) \
-            or (all_inner and requested_cluster != 1)
-        cluster = 1 if all_inner else max(0, requested_cluster)
-        prefetch = _per_operand(kernel, "PrefetchLocalRead", side,
-                                int(kernel.get("PrefetchLocalRead", 0) or 0))
-        stated_vg = max(1, int(asked_vg)) if has_vg else 1
-        split_vg = geometry.split_unit_divisor(theta, operand)
-        if has_vg and stated_vg > 1 and stated_vg % split_vg:
-            raise RuntimeError(
-                "VgprGroup%s=%d is not compatible with TDMSplit's prefetch-unit divisor %d."
-                % (side, stated_vg, split_vg))
-        # VG names the total subdivision. TDMSplit has already supplied its factor, so theta
-        # retains only the additional divisor applied to the current PU (VG2 -> VG1 at split2).
-        vg = max(1, stated_vg // split_vg)
+        value("PrefetchLocalRead", side)
+        value("ClusterLocalRead", side)
+        vg = value("VgprGroup", side)
+        depth = value("VgprAlloc", side)
+        if operand.name.startswith("MXS"):
+            group = operand.fragment.groups()[0]
+            parent = theta.op(side)
+            parent_depth = max(parent.fragment.ring_depths.values())
+            depth = min(
+                parent_depth,
+                max(
+                    1,
+                    geometry.product(
+                        extent
+                        for _name, extent
+                        in geometry.ring_axes(theta, operand, group)
+                    ),
+                ),
+            )
         operand.fragment.vgpr_group = vg
-        derived = _derived_register_depth(theta, operand, cluster, prefetch, vg)
-        if cluster and cluster_was_forced and has_va:
-            # AUTO/all-inner CLR1 may retain VA only when it holds the complete resident set.
-            required = geometry._ring_period(theta, operand)
-            depth = max(derived, required, int(asked_va))
-        elif cluster:
-            # An explicitly requested CLR1 owns the full outer-loop allocation.
-            depth = derived
-        elif has_va:
-            # Under CLR0, a stated VA replaces the derived PLR+1 count.
-            depth = max(1, int(asked_va))
-        else:
-            depth = derived
         unit = geometry.prefetch_unit_tiles(theta, operand)
         if vg > 1 and unit % vg:
             raise RuntimeError(
                 "VgprGroup%s=%d does not divide %s's %d-tile prefetch unit under this loop "
                 "order." % (side, vg, operand.name, unit))
-        explicit_total = bool(has_va and (not cluster or cluster_was_forced))
-        operand.fragment.va_includes_regions = explicit_total
-        operand.fragment.va_time_shares_regions = explicit_total
+        if value("ClusterLocalRead", side) > 0 \
+                and geometry.reloads_whole_set(theta, operand):
+            operand.fragment.va_includes_regions = False
+            operand.fragment.va_time_shares_regions = False
+            operand.fragment.ring_depths = {
+                label: 1 for label in operand.fragment.groups()}
+            continue
+        regions = geometry._region_count(theta, operand)
+        per_region = depth // regions if regions > 1 and depth % regions == 0 else 0
+        partitioned = (
+            regions > 1
+            and (
+                depth < regions
+                or (
+                    per_region > 0
+                    and (
+                        value("ClusterLocalRead", side) > 0
+                        or per_region >= value("PrefetchLocalRead", side) + 1
+                    )
+                )
+            )
+        )
+        if partitioned and depth >= regions:
+            depth //= regions
+        read_phi = kernel.get("ReadPhi") or {}
+        folded = int(read_phi.get(side, 1) or 1) > 1
+        total_ring = (
+            not partitioned
+            and (
+                regions > 1
+                or (
+                    not folded
+                    and depth > value("PrefetchLocalRead", side) + 1
+                )
+                or vg > 1
+            )
+        )
+        operand.fragment.va_includes_regions = total_ring
+        operand.fragment.va_time_shares_regions = total_ring
         operand.fragment.ring_depths = {
             label: depth for label in operand.fragment.groups()}
 
+def _validate_register_depths(theta, kernel):
+    def value(base, side):
+        result = kernel.get(base + side)
+        if result is None or int(result) == -1:
+            raise RuntimeError(
+                "%s%s was not calculated before theta construction"
+                % (base, side))
+        return int(result)
 
-def params_to_theta(p: dict) -> Theta:
+    from .schedule import BufferDepths
+    depths = BufferDepths(theta, include_shared=False)
+    for operand in theta.operands:
+        if not (operand.movements and operand.fragment):
+            continue
+        if operand.name not in ("A", "B"):
+            continue
+        side = _REGISTER_SIDE.get(operand.name)
+        if side is None:
+            continue
+        allocated = value("VgprAlloc", side)
+        cluster = value("ClusterLocalRead", side)
+        group = operand.fragment.groups()[0]
+        rotation = {
+            name for name, _extent
+            in geometry.rotation_unit_modes(theta, operand)
+        }
+        regions = set(operand.region_axes or ()) & rotation
+        buffers = geometry.group_ring_depth(
+            theta,
+            operand,
+            group,
+            depths,
+        )
+        required = 1
+        if value("VgprGroup", side) > 1 \
+                and geometry.reloads_whole_set(theta, operand) \
+                and geometry.requested_read_ahead(theta, operand, depths) > 0:
+            required = max(
+                required,
+                geometry._ring_period(theta, operand),
+                geometry.group_reuse_floor(
+                    theta,
+                    operand,
+                    group,
+                    charge_lead=False,
+                    lead=0,
+                ),
+            )
+        if cluster and not geometry.reloads_whole_set(theta, operand) \
+                and not geometry.vgpr_ring_carries(
+                    theta,
+                    operand,
+                    group,
+                    buffers,
+                ):
+            required = max(
+                1,
+                geometry.product(
+                    extent
+                    for name, extent in geometry.ring_axes(theta, operand, group)
+                    if name not in regions
+                ) * value("VgprGroup", side),
+            )
+        if cluster and geometry.reloads_whole_set(theta, operand):
+            resident_tiles = geometry.product(
+                extent
+                for _name, extent in theta.geometry(operand).varying
+            )
+            unit = geometry.prefetch_unit_tiles(theta, operand)
+            if resident_tiles % unit:
+                raise RuntimeError(
+                    "%s's %d resident tiles do not divide into %d-tile "
+                    "prefetch units" % (side, resident_tiles, unit))
+            required = max(
+                required,
+                resident_tiles // unit * value("VgprGroup", side),
+            )
+        if allocated < required:
+            raise RuntimeError(
+                "VgprAlloc%s=%d is smaller than %s's required "
+                "rotation-unit depth %d"
+                % (side, allocated, operand.name, required))
+
+
+def params_to_theta(p: dict, *, validate_register_depths=True) -> Theta:
     """Translate a TensileLite parameter dictionary into Theta."""
     copy_depth, read_depth, elem_bytes, fanM, fanN, kernel, substeps, matrix_instruction = _read_params(p)
     splits = _read_splits(kernel)
@@ -757,8 +744,18 @@ def params_to_theta(p: dict) -> Theta:
         configure_read, elem_bytes, frags, movements, kernel, matrix_instruction, nest, splits)
     _assign_effects(operands, kernel, nest, splits)
     view, groups = _build_fuse(hasMXA, hasMXB, kernel, operands)
-    theta = _build_theta(agent_inputs, copy_depth, read_depth, view, groups, kernel, nest,
-                         operands, assignment)
+    theta = _build_theta(
+        agent_inputs,
+        copy_depth,
+        read_depth,
+        view,
+        groups,
+        kernel,
+        nest,
+        operands,
+        assignment,
+        validate_register_depths,
+    )
     return theta
 
 
@@ -790,8 +787,6 @@ def _shape_params(elem_bytes, kernel, mi, wt0, wt1):
         "PrefetchLocalReadB": kernel.get("PrefetchLocalReadB", -1),
         "ClusterLocalRead": kernel.get("ClusterLocalRead", 0),
         "ClusterLocalReadA": kernel.get("ClusterLocalReadA", -1),
-        "_ClusterLocalReadForcedA": bool(kernel.get("_ClusterLocalReadForcedA", False)),
-        "_ClusterLocalReadForcedB": bool(kernel.get("_ClusterLocalReadForcedB", False)),
         "VgprGroupA": kernel.get("VgprGroupA", -1),
         "VgprGroupB": kernel.get("VgprGroupB", -1),
         "VgprAllocA": kernel.get("VgprAllocA", -1),
@@ -835,7 +830,7 @@ def _movement_params(kernel, target):
                                 _tdm_split.wave_region_span(kernel, "B")],
         "MXBlockA": int(kernel["ProblemType"].get("MXBlockA", 0) or 0),
         "MXBlockB": int(kernel["ProblemType"].get("MXBlockB", 0) or 0),
-        "LoopOrder": wmma_loop_order(kernel),
+        "LoopOrder": kernel["LoopOrder"],
         "ReadVectorElems": _read_vector_elems(kernel, target),
         "ReadQuantum": _read_coverage(kernel, target),
         # The MX half-wave fold is DERIVED from the kernel, not only supplied by a target: one

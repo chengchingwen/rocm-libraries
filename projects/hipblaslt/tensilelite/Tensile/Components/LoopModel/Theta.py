@@ -14,20 +14,6 @@ def loopModelSolutionName(writer) -> str:
   return getattr(writer.states, "kernelName", None) or "<unnamed solution>"
 
 
-def statedVgprDials(kernel) -> list:
-  """The VgprGroup/VgprAlloc dials this solution states outright, rather than deriving."""
-  dials = []
-  for side in ("A", "B"):
-    for name in ("VgprGroup" + side, "VgprAlloc" + side):
-      value = (kernel or {}).get(name)
-      try:
-        if value is not None and int(value) != -1:
-          dials.append(name)
-      except (TypeError, ValueError):
-        pass
-  return dials
-
-
 @contextmanager
 def namingSolution(writer, kernel=None):
   """Re-raise anything the model refuses with the SOLUTION it came from.
@@ -47,7 +33,7 @@ def namingSolution(writer, kernel=None):
   except (ValueError, RuntimeError) as error:
     if getattr(error, "_ulmNamedSolution", False):
       raise
-    # No dial list appended: the refusals already name the operand and the dial that could not
+    # No parameter list appended: the refusals already name the operand and the value that could not
     # be met, and a kernel-wide roll-call next to a per-operand message reads as a contradiction.
     named = type(error)("%s\n  solution: %s" % (error, loopModelSolutionName(writer)))
     named._ulmNamedSolution = True

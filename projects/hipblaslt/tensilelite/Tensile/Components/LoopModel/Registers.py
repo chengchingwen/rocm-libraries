@@ -1,13 +1,12 @@
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
-"""Derive LoopModel Valu-ring register allocation from cached theta and S."""
+"""Calculate LoopModel register parameters and Valu-ring allocation."""
 
 from typing import NamedTuple
 
 from ...LoopModel import traversal as _geometry
 
-from ..TDMSplit import AXIS_DU, AXIS_MT, split_of
-from .Theta import loopModelTheta
+from . import Order
 
 
 class ValuAlloc(NamedTuple):
@@ -27,6 +26,200 @@ class ValuAlloc(NamedTuple):
     return self.perBuffer * self.va
 
 
+_READ_AXES = {"A": frozenset(("M", "K")), "B": frozenset(("N", "K"))}
+
+
+def calculate(kernel):
+  """Calculate the concrete per-operand PLR, CLR, VG and VA values."""
+  if not kernel.get("UseLoopModel"):
+    return
+
+  def value(name, default=-1):
+    result = kernel.get(name, default)
+    if result is None:
+      return int(default)
+    try:
+      return int(result)
+    except (TypeError, ValueError):
+      return int(default)
+
+  shape = Order.axes(kernel)
+  axes = shape["axes"]
+  extents = dict(axes)
+  walked = tuple(
+      (name, extent)
+      for name, extent in axes
+      if extent > 1
+      or extents.get(name.replace("_inner", "_split"), 1) > 1
+  )
+  all_regions = set(shape["regions"]["A"]) | set(shape["regions"]["B"])
+  global_outer = next(
+      (name.split("_", 1)[0] for name, _extent in walked
+       if name not in all_regions),
+      walked[0][0].split("_", 1)[0],
+  )
+  requested_plr = max(0, value("PrefetchLocalRead", 0))
+  scalar_clr = max(0, value("ClusterLocalRead", 0))
+  values = {}
+
+  for side in ("A", "B"):
+    roles = _READ_AXES[side]
+    regions = set(shape["regions"][side])
+    varying = tuple(
+        (name, extent)
+        for name, extent in walked
+        if name.split("_", 1)[0] in roles
+    )
+    role_modes = tuple(item for item in varying if item[0] not in regions) \
+        or varying
+    outer_role = role_modes[0][0].split("_", 1)[0]
+    inner_role = role_modes[-1][0].split("_", 1)[0]
+    reloads = outer_role != global_outer
+    original_unit = tuple(
+        item for item in varying
+        if item[0].split("_", 1)[0] == inner_role
+    )
+    unit_modes = tuple(item for item in original_unit if item[0] not in regions)
+    unit = _geometry.product(extent for _name, extent in unit_modes)
+    original_tiles = _geometry.product(
+        extent for _name, extent in original_unit
+    )
+    split_unit = max(1, original_tiles // max(1, unit))
+
+    vg_name, va_name = "VgprGroup" + side, "VgprAlloc" + side
+    explicit_vg = value(vg_name) != -1
+    explicit_va = value(va_name) != -1
+    if explicit_vg or explicit_va:
+      kernel["SuppressNoLoadLoop"] = True
+    vg = max(1, value(vg_name, 1))
+    if split_unit > 1:
+      if vg > 1 and vg % split_unit:
+        raise RuntimeError(
+            "VgprGroup%s=%d is incompatible with TDMSplit's divisor %d"
+            % (side, vg, split_unit))
+      vg = max(1, vg // split_unit)
+    if unit % vg:
+      raise RuntimeError(
+          "VgprGroup%s=%d does not divide %s's %d-tile prefetch unit"
+          % (side, vg, side, unit))
+
+    role_extents = {
+        role: _geometry.product(
+            extent for name, extent in role_modes
+            if name.split("_", 1)[0] == role
+        )
+        for role in roles
+    }
+    cap_role = next(
+        (name.split("_", 1)[0] for name, _extent in role_modes
+         if role_extents[name.split("_", 1)[0]] > 1),
+        outer_role,
+    )
+    cap = max(1, role_extents[cap_role] * vg)
+    plr_name = "PrefetchLocalRead" + side
+    plr = value(plr_name)
+    if plr == -1:
+      plr = min(requested_plr, cap)
+    elif plr > cap:
+      raise RuntimeError(
+          "%s=%d exceeds %d, the most %s can run ahead"
+          % (plr_name, plr, cap, side))
+
+    clr_name = "ClusterLocalRead" + side
+    clr = value(clr_name)
+    auto_clr = clr == -1
+    if auto_clr:
+      clr = 0 if explicit_vg or explicit_va else scalar_clr
+    if reloads and auto_clr and not (explicit_vg or explicit_va):
+      clr = 1
+
+    va = value(va_name)
+    if va == -1:
+      rotation = varying if reloads else tuple(
+          item for item in varying
+          if item[0].split("_", 1)[0] != outer_role
+      )
+      summation = tuple(
+          item for item in varying
+          if item[0].split("_", 1)[0] == "K"
+      )
+      enumerator = tuple(
+          item for item in varying
+          if item[0].split("_", 1)[0] == outer_role
+      )
+      unpacked = _geometry.product(
+          extent for name, extent in unit_modes
+          if name not in {mode for mode, _extent in rotation}
+      )
+      level = next(
+          (name for name, _extent in walked if name not in all_regions),
+          None,
+      )
+      reduction_ring = tuple(
+          item for item in rotation
+          if item[0].split("_", 1)[0] == "K"
+      ) if level and level.startswith("K_") and unpacked > 1 else ()
+      ring = reduction_ring or (summation if reloads else enumerator)
+      rotation_regions = regions & {name for name, _extent in rotation}
+      positions = max(
+          1,
+          _geometry.product(
+              extent for name, extent in ring
+              if name not in rotation_regions
+          ),
+      )
+      if clr == 0:
+        if split_unit > 1 or vg > 1:
+          va = plr + 1
+        else:
+          read_phi = kernel.get("ReadPhi") or {}
+          folded = int(read_phi.get(side, 1) or 1) > 1
+          broadcast_role = "N" if side == "A" else "M"
+          positions_by_name = {
+              name: index for index, (name, _extent) in enumerate(walked)
+          }
+          ring_at = [positions_by_name[name] for name, _extent in ring]
+          unit_at = [positions_by_name[name] for name, _extent in unit_modes]
+          folded_across_broadcast = folded and ring_at and unit_at and any(
+              min(ring_at) < index < max(unit_at)
+              for index, (name, _extent) in enumerate(walked)
+              if name.split("_", 1)[0] == broadcast_role
+          )
+          floor = positions if folded_across_broadcast else 1
+          want = max(plr + 1, floor)
+          va = next(
+              (width for width in range(want, positions + 1)
+               if positions % width == 0),
+              positions,
+          )
+        region_count = _geometry.product(
+            max(1, extents[name] // shape["span"][side].get(name, 1))
+            for name in rotation_regions
+        )
+        va *= max(1, region_count)
+      else:
+        resident_tiles = _geometry.product(
+            extent for _name, extent in varying
+        )
+        if resident_tiles % unit:
+          raise RuntimeError(
+              "%s's %d resident tiles do not divide into %d-tile "
+              "prefetch units" % (side, resident_tiles, unit))
+        va = max(1, resident_tiles // unit * vg)
+    if va < 1:
+      raise RuntimeError("%s=%d must be positive" % (va_name, va))
+
+    values[side] = (max(0, plr), max(0, clr), vg, int(va))
+
+  for side, (plr, clr, vg, va) in values.items():
+    kernel["PrefetchLocalRead" + side] = plr
+    kernel["ClusterLocalRead" + side] = clr
+    kernel["VgprGroup" + side] = vg
+    kernel["VgprAlloc" + side] = va
+  kernel["PrefetchLocalRead"] = max(value[0] for value in values.values())
+  kernel["ClusterLocalRead"] = min(value[1] for value in values.values())
+
+
 def operandValuPuVaVg(writer, kernel, tc, bpe) -> ValuAlloc:
   """Registers in one buffer, and the buffer count, for one UseLoopModel operand.
 
@@ -37,45 +230,13 @@ def operandValuPuVaVg(writer, kernel, tc, bpe) -> ValuAlloc:
   MKN gives A=K and B=N.  Its register count is that many instruction tiles.
   A TDMSplit that cuts this axis has already halved it, so VG is only the
   remaining divisor (a HalfPLR shape on a split macro-tile axis is VG1, not
-  VG2).  VA is a stated VgprAlloc, otherwise PLR+1 when CLR is off and the
-  outer-loop size when CLR is on.
+  VG2). ``calculate`` stores PU, VG and VA before allocation.
   """
-  orders = ("KMN", "KNM", "MNK", "MKN", "NMK", "NKM")
-  order = orders[int(kernel.get("WmmaInnerOrder", 1) or 1) - 1]
   side = "A" if str(tc).endswith("A") else "B"
-  roles = ("M", "K") if side == "A" else ("N", "K")
-  puAxis = max(roles, key=lambda axis: order.index(axis))
-
-  def dial(name):
-    value = kernel.get(name, -1)
-    if value is None:
-      return -1
-    try:
-      return int(value)
-    except (TypeError, ValueError):
-      return -1
-
-  def tiles(axis):
-    if axis == "K":
-      k = kernel.get("MatrixInstK")
-      if not k:
-        k = kernel["MatrixInstruction"][2]
-      return max(1, int(kernel["DepthU"]) // int(k))
-    return int(kernel["MIWaveTileA"] if axis == "M" else kernel["MIWaveTileB"])
-
-  pu = tiles(puAxis)
-  splitFactor, splitAxis = split_of(kernel, side)
-  cutsPu = ((splitAxis == AXIS_MT and puAxis != "K")
-            or (splitAxis == AXIS_DU and puAxis == "K"))
-  if cutsPu and splitFactor > 1:
-    if pu % splitFactor:
-      raise RuntimeError(
-          "TDMSplit%s does not divide %s's %d-tile prefetch unit" % (side, tc, pu))
-    pu //= splitFactor
-
-  vg = dial("VgprGroup" + side)
-  if vg < 1:
-    vg = 1
+  from .Theta import loopModelTheta
+  theta, _depths = loopModelTheta(writer, kernel)
+  pu = _geometry.prefetch_unit_tiles(theta, theta.op(str(tc)))
+  vg = max(1, int(kernel["VgprGroup" + side]))
   iptName = "MIInputPerThread" + (tc if str(tc).startswith("MXS") else side)
   ipt = kernel[iptName]
   puRegs = (int(pu * ipt // writer.states.bpr) if bpe is None
@@ -85,28 +246,18 @@ def operandValuPuVaVg(writer, kernel, tc, bpe) -> ValuAlloc:
         "VgprGroup%s=%d does not divide %s's %d-register prefetch unit" % (side, vg, tc, puRegs))
   perBuffer = puRegs // vg
 
-  stated = dial("VgprAlloc" + side)
-  if stated > 0:
-    va = stated
+  if str(tc).startswith("MXS"):
+    required = _geometry.register_layout(theta, _depths)[str(tc)]["total"]
+    if required % perBuffer:
+      raise RuntimeError(
+          "%s's %d required VGPRs do not divide into %d-register buffers"
+          % (tc, required, perBuffer))
+    va = required // perBuffer
   else:
-    clr = dial("ClusterLocalRead" + side)
-    if clr < 0:
-      clr = dial("ClusterLocalRead")
-    if clr < 0:
-      clr = 0
-    if clr == 0:
-      plr = dial("PrefetchLocalRead" + side)
-      if plr < 0:
-        plr = dial("PrefetchLocalRead")
-      if plr < 0:
-        plr = 0
-      va = plr + 1
-    else:
-      # The outer loop is every loop outside the unit, so its size is how
-      # many prefetch units the operand's tiles hold.  A TDMSplit that cut
-      # the unit left its other half out here, and that half is one of
-      # those loops.
-      va = max(1, tiles(roles[0]) * tiles(roles[1]) // pu)
+    va = int(kernel["VgprAlloc" + side])
+  if va < 1:
+    raise RuntimeError(
+        "VgprAlloc%s must be calculated before register allocation" % side)
 
   direct = kernel.get("DirectToVgpr" + tc, kernel.get("DirectToVgpr" + side, False))
   packing = ((writer.states.packDTVA or writer.states.convDTVA) if side == "A"
@@ -139,6 +290,7 @@ def loopModelRegBuffers(writer, kernel):
   """
   if not kernel["UseLoopModel"]:
     return {}
+  from .Theta import loopModelTheta
   theta, S = loopModelTheta(writer, kernel)
   widths = {}
   for op in theta.operands:
@@ -157,18 +309,13 @@ def loopModelValuRegs(writer, kernel):
   """
   if not kernel["UseLoopModel"]:
     return {}
+  from .Theta import loopModelTheta
   theta, S = loopModelTheta(writer, kernel)
   out = {}
   for op in theta.operands:
     if op.trajectory.fragment_fill is None:
       continue
-    side = "A" if op.name in ("A", "MXSA") else "B" if op.name in ("B", "MXSB") else None
-    stated = side is not None and any(
-        int(kernel.get(name + side, -1) if kernel.get(name + side, -1) is not None else -1) != -1
-        for name in ("VgprGroup", "VgprAlloc"))
-    sizing = (_geometry.operand_footprint_regs if stated
-              else _geometry.operand_emitted_regs)
-    out[op.name] = int(sizing(theta, op, S))
+    out[op.name] = int(_geometry.operand_emitted_regs(theta, op, S))
   return out
 
 
@@ -176,6 +323,7 @@ def loopModelRegisterLayout(writer, kernel):
   """Compact per-group physical register offsets from the cached θ/S."""
   if not kernel["UseLoopModel"]:
     return {}
+  from .Theta import loopModelTheta
   theta, S = loopModelTheta(writer, kernel)
   return _geometry.register_layout(theta, S)
 

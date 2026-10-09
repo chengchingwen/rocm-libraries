@@ -34,7 +34,8 @@ def split_of(kernel, tc) -> tuple:
     had already drifted (some also excluded metadata, some did not).  The back-compat spelling
     `TDMSplit` never reaches here: `assignProblemIndependentDerivedParameters` expands it to the
     per-operand pair and pops it."""
-    if "MXS" in tc or tc == "Metadata" or kernel["ProblemType"]["Sparse"]:
+    if "MXS" in tc or tc == "Metadata" \
+            or (kernel.get("ProblemType") or {}).get("Sparse", 0):
         return (1, None)
     v = int(kernel.get("TDMSplit%s" % ("A" if tc.endswith("A") else "B"), 0) or 0)
     mt, du = TDM_SPLIT_AXIS.get(v, (1, 1))
@@ -50,6 +51,14 @@ def split_factors(kernel):
 
     theta's positional layout, so `LoopModel/translate.py` and `LoopModel/bridge.py` need no
     separate spelling — `TDMSplitA/B` are a restricted way of writing the same tuple."""
+    factors = kernel.get("TDMSplit")
+    if factors is True:
+        return (2, 2, 1, 1)
+    if isinstance(factors, (list, tuple)):
+        factors = tuple(max(1, int(value)) for value in list(factors)[:4])
+        factors += (1,) * (4 - len(factors))
+        if factors != (1, 1, 1, 1):
+            return factors
     a = TDM_SPLIT_AXIS.get(int(kernel.get("TDMSplitA", 0) or 0), (1, 1))
     b = TDM_SPLIT_AXIS.get(int(kernel.get("TDMSplitB", 0) or 0), (1, 1))
     if a == (1, 1) and b == (1, 1):

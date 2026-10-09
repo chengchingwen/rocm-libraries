@@ -18,6 +18,24 @@ import loopmodel_scenarios as scenarios
 from Tensile.LoopModel import theta as theta_mod# COPY/READ -- the operand roles `off` keys on
 from Tensile.LoopModel.traversal import presence, presence_axes, summation_names
 
+_RAW_PARAMS_TO_THETA = adapter.params_to_theta
+
+
+def _calculated_theta(params, *, validate_register_depths=True):
+    from gir_fixtures import calculate_registers
+
+    if validate_register_depths:
+        params = calculate_registers(params)
+    return _RAW_PARAMS_TO_THETA(
+        params,
+        validate_register_depths=validate_register_depths,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _calculated_adapter(monkeypatch):
+    monkeypatch.setattr(adapter, "params_to_theta", _calculated_theta)
+
 
 class Space:
     GLOBAL = GLOBAL
@@ -67,7 +85,7 @@ def _theta(params):
     params = dict(params)
     parts = {nm: int(params.pop("VgprPartition" + nm, 1) or 1) for nm in ("A", "B")}
     strat = {nm: int(params.pop("VgprReuseStrategy" + nm, 0) or 0) for nm in ("A", "B")}
-    th = adapter.params_to_theta(params)
+    th = _calculated_theta(params)
     for nm in ("A", "B"):
         n = parts[nm]
         if n <= 1:

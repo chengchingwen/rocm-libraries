@@ -237,14 +237,12 @@ def _getName(state, requiredParameters: frozenset, splitGSU: bool, ignoreInterna
   else:
     requiredParametersTemp.discard("TDMFuse")
 
-  # VgprGroup/VgprAlloc stay out of the name at -1, which is every shipped kernel; naming the
-  # derived value would rename all of them.  A solution that STATES one still has to be told
-  # apart from its siblings, so the dial it states is named and the other three are not.
-  for _vgprDial in ("VgprGroupA", "VgprGroupB", "VgprAllocA", "VgprAllocB"):
-    if int(state.get(_vgprDial, -1) or -1) == -1:
-      requiredParametersTemp.discard(_vgprDial)
+  # Registers calculates every value; names describe the final schedule.
+  for _registerParam in ("VgprGroupA", "VgprGroupB", "VgprAllocA", "VgprAllocB"):
+    if state.get("UseLoopModel", False):
+      requiredParametersTemp.add(_registerParam)
     else:
-      requiredParametersTemp.add(_vgprDial)
+      requiredParametersTemp.discard(_registerParam)
 
   if state.get("UseLoopModel", False):
     requiredParametersTemp.update(("UseLoopModel", "WmmaInnerOrder", "WmmaOuterOrder"))

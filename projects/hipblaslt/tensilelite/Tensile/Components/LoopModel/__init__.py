@@ -7,7 +7,8 @@ functions here, taking the writer -- the shape `Components/Subtile` uses.  Livin
 modules is also what makes every `Tensile/LoopModel` and `Tensile/Lowering` import a plain
 module-level one.
 
-`Theta` holds the cached schedule, `Registers` the Valu rings, `Program` the one GIR Program,
-`Emit` the three emission forks, and `TdmRegion` the descriptor primitives GIR places.  Nothing
-is re-exported here, so importing one module never drags in another's dependencies.
+`Order` calculates the loop axes, `Theta` holds the cached schedule, `Registers` the Valu rings,
+`Program` the one GIR Program, `Emit` the three emission forks, and `TdmRegion` the descriptor
+primitives GIR places.  Nothing is re-exported here, so importing one module never drags in
+another's dependencies.
 """
