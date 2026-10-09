@@ -111,26 +111,47 @@ def _render_loop(node, indent, out):
 
 def _render_switch(node, indent, out):
     pad = "  " * indent
-    out.append(f"{pad}switch {node.expression.render()}")
-    groups = []
-    by_body = {}
+    rendered = []
     for value, body in node.cases:
         lines = []
-        _render_body(body, indent + 2, lines)
-        key = tuple(lines)
-        if key in by_body:
-            groups[by_body[key]][0].append(value)
-        else:
-            by_body[key] = len(groups)
-            groups.append(([value], lines))
-    for values, lines in groups:
+        _render_body(body, indent + 1, lines)
+        rendered.append((value, body, tuple(lines)))
+    if rendered and not node.otherwise \
+            and len({lines for _value, _body, lines in rendered}) == 1:
+        values = ", ".join(str(value) for value, _body, _lines in rendered)
         out.append(
-            f"{pad}  case {','.join(str(value) for value in values)}"
+            f"{pad}switch {node.expression.render()} over {{{values}}}"
         )
-        out.extend(lines)
+        _render_body(rendered[0][1], indent + 1, out)
+        return
+    out.append(f"{pad}switch {node.expression.render()}")
+    for value, body, _lines in rendered:
+        out.append(f"{pad}  case {value}")
+        _render_body(body, indent + 2, out)
     if node.otherwise:
         out.append(f"{pad}  otherwise")
         _render_body(node.otherwise, indent + 2, out)
+
+
+def _render_let(node, indent, out):
+    pad = "  " * indent
+    bindings = []
+    if node.axis.extent.constant_value != 1:
+        bindings.append((node.axis.name, node.value.render()))
+    body = node.body
+    while len(body) == 1 and isinstance(body[0], Let):
+        nested = body[0]
+        if nested.axis.extent.constant_value != 1:
+            bindings.append((nested.axis.name, nested.value.render()))
+        body = nested.body
+    if not bindings:
+        _render_body(body, indent, out)
+        return
+    out.append(
+        f"{pad}at "
+        + ", ".join(f"{axis}={value}" for axis, value in bindings)
+    )
+    _render_body(body, indent + 1, out)
 
 
 def _render_body(nodes, indent, out):
@@ -170,8 +191,7 @@ def _render_body(nodes, indent, out):
                 out.append(f"{pad}else")
                 _render_body(node.else_body, indent + 1, out)
         elif isinstance(node, Let):
-            out.append(f"{pad}let {node.axis.name} = {node.value.render()}")
-            _render_body(node.body, indent + 1, out)
+            _render_let(node, indent, out)
         elif isinstance(node, Switch):
             _render_switch(node, indent, out)
         else:

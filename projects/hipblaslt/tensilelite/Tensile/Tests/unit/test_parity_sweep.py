@@ -511,6 +511,19 @@ def test_f8maf2_vab3_forced_clrb_keeps_three_copy_ring():
     assert steady_chain(program) == ["steady", "steady1", "steady2"]
     assert not check_plan(program)
 
+    from Tensile.LoopModel.loopir import render
+    text = render(decode_theta(theta).program)
+    assert "case 0,1,2" not in text
+    assert "over {0, 1, 2}" in text
+    lines = text.splitlines()
+    assert not any(
+        line.lstrip().startswith("if ")
+        and following.lstrip().startswith("if ")
+        and len(following) - len(following.lstrip())
+            > len(line) - len(line.lstrip())
+        for line, following in zip(lines, lines[1:])
+    )
+
 
 @pytest.mark.parametrize("wio,sa,sb,arm", [
     (1, 1, 0, 1), (2, 1, 0, 1), (4, 0, 1, 2), (6, 1, 0, 1),
