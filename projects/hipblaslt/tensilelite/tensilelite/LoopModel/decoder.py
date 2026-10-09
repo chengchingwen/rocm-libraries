@@ -1762,7 +1762,7 @@ class _Decoder:
                 tuple((value, (target,)) for value in range(3)),
             )
             program = replace(program, target, (dispatch,))
-            for loop in shape_loops:
+            for loop in reversed(shape_loops):
                 program = unroll(program, loop)
             return program
 
@@ -1778,7 +1778,7 @@ class _Decoder:
             ):
                 seen.add(id(node))
                 free_loops.append(node)
-        for loop in free_loops:
+        for loop in reversed(free_loops):
             program = unroll(program, loop)
 
         reduction_loops = tuple(

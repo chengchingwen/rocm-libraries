@@ -10,6 +10,9 @@ from .values import IRTypeError, TransformRefused
 from .expr import (
     And,
     Axis,
+    FALSE,
+    Not,
+    Or,
     Pred,
     TRUE,
     as_pred,
@@ -125,14 +128,11 @@ def unroll(program: Program, loop: Loop) -> Program:
     hi = loop.hi.constant_value
     if lo is None or hi is None:
         raise TransformRefused("unroll requires constant loop bounds")
-    return replace(
-        program,
-        loop,
-        tuple(
-            Let(loop.axis, value, loop.body)
-            for value in range(lo, hi)
-        ),
-    )
+    bodies = []
+    for value in range(lo, hi):
+        body = _specialize_body(loop.body, {loop.axis: value})
+        bodies.append(Let(loop.axis, value, body))
+    return replace(program, loop, tuple(bodies))
 
 
 def _repeat_steady(program: Program, copies: int) -> Program:
@@ -321,6 +321,131 @@ def _substitute_operation(operation, replacements):
             _identity=operation._identity,
         )
     raise IRTypeError("operation substitution expects Movement or Compute")
+
+
+def _specialize_predicate(predicate, bindings):
+    predicate = predicate.substitute(bindings)
+    if isinstance(predicate, And):
+        operands = []
+        for operand in predicate.operands:
+            simplified, verdict = _specialize_predicate(operand, {})
+            if verdict is False:
+                return FALSE, False
+            if verdict is None:
+                operands.append(simplified)
+        if not operands:
+            return TRUE, True
+        if len(operands) == 1:
+            return operands[0], None
+        return And(*operands), None
+    if isinstance(predicate, Or):
+        operands = []
+        for operand in predicate.operands:
+            simplified, verdict = _specialize_predicate(operand, {})
+            if verdict is True:
+                return TRUE, True
+            if verdict is None:
+                operands.append(simplified)
+        if not operands:
+            return FALSE, False
+        if len(operands) == 1:
+            return operands[0], None
+        return Or(*operands), None
+    if isinstance(predicate, Not):
+        operand, verdict = _specialize_predicate(predicate.operand, {})
+        if verdict is not None:
+            return (FALSE, False) if verdict else (TRUE, True)
+        return ~operand, None
+    verdict = predicate.evaluate({})
+    if verdict is True:
+        return TRUE, True
+    if verdict is False:
+        return FALSE, False
+    return predicate, None
+
+
+def _specialize_body(nodes, bindings):
+    """Apply known finite-axis values and remove control that they resolve."""
+
+    output = []
+    for node in nodes:
+        if isinstance(node, (Movement, Compute)):
+            output.append(_substitute_operation(node, bindings))
+        elif isinstance(node, Let):
+            value = node.value.substitute(bindings)
+            if value.constant_value is None:
+                raise TransformRefused("specialized Let is not constant")
+            body = _specialize_body(
+                node.body,
+                {**bindings, node.axis: value.constant_value},
+            )
+            output.append(Let(node.axis, value, body))
+        elif isinstance(node, Loop):
+            lower = node.lo.substitute(bindings)
+            upper = node.hi.substitute(bindings)
+            if lower.constant_value is not None \
+                    and upper.constant_value == lower.constant_value + 1:
+                output.append(Let(
+                    node.axis,
+                    lower.constant_value,
+                    _specialize_body(
+                        node.body,
+                        {**bindings, node.axis: lower.constant_value},
+                    ),
+                ))
+            else:
+                output.append(Loop(
+                    node.axis,
+                    lower,
+                    upper,
+                    _specialize_body(node.body, bindings),
+                ))
+        elif isinstance(node, Cond):
+            predicate, verdict = _specialize_predicate(node.pred, bindings)
+            if verdict is not None:
+                output.extend(_specialize_body(
+                    node.then_body if verdict else node.else_body,
+                    bindings,
+                ))
+                continue
+            then_body = _specialize_body(node.then_body, bindings)
+            else_body = _specialize_body(node.else_body, bindings)
+            if not else_body and len(then_body) == 1 \
+                    and isinstance(then_body[0], Cond) \
+                    and not then_body[0].else_body:
+                inner = then_body[0]
+                predicate, _verdict = _specialize_predicate(
+                    predicate & inner.pred,
+                    {},
+                )
+                output.append(Cond(
+                    predicate,
+                    inner.then_body,
+                ))
+            elif then_body or else_body:
+                output.append(Cond(predicate, then_body, else_body))
+        elif isinstance(node, Switch):
+            expression = node.expression.substitute(bindings)
+            if expression.constant_value is not None:
+                output.extend(_specialize_body(
+                    dict(node.cases).get(
+                        expression.constant_value,
+                        node.otherwise,
+                    ),
+                    bindings,
+                ))
+            else:
+                output.append(Switch(
+                    expression,
+                    tuple(
+                        (value, _specialize_body(case, bindings))
+                        for value, case in node.cases
+                    ),
+                    _specialize_body(node.otherwise, bindings),
+                ))
+        else:
+            output.append(node)
+    return tuple(output)
 
 
 def substitute_operation(operation, replacements):
