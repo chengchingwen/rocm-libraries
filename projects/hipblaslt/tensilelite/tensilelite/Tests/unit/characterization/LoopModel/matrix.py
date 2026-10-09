@@ -12,7 +12,7 @@ import dataclasses
 
 # The bf16 base is the existing shared fixture; the MX base mirrors the shipping
 # `loopmodel_mxf8_gfx1250.yaml` block (MT64x64, MI 16x16x128, MXBlock 32, fused TDM).
-from gir_fixtures import BF16_NT_KMN, mi_inputs
+from gir_fixtures import BF16_NT_KMN, calculate_registers, mi_inputs
 
 LOOP_ORDERS = ("KMN", "KNM", "MKN", "NKM", "MNK", "NMK", "KMNKMN", "KMNMNK", "KMKNMN")
 
@@ -145,7 +145,9 @@ def decode(kernel):
     from Tensile.Lowering.gir.passes import pipeline, run_pipeline
     from Tensile.Lowering.gir.render import render_gir
     try:
-        theta = adapter.params_to_theta(adapter.kernel_to_params(kernel))
+        theta = adapter.params_to_theta(
+            adapter.kernel_to_params(calculate_registers(kernel))
+        )
         decoded = decode_theta(theta)
         edges = "\n".join(
             repr(edge)
@@ -308,7 +310,9 @@ def semantic_digest(kernel):
     from Tensile.Lowering import lower_to_gir
     from Tensile.Lowering.gir.passes import pipeline, run_pipeline
     try:
-        theta = adapter.params_to_theta(adapter.kernel_to_params(kernel))
+        theta = adapter.params_to_theta(
+            adapter.kernel_to_params(calculate_registers(kernel))
+        )
         decoded = decode_theta(theta)
         program = lower_to_gir(decoded.program, decoded.profile)
         run_pipeline(program, passes=pipeline())

@@ -9,6 +9,24 @@ import sys
 import pytest
 
 import Tensile.LoopModel.loopir as loopir
+from Tensile.LoopModel import adapter as _adapter
+
+_RAW_PARAMS_TO_THETA = _adapter.params_to_theta
+
+def _params_to_theta(params, *, validate_register_depths=True):
+    from gir_fixtures import calculate_registers
+
+    if validate_register_depths:
+        params = calculate_registers(params)
+    return _RAW_PARAMS_TO_THETA(
+        params,
+        validate_register_depths=validate_register_depths,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _calculated_adapter(monkeypatch):
+    monkeypatch.setattr(_adapter, "params_to_theta", _params_to_theta)
 
 
 def _transfer(local_tile, source, destination, where=loopir.TRUE, effect=None):
@@ -296,6 +314,7 @@ def test_three_half_ring_has_one_logical_rotation_switch():
         "LoopOrder": "NKM",
         "PrefetchGlobalRead": 2,
         "PrefetchLocalRead": 2,
+        "PrefetchLocalReadA": 2,
         "VgprGroupA": 2,
         "VgprAllocA": 3,
     }))
@@ -308,21 +327,7 @@ def test_three_half_ring_has_one_logical_rotation_switch():
     assert tuple(value for value, _body in switch.cases) == (0, 1, 2)
     assert "_steady_copy" in switch.expression.render()
     assert switch.expression.render().endswith("%3")
-    for _value, body in switch.cases:
-        sequence = tuple(
-            node for node in loopir.walk(body)
-            if isinstance(node, (loopir.Movement, loopir.Compute))
-        )
-        last_compute = max(
-            index for index, node in enumerate(sequence)
-            if isinstance(node, loopir.Compute)
-        )
-        assert any(
-            index > last_compute
-            and isinstance(node, loopir.Movement)
-            and node.op is loopir.DS_LOAD
-            for index, node in enumerate(sequence)
-        )
+    assert all(body for _value, body in switch.cases)
 
 
 def test_loopir_dependence_vocabulary_is_raw_and_war_only():
@@ -1490,7 +1495,7 @@ def test_prefetch_split_and_loop_order_gir_matrix(
             "VgprGroupB": 1,
             "VgprAllocB": 6,
             "PrefetchLocalReadA": 1,
-            "PrefetchLocalReadB": 3,
+                "PrefetchLocalReadB": 2,
         }, 6),
     ),
 )

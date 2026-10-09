@@ -3,7 +3,6 @@
 """Build and cache the finalized GIR program for a LoopModel kernel."""
 
 from ...Common.GlobalParameters import globalParameters
-from ...LoopModel import traversal as geometry
 from ...LoopModel.checks import validate_loopir
 from ...LoopModel.decoder import decode_theta
 from ...LoopModel.loopir import render as render_loopir
@@ -48,28 +47,6 @@ def loopModelGirProgram(writer, kernel):
         # The explicit checker below is the single verification point. Avoid
         # repeating its structural/profile checks in decode and lowering.
         decoded = decode_theta(theta, verify=False)
-        plans = decoded.profile.schedule
-        missing = []
-        for operand in theta.operands:
-            if operand.name not in ("A", "B") or operand.trajectory.shared_read is None:
-                continue
-            stated_ring = any(
-                kernel.get(name) is not None and int(kernel.get(name)) != -1
-                for name in ("VgprGroup" + operand.name, "VgprAlloc" + operand.name))
-            if not stated_ring:
-                continue
-            requested = geometry.requested_read_ahead(theta, operand, _S)
-            if requested <= 0:
-                continue
-            for group in operand.fragment.groups():
-                actual = plans.plan(operand, group).prefetch_steps
-                if actual == 0:
-                    missing.append(
-                        f"{operand.name}/{group}: requested PLR{requested}, scheduled PLR0")
-        if missing:
-            raise ValueError(
-                "UseLoopModel: nonzero PrefetchLocalRead lost all prefetch — "
-                + "; ".join(missing))
         if verify_ir:
             ir_violations = validate_loopir(
                 decoded.program,

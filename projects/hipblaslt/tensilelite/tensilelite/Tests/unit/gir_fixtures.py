@@ -6,6 +6,7 @@ variants, plus the theta->GIR helpers.  Kept rocisa-free so the GIR tests run un
 """
 
 from Tensile.LoopModel import adapter
+from Tensile.Components.LoopModel import Order, Registers
 
 
 def mi_inputs(kernel):
@@ -36,6 +37,28 @@ def mi_inputs(kernel):
         if lrvw > 0 and per_thread >= lrvw and not per_thread % lrvw:
             reads[name] = per_thread // lrvw
     return {**merged, "ReadInstructions": {**(kernel.get("ReadInstructions") or {}), **reads}}
+
+
+def calculate_registers(kernel):
+    """Apply the Solution-owned LoopModel register derivation to a test kernel."""
+
+    calculated = dict(adapter.DEFAULTS)
+    calculated.update(kernel)
+    kernel = calculated
+    kernel["UseLoopModel"] = True
+    mi = kernel["MatrixInstruction"]
+    kernel.setdefault("MatrixInstK", mi[2])
+    if "MIWaveTile" not in kernel:
+        kernel["MIWaveTile"] = [mi[5], mi[6]]
+    kernel.setdefault("MIWaveTileA", kernel["MIWaveTile"][0])
+    kernel.setdefault("MIWaveTileB", kernel["MIWaveTile"][1])
+    kernel.setdefault(
+        "LoopIters",
+        int(kernel["DepthU"]) // int(kernel["MatrixInstK"]),
+    )
+    Order.calculate(kernel)
+    Registers.calculate(kernel)
+    return kernel
 
 
 BF16_NT_KMN = {
@@ -73,4 +96,4 @@ def theta(params):
     """
     if params.get("MatrixInstruction"):
         params = mi_inputs(params)
-    return adapter.params_to_theta(params)
+    return adapter.params_to_theta(calculate_registers(params))

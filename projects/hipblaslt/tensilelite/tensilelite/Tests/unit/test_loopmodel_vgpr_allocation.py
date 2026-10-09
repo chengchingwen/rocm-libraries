@@ -4,7 +4,6 @@
 import ast
 from pathlib import Path
 from types import SimpleNamespace
-from typing import NamedTuple
 
 import pytest
 
@@ -12,13 +11,8 @@ pytestmark = pytest.mark.unit
 
 _LEAVES = Path(__file__).resolve().parents[2] / "Lowering" / "leaves.py"
 _KERNEL_WRITER_ASSEMBLY = Path(__file__).resolve().parents[2] / "KernelWriterAssembly.py"
-_TDM_SPLIT = Path(__file__).resolve().parents[2] / "Components" / "TDMSplit.py"
 _LOOPMODEL_REGISTERS = (Path(__file__).resolve().parents[2]
                         / "Components" / "LoopModel" / "Registers.py")
-_AXIS_MT = "MT"
-_AXIS_DU = "DU"
-_SPLIT_OF = None
-_VALU_ALLOC = None
 
 
 def _function(path, name, namespace=None):
@@ -126,43 +120,51 @@ def test_ulm1_set_table_uses_each_operands_rotation_width():
     assert legacy_count("A") == 7
 
 
-def _split_of():
-    global _SPLIT_OF
-    if _SPLIT_OF is None:
-        _SPLIT_OF = _function(
-            _TDM_SPLIT,
-            "split_of",
-            {"TDM_SPLIT_AXIS": {0: (1, 1), 1: (2, 1), 2: (1, 2)},
-             "AXIS_MT": _AXIS_MT, "AXIS_DU": _AXIS_DU},
-        )
-    return _SPLIT_OF
-
-
 def _valu_alloc(kernel, tc, bpe):
+    from Tensile.Components.LoopModel import Order, Registers
+    from Tensile.Components.LoopModel.Registers import operandValuPuVaVg
+
+    kernel = dict(kernel)
+    kernel.setdefault("UseLoopModel", True)
+    if "LoopOrder" not in kernel:
+        kernel.setdefault("WmmaOuterOrder", 0)
+    kernel.setdefault("PrefetchLocalRead", 0)
+    kernel.setdefault("ClusterLocalRead", 0)
+    kernel.setdefault(
+        "LoopIters",
+        int(kernel["DepthU"]) // int(kernel["MatrixInstK"]),
+    )
+    kernel.setdefault(
+        "MIWaveTile",
+        [kernel["MIWaveTileA"], kernel["MIWaveTileB"]],
+    )
+    kernel.setdefault(
+        "MatrixInstruction",
+        [
+            16,
+            16,
+            kernel["MatrixInstK"],
+            1,
+            1,
+            kernel["MIWaveTileA"],
+            kernel["MIWaveTileB"],
+            1,
+            1,
+        ],
+    )
+    Order.calculate(kernel)
+    Registers.calculate(kernel)
+    from Tensile.LoopModel import adapter
+    theta = adapter.params_to_theta(
+        adapter.kernel_to_params(kernel),
+        validate_register_depths=False,
+    )
+    from Tensile.LoopModel.schedule import BufferDepths
+    depths = BufferDepths(theta, include_shared=False)
     writer = SimpleNamespace(states=SimpleNamespace(
         bpr=4, packDTVA=False, convDTVA=False, packDTVB=False, convDTVB=False))
-    size = _function(
-        _LOOPMODEL_REGISTERS,
-        "operandValuPuVaVg",
-        {"split_of": _split_of(), "AXIS_MT": _AXIS_MT, "AXIS_DU": _AXIS_DU,
-         "ValuAlloc": _valu_alloc_type()},
-    )
-    return size(writer, kernel, tc, bpe)
-
-
-def _valu_alloc_type():
-    global _VALU_ALLOC
-    if _VALU_ALLOC is None:
-        source = _LOOPMODEL_REGISTERS.read_text(encoding="utf-8")
-        tree = ast.parse(source, filename=str(_LOOPMODEL_REGISTERS))
-        cls = next(node for node in ast.walk(tree)
-                   if isinstance(node, ast.ClassDef) and node.name == "ValuAlloc")
-        module = ast.Module(body=[cls], type_ignores=[])
-        ast.fix_missing_locations(module)
-        namespace = {"NamedTuple": NamedTuple}
-        exec(compile(module, str(_LOOPMODEL_REGISTERS), "exec"), namespace)
-        _VALU_ALLOC = namespace["ValuAlloc"]
-    return _VALU_ALLOC
+    writer._loopModelThetaCache = (id(kernel), (theta, depths))
+    return operandValuPuVaVg(writer, kernel, tc, bpe)
 
 
 def _valu_size(kernel, tc, bpe):
@@ -223,7 +225,7 @@ def test_kmn_a_prefetch_unit_is_m_and_clr0_va_is_plr_plus_one():
     assert per * va == 8 * 2 // 1 * 16
 
 
-def test_clr1_without_stated_va_uses_the_outer_loop_size():
+def test_clr1_without_stated_va_uses_calculated_rotation_depth():
     kernel = _nmk_kernel()
     kernel["VgprAllocA"] = -1
 
@@ -236,7 +238,8 @@ def test_clr1_without_stated_va_uses_the_outer_loop_size():
 def test_nkm_clr1_counts_the_split_half_as_an_outer_loop():
     # WIO6 = NKM, so A's prefetch unit is M.  TDMSplit MT halves it to 4 tiles,
     # and the other half is one of the loops outside the unit, beside K.  CLR
-    # on with no stated VA holds them all: 16 tiles / 4 = 4 buffers.
+    # on with no stated VA allocates the complete resident set in prefetch-unit
+    # buffers.
     kernel = _nmk_kernel()
     kernel.update(WmmaInnerOrder=6, TDMSplitA=1, VgprAllocA=-1, VgprGroupA=-1,
                   ClusterLocalReadA=1, PrefetchLocalReadA=1)
@@ -244,7 +247,7 @@ def test_nkm_clr1_counts_the_split_half_as_an_outer_loop():
     per, va = _valu_size(kernel, "A", 1)
 
     assert (per, va) == (64, 4)
-    assert per * va == 8 * 2 // 1 * 16
+    assert per * va == 256
 
 
 def test_mkn_tdmsplit_mt_halves_b_prefetch_unit_and_keeps_vg1():
@@ -278,7 +281,7 @@ def test_lowering_folds_the_layout_address_into_the_allocation():
     assert fold(0, 7 * 128 + 7 * 16) == 7 * 128 + 7 * 16
 
 
-def test_the_allocation_carries_the_terms_of_its_own_formula():
+def test_tdmsplit_calculates_the_remaining_vg_divisor():
     # The IR dump states PU * VA / VG, so the allocation reports the terms and
     # not only their product.  MKN splits B's prefetch unit from 8 tiles to 4.
     kernel = _nmk_kernel()
@@ -287,9 +290,9 @@ def test_the_allocation_carries_the_terms_of_its_own_formula():
 
     alloc = _valu_alloc(kernel, "B", 1)
 
-    assert (alloc.puTiles, alloc.puRegs, alloc.vg, alloc.va) == (4, 64, 2, 3)
+    assert (alloc.puTiles, alloc.puRegs, alloc.vg, alloc.va) == (4, 64, 1, 3)
     assert alloc.perBuffer == alloc.puRegs // alloc.vg
-    assert alloc.total == alloc.perBuffer * alloc.va == 96
+    assert alloc.total == alloc.perBuffer * alloc.va == 192
 
 
 def test_halfplr_shape_is_vg2_va3():
@@ -301,3 +304,140 @@ def test_halfplr_shape_is_vg2_va3():
 
     assert (per, va) == (64, 3)
     assert per * va == 8 * 3 // 2 * 16
+
+
+def test_degenerate_free_axis_uses_the_same_k_unit_for_model_and_allocation():
+    kernel = {
+        "WmmaInnerOrder": 6,
+        "WmmaOuterOrder": 2,
+        "DepthU": 256,
+        "MatrixInstK": 128,
+        "MIWaveTileA": 1,
+        "MIWaveTileB": 4,
+        "MIInputPerThreadA": 64,
+        "MIInputPerThreadB": 64,
+        "MIInputPerThreadMXSA": 4,
+        "MIInputPerThreadMXSB": 4,
+        "PrefetchLocalRead": 1,
+        "ClusterLocalRead": 1,
+        "TDMSplitA": 0,
+        "TDMSplitB": 1,
+        "DirectToVgprA": False,
+        "DirectToVgprB": False,
+        "ProblemType": {"Sparse": 0, "MXBlockA": 32, "MXBlockB": 32},
+    }
+
+    assert _valu_alloc(kernel, "A", 1).perBuffer == 32
+    assert _valu_alloc(kernel, "MXSA", None).total == 2
+
+
+def test_split_mxs_allocation_uses_its_model_footprint():
+    kernel = {
+        "LoopOrder": "KMKNMN",
+        "DepthU": 256,
+        "MatrixInstK": 128,
+        "MIWaveTileA": 2,
+        "MIWaveTileB": 2,
+        "MIInputPerThreadA": 64,
+        "MIInputPerThreadB": 64,
+        "MIInputPerThreadMXSA": 4,
+        "MIInputPerThreadMXSB": 4,
+        "PrefetchLocalRead": 1,
+        "ClusterLocalRead": 0,
+        "TDMSplitA": 1,
+        "TDMSplitB": 0,
+        "DirectToVgprA": False,
+        "DirectToVgprB": False,
+        "ProblemType": {"Sparse": 0, "MXBlockA": 32, "MXBlockB": 32},
+    }
+
+    assert _valu_alloc(kernel, "MXSA", None).total == 8
+
+
+def _f8_split_register_kernel(va_b=3):
+    return {
+        "UseLoopModel": True,
+        "MatrixInstruction": [16, 16, 128, 1, 1, 8, 8, 2, 2],
+        "MatrixInstK": 128,
+        "DepthU": 256,
+        "LoopIters": 2,
+        "MIWaveTile": [8, 8],
+        "MIWaveTileA": 8,
+        "MIWaveTileB": 8,
+        "MIInputPerThreadA": 64,
+        "MIInputPerThreadB": 64,
+        "WmmaInnerOrder": 2,
+        "WmmaOuterOrder": 1,
+        "PrefetchGlobalRead": 2,
+        "PrefetchLocalRead": 2,
+        "ClusterLocalRead": 0,
+        "ClusterLocalReadA": 0,
+        "ClusterLocalReadB": 1,
+        "VgprGroupA": 1,
+        "VgprGroupB": 1,
+        "VgprAllocA": 4,
+        "VgprAllocB": va_b,
+        "TDMSplitA": 1,
+        "TDMSplitB": 1,
+        "NumWaves": 4,
+        "ElemBytes": 1,
+        "ProblemType": {"Sparse": 0},
+    }
+
+
+def test_calculated_f8_split_ring_matches_allocation():
+    from Tensile.Components.LoopModel import Order, Registers
+    from Tensile.LoopModel import adapter
+    from Tensile.LoopModel import traversal as geometry
+    from Tensile.LoopModel.schedule import BufferDepths
+
+    kernel = _f8_split_register_kernel()
+    Order.calculate(kernel)
+    Registers.calculate(kernel)
+    theta = adapter.params_to_theta(kernel)
+    depths = BufferDepths(theta, include_shared=False)
+
+    assert kernel["VgprAllocA"] == geometry.group_ring_depth(
+        theta, theta.op("A"), "g0", depths) == 4
+    assert kernel["VgprAllocB"] == geometry.group_ring_depth(
+        theta, theta.op("B"), "g0", depths) == 3
+
+
+def test_register_owner_calculates_all_eight_operand_parameters():
+    from Tensile.Components.LoopModel import Order, Registers
+
+    kernel = _f8_split_register_kernel()
+    kernel.update({
+        "PrefetchLocalReadA": -1,
+        "PrefetchLocalReadB": -1,
+        "ClusterLocalReadA": -1,
+        "ClusterLocalReadB": -1,
+        "VgprGroupA": -1,
+        "VgprGroupB": -1,
+        "VgprAllocA": -1,
+        "VgprAllocB": -1,
+    })
+    Order.calculate(kernel)
+    Registers.calculate(kernel)
+
+    assert all(
+        int(kernel[base + side]) >= 0
+        for base in (
+            "PrefetchLocalRead",
+            "ClusterLocalRead",
+            "VgprGroup",
+            "VgprAlloc",
+        )
+        for side in ("A", "B")
+    )
+
+
+def test_adapter_rejects_calculated_ring_smaller_than_required_depth():
+    from Tensile.Components.LoopModel import Order, Registers
+    from Tensile.LoopModel import adapter
+
+    kernel = _f8_split_register_kernel(va_b=1)
+    Order.calculate(kernel)
+    Registers.calculate(kernel)
+    with pytest.raises(RuntimeError, match="VgprAllocB=1.*smaller.*rotation"):
+        adapter.params_to_theta(kernel)

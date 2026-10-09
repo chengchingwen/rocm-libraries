@@ -8426,10 +8426,7 @@ class KernelWriterAssembly(KernelWriter):
     if pgr == 1:
       return 0 if kernel["SuppressNoLoadLoop"] else 1
     if pgr == 2:
-      statedVgprRing = kernel.get("UseLoopModel", False) and any(
-          int(kernel.get(name, -1) or -1) != -1
-          for name in ("VgprGroupA", "VgprGroupB", "VgprAllocA", "VgprAllocB"))
-      return (0 if (kernel["HalfPLR"] or statedVgprRing) else 1) \
+      return (0 if (kernel["HalfPLR"] or kernel.get("UseLoopModel", False)) else 1) \
           if kernel["SuppressNoLoadLoop"] else 2
     if pgr >= 3:
       # openLoop early-exits to NoGlobalLoadLoop for LoopCounter <= PGR.

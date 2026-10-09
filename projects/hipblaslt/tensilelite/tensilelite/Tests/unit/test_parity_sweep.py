@@ -9,15 +9,21 @@ import pytest
 
 import sys, os
 sys.path.insert(0, os.path.dirname(__file__))
-from gir_fixtures import mi_inputs
+from gir_fixtures import calculate_registers, mi_inputs
 from Tensile.LoopModel import adapter
-from Tensile.LoopModel.adapter import kernel_to_params
+from Tensile.LoopModel.adapter import kernel_to_params as _kernel_to_params
 from Tensile.LoopModel.decoder import decode_theta
 from Tensile.Lowering.loopir_to_gir import lower_to_gir
 from Tensile.Lowering.gir.passes import pipeline as gir_pipeline
 from Tensile.Lowering.gir.passes import run_pipeline
 from Tensile.Lowering.gir.verify_dataflow import check_plan
 from Tensile.Lowering.gir.analyses.region_increment import walk_violations
+
+
+def kernel_to_params(kernel):
+    """Run the same register calculation as Solution before adapting the kernel."""
+
+    return _kernel_to_params(calculate_registers(kernel))
 
 
 def build_gir(theta, loop_copies=None):
@@ -83,19 +89,29 @@ def test_local_read_pair_auto_side_inherits_scalar():
 
 
 def test_k_axis_read_ahead_cap_counts_vg_buffers():
-    from Tensile.LoopModel.adapter import loop_order_of
-    from Tensile.SolutionStructs.Solution import loopModelReadAheadCap
+    from Tensile.Components.LoopModel import Registers
+    from Tensile.Components.LoopModel.Order import loopOrder
+
+    def cap(kernel, side):
+        kernel = dict(kernel)
+        kernel["PrefetchLocalRead"] = 999
+        kernel["PrefetchLocalReadA"] = -1
+        kernel["PrefetchLocalReadB"] = -1
+        kernel["UseLoopModel"] = True
+        Registers.calculate(kernel)
+        return kernel["PrefetchLocalRead" + side]
 
     k = _kernel(_mxf8(), _mi("fp8", (2, 2), (1, 1)), 2, 1, "KMN", 0, 0, 1)
     k.update(LoopIters=2, WmmaInnerOrder=1, WmmaOuterOrder=3, VgprGroupA=1)
-    vg1 = loopModelReadAheadCap(k, "A")
+    k["LoopOrder"] = loopOrder(1, 3)
+    vg1 = cap(k, "A")
     k["VgprGroupA"] = 2
-    assert loopModelReadAheadCap(k, "A") == 2 * vg1
+    assert cap(k, "A") == 2 * vg1
 
     k = _kernel(_mxf8(), _mi("fp8", (8, 8), (2, 2)),
-                2, 8, loop_order_of(6, 2), 1, 1, 4)
+                2, 8, loopOrder(6, 2), 1, 1, 4)
     k.update(LoopIters=2, WmmaInnerOrder=6, WmmaOuterOrder=2, VgprGroupB=2)
-    assert loopModelReadAheadCap(k, "B") == 8
+    assert cap(k, "B") == 8
 
 
 def _kernel(dover, mi, pgr, plr, order, sa, sb, vw):
@@ -268,14 +284,14 @@ def test_deep_b_ring_keeps_full_plr_and_a_complete_three_copy_frame(vg, va, plr)
     steady copies, no drain join, and a frame contract covering every copy edge.
     """
     from Tensile.LoopModel import traversal as geometry
-    from Tensile.LoopModel.adapter import loop_order_of
+    from Tensile.Components.LoopModel.Order import loopOrder
     from Tensile.LoopModel.schedule import BufferDepths, Schedule
     from Tensile.Lowering import steady_chain
     from Tensile.Lowering.gir.emit_plan import plan_program
     from Tensile.Lowering.gir.frame_contract import build_contract
 
     k = _kernel(_mxf8(), _mi("fp8", (8, 8), (2, 2)),
-                2, plr, loop_order_of(6, 2), 1, 1, 4)
+                2, plr, loopOrder(6, 2), 1, 1, 4)
     k.update(LoopIters=2, WmmaInnerOrder=6, WmmaOuterOrder=2,
              PrefetchLocalReadA=1, PrefetchLocalReadB=plr,
              ClusterLocalRead=0, ClusterLocalReadA=1, ClusterLocalReadB=0,
@@ -315,7 +331,7 @@ def test_deep_b_ring_keeps_full_plr_and_a_complete_three_copy_frame(vg, va, plr)
 
 
 def test_the_covering_invariant_uses_the_derived_steady_period():
-    """The materialized steady period covers exactly T."""
+    """The calculated steady period covers exactly T."""
     from Tensile.Lowering.gir.analysis import AnalysisManager
     from Tensile.Lowering.gir.analyses.loop_shape import (
         Linear, LoopShape, reduction_coverage_violations)
@@ -377,7 +393,7 @@ def test_halfplr_costs_one_and_a_half_buffers_on_the_named_operand(half_plr, hal
             assert th.op(name).fragment.vgpr_group == 1
 
 
-def test_clr_and_explicit_va_precedence_is_resolved_in_the_adapter():
+def test_clr_and_explicit_va_precedence_is_calculated_in_registers():
     k = _half_plr_kernel("KMN", 1)
 
     # CLR0: explicit VA replaces PLR+1.
@@ -396,12 +412,12 @@ def test_clr_and_explicit_va_precedence_is_resolved_in_the_adapter():
     assert theta.op("A").fragment.vgpr_group == 1
     assert theta.op("A").fragment.ring_depths == {"g0": 5}
 
-    # Explicit CLR1: the two-unit outer loop, split into VG2 buffers, owns four buffers.
+    # Explicit VA remains authoritative under CLR1.
     k["VgprGroupA"] = 2
     k["VgprAllocA"] = 3
     k.update(ClusterLocalRead=1, ClusterLocalReadA=1, ClusterLocalReadB=1)
     theta = adapter.params_to_theta(kernel_to_params(k))
-    assert theta.op("A").fragment.ring_depths == {"g0": 4}
+    assert theta.op("A").fragment.ring_depths == {"g0": 3}
 
 
 def test_all_inner_forced_clr1_retains_a_large_enough_explicit_va():
@@ -422,35 +438,78 @@ def test_all_inner_forced_clr1_retains_a_large_enough_explicit_va():
     assert_prefetch_is_kept(theta)
 
     k["VgprAllocA"] = 1
-    theta = adapter.params_to_theta(kernel_to_params(k))
-    assert theta.op("A").fragment.ring_depths == {"g0": 2}
-    assert_prefetch_is_kept(theta)
+    k["ClusterLocalReadA"] = 1
+    with pytest.raises(RuntimeError, match="smaller.*rotation"):
+        adapter.params_to_theta(kernel_to_params(k))
 
 
-def test_forced_all_inner_flag_overwrites_va_too_small_for_split_regions():
-    """Solution's forced CLR1 retains VA only when it holds the complete split resident set."""
-    from Tensile.LoopModel import traversal as geometry
-    from Tensile.LoopModel.adapter import loop_order_of
-    from Tensile.LoopModel.schedule import BufferDepths, Schedule
+def test_forced_all_inner_rejects_explicit_va_below_required_rotation():
+    """Registers owns the floor; adapter rejects an explicit smaller allocation."""
+    from Tensile.Components.LoopModel.Order import loopOrder
 
     k = _kernel(_mxf8(), _mi("fp8", (2, 2), (1, 1)),
-                2, 2, loop_order_of(5, 0), 1, 0, 2)
+                2, 2, loopOrder(5, 0), 1, 0, 2)
     k.update(WmmaInnerOrder=5, WmmaOuterOrder=0,
              ClusterLocalRead=0, ClusterLocalReadA=1, ClusterLocalReadB=0,
-             _ClusterLocalReadForcedA=True,
              VgprGroupA=2, VgprAllocA=3,
              VgprGroupB=-1, VgprAllocB=-1,
              SuppressNoLoadLoop=True, SourceSwap=False)
+    with pytest.raises(RuntimeError, match="VgprAllocA=3.*smaller"):
+        adapter.params_to_theta(kernel_to_params(k))
+
+
+def test_f8maf2_clra_allocates_the_complete_resident_set():
+    """CLR1 A needs four prefetch-unit buffers, not two region slots."""
+    from Tensile.Components.LoopModel.Order import loopOrder
+    from Tensile.LoopModel import traversal as geometry
+    from Tensile.LoopModel.schedule import BufferDepths
+
+    k = _kernel(_mxf8(), _mi("fp8", (8, 8), (2, 2)),
+                2, 4, loopOrder(6, 2), 1, 1, 4)
+    k.update(LoopIters=2, WmmaInnerOrder=6, WmmaOuterOrder=2,
+             PrefetchLocalReadA=1, PrefetchLocalReadB=4,
+             ClusterLocalRead=0, ClusterLocalReadA=1, ClusterLocalReadB=0,
+             VgprGroupA=-1, VgprAllocA=-1,
+             VgprGroupB=1, VgprAllocB=6,
+             SuppressNoLoadLoop=True, SourceSwap=True)
+
+    params = kernel_to_params(k)
+    theta = adapter.params_to_theta(params)
+    depths = BufferDepths(theta, include_shared=False)
+
+    assert (params["VgprAllocA"], params["VgprAllocB"]) == (4, 6)
+    assert geometry.register_layout(theta, depths)["A"]["total"] == 256
+    assert geometry.register_layout(theta, depths)["B"]["total"] == 192
+
+
+def test_f8maf2_vab3_forced_clrb_keeps_three_copy_ring():
+    """Regression for the WIO2/WOO1 F8 kernel that was numerically wrong in FFM."""
+    from Tensile.LoopModel import traversal as geometry
+    from Tensile.Components.LoopModel.Order import loopOrder
+    from Tensile.LoopModel.schedule import BufferDepths
+    from Tensile.Lowering import steady_chain
+
+    k = _kernel(_mxf8(), _mi("fp8", (8, 8), (2, 2)),
+                2, 2, loopOrder(2, 1), 1, 1, 4)
+    k.update(LoopIters=2, WmmaInnerOrder=2, WmmaOuterOrder=1,
+             PrefetchLocalReadA=2, PrefetchLocalReadB=2,
+             ClusterLocalRead=0, ClusterLocalReadA=0, ClusterLocalReadB=1,
+             VgprGroupA=1, VgprAllocA=4,
+             VgprGroupB=1, VgprAllocB=3,
+             SuppressNoLoadLoop=True, SourceSwap=True)
+
     theta = adapter.params_to_theta(kernel_to_params(k))
     depths = BufferDepths(theta, include_shared=False)
-    operand = theta.op("A")
-    assert operand.fragment.ring_depths == {"g0": 4}
-    assert geometry.group_ring_depth(theta, operand, "g0", depths) == 4
-    requested = geometry.requested_read_ahead(theta, operand, depths)
-    assert requested == Schedule(theta, depths).plan(operand, "g0").prefetch_steps
+    b = theta.op("B")
+    assert b.fragment.ring_depths == {"g0": 3}
+    assert geometry.group_ring_depth(theta, b, "g0", depths) == 3
+    assert geometry.register_layout(theta, depths)["B"]["total"] == 192
+
     copies = geometry.ring_trip_copies(theta, depths)
-    assert copies == 1
-    assert not check_plan(build_gir(theta, loop_copies=copies))
+    program = build_gir(theta, loop_copies=copies)
+    assert copies == 3
+    assert steady_chain(program) == ["steady", "steady1", "steady2"]
+    assert not check_plan(program)
 
 
 @pytest.mark.parametrize("wio,sa,sb,arm", [
@@ -458,11 +517,11 @@ def test_forced_all_inner_flag_overwrites_va_too_small_for_split_regions():
 ])
 def test_split_provided_vg_edge_orders_keep_prefetch_and_sources(wio, sa, sb, arm):
     from Tensile.LoopModel import traversal as geometry
-    from Tensile.LoopModel.adapter import loop_order_of
+    from Tensile.Components.LoopModel.Order import loopOrder
     from Tensile.LoopModel.schedule import BufferDepths, Schedule
 
     k = _kernel(_mxf8(), _mi("fp8", (2, 2), (1, 1)),
-                2, 2, loop_order_of(wio, 0), sa, sb, 2)
+                2, 2, loopOrder(wio, 0), sa, sb, 2)
     k.update(WmmaInnerOrder=wio, WmmaOuterOrder=0,
              ClusterLocalRead=0, ClusterLocalReadA=0, ClusterLocalReadB=0,
              SuppressNoLoadLoop=True, SourceSwap=False)
@@ -579,9 +638,9 @@ def test_the_shallow_half_keeps_a_ring_digit_when_the_region_leads():
     """A TDMSplit-provided half is VG1/VA3 and still retains a physical ring digit."""
     from Tensile.LoopModel import traversal as g
     from Tensile.LoopModel.schedule import BufferDepths
-    from Tensile.LoopModel.adapter import loop_order_of
+    from Tensile.Components.LoopModel.Order import loopOrder
 
-    th = _split_half_plr_theta(loop_order_of(1, 1), 1, sa=1, sb=0)
+    th = _split_half_plr_theta(loopOrder(1, 1), 1, sa=1, sb=0)
     op, depths = th.op("A"), BufferDepths(th, include_shared=False)
     assert op.fragment.vgpr_group == 1
     assert op.fragment.ring_depths == {"g0": 3}
@@ -595,12 +654,16 @@ def test_the_shallow_half_keeps_a_ring_digit_when_the_region_leads():
 @pytest.mark.parametrize("half_plr", [2, 3])
 def test_shallow_half_buffer_repeats_reads_over_the_broadcast_pass(wio, sb, half_plr):
     """VA3 rereads B for each M pass instead of retaining four live values in three slots."""
-    from Tensile.LoopModel.adapter import loop_order_of
+    from Tensile.Components.LoopModel.Order import loopOrder
     from Tensile.LoopModel.schedule import BufferDepths
     from Tensile.LoopModel import traversal as geometry
     from Tensile.Lowering.gir.emit_plan import plan_program
 
-    theta = _split_half_plr_theta(loop_order_of(wio, 1), half_plr, 1, sb)
+    if half_plr == 3 and wio == 5:
+        with pytest.raises(RuntimeError, match="VgprAllocA=3.*smaller"):
+            _split_half_plr_theta(loopOrder(wio, 1), half_plr, 1, sb)
+        return
+    theta = _split_half_plr_theta(loopOrder(wio, 1), half_plr, 1, sb)
     copies = geometry.ring_trip_copies(theta, BufferDepths(theta, include_shared=False))
     prog = build_gir(theta, loop_copies=copies)
     assert not check_plan(prog)
@@ -622,14 +685,14 @@ def test_tdmsplit_consuming_vg_still_builds_the_three_copy_ring(wio, half_plr):
     These are the twelve PGR1/PGR2 YAML kernels that previously built one steady
     block, then returned to the wrong half-buffer on hardware.
     """
-    from Tensile.LoopModel.adapter import loop_order_of
+    from Tensile.Components.LoopModel.Order import loopOrder
     from Tensile.LoopModel.schedule import BufferDepths
     from Tensile.LoopModel import traversal as geometry
     from Tensile.Lowering import steady_chain
     from Tensile.Lowering.gir.emit_plan import plan_program
     from Tensile.Lowering.gir.frame_contract import build_contract
 
-    theta = _split_half_plr_theta(loop_order_of(wio, 1), half_plr, 1, 1)
+    theta = _split_half_plr_theta(loopOrder(wio, 1), half_plr, 1, 1)
     shaped = [theta.op(side) for side, bit in (("A", 1), ("B", 2)) if half_plr & bit]
     assert shaped
     assert all(geometry.vgpr_group(theta, op) == 1 for op in shaped)
@@ -664,12 +727,12 @@ def test_ungrouped_peer_defers_a_reload_that_would_clobber_its_broadcast_reuse()
     Loading the next generation between those passes overwrites values the second pass still
     needs; this was numerically wrong on hardware while the logical GIR source check stayed clean.
     """
-    from Tensile.LoopModel.adapter import loop_order_of
+    from Tensile.Components.LoopModel.Order import loopOrder
     from Tensile.LoopModel.schedule import BufferDepths, Schedule
     from Tensile.LoopModel import traversal as geometry
 
     k = _kernel(_mxf8(), _mi("fp8", (2, 2), (1, 1)),
-                1, 2, loop_order_of(1, 1), 1, 1, 1)
+                1, 2, loopOrder(1, 1), 1, 1, 1)
     k.update(HalfPLR=0, ClusterLocalRead=0,
              ClusterLocalReadA=0, ClusterLocalReadB=0,
              PrefetchLocalReadA=2, PrefetchLocalReadB=1,
