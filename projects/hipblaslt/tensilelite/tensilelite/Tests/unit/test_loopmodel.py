@@ -322,6 +322,64 @@ def test_counted_loop_exit_translates_the_drain_frame_once(pgr):
     assert {hazard.producer.operand for hazard in nearest} == {"A", "B"}
 
 
+def _two_copy_mxf8_drain_theta(pgr):
+    kernel = dict(_mxf8_kernel("MKN", 2))
+    kernel.update(
+        PrefetchGlobalRead=pgr,
+        PrefetchLocalRead=1,
+        PrefetchLocalReadA=1,
+        PrefetchLocalReadB=1,
+        ClusterLocalRead=1,
+        ClusterLocalReadA=1,
+        ClusterLocalReadB=1,
+        VgprAllocA=4,
+        VgprAllocB=2,
+        VgprGroupA=1,
+        VgprGroupB=1,
+        SuppressNoLoadLoop=False,
+    )
+    target = {
+        "ReadVectorElems": {"MXSA": 16, "MXSB": 16},
+        "ReadPhi": {"MXSA": 2, "MXSB": 2},
+        "ReadRho": {"MXSA": 0, "MXSB": 0},
+    }
+    return _RAW_PARAMS_TO_THETA(
+        adapter.kernel_to_params(kernel, target),
+        validate_register_depths=False,
+    )
+
+
+def test_each_unrolled_copy_enters_the_shared_drain_in_its_own_frame():
+    """A two-copy loop joins at drain0 by phi; it needs no path predicate or split edge."""
+    program = build_gir(_two_copy_mxf8_drain_theta(2))
+    drain = program.block("drain0")
+
+    assert drain.path_chunk_base == {
+        "prologue_join": 0,
+        "steady": 1,
+        "steady1": 2,
+    }
+    assert drain.preds == ("prologue_join", "steady", "steady1")
+    assert all(dict(phi.incomings) == {
+        "prologue_join": 0,
+        "steady": 1,
+        "steady1": 0,
+    } for phi in drain.phis)
+
+
+def test_partial_drain_rotation_compares_logical_reads_not_sequence_lengths():
+    """PGR1's partial drain omits finished reads; the remaining logical reads retain their slots."""
+    from Tensile.Lowering.gir.verify_dataflow import (
+        _read_slot_pattern, check_drain_continues_rotation)
+
+    program = build_gir(_two_copy_mxf8_drain_theta(1))
+    steady = _read_slot_pattern(program, "steady1")
+    drain = _read_slot_pattern(program, "drain0")
+
+    assert any(len(drain[key]) < len(steady[key]) for key in set(steady) & set(drain))
+    assert check_drain_continues_rotation(program) == []
+
+
 def test_split_axes_do_not_multiply_the_prefetch_unit():
     """PLR1 on M_split(2).M_inner(4) advances one M_inner unit, not both regions."""
     from Tensile.LoopModel import traversal as geometry

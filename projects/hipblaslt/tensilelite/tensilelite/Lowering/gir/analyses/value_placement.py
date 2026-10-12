@@ -141,12 +141,12 @@ class ValuePlacementSolver:
     # ------------------------------------------------------------------ placement
     def solve(self, on_conflict):
         """[Placement], deterministically ordered.  `on_conflict(kind, detail)` reports a TOP meet
-        or an unsplittable critical edge; it is expected to raise.
+        or a conflicting join; it is expected to raise.
 
         Three def kinds fall out of the two fixpoints, and they are disjoint by construction:
           intra-block -- between consecutive accesses in b whose requirements differ;
           on-entry   -- where a block's own first requirement differs from what reaches it;
-          on-edge    -- where two predecessors deliver different values to one successor.
+          on-exit    -- where every successor agrees on the value needed after the block.
         """
 
         antic = self.antic()
@@ -167,12 +167,12 @@ class ValuePlacementSolver:
                 on_conflict("join", (b, None, arrive, want))
             elif (arrive is not BOTTOM and want is not BOTTOM and want is not TOP
                   and arrive != want):
-                preds = self._preds.get(b, ())
-                if len(preds) <= 1:
-                    first = self._acc[b][0].node if self._acc.get(b) else BLOCK_EXIT
-                    out.append(Placement(b, BLOCK_ENTRY, first, arrive, want))
-                else:
-                    on_conflict("critical-edge", (preds[0], b, arrive, want))
+                # ``arrive`` is the meet of EVERY predecessor.  Reaching this arm (rather than
+                # TOP above) proves they all agree, so one definition at the common block entry is
+                # valid no matter how many predecessors the block has.  Calling this a critical
+                # edge confuses CFG fan-in with a value conflict and rejects a legal drain phi.
+                first = self._acc[b][0].node if self._acc.get(b) else BLOCK_EXIT
+                out.append(Placement(b, BLOCK_ENTRY, first, arrive, want))
 
             # EXIT def: the agreed successor demand vs what the block already holds.
             want_x = self._exit_want(b, antic)
