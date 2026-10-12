@@ -605,6 +605,12 @@ int& counterField(WaitCountSpec& spec, CounterKind counter) {
     STINKY_UNREACHABLE("GIR frame wait plan asked for an unsupported counter field");
 }
 
+int counterField(const WaitCountSpec& spec, CounterKind counter) {
+    if (counter == CK_DS) return spec.dsCount;
+    if (counter == CK_Tensor) return spec.tensorCount;
+    STINKY_UNREACHABLE("GIR frame wait plan asked for an unsupported counter field");
+}
+
 void tightenField(WaitCountSpec& spec, CounterKind counter, int wait) {
     int& field = counterField(spec, counter);
     if (field == WaitCountSpec::kUnused || wait < field) field = wait;
@@ -766,27 +772,30 @@ WaitInsertionPlan materializePlan(const DecisionMap& decisions,
     return plan;
 }
 
-/// Prove every planned wait can change its counter. A weaker/equal wait after the queue is already
-/// bounded (accounting for every CFG path and intervening issue) is a counter-model defect, not an
-/// optimization opportunity: fail generation instead of hiding it in emitted assembly.
-void validateNoRedundantWaits(Function& function, WaitInsertionPlan& plan) {
+/// Prove every planned wait can change its counter and identify existing dscnt-only waits that the
+/// plan makes redundant. A redundant planned wait is a counter-model defect; an existing wait came
+/// from an earlier producer and is returned for reconciliation by the caller.
+std::vector<StinkyInstruction*> analyzeCombinedWaitStream(
+    Function& function, const WaitInsertionPlan& plan,
+    const std::function<bool(const BasicBlock&)>& removableCoverage) {
     using Bounds = std::array<int, CK_Count>;
     const std::array<CounterKind, 2> counters{CK_DS, CK_Tensor};
     constexpr int kBeyondEncodableWait = 64;
+    std::vector<StinkyInstruction*> redundantObserved;
     const auto unknownBounds = [] {
         Bounds result;
         result.fill(-1);
         return result;
     };
 
-    const auto scanBlock = [&](BasicBlock& block, Bounds upperBound, bool validate) {
-        const auto applyPlanned = [&](WaitCountSpec& spec, CounterKind counter,
+    const auto scanBlock = [&](BasicBlock& block, Bounds upperBound, bool finalScan) {
+        const auto applyPlanned = [&](const WaitCountSpec& spec, CounterKind counter,
                                       const StinkyInstruction* anchor) {
-            int& wait = counterField(spec, counter);
+            const int wait = counterField(spec, counter);
             if (wait == WaitCountSpec::kUnused) return;
             int& bound = upperBound[counter];
             if (bound >= 0 && wait >= bound) {
-                if (validate)
+                if (finalScan)
                     STINKY_UNREACHABLE(
                         (std::string("GIR counter flow produced redundant ") +
                          (counter == CK_DS ? "dscnt" : "tensorcnt") +
@@ -807,18 +816,29 @@ void validateNoRedundantWaits(Function& function, WaitInsertionPlan& plan) {
                 for (CounterKind counter : counters) applyPlanned(planned->second, counter, inst);
 
             int observed[CK_Count];
-            if (observedWaitDrains(*inst, observed))
-                for (CounterKind counter : counters)
-                    if (observed[counter] >= 0 &&
-                        (upperBound[counter] < 0 || observed[counter] < upperBound[counter]))
-                        upperBound[counter] = observed[counter];
+            if (observedWaitDrains(*inst, observed)) {
+                for (CounterKind counter : counters) {
+                    const int wait = observed[counter];
+                    if (wait < 0) continue;
+                    int& bound = upperBound[counter];
+                    if (bound >= 0 && wait >= bound) {
+                        const bool dscntOnlyWait =
+                            counter == CK_DS && inst->getUnifiedOpcode() == GFX::s_wait_dscnt;
+                        if (finalScan && dscntOnlyWait && removableCoverage &&
+                            removableCoverage(block))
+                            redundantObserved.push_back(inst);
+                        continue;
+                    }
+                    bound = wait;
+                }
+            }
 
             const CounterKind issue = classifyMemOp(*inst);
             if ((issue == CK_DS || issue == CK_Tensor) && upperBound[issue] >= 0)
                 upperBound[issue] = std::min(kBeyondEncodableWait, upperBound[issue] + 1);
         }
 
-        for (TailDrain& drain : plan.tailDrains) {
+        for (const TailDrain& drain : plan.tailDrains) {
             if (drain.predBB != &block) continue;
             for (CounterKind counter : counters) applyPlanned(drain.spec, counter, nullptr);
         }
@@ -866,6 +886,14 @@ void validateNoRedundantWaits(Function& function, WaitInsertionPlan& plan) {
     }
 
     for (BasicBlock& block : function) (void)scanBlock(block, mergedInput(block), true);
+    return redundantObserved;
+}
+
+/// A planned wait that cannot change its counter is a solver defect. Existing waits are checked by
+/// the same walk but left to the insertion pass, which owns whether that earlier producer's IR may
+/// be rewritten.
+void validateNoRedundantWaits(Function& function, const WaitInsertionPlan& plan) {
+    (void)analyzeCombinedWaitStream(function, plan, {});
 }
 
 StinkyInstruction* instructionAt(BasicBlock* block, size_t index) {
@@ -879,6 +907,27 @@ StinkyInstruction* instructionAt(BasicBlock* block, size_t index) {
 }
 
 }  // namespace
+
+void removeObservedDsWaitsRedundantWithPlan(Function& function, const WaitInsertionPlan& plan,
+                                            const std::function<bool(const BasicBlock&)>& covers) {
+    const std::vector<StinkyInstruction*> redundant =
+        analyzeCombinedWaitStream(function, plan, covers);
+    if (redundant.empty()) return;
+
+    const std::unordered_set<StinkyInstruction*> remove(redundant.begin(), redundant.end());
+    for (BasicBlock& block : function) {
+        for (auto it = block.begin(); it != block.end();) {
+            auto* inst = dyn_cast<StinkyInstruction>(it.getNodePtr());
+            if (!inst || !remove.contains(inst)) {
+                ++it;
+                continue;
+            }
+            PASS_DEBUG(std::cerr << "[gir-wait-reconcile] remove redundant observed wait in "
+                                 << block.getLabel() << "#" << indexInBlock(*inst) << "\n");
+            it = block.eraseIR(it);
+        }
+    }
+}
 
 int girFrameIssuesAcrossSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
                              const GirFrameNode& producerNode, size_t producerIndex, int span,

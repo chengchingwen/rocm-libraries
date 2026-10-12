@@ -77,11 +77,16 @@ class GirWaitCntInsertionPass final : public StinkyInstPass {
         const auto& hazards = AM.getResult<GirFrameHazardAnalysis>(function);
         if (frames.empty() || hazards.empty()) return PreservedAnalyses::all();
 
-        WaitInsertionPlan plan =
-            buildGirFrameWaitPlan(function, frames, hazards, [&passCtx](const BasicBlock& block) {
-                return passCtx.shouldProcessBasicBlock(const_cast<BasicBlock&>(block));
-            });
+        const auto covers = [&passCtx](const BasicBlock& block) {
+            return passCtx.shouldProcessBasicBlock(const_cast<BasicBlock&>(block));
+        };
+        WaitInsertionPlan plan = buildGirFrameWaitPlan(function, frames, hazards, covers);
         if (plan.anchorWaits.empty() && plan.tailDrains.empty()) return PreservedAnalyses::all();
+
+        // Generic register waits are emitted first so GIR ranks can credit them. A stronger GIR
+        // drain can in turn make a later generic wait stale; reconcile that one-way effect against
+        // the complete virtual plan before materialising the GIR waits.
+        removeObservedDsWaitsRedundantWithPlan(function, plan, covers);
 
         const GfxArchID arch =
             getGfxArchID(passCtx.getGemmTileConfig().arch[0], passCtx.getGemmTileConfig().arch[1],

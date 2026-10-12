@@ -842,6 +842,54 @@ TEST(GirFrameAnalysisTest, FrameWarRetiresVacatingDsRead) {
     EXPECT_GE(wait->dlcnt, 0);
 }
 
+TEST(GirFrameAnalysisTest, FrameWaitReconcilesGenericDscntStream) {
+    Function function("war_reconciles_generic_wait");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    BasicBlock* block = function.createBasicBlock("entry");
+
+    StinkyInstruction* read = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
+    read->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
+    StinkyInstruction* copy = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
+    copy->addModifier<GirActionData>(
+        GirActionData{1, 1, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, false}}});
+
+    // The frame WAR adds dscnt 0 before `copy`. Two later issues make the counter bound 2, so a
+    // generic dscnt 63 cannot change hardware state. After two more issues, dscnt 1 still tightens
+    // the bound and must remain.
+    createDsReadB128InBlock(block, GfxArchID::Gfx1250, 32, 20);
+    createDsReadB128InBlock(block, GfxArchID::Gfx1250, 36, 20);
+    AsmIRBuilder builder(*block, GfxArchID::Gfx1250);
+    auto addWait = [&](int keep) {
+        StinkyInstruction* wait =
+            builder.create(getMCIDByUOp(GFX::s_wait_dscnt, GfxArchID::Gfx1250));
+        wait->addSrcReg(StinkyRegister(keep));
+        SWaitCntData data;
+        data.dlcnt = keep;
+        wait->addModifier<SWaitCntData>(data);
+    };
+    addWait(63);
+    createDsReadB128InBlock(block, GfxArchID::Gfx1250, 40, 20);
+    createDsReadB128InBlock(block, GfxArchID::Gfx1250, 44, 20);
+    addWait(1);
+    function.setStringMetaData(kGirFrameContractKey, kWarContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    createGirWaitCntInsertionPass()->run(function, context, analyses);
+
+    std::vector<int> waits;
+    for (IRBase& node : *block) {
+        auto* inst = dyn_cast<StinkyInstruction>(&node);
+        if (!inst || inst->getUnifiedOpcode() != GFX::s_wait_dscnt) continue;
+        ASSERT_FALSE(inst->getSrcRegs().empty());
+        waits.push_back(inst->getSrcRegs().front().getLiteralInt());
+    }
+    EXPECT_EQ(waits, (std::vector<int>{0, 1}));
+}
+
 TEST(GirFrameAnalysisTest, SameTripRingAliasWarDrainsBeforeOverwrite) {
     Function function("same_trip_ring_alias_war");
     setFunctionArch(function, GfxArchID::Gfx1250);
