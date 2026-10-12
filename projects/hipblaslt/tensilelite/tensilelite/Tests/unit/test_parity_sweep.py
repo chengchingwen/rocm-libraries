@@ -170,6 +170,47 @@ def test_no_reachable_config_is_refused_by_the_decode_and_lower_path(gen, name):
         + "\n  ".join(f"{k} -> {m}" for k, m in refused[:10]))
 
 
+@pytest.mark.parametrize(
+    "order,pgr,split_a,split_b",
+    (
+        ("NMK", 1, 0, 0),
+        ("MKN", 2, 1, 0),
+        ("MKN", 2, 0, 2),
+        ("KMNMKN", 2, 0, 2),
+    ),
+)
+def test_folded_mxsb_refill_follows_its_last_broadcast_consumer(
+    order, pgr, split_a, split_b
+):
+    """One folded scale read must not refill its slot between two M consumers."""
+    k = _kernel(_mxf8(32), _mi("fp8", (2, 2), (2, 2)),
+                pgr, 1, order, split_a, split_b, 2)
+    k.update(
+        ClusterLocalReadA=1,
+        ClusterLocalReadB=1,
+        VgprGroupA=1,
+        VgprGroupB=1,
+        VgprAllocA=2,
+        VgprAllocB=2,
+        ISA=[12, 5, 0],
+        MXScaleFormat="InMemorySwizzle",
+        LocalReadVectorWidthMXS=16,
+        MatrixInstM=16,
+        MatrixInstN=16,
+    )
+    target = {
+        "ReadVectorElems": {"MXSA": 16, "MXSB": 16},
+        "ReadPhi": {"MXSA": 2, "MXSB": 2},
+        "ReadRho": {"MXSA": 0, "MXSB": 0},
+    }
+    theta = adapter.params_to_theta(
+        adapter.kernel_to_params(calculate_registers(k), target),
+        validate_register_depths=False,
+    )
+
+    assert check_plan(build_gir(theta)) == []
+
+
 def test_pgr3_decode_is_structurally_supported():
     """The decoder itself carries PGR3; Solution policy may still reject a concrete kernel."""
     k = {**_BASE, "PrefetchGlobalRead": 3, "NumLdsBlk": 3}

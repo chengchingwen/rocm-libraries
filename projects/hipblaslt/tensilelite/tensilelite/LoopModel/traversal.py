@@ -1232,16 +1232,6 @@ def ring_trip_copies(theta, depths) -> int:
 
 def _shifted_ring_slot(theta, operand, group, shift, strides, buffers, fold=None):
     """The PU-sized ring slot the prefetched read writes, as an Expr."""
-    hop = operand.trajectory.shared_read
-    if hop is None or hop.coverage is None:
-        return _digits(
-            theta,
-            position_terms(strides, fold),
-            int(shift),
-            ((1, group_register_positions(theta, operand), 0),),
-            max(1, buffers),
-        )
-
     extents = transfer_extents(theta, operand)
     position = _position(theta, position_terms(strides, fold), int(shift))
 
@@ -1276,7 +1266,19 @@ def _shifted_ring_slot(theta, operand, group, shift, strides, buffers, fold=None
             1, int(extents.get(name, extent)))
         unit_value = max(1, int(extent)) * unit_value + digit
     subunit = (unit_value // max(1, unit_width)) % subdivisions
-    return (subdivisions * ring_value + subunit) % max(1, buffers)
+    walk_span = max(
+        (
+            max(1, int(stride)) * max(1, int(extents.get(name, 1)))
+            for name, stride in strides.items()
+        ),
+        default=1,
+    )
+    generation = position // max(1, walk_span)
+    return (
+        generation * _ring_period(theta, operand)
+        + subdivisions * ring_value
+        + subunit
+    ) % max(1, buffers)
 
 
 # --- registers -------------------------------------------------------------
