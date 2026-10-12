@@ -1384,7 +1384,14 @@ def _finish_pipeline(
             term=Goto(target),
             gen_rel=-len(drain_labels) + index,
             chunk_base=copy_count + index,
-            path_chunk_base={},
+            # A counted-loop copy exits after ONE more chunk in that copy's own frame.  The
+            # shared drain block therefore has a distinct entrance frame for each static copy;
+            # recording those frames lets EntranceFramePhis merge them without changing the
+            # physical CFG or inventing an edge-only pointer swap.
+            path_chunk_base={
+                steady_label: copy_index + 1
+                for copy_index, steady_label in enumerate(steady_labels)
+            } if index == 0 and copy_count > 1 else {},
         ))
 
     for index, (label, body) in enumerate(
