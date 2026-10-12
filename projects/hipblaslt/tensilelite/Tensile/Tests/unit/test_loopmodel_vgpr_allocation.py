@@ -351,7 +351,57 @@ def test_split_mxs_allocation_uses_its_model_footprint():
         "ProblemType": {"Sparse": 0, "MXBlockA": 32, "MXBlockB": 32},
     }
 
-    assert _valu_alloc(kernel, "MXSA", None).total == 8
+    # M_split advances the ring offset; it does not duplicate the physical PU.
+    assert _valu_alloc(kernel, "MXSA", None).total == 4
+
+
+def test_mab3_distributed_mxsb_uses_covered_unit_and_reduction_ring():
+    kernel = {
+        "UseLoopModel": True,
+        "WmmaInnerOrder": 6,
+        "WmmaOuterOrder": 2,
+        "DepthU": 256,
+        "MatrixInstK": 128,
+        "MatrixInstM": 16,
+        "MatrixInstN": 16,
+        "MatrixInstruction": [16, 16, 128, 1, 1, 1, 4, 1, 4],
+        "MIWaveTile": [1, 4],
+        "MIWaveTileA": 1,
+        "MIWaveTileB": 4,
+        "MIInputPerThreadA": 64,
+        "MIInputPerThreadB": 64,
+        "MIInputPerThreadMXSA": 4,
+        "MIInputPerThreadMXSB": 4,
+        "PrefetchGlobalRead": 2,
+        "PrefetchLocalRead": 1,
+        "PrefetchLocalReadA": 1,
+        "PrefetchLocalReadB": 1,
+        "ClusterLocalRead": 1,
+        "ClusterLocalReadA": 1,
+        "ClusterLocalReadB": 1,
+        "VgprGroupA": 1,
+        "VgprGroupB": 1,
+        "VgprAllocA": 1,
+        "VgprAllocB": 4,
+        "TDMSplitA": 0,
+        "TDMSplitB": 1,
+        "TDMFuse": 2,
+        "VectorWidthA": 1,
+        "VectorWidthB": 1,
+        "VectorWidthMXSA": 1,
+        "VectorWidthMXSB": 1,
+        "LocalReadVectorWidthMXS": 16,
+        "ISA": [12, 5, 0],
+        "MXScaleFormat": "InMemorySwizzle",
+        "WavefrontSize": 32,
+        "NumWaves": 4,
+        "DirectToVgprA": False,
+        "DirectToVgprB": False,
+        "ProblemType": {"Sparse": 0, "MXBlockA": 32, "MXBlockB": 32},
+    }
+
+    alloc = _valu_alloc(kernel, "MXSB", None)
+    assert (alloc.perBuffer, alloc.va, alloc.total) == (2, 4, 8)
 
 
 def _f8_split_register_kernel(va_b=3):
@@ -385,6 +435,26 @@ def _f8_split_register_kernel(va_b=3):
     }
 
 
+def _f8_split_nkm_register_kernel():
+    """The VA3/VA3 NKM shape whose split regions used to alias live inputs."""
+    kernel = _f8_split_register_kernel()
+    kernel.update(
+        MatrixInstruction=[16, 16, 128, 1, 1, 8, 10, 2, 2],
+        MIWaveTile=[8, 10],
+        MIWaveTileB=10,
+        WmmaInnerOrder=6,
+        WmmaOuterOrder=2,
+        PrefetchLocalRead=3,
+        PrefetchLocalReadA=2,
+        PrefetchLocalReadB=3,
+        ClusterLocalReadA=0,
+        ClusterLocalReadB=0,
+        VgprAllocA=3,
+        VgprAllocB=3,
+    )
+    return kernel
+
+
 def test_calculated_f8_split_ring_matches_allocation():
     from Tensile.Components.LoopModel import Order, Registers
     from Tensile.LoopModel import adapter
@@ -401,6 +471,61 @@ def test_calculated_f8_split_ring_matches_allocation():
         theta, theta.op("A"), "g0", depths) == 4
     assert kernel["VgprAllocB"] == geometry.group_ring_depth(
         theta, theta.op("B"), "g0", depths) == 3
+
+
+def test_split_regions_are_flattened_offsets_with_loop_split_refills():
+    from Tensile.Components.LoopModel import Order, Registers
+    from Tensile.LoopModel import adapter
+    from Tensile.LoopModel import traversal as geometry
+    from Tensile.LoopModel.decoder import decode_theta
+    from Tensile.LoopModel.schedule import BufferDepths, Schedule, prefetch_refusals
+    from Tensile.Lowering import lower_to_gir
+    from Tensile.Lowering.gir.emit_plan import plan_block
+    from Tensile.Lowering.gir.passes import pipeline, run_pipeline
+    from Tensile.Lowering.gir.verify_dataflow import check_plan
+
+    kernel = _f8_split_nkm_register_kernel()
+    Order.calculate(kernel)
+    Registers.calculate(kernel)
+    theta = adapter.params_to_theta(kernel)
+    depths = BufferDepths(theta, include_shared=False)
+    schedule = Schedule(theta, depths)
+
+    expected = {
+        "A": (2, 4),
+        "B": (3, 10),
+    }
+    for name, (plr, period) in expected.items():
+        operand = theta.op(name)
+        group = operand.fragment.groups()[0]
+        width = geometry.group_ring_depth(theta, operand, group, depths)
+        assert not hasattr(operand.fragment, "va_includes_regions")
+        assert not hasattr(operand.fragment, "va_time_shares_regions")
+        assert geometry.requested_read_ahead(theta, operand, depths) == plr
+        assert schedule.want(operand) == plr
+        assert schedule.steps(operand, group, plr) == plr
+        assert geometry.ring_positions(theta, operand, group, width) == period
+
+    a_slot = geometry.ring_slot(theta, theta.op("A"), "g0", 3)
+    assert a_slot.evaluate({"M_split": 1, "K_inner": 0, "M_inner": 0}) == 2
+    assert a_slot.evaluate({"M_split": 1, "K_inner": 1, "M_inner": 0}) == 0
+    assert prefetch_refusals(theta, depths) == ()
+
+    decoded = decode_theta(theta)
+    split_axes = {
+        axis.name
+        for bindings in decoded.profile.read_issue_bindings.values()
+        for axis, _value in bindings
+    }
+    assert split_axes == set()
+    program = lower_to_gir(decoded.program, decoded.profile)
+    run_pipeline(program, passes=pipeline())
+    assert check_plan(program) == []
+    reads = [action for action in plan_block(program, "steady") if action.kind == "read"]
+    keys = [(action.at["tc"], action.at["tile_flat"], action.at["k_flat"],
+             tuple(action.at.get("issue") or ()))
+            for action in reads]
+    assert len(keys) == len(set(keys))
 
 
 def test_register_owner_calculates_all_eight_operand_parameters():

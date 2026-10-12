@@ -623,10 +623,8 @@ def test_halfplr_lowers_drain_free_over_its_three_copies(half_plr):
 
 
 # ---------------------------------------------------------------------------
-# A region that LEADS the ring cannot also separate generations.  `ring_block_width`
-# gives each region a share of the depth; when that share falls to one slot the
-# enumerator keeps no digit, and a group shallower than its sibling then aliases its
-# own generations under the deeper one's read-ahead.
+# A region is an ordinary digit of the PU offset.  A short ring may defer a refill, but it never
+# manufactures another read on an invariant consumer pass.
 # ---------------------------------------------------------------------------
 def _split_half_plr_theta(order, half_plr, sa, sb, wt=(2, 2), clr=0, pgr=2):
     k = _kernel(_mxf8(), _mi("fp8", wt, (1, 1)), pgr, 2, order, sa, sb, 1)
@@ -665,8 +663,8 @@ def test_the_shallow_half_keeps_a_ring_digit_when_the_region_leads():
 
 @pytest.mark.parametrize("wio, sb", [(1, 0), (2, 0), (5, 0), (5, 1), (6, 0), (6, 1)])
 @pytest.mark.parametrize("half_plr", [2, 3])
-def test_shallow_half_buffer_repeats_reads_over_the_broadcast_pass(wio, sb, half_plr):
-    """VA3 rereads B for each M pass instead of retaining four live values in three slots."""
+def test_shallow_half_buffer_splits_broadcast_pass_for_refills(wio, sb, half_plr):
+    """VA3 splits the M pass so each target slot is refilled only after its final consumer."""
     from Tensile.Components.LoopModel.Order import loopOrder
     from Tensile.LoopModel.schedule import BufferDepths
     from Tensile.LoopModel import traversal as geometry
@@ -677,7 +675,8 @@ def test_shallow_half_buffer_repeats_reads_over_the_broadcast_pass(wio, sb, half
             _split_half_plr_theta(loopOrder(wio, 1), half_plr, 1, sb)
         return
     theta = _split_half_plr_theta(loopOrder(wio, 1), half_plr, 1, sb)
-    copies = geometry.ring_trip_copies(theta, BufferDepths(theta, include_shared=False))
+    depths = BufferDepths(theta, include_shared=False)
+    copies = geometry.ring_trip_copies(theta, depths)
     prog = build_gir(theta, loop_copies=copies)
     assert not check_plan(prog)
 
@@ -738,7 +737,7 @@ def test_ungrouped_peer_defers_a_reload_that_would_clobber_its_broadcast_reuse()
 
     With M_split outside B's walk, B's four region slots are consumed once in each M pass.
     Loading the next generation between those passes overwrites values the second pass still
-    needs; this was numerically wrong on hardware while the logical GIR source check stayed clean.
+    needs.  PLR remains requested and LoopIR splits the pass at the refill boundary.
     """
     from Tensile.Components.LoopModel.Order import loopOrder
     from Tensile.LoopModel.schedule import BufferDepths, Schedule
@@ -761,7 +760,9 @@ def test_ungrouped_peer_defers_a_reload_that_would_clobber_its_broadcast_reuse()
     assert geometry.requested_read_ahead(theta, b, depths) == 1
     assert geometry.register_reuse_verdict(theta, b, group, buffers, 1) \
         == geometry.CLOBBER
-    assert Schedule(theta, depths).want(b) == 0
+    schedule = Schedule(theta, depths)
+    assert schedule.want(b) == 1
+    assert schedule.steps(b, group, 1) == 1
     prog = build_gir(theta, loop_copies=geometry.ring_trip_copies(theta, depths))
     assert not check_plan(prog)
 

@@ -288,10 +288,6 @@ def group_index(theta, operand, coord) -> int:
     return group_index_expr(theta, operand).evaluate(dict(coord))
 
 
-def _region_span_of(operand, name) -> int:
-    return max(1, int((getattr(operand, "region_span", {}) or {}).get(name, 1)))
-
-
 def _flatten_digits(digits, at, group_wrap) -> tuple:
     """Mixed-radix value of `digits` under the coordinate `at`, and the extent they span."""
     value, total = 0, 1
@@ -306,28 +302,24 @@ def _flatten_digits(digits, at, group_wrap) -> tuple:
 
 
 def _rotation_block_digits(theta, operand):
-    """The digits one rotation block distinguishes, outer to inner, with its grouping context.
-
-    A region factor belonging to this rotation unit is packed inside its (group, slot) block; a
-    reduction region outside the unit is an outer enumerator reusing the same names.
-    """
+    """The digits one PU-sized ring slot distinguishes, with its grouping context."""
     groups = max(1, len(operand.fragment.groups()))
     grouping = grouping_mode_name(theta, operand)
     group_extent = max(1, grouping_extent(theta, operand) // groups)
     region_axes = getattr(operand, "region_axes", ()) or ()
-    rotation = rotation_unit_modes(theta, operand)
-
-    digits = [(name, group_extent if name == grouping else extent, 1, name == grouping)
-              for name, extent in rotation if name not in region_axes]
-
-    named = {name for name, _extent, _divisor, _is_grouping in digits}
-    ring_names = {name for name, _extent in ring_axes(
-        theta, operand, operand.fragment.groups()[0])}
-    for name, extent in prefetch_unit_modes(theta, operand):
-        if name in named or name in region_axes or name in ring_names:
-            continue
-        digits.append((name, group_extent if name == grouping else extent, 1, name == grouping))
-        named.add(name)
+    movement = operand.trajectory.shared_read
+    coverage = getattr(movement, "coverage", None) if movement is not None else None
+    modes = prefetch_unit_modes(theta, operand)
+    if coverage is not None:
+        ring = {name for name, _extent in ring_axes(
+            theta, operand, operand.fragment.groups()[0])}
+        modes = [(name, extent) for name, extent in theta.geometry(operand).varying
+                 if name not in ring]
+    digits = [
+        (name, group_extent if name == grouping else extent, 1, name == grouping)
+        for name, extent in modes
+        if name not in region_axes
+    ]
     # VG MOVED THE AXIS'S TOP FACTOR INTO THE SLOT, so the block keeps only what is left of it
     # and wraps there -- the same digit in two places would address past the allocation.
     split = vgpr_group_axis(theta, operand)
@@ -339,16 +331,6 @@ def _rotation_block_digits(theta, operand):
     return digits, grouping, group_extent
 
 
-def _scale_presence_digits(theta, operand, grouping, group_extent):
-    """An MX scale's digits: every axis it is present on, minus the region the slot selects."""
-    region_axes = ((getattr(operand, "region_axes", ()) or ())
-                   if _region_count(theta, operand) > 1 else ())
-    return [(axis.name, group_extent if axis.name == grouping
-             else int(axis.extent.constant_value), 1,
-             axis.name == grouping)
-            for axis in presence_axes(theta, operand) if axis.name not in region_axes]
-
-
 def _issue_order(keys) -> list:
     """The distinct carrier keys in first-appearance order -- the order the reads issue in."""
     order = []
@@ -356,15 +338,6 @@ def _issue_order(keys) -> list:
         if key not in order:
             order.append(key)
     return order
-
-
-def _realized_ring_depth(theta, operand, coord) -> int:
-    """Slots the group holding `coord` actually rotates through, read off the fragment."""
-    labels = operand.fragment.groups()
-    group = labels[group_index(theta, operand, coord)] if labels else None
-    width = int((operand.fragment.ring_depths or {}).get(group, 1))
-    regions = 1 if operand.fragment.va_includes_regions else _region_count(theta, operand)
-    return max(1, width) * max(1, regions)
 
 
 def unit_tile_index(theta, operand, coord) -> int:
@@ -376,26 +349,16 @@ def unit_tile_index(theta, operand, coord) -> int:
     if coverage is None:
         return _flatten_digits(digits, at, group_extent)[0]
 
-    is_scale = operand.name.startswith("MXS")
-    if is_scale:
-        digits = _scale_presence_digits(theta, operand, grouping, group_extent)
     reduction = set(summation_names(theta))
     free_value, free_total = _flatten_digits(
         [d for d in digits if d[0] not in reduction], at, group_extent)
     reduction_value, reduction_total = _flatten_digits(
         [d for d in digits if d[0] in reduction], at, group_extent)
 
-    # A scale's carrier is (carrier, slot): the fold distributes one instruction over sub-agents,
-    # so two tiles sharing a carrier still occupy distinct slots.
-    keys = [(coverage.carrier_of(tile), coverage.slot_of(tile)) if is_scale
-            else coverage.carrier_of(tile) for tile in range(max(1, free_total))]
+    keys = [(coverage.carrier_of(tile), coverage.slot_of(tile))
+            for tile in range(max(1, free_total))]
     order = _issue_order(keys)
     free_index = order.index(keys[free_value])
-    if is_scale:
-        # The ring already names the reduction values it has slots for; the block carries only
-        # what is left, so a slot-deep ring does not encode the same digit twice.
-        carried = reduction_value // _realized_ring_depth(theta, operand, at)
-        return carried * len(order) + free_index
     return free_index * reduction_total + reduction_value
 
 
@@ -570,7 +533,7 @@ def concurrent_regions(theta, operand) -> int:
 
 
 def group_live_peak(theta, operand, group, post_war=True, off=None) -> int:
-    """Rotation units simultaneously live in one group."""
+    """PU-sized ring slots simultaneously live in one group."""
     if off is None:
         if post_war:
             return concurrent_regions(theta, operand)
@@ -578,7 +541,7 @@ def group_live_peak(theta, operand, group, post_war=True, off=None) -> int:
             theta, operand, requested_read_ahead(theta, operand), (group,))
     if off <= 0:
         return 1
-    stride = rotation_unit_positions(theta, operand)
+    stride = group_register_positions(theta, operand)
     return (1 + -(-int(off) // max(1, stride))) * concurrent_regions(theta, operand)
 
 
@@ -604,7 +567,7 @@ def derived_group_reuse_floor(theta, operand, group) -> int:
         first, _last = intervals.get(source, (time, time))
         intervals[source] = (first, time)
 
-    maximum = max(1, group_ring_size(theta, operand, group))
+    maximum = _ring_period(theta, operand)
     for width in range(1, maximum + 1):
         slot = ring_slot(theta, operand, group, width)
         by_register = {}
@@ -621,8 +584,7 @@ def derived_group_reuse_floor(theta, operand, group) -> int:
     return maximum
 
 
-def group_reuse_floor(theta, operand, group, shared_regions=False, charge_lead=True,
-                      lead=None) -> int:
+def group_reuse_floor(theta, operand, group, charge_lead=True, lead=None) -> int:
     """Smallest ring that retains one read across every invariant-axis consumer pass."""
     if vgpr_group_axis(theta, operand) is None:
         return derived_group_reuse_floor(theta, operand, group)
@@ -631,8 +593,7 @@ def group_reuse_floor(theta, operand, group, shared_regions=False, charge_lead=T
         cache = {}
         setattr(theta, "_group_reuse_floor_cache", cache)
     cache_key = (operand.name, tuple(operand.fragment.groups()),
-                 getattr(operand.fragment, "grouping_mode", None), group, shared_regions,
-                 charge_lead, lead)
+                 getattr(operand.fragment, "grouping_mode", None), group, charge_lead, lead)
     if cache_key in cache:
         return cache[cache_key]
     hop = operand.trajectory.shared_read
@@ -648,18 +609,10 @@ def group_reuse_floor(theta, operand, group, shared_regions=False, charge_lead=T
         first, _last = intervals.get(source, (time, time))
         intervals[source] = (first, time)
 
-    # THE SEARCH CEILING IS IN BUFFERS, so VG raises it: a unit cut `extra` ways offers that
-    # many more widths, and stopping at the unit count would report a floor the ring cannot
-    # actually honour -- silently, because the loop falls through to `maximum`.
-    # THE PROBE WALKS THE WHOLE RING, REGIONS INCLUDED.  It used to walk a PER-REGION width and
-    # scale the answer by `regions`, which was right while `ring_block_width` shrank the
-    # enumerator to the regions' share of the depth.  It no longer does -- the period spans the
-    # regions by construction -- so scaling here counts them twice and refuses widths that
-    # verify clean.
-    split = vgpr_group_axis(theta, operand)
-    regions = 1 if shared_regions else max(1, _region_count(theta, operand))
-    maximum = max(1, group_ring_size(theta, operand, group)
-                  * (split[1] if split is not None else 1) * regions)
+    # The flattened walk already includes every outer digit and every VG subdivision.  Its
+    # period is therefore the complete search ceiling; scaling it by regions or VG would count
+    # those factors twice.
+    maximum = _ring_period(theta, operand)
     # WHEN THE REFILL LANDS, counted in the operand's own read order: a read-ahead issues the
     # load `lead` sources before the value is wanted, so the slot must be free that early.  The
     # consumption windows alone are disjoint either way; what separates a shape that fits from
@@ -733,9 +686,9 @@ def _direct_input(theta, side):
 def requested_read_ahead(theta, operand, depths=None) -> int:
     """Internal per-operand PLR, in this operand's grouped-prefetch units.
 
-    The adapter normalizes an explicit VG request after TDMSplit.  A whole-set operand then
-    converts its lead from the original prefetch unit to the current structural unit; other
-    operands already count the current unit. ``depths`` applies the VA capacity cap.
+    The adapter normalizes VG after TDMSplit, and PLR already counts the resulting structural
+    prefetch unit.  In particular, a split region changes the flattened ring offset; it does not
+    multiply the requested lead. ``depths`` applies the VA capacity cap.
     """
     raw = _raw_read_ahead(theta, operand)
     if not raw:
@@ -752,15 +705,6 @@ def requested_read_ahead(theta, operand, depths=None) -> int:
         peer = _direct_input(theta, "B" if side == "A" else "A")
         want = raw if peer is None else \
             _raw_read_ahead(theta, peer) * prefetch_unit_tiles(theta, peer)
-    elif reloads_whole_set(theta, operand):
-        original = product(extent for _name, extent
-                           in original_prefetch_unit_modes(theta, operand))
-        grouped = prefetch_unit_tiles(theta, operand)
-        if original % grouped:
-            raise RuntimeError(
-                f"{operand.name}: original prefetch unit {original} is not divisible by "
-                f"current unit {grouped}")
-        want = raw * (original // grouped)
     else:
         want = raw
 
@@ -783,11 +727,8 @@ def requested_read_ahead(theta, operand, depths=None) -> int:
 
 def prefetch_capacity(theta, operand, depths) -> int:
     """VGPR capacity expressed in this operand's grouped-prefetch units."""
-    punit = group_prefetch_unit_tiles(theta, operand)
-    runit = group_rotation_unit_tiles(theta, operand)
-    capacity = sum(Fraction(max(1, int(depths.get(operand.name, group))) * runit, punit)
-                   for group in operand.fragment.groups())
-    return max(0, capacity.numerator // capacity.denominator)
+    return sum(max(1, int(depths.get(operand.name, group)))
+               for group in operand.fragment.groups())
 
 
 def _staged_prefetch_cap(theta, operand, want) -> int:
@@ -874,48 +815,26 @@ class MmaShape:
 
 
 def group_register_positions(theta, operand) -> int:
-    """Physical register positions in one (group, rotation-slot) block: ONE region's tiles.
-
-    Regions are extra rotation, so their multiplicity is slot COUNT, not block size.
-    """
-    # VG CUTS THE BLOCK, and only by what it divides BEYOND the split: the split's own share is
-    # already taken out of `group_unit_tiles`, so at the derived VG this is the per-region unit
-    # it always was, and `VG=2` with no split halves a unit nothing else divided.
-    split = vgpr_group_axis(theta, operand)
-    tiles = group_unit_tiles(theta, operand, operand.fragment.groups()[0])
-    tiles = max(1, tiles // (split[1] if split is not None else 1))
-    rotation = {name for name, _extent in rotation_unit_modes(theta, operand)}
-    regions = set(getattr(operand, "region_axes", ()) or ())
-    ring_names = {name for name, _extent in ring_axes(
-        theta, operand, operand.fragment.groups()[0])}
-    tiles *= product(extent for name, extent in prefetch_unit_modes(theta, operand)
-                     if name not in rotation and name not in regions and name not in ring_names)
+    """Physical register positions in one ``(group, ring slot)``: exactly one PU."""
     hop = operand.trajectory.shared_read
-    coverage = getattr(hop, "coverage", None) if hop is not None else None
-    if coverage is None:
-        return max(1, tiles)
-    if operand.name.startswith("MXS"):
-        regions = set(getattr(operand, "region_axes", ()) or ())
-        region_span = getattr(operand, "region_span", {}) or {}
+    if hop is not None and hop.coverage is not None:
+        ring = {name for name, _extent in ring_axes(
+            theta, operand, operand.fragment.groups()[0])}
+        modes = [(name, extent) for name, extent in theta.geometry(operand).varying
+                 if name not in ring]
         grouping = grouping_mode_name(theta, operand)
         groups = max(1, len(operand.fragment.groups()))
-        free_positions = reduction_positions = 1
-        reduction = set(summation_names(theta))
-        for axis in presence_axes(theta, operand):
-            extent = max(1, int(axis.extent.constant_value))
-            if axis.name in regions:
-                extent = max(1, extent // max(1, int(region_span.get(axis.name, 1))))
-            if axis.name == grouping:
-                extent = max(1, extent // groups)
-            if axis.name in reduction:
-                reduction_positions *= extent
-            else:
-                free_positions *= extent
-        pairs = {(coverage.carrier_of(tile), coverage.slot_of(tile))
-                 for tile in range(max(1, free_positions))}
-        return max(1, reduction_positions * len(pairs))
-    return max(1, len({(coverage.carrier_of(tile), coverage.slot_of(tile))
-                       for tile in range(max(1, tiles))}))
+        positions = product(
+            max(1, extent // groups) if name == grouping else extent
+            for name, extent in modes
+        )
+        active = len({
+            (hop.coverage.carrier_of(tile), hop.coverage.slot_of(tile))
+            for tile in range(max(1, positions))
+        })
+        agents = max(1, int(getattr(operand.fragment, "agent_group_size", 0) or 1))
+        return max(1, active * agents)
+    return group_prefetch_unit_positions(theta, operand)
 
 
 def operand_footprint_regs(theta, operand, depths) -> int:
@@ -959,10 +878,8 @@ def split_unit_divisor(theta, operand) -> int:
 
 
 def group_ring_depth(theta, operand, group, depths) -> int:
-    """Physical slots for VA, sharing only when an outer region finishes before the ring turns."""
-    depth = max(1, int(depths.get(operand.name, group)))
-    regions = 1 if operand.fragment.va_includes_regions else _region_count(theta, operand)
-    return depth * max(1, regions)
+    """Physical PU-sized slots in this group's VA ring."""
+    return max(1, int(depths.get(operand.name, group)))
 
 
 def register_layout(theta, depths) -> dict:
@@ -1139,22 +1056,13 @@ def _reduction_prefetch_ring_modes(theta, operand):
 
 
 def ring_axes(theta, operand, group):
-    """Modes enumerating rotation units for a streamed operand.
-
-    The group is the operand's, not this argument's: every group of one fragment enumerates the
-    same modes, so `group` says which ring, never which axes.
-    """
+    """Outer modes converted to this operand's dense PU-ring offset."""
     geometry = theta.geometry(operand)
     hop = operand.trajectory.shared_read
-    if operand.name.startswith("MXS") and hop is not None and hop.coverage is not None:
+    if hop is not None and hop.coverage is not None:
         return list(geometry.summation_modes)
-    if geometry.reduction_ring:
-        return list(geometry.reduction_ring)
-    if geometry.reloads_whole_set:
-        if len(operand.fragment.groups()) == 1:
-            return list(geometry.summation_modes)
-        return []
-    return unit_enumerator_modes(theta, operand)
+    unit = {name for name, _extent in geometry.prefetch_unit}
+    return [(name, extent) for name, extent in geometry.varying if name not in unit]
 
 
 def ring_slot(theta, operand, group, buffers, advance=0, strides=None):
@@ -1162,16 +1070,6 @@ def ring_slot(theta, operand, group, buffers, advance=0, strides=None):
     if buffers <= 1:
         return Expr.constant(0)
     extents = transfer_extents(theta, operand)
-    hop = operand.trajectory.shared_read
-    if operand.name.startswith("MXS") and hop is not None and hop.coverage is not None:
-        # Decode the reduction digit from the FULL covered read-order position.  Filtering the
-        # free carrier axes first changes their radix: on K.M with four M tiles folded by two,
-        # advance=2 is one K step, not two.
-        varying = varying_axes(theta, operand)
-        walk_strides = strides or axis_strides(theta, varying, extents)[0]
-        shifted = _shifted_ring_slot(theta, operand, group, int(advance), walk_strides, buffers,
-                                     read_coverage(theta, operand))
-        return shifted if shifted is not None else Expr.constant(0)
     varying = varying_axes(theta, operand)
     walk_strides = strides or axis_strides(theta, varying, extents)[0]
     if reloads_whole_set(theta, operand) and len(operand.fragment.groups()) == 1:
@@ -1261,45 +1159,34 @@ def _shifted_coord(theta, axis, shift, strides, _reload_span, extents, fold=None
     return (position // stride) % extent
 
 
-def regions_lead_the_ring(theta, operand, group) -> bool:
-    """Is a region axis visited OUTSIDE every axis the ring rotates on?
+def _ring_period(theta, operand, extra_axes=()) -> int:
+    """PU-sized VA offsets traversed by one chunk.
 
-    Then a region does not revisit the ring: the outer loop finishes one region before the next
-    begins, so two regions may share a slot but two GENERATIONS may not.
+    Every varying axis participates in the flattened position.  Region axes therefore advance
+    the offset exactly like any other outer digit; neither VA nor the ring needs a region mode.
     """
-    order = [axis.name for axis in theta.ord]
-    regions = [name for name in (getattr(operand, "region_axes", ()) or ()) if name in order]
-    ring = [name for name, _extent in ring_axes(theta, operand, group)
-            if name in order and name not in regions]
-    if not regions or not ring:
-        return False
-    return min(order.index(name) for name in regions) < min(order.index(name) for name in ring)
-
-
-def _ring_period(theta, operand) -> int:
-    """Physical VA slots traversed by one chunk under the VG decomposition."""
-    modes = [
-        (axis.name, int(axis.extent.constant_value))
-        for axis in presence_axes(theta, operand)
+    ring_modes = ring_axes(theta, operand, operand.fragment.groups()[0])
+    ring_names = dict(ring_modes)
+    extras = {getattr(axis, "name", axis) for axis in (extra_axes or ())}
+    ring_modes = [
+        (axis.name, ring_names.get(
+            axis.name, int(axis.extent.constant_value)))
+        for axis in theta.inner_axes()
+        if axis.name in ring_names or axis.name in extras
     ]
-    positions = _covered_positions(theta, operand, modes)
+    ring_positions = _covered_positions(theta, operand, ring_modes)
+    ring_names = {name for name, _extent in ring_modes}
+    unit_modes = [(name, extent) for name, extent in theta.geometry(operand).varying
+                  if name not in ring_names]
+    full_unit = _covered_positions(theta, operand, unit_modes)
     unit = group_register_positions(theta, operand)
-    if positions % max(1, unit):
-        raise RuntimeError(
-            f"{operand.name}: {positions} covered positions are not divisible by "
-            f"the {unit}-position VGPR unit")
-    return max(1, positions // max(1, unit))
+    subdivisions = max(1, -(-full_unit // max(1, unit)))
+    return max(1, ring_positions * subdivisions)
 
 
-def vgpr_ring_carries(theta, operand, group, buffers) -> bool:
+def vgpr_ring_carries(theta, operand, group, buffers, extra_axes=()) -> bool:
     """Whether one trip advances this VA ring to a different starting phase."""
-    if operand.fragment.va_includes_regions or vgpr_group_axis(theta, operand) is not None:
-        period = _ring_period(theta, operand)
-        return period % max(1, int(buffers)) != 0
-    extents = transfer_extents(theta, operand)
-    strides, _span = axis_strides(theta, varying_axes(theta, operand), extents)
-    _digits, period = _ring_digits(theta, operand, group, strides, buffers)
-    return period % max(1, int(buffers)) != 0
+    return _ring_period(theta, operand, extra_axes) % max(1, int(buffers)) != 0
 
 
 def vgpr_group_axis(theta, operand):
@@ -1315,106 +1202,13 @@ def vgpr_group_axis(theta, operand):
     return (modes[-1][0], radix) if radix > 1 and modes else None
 
 
-def vgpr_group_digit(theta, operand, strides):
-    """`vgpr_group_axis` as a ring digit: the position stride that advances per VG-th unit."""
-    split = vgpr_group_axis(theta, operand)
-    if split is None or split[0] not in strides:
-        return None
-    name, radix = split
-    extent = dict(prefetch_unit_modes(theta, operand)).get(name, 1)
-    return (max(1, strides[name]) * max(1, max(1, extent) // radix), radix)
-
-
-def ring_block_width(theta, operand, group, buffers) -> int:
-    """Traversal positions owned by the ring enumerator before region digits are appended.
-
-    An outer region completes before the ring turns and therefore time-shares the full VA ring.
-    Concurrent regions reserve equal shares. Unsplit rings use the full span.
-    """
-    span = 1
-    for _name, extent in ring_axes(theta, operand, group):
-        span *= max(1, extent)
-    regions = max(1, _region_count(theta, operand))
-    if regions <= 1:
-        return max(1, span)
-    if regions_lead_the_ring(theta, operand, group) \
-            and operand.fragment.va_time_shares_regions:
-        return max(1, min(span, max(1, int(buffers))))
-    return max(1, min(span, max(1, int(buffers)) // regions))
-
-
-def regions_time_share(theta, operand, group, buffers) -> bool:
-    """Do this group's regions land on the same slots, rather than each owning its own?
-
-    They start at the ring's own width, so they separate only when that width is not a multiple
-    of the depth; when they share, the value a refill overwrites stays live across the sweep.
-    """
-    if _region_count(theta, operand) <= 1:
-        return False
-    return ring_block_width(theta, operand, group, buffers) % max(1, buffers) == 0
-
-
-def _ring_digits(theta, operand, group, strides, buffers):
-    """The ring's mixed-radix digits, innermost first, and the PERIOD they span.
-
-    The one place the rotation's digit layout is decided; `_shifted_ring_slot` renders it and
-    `ring_positions` reports its period, so the two can never drift apart.
-    """
-    ring = [(name, extent) for name, extent in ring_axes(theta, operand, group)
-            if name in strides]
-    digits, place = [], 1
-    # VG SUBDIVIDES THE UNIT, so its digit is the FASTEST: two buffers of one unit are adjacent
-    # in read order, closer than the enumerator's next unit.
-    group_digit = vgpr_group_digit(theta, operand, strides)
-    if group_digit is not None:
-        digits.append((place, group_digit[0], group_digit[1]))
-        place *= group_digit[1]
-    width = place * ring_block_width(theta, operand, group, buffers)
-    # WHAT VG ALREADY TOOK OFF ITS AXIS.  VG subdivides one of these very axes, so re-adding the
-    # whole extent here builds a SECOND digit over the same bits -- both read the low part of the
-    # position and the ring enumerates half as many places as it claims.  The enumerator gets the
-    # remainder above the VG cut, and divides past the part VG spent.
-    cut = dict([vgpr_group_axis(theta, operand)]) if vgpr_group_axis(theta, operand) else {}
-    for name, extent in reversed(ring):  # the innermost axis is the fastest radix
-        if place >= width:
-            break                        # the rest of the enumerator wraps inside the ring
-        taken = max(1, cut.get(name, 1))
-        radix = min(max(1, max(1, extent) // taken), width // place)
-        if radix <= 1:
-            continue                     # an extent-1 axis enumerates nothing, it does not end the ring
-        digits.append((place, max(1, strides[name]) * taken, radix))
-        place *= radix
-    # A region is extra rotation, so it can carry the ring alone when the enumerator is empty.
-    # IT STARTS WHERE THE DIGITS REACHED, not at the nominal width: a gap between them is a place
-    # the modulus folds away, and the region then shares a slot with position 0.
-    region_digits = _region_digits(theta, operand, strides, max(place, 1))
-    time_shares_regions = (regions_lead_the_ring(theta, operand, group)
-                           and operand.fragment.va_time_shares_regions)
-    if not time_shares_regions:
-        digits.extend(region_digits)
-    digit_period = digits[-1][0] * digits[-1][2] if digits else 1
-    # A time-shared region does not own separate slots, but traversing it still advances the ring.
-    # Keep that distance in the per-trip period so VA=3 over two split halves carries by four
-    # positions (the split-provided VG1 HalfPLR shape), not by only the inner K span.
-    region_period = region_digits[-1][0] * region_digits[-1][2] if region_digits else 1
-    period = max(digit_period, region_period)
-    return digits, max(1, period)
-
-
-def ring_positions(theta, operand, group, buffers) -> int:
+def ring_positions(theta, operand, group, buffers, extra_axes=()) -> int:
     """Rotation positions one trip walks -- the PERIOD of the slot expression.
 
     Where it is a multiple of the depth the ring closes every trip; where it is not -- four
     positions over three buffers -- the slot carries into the next one.
     """
-    if not vgpr_ring_carries(theta, operand, group, buffers):
-        return max(1, int(buffers))
-    if operand.fragment.va_includes_regions or vgpr_group_axis(theta, operand) is not None:
-        return _ring_period(theta, operand)
-    extents = transfer_extents(theta, operand)
-    strides, _span = axis_strides(theta, varying_axes(theta, operand), extents)
-    _digits, period = _ring_digits(theta, operand, group, strides, buffers)
-    return period
+    return _ring_period(theta, operand, extra_axes)
 
 
 def ring_trip_copies(theta, depths) -> int:
@@ -1437,127 +1231,52 @@ def ring_trip_copies(theta, depths) -> int:
 
 
 def _shifted_ring_slot(theta, operand, group, shift, strides, buffers, fold=None):
-    """The rotation slot the prefetched read writes, as an Expr."""
-    group_digit = vgpr_group_digit(theta, operand, strides)
-    region_digits = tuple(_region_digits(theta, operand, strides, 1))
-    if reloads_whole_set(theta, operand) and group_digit is None \
-            and operand.fragment.va_includes_regions and region_digits:
-        # TDMSplit can supply VG itself, leaving no additional ``vgpr_group_axis``.  Its region
-        # index is then the sub-buffer digit and a complete resident-set walk starts the next set.
-        extents = transfer_extents(theta, operand)
-        span = max((max(1, int(stride)) * max(1, int(extents.get(name, 1)))
-                    for name, stride in strides.items()), default=1)
-        radix = max(1, _region_count(theta, operand))
+    """The PU-sized ring slot the prefetched read writes, as an Expr."""
+    hop = operand.trajectory.shared_read
+    if hop is None or hop.coverage is None:
         return _digits(
             theta,
             position_terms(strides, fold),
             int(shift),
-            region_digits + ((radix, span, 0),),
+            ((1, group_register_positions(theta, operand), 0),),
             max(1, buffers),
         )
-    if reloads_whole_set(theta, operand) and group_digit is not None:
-        # An all-inner buffer holds every register position outside VG.  Those positions select
-        # the unit-index WITHIN a buffer; they must not advance VA.  VG selects the half/quarter
-        # buffer, and only a complete resident-set traversal advances to the next VG-buffer set.
-        div, radix = group_digit
-        extents = transfer_extents(theta, operand)
-        span = max((max(1, int(stride)) * max(1, int(extents.get(name, 1)))
-                    for name, stride in strides.items()), default=1)
-        regions = max(1, _region_count(theta, operand))
-        # Interleave region slots so the final modulus rotates WITHIN each region:
-        #   region + R * ((vg_digit + generation*VG) mod VA).
-        # A contiguous ``region*VA + local`` layout would need a nested modulus Expr cannot
-        # represent, while the interleaved layout is the same compact register count.
-        digits = region_digits + (
-            (regions, div, radix),
-            (regions * radix, span, 0),
-        )
-        return _digits(
-            theta,
-            position_terms(strides, fold),
-            int(shift),
-            digits,
-            max(1, buffers),
-        )
-    if operand.fragment.va_includes_regions:
-        # Explicit CLR0 VA is one total circular stream.  Every register position inside a
-        # buffer is the low part of the extended read order; region and repeated-broadcast axes
-        # advance that stream instead of wrapping an individual ring digit early.
-        unit = group_register_positions(theta, operand)
-        return _digits(
-            theta,
-            position_terms(strides, fold),
-            int(shift),
-            ((1, unit, 0),),
-            max(1, buffers),
-        )
-    uses_subunit_digits = (vgpr_group_axis(theta, operand) is not None
-                           or operand.fragment.va_time_shares_regions
-                           or vgpr_ring_carries(theta, operand, group, buffers))
-    if not uses_subunit_digits:
-        ring = [(name, extent) for name, extent in ring_axes(theta, operand, group)
-                if name in strides]
-        width = ring_block_width(theta, operand, group, buffers)
-        digits, place = [], 1
-        for name, extent in reversed(ring):
-            if place >= width:
-                break
-            radix = min(max(1, extent), width // place)
-            if radix <= 1:
-                continue
-            digits.append((place, max(1, strides[name]), radix))
-            place *= radix
-        if not (regions_lead_the_ring(theta, operand, group)
-                and operand.fragment.va_time_shares_regions):
-            digits.extend(_region_digits(theta, operand, strides, width))
-        if not digits:
-            return None
-        return _digits(
-            theta,
-            position_terms(strides, fold),
-            shift,
-            tuple(reversed(digits)),
-            max(1, buffers),
-        )
-    digits, _period = _ring_digits(theta, operand, group, strides, buffers)
-    if not digits:
-        return None
-    # THE TOP DIGIT DOES NOT WRAP.  Wrapping it folds the ring's last position onto its first
-    # BEFORE the depth modulus, so a depth the ring does not divide -- 3 buffers over 4 positions
-    # -- refills a slot still in use.  Where it does divide, the modulus absorbs the carry and
-    # the slot is the one it always was.
-    place, div, _radix = digits[-1]
-    digits[-1] = (place, div, 0)
-    return _digits(
-        theta,
-        position_terms(strides, fold),
-        shift,
-        tuple(reversed(digits)),
-        max(1, buffers),
-    )
 
+    extents = transfer_extents(theta, operand)
+    position = _position(theta, position_terms(strides, fold), int(shift))
 
-def _region_digits(theta, operand, strides, place):
-    """The region's digits in the ring: the outermost radix of the read order.
-
-    It rides the shifted position like every other digit, so a lead that reaches the end of a
-    region carries into the next one -- which is how a time-shared slot gets refilled.
-    """
-    inner = {
-        axis.name: int(axis.extent.constant_value)
+    base_ring = dict(ring_axes(theta, operand, group))
+    varying = {name for name, _extent in theta.geometry(operand).varying}
+    ring_modes = [
+        (axis.name, base_ring.get(
+            axis.name, int(axis.extent.constant_value)))
         for axis in theta.inner_axes()
-    }
-    axes = [name for name in (getattr(operand, "region_axes", ()) or ())
-            if name in inner and name in strides]
-    if not axes or _region_count(theta, operand) <= 1:
-        return []
-    digits = []
-    for name in reversed(axes):
-        width = _region_span_of(operand, name)
-        count = max(1, max(1, int(inner.get(name, 1))) // width)
-        digits.append((place, max(1, strides[name]) * width, count))
-        place *= count
-    return digits
+        if axis.name in base_ring
+        or (axis.name in strides and axis.name not in varying)
+    ]
+    ring_value = Expr.constant(0)
+    for name, extent in ring_modes:
+        if name not in strides:
+            continue
+        digit = (position // max(1, int(strides[name]))) % max(
+            1, int(extents.get(name, extent)))
+        ring_value = max(1, int(extent)) * ring_value + digit
+
+    ring_names = {name for name, _extent in ring_modes}
+    unit_modes = [(name, extent) for name, extent in theta.geometry(operand).varying
+                  if name not in ring_names]
+    unit_width = group_register_positions(theta, operand)
+    full_unit = _covered_positions(theta, operand, unit_modes)
+    subdivisions = max(1, -(-full_unit // max(1, unit_width)))
+    unit_value = Expr.constant(0)
+    for name, extent in unit_modes:
+        if name not in strides:
+            continue
+        digit = (position // max(1, int(strides[name]))) % max(
+            1, int(extents.get(name, extent)))
+        unit_value = max(1, int(extent)) * unit_value + digit
+    subunit = (unit_value // max(1, unit_width)) % subdivisions
+    return (subdivisions * ring_value + subunit) % max(1, buffers)
 
 
 # --- registers -------------------------------------------------------------
@@ -1852,14 +1571,6 @@ def reload_positions(theta, operand, group, buffers, distance):
 
     None means no such position exists, so this width cannot carry this read-ahead.
     """
-    if (vgpr_group_axis(theta, operand) is None and buffers > 1
-            and (_region_count(theta, operand) <= 1
-                 or (reloads_whole_set(theta, operand)
-                     and len(operand.fragment.groups()) == 1))):
-        return {}
-    # A storage-region walk can put a refill between two invariant-axis consumers even at VG1,
-    # so it needs the same physical-register timeline as a subdivided ring.  The unsplit VG1
-    # compatibility path keeps its established placement.
     timeline = _register_timeline(theta, operand, group, buffers, distance)
     if timeline is None:
         return {}

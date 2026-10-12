@@ -585,66 +585,14 @@ def _set_register_depths(theta, kernel):
         value("ClusterLocalRead", side)
         vg = value("VgprGroup", side)
         depth = value("VgprAlloc", side)
-        if operand.name.startswith("MXS"):
-            group = operand.fragment.groups()[0]
-            parent = theta.op(side)
-            parent_depth = max(parent.fragment.ring_depths.values())
-            depth = min(
-                parent_depth,
-                max(
-                    1,
-                    geometry.product(
-                        extent
-                        for _name, extent
-                        in geometry.ring_axes(theta, operand, group)
-                    ),
-                ),
-            )
+        if int(getattr(operand.fragment, "agent_group_size", 0) or 0) > 0:
+            depth = min(depth, geometry._ring_period(theta, operand))
         operand.fragment.vgpr_group = vg
         unit = geometry.prefetch_unit_tiles(theta, operand)
         if vg > 1 and unit % vg:
             raise RuntimeError(
                 "VgprGroup%s=%d does not divide %s's %d-tile prefetch unit under this loop "
                 "order." % (side, vg, operand.name, unit))
-        if value("ClusterLocalRead", side) > 0 \
-                and geometry.reloads_whole_set(theta, operand):
-            operand.fragment.va_includes_regions = False
-            operand.fragment.va_time_shares_regions = False
-            operand.fragment.ring_depths = {
-                label: 1 for label in operand.fragment.groups()}
-            continue
-        regions = geometry._region_count(theta, operand)
-        per_region = depth // regions if regions > 1 and depth % regions == 0 else 0
-        partitioned = (
-            regions > 1
-            and (
-                depth < regions
-                or (
-                    per_region > 0
-                    and (
-                        value("ClusterLocalRead", side) > 0
-                        or per_region >= value("PrefetchLocalRead", side) + 1
-                    )
-                )
-            )
-        )
-        if partitioned and depth >= regions:
-            depth //= regions
-        read_phi = kernel.get("ReadPhi") or {}
-        folded = int(read_phi.get(side, 1) or 1) > 1
-        total_ring = (
-            not partitioned
-            and (
-                regions > 1
-                or (
-                    not folded
-                    and depth > value("PrefetchLocalRead", side) + 1
-                )
-                or vg > 1
-            )
-        )
-        operand.fragment.va_includes_regions = total_ring
-        operand.fragment.va_time_shares_regions = total_ring
         operand.fragment.ring_depths = {
             label: depth for label in operand.fragment.groups()}
 
@@ -670,11 +618,6 @@ def _validate_register_depths(theta, kernel):
         allocated = value("VgprAlloc", side)
         cluster = value("ClusterLocalRead", side)
         group = operand.fragment.groups()[0]
-        rotation = {
-            name for name, _extent
-            in geometry.rotation_unit_modes(theta, operand)
-        }
-        regions = set(operand.region_axes or ()) & rotation
         buffers = geometry.group_ring_depth(
             theta,
             operand,
@@ -684,7 +627,9 @@ def _validate_register_depths(theta, kernel):
         required = 1
         if value("VgprGroup", side) > 1 \
                 and geometry.reloads_whole_set(theta, operand) \
-                and geometry.requested_read_ahead(theta, operand, depths) > 0:
+                    and geometry.requested_read_ahead(theta, operand, depths) > 0 \
+                    and not geometry.vgpr_ring_carries(
+                        theta, operand, group, buffers):
             required = max(
                 required,
                 geometry._ring_period(theta, operand),
@@ -696,34 +641,16 @@ def _validate_register_depths(theta, kernel):
                     lead=0,
                 ),
             )
-        if cluster and not geometry.reloads_whole_set(theta, operand) \
-                and not geometry.vgpr_ring_carries(
-                    theta,
-                    operand,
-                    group,
-                    buffers,
-                ):
-            required = max(
-                1,
-                geometry.product(
-                    extent
-                    for name, extent in geometry.ring_axes(theta, operand, group)
-                    if name not in regions
-                ) * value("VgprGroup", side),
-            )
         if cluster and geometry.reloads_whole_set(theta, operand):
-            resident_tiles = geometry.product(
-                extent
-                for _name, extent in theta.geometry(operand).varying
-            )
-            unit = geometry.prefetch_unit_tiles(theta, operand)
-            if resident_tiles % unit:
-                raise RuntimeError(
-                    "%s's %d resident tiles do not divide into %d-tile "
-                    "prefetch units" % (side, resident_tiles, unit))
+            required = max(required, geometry._ring_period(theta, operand))
+        elif cluster and not geometry.vgpr_ring_carries(
+                theta, operand, group, buffers):
+            # A closed streaming ring must retain its logical fan.  Storage regions are already
+            # flattened into the offset and do not participate in this depth requirement.
             required = max(
                 required,
-                resident_tiles // unit * value("VgprGroup", side),
+                geometry.group_ring_size(theta, operand, group)
+                * value("VgprGroup", side),
             )
         if allocated < required:
             raise RuntimeError(

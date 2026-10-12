@@ -4,8 +4,10 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from functools import cached_property
+import heapq
 import itertools
 
 from . import traversal as geometry
@@ -60,6 +62,7 @@ from .loopir.functional import (
     _hoist_region,
     _repeat_steady,
     _rewrite_region,
+    _schedule_runs,
     _unroll_region,
     _unroll_runs,
 )
@@ -67,6 +70,7 @@ from .schedule import (
     Schedule,
     _read_placement,
     _readahead_shift,
+    _splits_refill,
     build_S,
     copy_first_operands,
     loads_in_place,
@@ -199,7 +203,7 @@ class ThetaTargetProfile:
                 prefetch_steps=int(prefetch_steps),
                 groups=(label,),
                 plans=self.schedule,
-                repeat_axes=tuple(issue_axes),
+                split_axes=tuple(issue_axes),
             )
             expression = slots[0][1]
             width = (
@@ -211,6 +215,7 @@ class ThetaTargetProfile:
                 descriptor,
                 label,
                 width,
+                issue_axes,
             )
             positions = (
                 geometry.ring_positions(
@@ -218,6 +223,7 @@ class ThetaTargetProfile:
                     descriptor,
                     label,
                     width,
+                    issue_axes,
                 )
                 if carries else 0
             )
@@ -250,10 +256,9 @@ class ThetaTargetProfile:
             slot = 0
         if carries:
             phase = int(copy_phase or 0)
-            direction = -1 if issue_axes else 1
             slot = (
                 slot
-                + direction * phase * positions
+                + phase * positions
             ) % width
         result = group, slot, width
         self._register_locations[key] = result
@@ -475,6 +480,15 @@ class _Decoder:
         self.theta = theta
         self.depths, _ = build_S(theta)
         self.schedule = Schedule(theta, self.depths)
+        self._needs_refill_schedule = any(
+            _splits_refill(theta, operand, group, self.depths)
+            for operand in theta.operands
+            if operand.trajectory.fragment_fill is not None
+            and operand.trajectory.fragment_fill.coverage is None
+            and not operand.is_output
+            and self.schedule.want(operand) > 0
+            for group in operand.fragment.groups()
+        )
         requested_steps = self.schedule.read_ahead_steps
         self._register_inplace = {
             (operand.name, group)
@@ -950,53 +964,9 @@ class _Decoder:
         )
         return self._compute_cache
 
-    def _repeat_read_axes(self, descriptor):
-        if descriptor.fragment is None \
-                or descriptor.name.startswith("MXS") \
-                or geometry.reloads_whole_set(self.theta, descriptor):
-            return ()
-        want = self.schedule.want(descriptor)
-        shallow = any(
-            geometry.group_ring_depth(
-                self.theta, descriptor, group, self.depths
-            ) < geometry.group_reuse_floor(
-                self.theta,
-                descriptor,
-                group,
-                charge_lead=False,
-                lead=0,
-            )
-            or (
-                descriptor.fragment.va_time_shares_regions
-                and geometry.group_ring_depth(
-                    self.theta, descriptor, group, self.depths
-                ) < geometry.group_live_peak(
-                    self.theta,
-                    descriptor,
-                    group,
-                    off=geometry.prefetch_distance_for(
-                        self.theta,
-                        descriptor,
-                        self.schedule.steps(descriptor, group, want),
-                    ),
-                )
-            )
-            for group in descriptor.fragment.groups()
-        )
-        if not shallow or self.read_level[descriptor.name] not in {
-            axis.name for axis in self.inner_levels
-        }:
-            return ()
-        varying = set(geometry.varying_axes(self.theta, descriptor))
-        level = next(
-            index for index, axis in enumerate(self.inner_levels)
-            if axis.name == self.read_level[descriptor.name]
-        )
-        return tuple(
-            axis.name for axis in self.inner_levels[:level]
-            if axis.name not in varying
-            and int(axis.extent.constant_value) > 1
-        )
+    def _refill_split_axes(self, descriptor):
+        """Issue-axis duplication is not a refill schedule."""
+        return ()
 
     def _read_issue_priority_descriptor(self, descriptor):
         groups = tuple(descriptor.fragment.groups()) or ("g0",)
@@ -1011,7 +981,7 @@ class _Decoder:
             depth,
             self.depths,
             plans=self.schedule,
-            repeat_axes=self._repeat_read_axes(descriptor),
+            split_axes=self._refill_split_axes(descriptor),
         )
         coverage = geometry.read_coverage(self.theta, descriptor)
         varying = set(geometry.varying_axes(self.theta, descriptor))
@@ -1046,11 +1016,11 @@ class _Decoder:
 
     def _read_guard_axes(self, descriptor, depth):
         varying = set(geometry.varying_axes(self.theta, descriptor))
-        repeated = set(self._repeat_read_axes(descriptor))
+        split = set(self._refill_split_axes(descriptor))
         values = [
             (axis.name, 0)
             for axis in self.inner_levels[:depth]
-            if axis.name not in varying and axis.name not in repeated
+            if axis.name not in varying and axis.name not in split
         ]
         coverage = geometry.read_coverage(self.theta, descriptor)
         values.extend(
@@ -1068,10 +1038,7 @@ class _Decoder:
             body = (Cond(expression == int(values.get(name, 0)), body, ()),)
         return body[0]
 
-    def _reload_cycle(self, descriptor, groups, span):
-        if geometry.reloads_whole_set(self.theta, descriptor) \
-                or descriptor.name.startswith("MXS"):
-            return max(1, int(span))
+    def _reload_cycle(self, descriptor, groups):
         selected = tuple(groups or descriptor.fragment.groups())
         width = min(
             geometry.group_ring_depth(
@@ -1079,22 +1046,8 @@ class _Decoder:
             )
             for group in selected
         )
-        time_shares_regions = any(
-            geometry.regions_lead_the_ring(self.theta, descriptor, group)
-            and descriptor.fragment.va_time_shares_regions
-            for group in selected
-        )
-        unit_positions = (
-            geometry.group_prefetch_unit_positions(self.theta, descriptor)
-            if time_shares_regions
-            or geometry.vgpr_group_axis(self.theta, descriptor) is not None
-            else geometry.rotation_unit_positions(self.theta, descriptor)
-        )
-        return max(
-            1,
-            geometry.group_register_positions(self.theta, descriptor),
-            width * unit_positions,
-        )
+        unit = geometry.group_register_positions(self.theta, descriptor)
+        return max(1, width * unit)
 
     def _read_anchor(self, descriptor, groups, depth, invariant):
         if not invariant:
@@ -1122,9 +1075,9 @@ class _Decoder:
         advance, span, position, _replacements = self._read_retiming(operation)
         guard_axes = self._read_guard_axes(descriptor, depth)
         invariant = {name for name, step in guard_axes if step == 0}
-        reload_cycle = self._reload_cycle(descriptor, groups, span)
+        reload_cycle = self._reload_cycle(descriptor, groups)
         remainder = advance % reload_cycle if advance else 0
-        late = {
+        late_values = {
             name: max(0, int(self.axis_by_name[name].extent.constant_value) - 1)
             for name in invariant
         }
@@ -1143,7 +1096,7 @@ class _Decoder:
             )
             guard_cycle = (
                 max(reload_cycle, span)
-                if carries and not self._repeat_read_axes(descriptor)
+                if carries and not self._refill_split_axes(descriptor)
                 else reload_cycle
             )
             nowrap = position % guard_cycle < reload_cycle - remainder
@@ -1151,12 +1104,12 @@ class _Decoder:
                 Cond(
                     nowrap,
                     (self._guard_read(operation, guard_axes, {}),),
-                    (self._guard_read(operation, guard_axes, late),),
+                    (self._guard_read(operation, guard_axes, late_values),),
                 ),
                 True,
             )
         if advance >= reload_cycle and not remainder and invariant:
-            anchor = late
+            anchor = late_values
         else:
             anchor = self._read_anchor(
                 descriptor, groups, advance, invariant
@@ -1305,7 +1258,7 @@ class _Decoder:
             self.depths,
             groups=groups,
             plans=self.schedule,
-            repeat_axes=self._repeat_read_axes(descriptor),
+            split_axes=self._refill_split_axes(descriptor),
         )
         coverage = geometry.read_coverage(self.theta, descriptor)
         position = Expr.constant(0)
@@ -1823,6 +1776,200 @@ class _Decoder:
             ),
         )
 
+    def _tile_coordinate(self, tile):
+        environment = {
+            key: 0
+            for axis in self.axes
+            for key in (axis, axis.name)
+        }
+        environment.update({param: 0 for param in self.params})
+        environment.update({param.name: 0 for param in self.params})
+        return {
+            axis.name: int(index.evaluate(environment))
+            for axis, index in zip(tile.operand.axes, tile.indices)
+        }
+
+    def _register_occurrence(
+        self,
+        tile,
+        *,
+        placement_environment=None,
+        prefetch_steps=0,
+        groups=None,
+    ):
+        descriptor = self.theta.op(tile.operand.name)
+        coordinate = self._tile_coordinate(tile)
+        labels = tuple(descriptor.fragment.groups()) or ("g0",)
+        group_number = geometry.group_index(self.theta, descriptor, coordinate)
+        group_number = min(max(0, int(group_number)), len(labels) - 1)
+        group = labels[group_number]
+        buffers = geometry.group_ring_depth(
+            self.theta, descriptor, group, self.depths)
+        if prefetch_steps:
+            slots, _source = _read_placement(
+                self.theta,
+                descriptor,
+                self.depths,
+                prefetch_steps=prefetch_steps,
+                groups=groups or (group,),
+                plans=self.schedule,
+            )
+            expression = slots[0][1]
+            bindings = dict(placement_environment or {})
+            for axis in expression.free_axes():
+                value = bindings.get(axis, bindings.get(axis.name, 0))
+                bindings[axis] = value
+                bindings[axis.name] = value
+            slot = expression.evaluate(bindings)
+        else:
+            slot = geometry.ring_slot(
+                self.theta, descriptor, group, buffers).evaluate(coordinate)
+        unit = geometry.unit_tile_index(self.theta, descriptor, coordinate)
+
+        varying = geometry.varying_axes(self.theta, descriptor)
+        strides, span = geometry.axis_strides(
+            self.theta, varying, geometry.transfer_extents(self.theta, descriptor))
+        position = sum(int(strides[name]) * int(coordinate.get(name, 0))
+                       for name in strides)
+        outer = self.theta.summation_chunk_name("iter")
+        ordinal = int(coordinate.get(outer, 0)) * max(1, int(span)) + position
+        value = (
+            int(coordinate.get(outer, 0)),
+            tuple((name, int(coordinate.get(name, 0))) for name in varying),
+        )
+        return (descriptor.name, group, int(slot), int(unit)), value, ordinal
+
+    def _schedule_refill_run(self, operations):
+        """Stable occurrence schedule satisfying physical-register RAW/WAR edges."""
+        units = tuple(operations)
+        if not self._needs_refill_schedule:
+            return units
+
+        def operation_of(node):
+            environment = {}
+            while isinstance(node, Let) and len(node.body) == 1:
+                value = node.value.constant_value
+                if value is not None:
+                    environment[node.axis] = value
+                    environment[node.axis.name] = value
+                node = node.body[0]
+            return node, environment
+
+        unpacked = tuple(operation_of(unit) for unit in units)
+        operations = tuple(item[0] for item in unpacked)
+        environments = tuple(item[1] for item in unpacked)
+        for operation in operations:
+            if isinstance(operation, Movement) and operation.op is DS_LOAD:
+                descriptor = self.operation_operand.get(operation._identity)
+                hop = descriptor.trajectory.shared_read if descriptor is not None else None
+                if hop is not None and hop.coverage is not None:
+                    return units
+
+        edges = [set() for _operation in operations]
+        users = defaultdict(lambda: defaultdict(list))
+        ordinals = defaultdict(dict)
+        reads = []
+        resident = {}
+        previous_output = {}
+
+        def add_edge(source, target):
+            if source != target:
+                edges[source].add(target)
+
+        for index, operation in enumerate(operations):
+            if isinstance(operation, Compute):
+                for tile in operation.reads:
+                    descriptor = self.theta.op(tile.operand.name)
+                    if descriptor.fragment is None:
+                        continue
+                    key, value, ordinal = self._register_occurrence(tile)
+                    users[key][value].append(index)
+                    ordinals[key][value] = ordinal
+                    resident.setdefault(key, value)
+                output = operation.writes[0] if operation.writes else None
+                if output is not None:
+                    coordinate = self._tile_coordinate(output)
+                    output_key = tuple(sorted(coordinate.items()))
+                    if output_key in previous_output:
+                        add_edge(previous_output[output_key], index)
+                    previous_output[output_key] = index
+            elif isinstance(operation, Movement) and operation.op is DS_LOAD:
+                definitions = []
+                for transfer in operation.transfers:
+                    descriptor = self.operation_operand[operation._identity]
+                    groups = self.operation_groups.get(operation._identity)
+                    wanted = self.schedule.want(descriptor)
+                    depth = min(
+                        self.schedule.steps(descriptor, group, wanted)
+                        for group in (groups or descriptor.fragment.groups())
+                    )
+                    key, value, ordinal = self._register_occurrence(
+                        transfer.local_tile,
+                        placement_environment=environments[index],
+                        prefetch_steps=depth,
+                        groups=groups,
+                    )
+                    definitions.append((key, value, ordinal, resident.get(key)))
+                    ordinals[key][value] = ordinal
+                    resident[key] = value
+                reads.append((index, tuple(definitions)))
+
+        reads_by_key = defaultdict(list)
+        for read_index, definitions in reads:
+            for key, value, ordinal, old_value in definitions:
+                reads_by_key[key].append((read_index, value))
+                for user in users[key].get(value, ()):
+                    add_edge(read_index, user)
+                if old_value is not None and old_value != value:
+                    for user in users[key].get(old_value, ()):
+                        add_edge(user, read_index)
+                candidates = [
+                    (candidate_ordinal, candidate)
+                    for candidate, candidate_ordinal in ordinals[key].items()
+                    if candidate != value and users[key].get(candidate)
+                ]
+                if candidates:
+                    lower = [item for item in candidates if item[0] < ordinal]
+                    _previous_ordinal, previous = max(
+                        lower or candidates, key=lambda item: item[0])
+                    for user in users[key].get(previous, ()):
+                        add_edge(user, read_index)
+
+        for key_reads in reads_by_key.values():
+            for (left, _left_value), (right, _right_value) in zip(
+                    key_reads, key_reads[1:]):
+                add_edge(left, right)
+
+        indegree = [0] * len(operations)
+        for source in range(len(operations)):
+            for target in edges[source]:
+                indegree[target] += 1
+        ready = []
+        for index, degree in enumerate(indegree):
+            if degree == 0:
+                priority = 0 if isinstance(operations[index], Movement) else 1
+                heapq.heappush(ready, (priority, index))
+        ordered = []
+        while ready:
+            _priority, index = heapq.heappop(ready)
+            ordered.append(index)
+            for target in sorted(edges[index]):
+                indegree[target] -= 1
+                if indegree[target] == 0:
+                    priority = 0 if isinstance(operations[target], Movement) else 1
+                    heapq.heappush(ready, (priority, target))
+        if len(ordered) != len(operations):
+            blocked = [index for index, degree in enumerate(indegree) if degree]
+            raise RuntimeError(
+                "LoopModel refill scheduling is cyclic under loop order %s; "
+                "blocked occurrences %s"
+                % (
+                    ",".join(axis.name for axis in self.theta.inner_axes()),
+                    blocked[:8],
+                )
+            )
+        return tuple(units[index] for index in ordered)
+
     def build(self, *, verify=True):
         if not isinstance(verify, bool):
             raise TypeError("decode verification flag must be a bool")
@@ -1914,11 +2061,12 @@ class _Decoder:
             and operation.op is DS_LOAD
             and self._operation_needs_defer(operation)
         )
-        program = _defer_paths(
-            program,
-            regions=(STEADY, DRAIN),
-            operations=in_place_reads,
-        )
+        if not self._needs_refill_schedule:
+            program = _defer_paths(
+                program,
+                regions=(STEADY, DRAIN),
+                operations=in_place_reads,
+            )
         program = _defer_loops(
             program,
             regions=STEADY,
@@ -1950,6 +2098,19 @@ class _Decoder:
             steady_copies,
         )
         program = self._unroll_half_plr_shape(program, steady_copies)
+        if self._needs_refill_schedule:
+            program = _schedule_runs(
+                program,
+                regions=(STEADY, DRAIN, SHORT),
+                selector=lambda operation: (
+                    isinstance(operation, Compute)
+                    or (
+                        isinstance(operation, Movement)
+                        and operation.op is DS_LOAD
+                    )
+                ),
+                schedule=self._schedule_refill_run,
+            )
         if not any(isinstance(node, Region) for node in walk(program)):
             program = program.with_body(
                 (Region(STEADY), *program.body),
@@ -1986,7 +2147,7 @@ class _Decoder:
                         Expr.axis_value(self.axis_by_name[name]),
                     ),
                 )
-                for name in self._repeat_read_axes(descriptor)
+                for name in self._refill_split_axes(descriptor)
             )
         read_signatures = {}
         for operation in final_reads:
