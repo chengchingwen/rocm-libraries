@@ -208,6 +208,8 @@ bool buildGfx1250Pipeline(ModulePassManager& mpm, StinkyAsmModule& module, const
                 // Same option as InsertClusterBarrierPass below (see
                 // cluster-barrier.md).
                 passFeatureConfig.dagFeatures.clusterBarrier = moduleOptions.ClusterBarrier;
+                passFeatureConfig.dagFeatures.girFramePipeline =
+                    moduleOptions.EnableGirFramePipeline;
                 passFeatureConfig.dagFeatures.clusterBarrierTensorLoadDelayCycles =
                     moduleOptions.EnableGirFramePipeline && moduleOptions.ClusterBarrier ? 200 : 0;
                 passFeatureConfig.dagFeatures.lockDsReadOrder = moduleOptions.LockDsReadOrder;

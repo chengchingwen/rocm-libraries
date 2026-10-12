@@ -911,6 +911,20 @@ class CDNA5ReadyQueue : public ReadyQueue {
     // (dagFeatures.waitAluHoldStrictCount). A filler it would put an s_wait_alu before is held, so
     // the DAG and the pass agree.
     std::unique_ptr<WaitAluTracker> waitAlu_;
+    // GIR inserts synchronization after scheduling, so its DS candidates have no physical
+    // barrier window to hold against. Defer a wait-producing DS candidate to the ordinary
+    // fallback; no edge or fixed placement is introduced.
+    bool girDsWouldWaitAlu(const DAGNode* node) const {
+        if (node == nullptr || !waitAlu_ ||
+            !getPassContext().getPassFeatureConfig().dagFeatures.girFramePipeline)
+            return false;
+        const WaitAluNeed need = waitAlu_->query(*node->inst);
+        const bool wouldWait = need.vaVdst >= 0 || need.vmVsrc >= 0;
+        PASS_DEBUG(if (wouldWait) std::cerr << "[CDNA5 GIR DS wait-alu] hold dagId=" << node->id
+                                            << " va_vdst=" << need.vaVdst
+                                            << " vm_vsrc=" << need.vmVsrc << "\n");
+        return wouldWait;
+    }
     // A filler InsertWaitAlu would put a strict s_wait_alu before (count <=
     // waitAluHoldStrictCount; in multi-stage loops any vm_vsrc count) is held until the two
     // windows before the next s_barrier_wait, where the wave stalls anyway. Not held when it
@@ -1711,8 +1725,8 @@ bool CDNA5ReadyQueue::findSmallestPickableNonWmma(DAGNode* pickedDS, DAGNode** o
             : 0;
     const bool warGateRelief = dsIssuedThisRegion_ < expectedDs;
     const bool warTooClose = !warGateRelief && pipeOpGateBlocks(pickedDS);
-    const bool dsBaseOk =
-        pickedDS && dsBudgetAllowsIssue && !warTooClose && !destOverlapsActiveWmmaSrc(pickedDS);
+    const bool dsBaseOk = pickedDS && dsBudgetAllowsIssue && !warTooClose &&
+                          !destOverlapsActiveWmmaSrc(pickedDS) && !girDsWouldWaitAlu(pickedDS);
     int dsThrottleWait = 0;
     bool dsProtect = false;
     if (dsBaseOk) {
@@ -2434,7 +2448,9 @@ DAGNode* CDNA5ReadyQueue::pickOne() {
     // point, no side effects here.
     decidePromote();
 
-    // Pre-compute the best DS read by dsReadPriority once for all phases.
+    // Pre-compute the best DS read by dsReadPriority once for all phases. GIR may defer this
+    // candidate when issuing it would require wait_alu, but must not leapfrog to a later read:
+    // changing FIFO issue order changes the dscnt ranks derived after scheduling.
     DAGNode* pickedDS = nullptr;
     for (DAGNode* n : localReadQueue) {
         if (!pickedDS || n->dsReadPriority < pickedDS->dsReadPriority) pickedDS = n;
