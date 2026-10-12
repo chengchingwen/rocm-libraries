@@ -204,13 +204,14 @@ def calculate(kernel):
     if va < 1:
       raise RuntimeError("%s=%d must be positive" % (va_name, va))
 
-    values[side] = (max(0, plr), max(0, clr), vg, int(va))
+    values[side] = (max(0, plr), max(0, clr), vg, int(va), explicit_va)
 
-  for side, (plr, clr, vg, va) in values.items():
+  for side, (plr, clr, vg, va, explicit_va) in values.items():
     kernel["PrefetchLocalRead" + side] = plr
     kernel["ClusterLocalRead" + side] = clr
     kernel["VgprGroup" + side] = vg
     kernel["VgprAlloc" + side] = va
+    kernel["VgprAllocExplicit" + side] = explicit_va
   kernel["PrefetchLocalRead"] = max(value[0] for value in values.values())
   kernel["ClusterLocalRead"] = min(value[1] for value in values.values())
 
