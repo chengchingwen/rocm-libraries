@@ -237,16 +237,38 @@ def test_clr1_without_stated_va_uses_calculated_rotation_depth():
 
 def test_nkm_clr1_counts_the_split_half_as_an_outer_loop():
     # WIO6 = NKM, so A's prefetch unit is M.  TDMSplit MT halves it to 4 tiles,
-    # and the other half is one of the loops outside the unit, beside K.  CLR
-    # on with no stated VA allocates the complete resident set in prefetch-unit
-    # buffers.
+    # and moves that region digit into the ring.  CLR keeps the original
+    # eight-tile resident unit by pulling the next enumerator digit in-slot.
     kernel = _nmk_kernel()
     kernel.update(WmmaInnerOrder=6, TDMSplitA=1, VgprAllocA=-1, VgprGroupA=-1,
                   ClusterLocalReadA=1, PrefetchLocalReadA=1)
 
     per, va = _valu_size(kernel, "A", 1)
 
-    assert (per, va) == (64, 4)
+    assert (per, va) == (128, 2)
+    assert per * va == 256
+
+
+def test_nmk_clr_split_keeps_k_sized_unit_instead_of_the_whole_rotation_set():
+    """MT128x128 MIWT8x2 has A PU=K=2; M is counted by VA, not inside every slot."""
+    kernel = _nmk_kernel()
+    kernel.update(
+        MIWaveTileB=2,
+        MIWaveTile=[8, 2],
+        MatrixInstruction=[16, 16, 128, 1, 1, 8, 2, 1, 4],
+        TDMSplitA=1,
+        TDMSplitB=1,
+        VgprAllocA=-1,
+        VgprAllocB=-1,
+        VgprGroupA=-1,
+        VgprGroupB=-1,
+        ClusterLocalReadA=1,
+        ClusterLocalReadB=1,
+    )
+
+    per, va = _valu_size(kernel, "A", 1)
+
+    assert (per, va) == (32, 8)
     assert per * va == 256
 
 
