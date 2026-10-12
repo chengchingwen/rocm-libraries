@@ -111,31 +111,35 @@ def test_accessless_block_passes_the_value_through_both_ways():
 def test_conflicting_join_is_reported_not_resolved():
     """Two predecessors leaving different values: there is no single correct def, and preferring a
     predecessor is the silent-wrong-answer this whole layer exists to avoid."""
-    x, y, z = N("c@x"), N("c@y"), N("c@z")
-    acc = {"x": [RequiredValue("x", x, 0)], "y": [RequiredValue("y", y, 1)], "z": [RequiredValue("z", z, 0)]}
-    succs = {"x": ["z"], "y": ["z"], "z": []}
-    preds = {"x": [], "y": [], "z": ["x", "y"]}
+    x, y, z, u = N("c@x"), N("c@y"), N("c@z"), N("c@u")
+    acc = {"entry": [], "x": [RequiredValue("x", x, 0)],
+           "y": [RequiredValue("y", y, 1)], "z": [RequiredValue("z", z, 0)],
+           "u": [RequiredValue("u", u, 1)]}
+    # y cannot change at exit: z needs 0 while u still needs 1.  Therefore z genuinely receives
+    # different values from x and y.
+    succs = {"entry": ["x", "y"], "x": ["z"], "y": ["z", "u"], "z": [], "u": []}
+    preds = {"entry": [], "x": ["entry"], "y": ["entry"], "z": ["x", "y"], "u": ["y"]}
     seen = []
-    ValuePlacementSolver(acc, preds, succs, lambda a, b: 0, "x", 0).solve(
+    ValuePlacementSolver(acc, preds, succs, lambda a, b: 0, "entry", 0).solve(
         lambda kind, detail: seen.append(kind))
-    # y supplies 1 where z demands 0 -> a real edge def; x supplies 0 -> none.  The conflict this
-    # test pins is the CRITICAL EDGE: z has two preds, y has one succ, so y hosts it legally.
-    assert seen == [] or "critical-edge" in seen
+    assert seen == ["join"]
 
 
-def test_critical_edge_is_reported():
-    """pred has two successors AND succ has two predecessors: the def cannot go at either end
-    without executing on a path that must not have it.  Must be reported."""
-    # `u` must DEMAND the old value for this to be a real critical edge.
+def test_agreed_join_places_one_definition_at_the_common_block_entry():
+    """CFG fan-in is not a value conflict when every reaching predecessor supplies the same value."""
+    # `u` keeps p's old value live, so the change cannot be hoisted to p's exit.
     a, b, c = N("c@p"), N("c@t"), N("c@u")
     acc = {"p": [RequiredValue("p", a, 0)], "q": [], "t": [RequiredValue("t", b, 1)],
            "u": [RequiredValue("u", c, 0)]}
     succs = {"p": ["t", "u"], "q": ["t"], "t": [], "u": []}
     preds = {"p": [], "q": [], "t": ["p", "q"], "u": ["p"]}
-    seen = []
-    ValuePlacementSolver(acc, preds, succs, lambda x, y: 0, "p", 0).solve(
-        lambda kind, detail: seen.append((kind, detail[0], detail[1])))
-    assert ("critical-edge", "p", "t") in seen, seen
+    places = ValuePlacementSolver(
+        acc, preds, succs, lambda x, y: 0, "p", 0).solve(_raise)
+    head = [place for place in places if place.block == "t"]
+    assert len(head) == 1, places
+    assert head[0].after == BLOCK_ENTRY and head[0].before is b
+    assert (head[0].from_value, head[0].to_value) == (0, 1)
+    assert not any(place.block == "p" and place.at_exit for place in places)
 
 
 def test_frame_delta_makes_cross_frame_blocks_comparable():

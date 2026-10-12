@@ -331,12 +331,25 @@ def check_refill_splits_consumers(prog, phase="steady", acts=None) -> list:
 
 
 def _read_slot_pattern(prog, label) -> dict:
-    """The register slots each operand's reads write in this block, IN ISSUE ORDER."""
+    """``{operand/group: {(tile, k, region): slot}}`` for this block's reads."""
     out = {}
     for act in plan_block(prog, label):
         if act.kind == "read":
-            out.setdefault((act.at.get("tc"), act.at.get("group")), []).append(act.at["reg_buf"])
-    return {key: tuple(seq) for key, seq in out.items()}
+            at = act.at
+            key = (at.get("tc"), at.get("group"))
+            fills = at.get("fills") or ((
+                at.get("tile"),
+                at.get("region", 0),
+                at.get("tile_flat", at.get("tile")),
+                at.get("k"),
+                at.get("k_flat", at.get("k")),
+            ),)
+            for fill in fills:
+                # Absolute tile/k identify the logical value; region remains explicit because
+                # separately packed regions may project to the same within-region coordinates.
+                value = (fill[2], fill[4], fill[1])
+                out.setdefault(key, {})[value] = at["reg_buf"]
+    return out
 
 
 def check_drain_continues_rotation(prog, loop="steady") -> list:
@@ -355,9 +368,11 @@ def check_drain_continues_rotation(prog, loop="steady") -> list:
             continue
         got = _read_slot_pattern(prog, label)
         for key in sorted(set(want) & set(got), key=str):
-            if got[key] != want[key]:
-                wrong = {v: (got[key][v], want[key][v]) for v in sorted(set(want[key]) & set(got[key]), key=str)
-                         if got[key][v] != want[key][v]}
+            common = set(want[key]) & set(got[key])
+            wrong = {value: (got[key][value], want[key][value])
+                     for value in sorted(common, key=str)
+                     if got[key][value] != want[key][value]}
+            if wrong:
                 viol.append(
                     "%s DRAIN-RESTARTS-ROTATION  %s sends (tile,k,region)->slot %s, but resuming "
                     "the %d-copy chain after %s requires %s -- the drain replays a copy the loop "

@@ -580,3 +580,35 @@ def test_adapter_rejects_calculated_ring_smaller_than_required_depth():
     Registers.calculate(kernel)
     with pytest.raises(RuntimeError, match="VgprAllocB=1.*smaller.*rotation"):
         adapter.params_to_theta(kernel)
+
+
+def test_wio1_clr1_va1_holds_its_complete_two_tile_prefetch_unit():
+    from Tensile.Components.LoopModel import Order, Registers
+    from Tensile.LoopModel import adapter
+
+    kernel = _f8_split_register_kernel()
+    kernel.update(
+        MatrixInstruction=[16, 16, 128, 1, 1, 2, 2, 2, 2],
+        MIWaveTile=[2, 2],
+        MIWaveTileA=2,
+        MIWaveTileB=2,
+        DepthU=128,
+        LoopIters=1,
+        WmmaInnerOrder=1,
+        WmmaOuterOrder=0,
+        PrefetchLocalRead=2,
+        ClusterLocalRead=1,
+        ClusterLocalReadA=-1,
+        ClusterLocalReadB=-1,
+        VgprGroupA=-1,
+        VgprGroupB=-1,
+        VgprAllocA=-1,
+        VgprAllocB=-1,
+        TDMSplitA=0,
+        TDMSplitB=0,
+    )
+    Order.calculate(kernel)
+    Registers.calculate(kernel)
+
+    assert kernel["VgprAllocA"] == 1
+    adapter.params_to_theta(kernel)

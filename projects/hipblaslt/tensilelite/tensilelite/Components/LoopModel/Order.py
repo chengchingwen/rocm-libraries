@@ -80,25 +80,6 @@ def calculate(kernel):
   elif not 0 <= outer < len(_OUTER):
     raise ValueError("WmmaOuterOrder=%r must be 0..3" % outer)
 
-  if outer:
-    axis = _OUTER[outer]
-    split_axes = (_splitAxis(kernel, "A"), _splitAxis(kernel, "B"))
-    if axis not in split_axes:
-      raise RuntimeError(
-          "WmmaOuterOrder=%d hoists the %s split outermost, but "
-          "TDMSplitA=%s/TDMSplitB=%s do not split %s "
-          "(A splits %s, B splits %s)"
-          % (
-              outer,
-              axis,
-              kernel.get("TDMSplitA"),
-              kernel.get("TDMSplitB"),
-              axis,
-              split_axes[0],
-              split_axes[1],
-          )
-      )
-
   kernel["WmmaOuterOrder"] = outer
   kernel["LoopOrder"] = loopOrder(kernel.get("WmmaInnerOrder", 1), outer)
 
