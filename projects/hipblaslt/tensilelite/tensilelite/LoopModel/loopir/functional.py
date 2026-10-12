@@ -1123,9 +1123,12 @@ def _schedule_runs(
     *,
     regions,
     selector: Callable[[Movement | Compute], bool],
-    schedule: Callable[[tuple[Movement | Compute, ...]], tuple[Movement | Compute, ...]],
+    schedule: Callable[
+        [tuple[Movement | Compute, ...]],
+        tuple[Movement | Compute, ...] | None,
+    ],
 ) -> Program:
-    """Materialize selected finite operation runs and schedule their occurrences."""
+    """Materialize and schedule finite runs; ``None`` preserves an unchanged run."""
 
     if not callable(selector) or not callable(schedule):
         raise IRTypeError("_schedule_runs expects callable selector and schedule")
@@ -1205,7 +1208,12 @@ def _schedule_runs(
             except TransformRefused:
                 output.extend(body[index:stop])
             else:
-                output.extend(schedule(materialized))
+                scheduled = schedule(materialized)
+                output.extend(
+                    body[index:stop]
+                    if scheduled is None
+                    else scheduled
+                )
             index = stop
         return tuple(output)
 

@@ -645,12 +645,15 @@ def _validate_register_depths(theta, kernel):
             required = max(required, geometry._ring_period(theta, operand))
         elif cluster and not geometry.vgpr_ring_carries(
                 theta, operand, group, buffers):
-            # A closed streaming ring must retain its logical fan.  Storage regions are already
-            # flattened into the offset and do not participate in this depth requirement.
             required = max(
                 required,
-                geometry.group_ring_size(theta, operand, group)
-                * value("VgprGroup", side),
+                geometry.group_reuse_floor(
+                    theta,
+                    operand,
+                    group,
+                    charge_lead=False,
+                    lead=0,
+                ),
             )
         if allocated < required:
             raise RuntimeError(
