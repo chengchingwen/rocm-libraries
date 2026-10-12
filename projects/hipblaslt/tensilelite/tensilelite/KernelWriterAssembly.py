@@ -7319,6 +7319,24 @@ class KernelWriterAssembly(KernelWriter):
   # a array of pairs of (imod, vgprBase)'s
   # User must call tailLoopFreeVgpr(vgprBase, imod) to release the resources.
   ##############################################################################
+  def tailLoopValuRegs(self, kernel, tc):
+    """Registers the tail loop addresses off `vgprValu{tc}_X0_I0`: one
+    MatrixInstK slab of the macro tile per buffer it unrolls over."""
+    if not kernel["EnableMatrixInstruction"]:
+      return 0
+    elements = kernel["MIWaveTile" + tc] * kernel["MIInputPerThread" + tc]
+    bpe = kernel["ProblemType"]["DataType" + tc].numBytes()
+    slab = int(ceil(elements * bpe / self.states.bpr))
+    buffers = 1
+    if (kernel["DirectToVgprA"] or kernel["DirectToVgprB"]
+        or kernel["DirectToLdsA"] or kernel["DirectToLdsB"]):
+      buffers = kernel["DepthU"] // (kernel["MatrixInstK"] * kernel["LocalSplitU"])
+    elif kernel["ProblemType"]["Sparse"] and kernel["DirectToVgprSparseMetadata"]:
+      buffers = kernel["LoopIters"]
+    buffers = min(max(1, buffers), max(1, operandNumVgprBuffer(self, tc)))
+    state = {"A": self.states.a, "B": self.states.b}[tc]
+    return (buffers - 1) * int(state.numVgprValuPerBlock or 0) + slab
+
   def tailLoopAllocValuVgpr(self, kernel, tensorParametersA, tensorParametersB, tensorParametersM):
     imodA            = Module("tailLoopAllocValuAVgpr")
     vgprBaseA        = -1
@@ -7330,7 +7348,7 @@ class KernelWriterAssembly(KernelWriter):
     # 1024 vgpr: avoid cross pool usage
     valuVgprAlignment = 8 if self.states.asmCaps["HasVgprMSB"] else 2
     if self.states.a.numVgprValu > 0 and not kernel["DirectToVgprA"]:
-      numValuA = self.states.a.numVgprValu
+      numValuA = self.tailLoopValuRegs(kernel, "A") or self.states.a.numVgprValu
       if tensorParametersA["bpe"] < 4 and not kernel["UnrollMajorLDSA"] and not kernel["enableLDSTrA"]:
         if self.states.lrvwTileA > 1:
           numVgprValuPackA = ceil(kernel["VectorWidthA"] * tensorParametersA["bpe"] / self.states.bpr) * kernel["MIWaveTileA"] // kernel["VectorWidthA"] * kernel["InnerUnroll"] * operandNumVgprBuffer(self, "A") * kernel["MIInputPerThreadA"]
@@ -7354,7 +7372,7 @@ class KernelWriterAssembly(KernelWriter):
     numValuB         = 0
     numVgprValuPackB = 0
     if self.states.b.numVgprValu > 0 and not kernel["DirectToVgprB"]:
-      numValuB = self.states.b.numVgprValu
+      numValuB = self.tailLoopValuRegs(kernel, "B") or self.states.b.numVgprValu
       if tensorParametersB["bpe"] < 4 and not kernel["UnrollMajorLDSB"] and not kernel["enableLDSTrB"]:
         if self.states.lrvwTileB > 1:
           numVgprValuPackB = ceil(kernel["VectorWidthB"] * tensorParametersB["bpe"] / self.states.bpr) * kernel["MIWaveTileB"] // kernel["VectorWidthB"] * kernel["InnerUnroll"] * operandNumVgprBuffer(self, "B") * kernel["MIInputPerThreadB"]

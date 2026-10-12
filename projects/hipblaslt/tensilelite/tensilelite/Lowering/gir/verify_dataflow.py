@@ -367,6 +367,96 @@ def check_drain_continues_rotation(prog, loop="steady") -> list:
     return viol
 
 
+def _read_values(at) -> set:
+    """Every (tile, k) a read leaves in its register, absorbed axes included."""
+    fills = at.get("fills") or ()
+    if fills:
+        return {(fill[2], fill[4]) for fill in fills}
+    return {(at.get("tile_flat", at["tile"]), at.get("k_flat", at["k"]))}
+
+
+def check_unit_index_fits_its_buffer(prog) -> list:
+    """A slot's registers must hold every unit indexed into it.
+
+    The address is `slot_base + unit * frag`, so a unit span wider than the distance between two
+    slot bases runs into the next slot -- and, at the last slot, past the allocation, where the
+    fold lands it on slot 0.  Nothing downstream can tell that apart from a legitimate address.
+    """
+    layout = prog.meta.get("register_layout") or {}
+    alloc = prog.meta.get("valu_alloc") or {}
+    span, frag = {}, {}
+    for act in (a for phase in prog.blocks for a in plan_block(prog, phase)):
+        at = act.at
+        if act.kind != "read" or at["tc"] not in layout:
+            continue
+        units = tuple(at.get("unit_indexes") or (at.get("unit_index", 0),))
+        size = int(at.get("size_regs") or 0)
+        if not size:
+            continue
+        frag[at["tc"]] = size
+        span[at["tc"]] = max(span.get(at["tc"], 0), (max(units) + 1) * size)
+    viol = []
+    for operand, reach in sorted(span.items()):
+        bases = sorted(layout[operand]["slots"].values())
+        stride = min((b - a for a, b in zip(bases, bases[1:])), default=reach)
+        per_buffer = int((alloc.get(operand) or {}).get("per_buffer", stride))
+        total = int((alloc.get(operand) or {}).get("total", layout[operand]["total"]))
+        if int(layout[operand]["total"]) > total:
+            viol.append(
+                "%s LAYOUT-EXCEEDS-ALLOCATION  the register layout uses %d registers per slot "
+                "and %d total, but the allocation has %d per buffer and %d total."
+                % (operand, stride, layout[operand]["total"], per_buffer, total))
+        if reach > stride:
+            viol.append(
+                "%s UNIT-OVERRUNS-BUFFER  slots are %d registers apart but its units reach %d "
+                "(%d units of %d) -- every slot above the first addresses into the next one."
+                % (operand, stride, reach, reach // frag[operand], frag[operand]))
+    return viol
+
+
+def _walk_values(prog, phases, held, viol=None):
+    """Thread register contents through `phases` in order, collecting stale reads into `viol`."""
+    for phase in phases:
+        for act in plan_block(prog, phase):
+            at = act.at
+            if act.kind == "read":
+                values = _read_values(at)
+                for unit in (at.get("unit_indexes") or (at.get("unit_index", 0),)):
+                    held[(at["tc"], at.get("group"), at["reg_buf"], unit)] = values
+            elif act.kind == "wmma" and viol is not None:
+                for op, group, buf, unit, index in at.get("srcs", ()) or ():
+                    have = held.get((op, group, buf, unit))
+                    want = (index, at.get("u"))
+                    if have is None or want in have:
+                        continue
+                    viol.append(
+                        "%s WMMA-READS-STALE-VALUE  %s slot %s unit %s holds %s, but the wmma at "
+                        "C[%s,%s] reads it as tile %s k %s -- a read overwrote the value before "
+                        "its last consumer."
+                        % (phase, op, buf, unit, sorted(have), at.get("idx0"), at.get("idx1"),
+                           index, at.get("u")))
+    return held
+
+
+def check_wmma_reads_its_own_value(prog, loop="steady") -> list:
+    """A wmma source must still hold the (tile, k) that wmma's coordinate names.
+
+    The loop body is the whole copy chain, walked twice so the second pass sees what the previous
+    iteration left: most of a body's consumers read values filled before it, and a ring too short
+    for them is only visible across that edge.  `check_refill_splits_consumers` questions one
+    block, and only reads carrying an `advance`, so neither case reaches it.
+    """
+    chain = loop_chain_blocks(prog, loop) or []
+    viol = []
+    if chain:
+        _walk_values(prog, chain, _walk_values(prog, chain, {}))
+        _walk_values(prog, chain, _walk_values(prog, chain, {}), viol)
+    for phase in prog.blocks:
+        if phase not in chain:
+            _walk_values(prog, [phase], {}, viol)
+    return viol
+
+
 def check_plan(prog, plans=None) -> list:
     """Every semantic check, as one list of violations.  Empty means the plan computes the GEMM its
     theta describes -- up to the address geometry, which `lds_geometry` owns.
@@ -382,7 +472,8 @@ def check_plan(prog, plans=None) -> list:
     out += check_region_coverage(prog, acts=steady)
     out += check_source_coverage(prog, acts=steady)
     out += check_register_dataflow(prog, plans=plans)
-    if prog.meta.get("vgpr_subdivided"):
-        out += check_refill_splits_consumers(prog, acts=steady)
+    out += check_refill_splits_consumers(prog, acts=steady)
+    out += check_unit_index_fits_its_buffer(prog)
+    out += check_wmma_reads_its_own_value(prog)
     out += check_drain_continues_rotation(prog)
     return out

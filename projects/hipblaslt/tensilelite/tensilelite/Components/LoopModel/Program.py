@@ -67,6 +67,14 @@ def loopModelGirProgram(writer, kernel):
             include_dependencies=include_dependencies,
             verify=False,
         )
+        prog.meta["valu_alloc"] = {
+            name: {
+                "per_buffer": int(alloc.perBuffer),
+                "total": int(alloc.total),
+            }
+            for name, alloc in (writer.states.loopModelValuAlloc or {}).items()
+            if int(alloc.total) > 0
+        }
         # PrefetchGL2 is a target-side GIR placement parameter, not LoopIR.
         prog.params[Gl2PrefetchRegions.PARAM] = kernel["PrefetchGL2"]
         run_pipeline(

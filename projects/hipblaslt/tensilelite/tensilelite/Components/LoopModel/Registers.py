@@ -192,11 +192,6 @@ def calculate(kernel):
                if positions % width == 0),
               positions,
           )
-        region_count = _geometry.product(
-            max(1, extents[name] // shape["span"][side].get(name, 1))
-            for name in rotation_regions
-        )
-        va *= max(1, region_count)
       else:
         resident_tiles = _geometry.product(
             extent for _name, extent in varying
@@ -237,7 +232,7 @@ def operandValuPuVaVg(writer, kernel, tc, bpe) -> ValuAlloc:
   theta, _depths = loopModelTheta(writer, kernel)
   pu = _geometry.prefetch_unit_tiles(theta, theta.op(str(tc)))
   vg = max(1, int(kernel["VgprGroup" + side]))
-  iptName = "MIInputPerThread" + (tc if str(tc).startswith("MXS") else side)
+  iptName = "MIInputPerThread" + (tc if bpe is None else side)
   ipt = kernel[iptName]
   puRegs = (int(pu * ipt // writer.states.bpr) if bpe is None
             else int(pu * ipt * bpe // writer.states.bpr))
@@ -246,13 +241,10 @@ def operandValuPuVaVg(writer, kernel, tc, bpe) -> ValuAlloc:
         "VgprGroup%s=%d does not divide %s's %d-register prefetch unit" % (side, vg, tc, puRegs))
   perBuffer = puRegs // vg
 
-  if str(tc).startswith("MXS"):
+  operand = theta.op(str(tc))
+  if bpe is None:
     required = _geometry.register_layout(theta, _depths)[str(tc)]["total"]
-    if required % perBuffer:
-      raise RuntimeError(
-          "%s's %d required VGPRs do not divide into %d-register buffers"
-          % (tc, required, perBuffer))
-    va = required // perBuffer
+    va = max(1, -(-required // max(1, perBuffer)))
   else:
     va = int(kernel["VgprAlloc" + side])
   if va < 1:
@@ -281,7 +273,7 @@ def operandNumVgprBuffer(writer, tc):
 
 
 def loopModelRegBuffers(writer, kernel):
-  """Per-operand ring depth -- that operand's VGPR buffer count, regions included.
+  """Per-operand ring depth -- that operand's stated VGPR buffer count.
 
   GIR and the `Valu*_X*` table read the same cached θ/S, so every slot GIR names has a matching
   symbol.  Register groups of one operand share the X axis, so that operand's depth is the max

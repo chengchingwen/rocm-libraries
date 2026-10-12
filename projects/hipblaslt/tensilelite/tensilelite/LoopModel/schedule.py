@@ -15,42 +15,26 @@ from .traversal import (CLOBBER, axis_strides,
                         prefetch_axis_name, prefetch_distance_for,
                         presence_axes, read_coverage, readahead_level,
                         register_reuse_verdict, reload_modes, reload_positions,
-                        reload_anchor, reloads_whole_set, requested_read_ahead, ring_slot,
+                        reloads_whole_set, requested_read_ahead, ring_slot,
                         transfer_extents)
 
-def _placeable_read_ahead(theta, operand, depths) -> int:
-    """The requested read-ahead, lowered until every group's refill has a legal position.
+def _splits_refill(theta, operand, group, depths) -> bool:
+    """Whether an invariant finite loop can split this short ring's refill."""
+    buffers = geometry.group_ring_depth(theta, operand, group, depths)
+    if buffers >= group_reuse_floor(
+            theta, operand, group, charge_lead=False, lead=0):
+        return False
+    level = geometry.operand_level(theta, operand, geometry.DS_LOAD)
+    order = list(theta.inner_axes())
+    at = next((i for i, axis in enumerate(order) if axis.name == level), len(order))
+    varying = set(geometry.varying_axes(theta, operand))
+    return any(axis.name not in varying and int(axis.extent.constant_value) > 1
+               for axis in order[:at])
 
-    `reload_anchor` returns None when no position follows the last reader of the value the refill
-    overwrites.  The emitter read that as "no constraint" and placed the refill anywhere -- which
-    put it BETWEEN two consumers of one generation, so the second consumer read the next one and
-    the kernel computed wrong answers.  The honest reading is that this DEPTH cannot be read
-    ahead, so it is lowered until it can; 0 always can.
-    """
-    want = requested_read_ahead(theta, operand, depths)
-    if not want or operand.fragment is None:
-        return want
-    while want > 0:
-        def legal(group):
-            distance = prefetch_distance_for(theta, operand, want, (group,))
-            if not distance:
-                return True
-            buffers = geometry.group_ring_depth(theta, operand, group, depths)
-            anchor = reload_anchor(theta, operand, group, buffers, distance)
-            if operand.fragment.va_includes_regions \
-                    and max(1, int(depths.get(operand.name, group))) >= want + 1:
-                return True
-            if reloads_whole_set(theta, operand) and geometry.vgpr_subdivided(theta, operand) \
-                    and buffers >= group_live_peak(
-                        theta, operand, group, off=distance):
-                return True
-            return anchor is not None and (
-                bool(anchor)
-                or not geometry.vgpr_ring_carries(theta, operand, group, buffers))
-        if all(legal(group) for group in operand.fragment.groups()):
-            return want
-        want -= 1
-    return 0
+
+def _placeable_read_ahead(theta, operand, depths) -> int:
+    """The requested lead; physical occupancy controls placement, not realization."""
+    return requested_read_ahead(theta, operand, depths)
 
 def copy_must_be_first(theta, operand, depths, plans=None):
     plans = Schedule(theta, depths) if plans is None else plans
@@ -114,23 +98,7 @@ def _prefetching_groups(operand):
 
 
 def prefetch_steps_for(theta, operand, group, requested, depths) -> int:
-    """Realized lead for one group; the request governs it, not the refill policy.
-
-    `inplace` says WHEN the refill happens, not whether there is a lead, so it does not zero one.
-    Neither does `regions_time_share`: regions landing on one slot is WHERE the refill goes, and a
-    refill placed after the region's last use overwrites nothing that is still live.
-    """
-    depth = max(1, int(depths.get(operand.name, group)))
-    if operand.fragment.va_includes_regions and depth >= max(0, int(requested)) + 1:
-        return min(max(0, int(requested)), requested_read_ahead(theta, operand, depths))
-    if reloads_whole_set(theta, operand) and geometry.vgpr_subdivided(theta, operand):
-        distance = prefetch_distance_for(theta, operand, requested, (group,))
-        buffers = geometry.group_ring_depth(theta, operand, group, depths)
-        if buffers >= group_live_peak(
-                theta, operand, group, off=distance):
-            return min(max(0, int(requested)), requested_read_ahead(theta, operand, depths))
-    if depth < group_reuse_floor(theta, operand, group):
-        return 0
+    """Realized lead; a busy destination defers the read without reducing PLR."""
     return min(max(0, int(requested)), requested_read_ahead(theta, operand, depths))
 
 
@@ -189,16 +157,13 @@ def prefetch_refusal(theta, operand, group, prefetch_steps, depths):
 
 def prefetch_refusals(theta, depths, prefetch_steps=None):
     """Every (op, group) whose PLR request the derivation could not honour."""
-    if prefetch_steps is None:
-        try:
-            prefetch_steps = Schedule(theta, depths).read_ahead_steps
-        except Exception:
-            return ()
     out = []
     for operand in theta.operands:
         if getattr(operand, "is_output", False):
             continue
-        operand_steps = min(prefetch_steps, requested_read_ahead(theta, operand, depths))
+        requested = requested_read_ahead(theta, operand, depths)
+        operand_steps = requested if prefetch_steps is None \
+            else min(max(0, int(prefetch_steps)), requested)
         for group in operand.fragment.groups():
             refusal = prefetch_refusal(theta, operand, group, operand_steps, depths)
             if refusal is not None:
@@ -216,10 +181,10 @@ def _readahead_depth(theta, operand, prefetch_steps, depths, groups=None, plans=
 
 
 def _readahead_shift(theta, operand, prefetch_steps, depths, groups=None, plans=None,
-                     repeat_axes=()):
+                     split_axes=()):
     """The load-order offset the read-ahead becomes, with the strides it was measured in."""
     extents = transfer_extents(theta, operand)
-    modes = set(reload_modes(theta, operand)) | set(repeat_axes or ())
+    modes = set(reload_modes(theta, operand)) | set(split_axes or ())
     strides, reload_span = axis_strides(theta, modes, extents)
     steps = _readahead_depth(theta, operand, prefetch_steps, depths, groups, plans)
     # `prefetch_distance_for` is the ONE answer -- re-testing the level against `strides` here is
@@ -232,15 +197,23 @@ def _readahead_shift(theta, operand, prefetch_steps, depths, groups=None, plans=
 
 def loads_in_place(theta, operand, prefetch_steps, depths, groups=None, plans=None) -> bool:
     """Does the read-ahead land back on the value it started from, so the refill is in place?"""
-    shift, _strides, reload_span, _extents = _readahead_shift(theta, operand, prefetch_steps,
-                                                              depths, groups, plans)
-    return bool(shift) and shift % max(1, reload_span) == 0
+    shift, _strides, _reload_span, _extents = _readahead_shift(
+        theta, operand, prefetch_steps, depths, groups, plans)
+    selected = tuple(groups or operand.fragment.groups())
+    unit = geometry.group_register_positions(theta, operand)
+    return bool(shift) and all(
+        shift % max(
+            1,
+            unit * geometry.group_ring_depth(theta, operand, group, depths),
+        ) == 0
+        for group in selected
+    )
 
 
 def _read_placement(theta, operand, depths, prefetch_steps=0, groups=None, plans=None,
-                    repeat_axes=()):
+                    split_axes=()):
     shift, strides, reload_span, extents = _readahead_shift(theta, operand, prefetch_steps,
-                                                            depths, groups, plans, repeat_axes)
+                                                            depths, groups, plans, split_axes)
     slots = []
     all_groups = operand.fragment.groups()
     selected = all_groups if groups is None else tuple(g for g in all_groups if g in groups)
@@ -443,7 +416,7 @@ class BufferDepths:
 
 
 def derive_S(theta) -> BufferDepths:
-    """Derive per-region VA onto fragment placements."""
+    """Derive each fragment group's VA depth."""
     for operand in theta.operands:
         if operand.is_output:
             continue

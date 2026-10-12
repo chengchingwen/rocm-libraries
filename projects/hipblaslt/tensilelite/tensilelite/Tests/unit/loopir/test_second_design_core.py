@@ -1538,7 +1538,7 @@ def test_physical_register_ring_projection_is_materialized_in_loopir(
     assert actual.blocks
 
 
-def test_repeat_read_occurrences_drive_the_three_copy_ring_projection():
+def test_three_copy_ring_projection_does_not_repeat_reads():
     from Tensile.LoopModel import traversal
     from Tensile.LoopModel.adapter import params_to_theta
     from Tensile.LoopModel.decoder import decode_theta
@@ -1590,7 +1590,7 @@ def test_repeat_read_occurrences_drive_the_three_copy_ring_projection():
         for action in actions
         if action.kind == "read" and action.at["tc"] == "A"
     }
-    assert {(("N_inner", 0),), (("N_inner", 1),)} <= issues
+    assert issues == {()}
 
 
 def test_ds_load_coverage_is_a_local_transfer_set():
@@ -1833,7 +1833,7 @@ def test_multi_axis_tensorload_regions_are_explicit_effect_partitions():
         } == {region}
 
 
-def test_repeat_read_axis_without_retiming_lowers_as_an_expression():
+def test_split_axis_without_retiming_lowers_as_an_expression():
     from Tensile.LoopModel import adapter
     from Tensile.LoopModel.checks import validate_loopir
     from Tensile.LoopModel.decoder import decode_theta

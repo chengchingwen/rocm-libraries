@@ -525,6 +525,60 @@ def _flatten_finite(nodes, bindings):
     return tuple(output)
 
 
+def _materialize_finite_units(nodes, bindings):
+    """Specialize a finite body into one binding-preserving unit per operation."""
+    output = []
+
+    def bound(operation, environment):
+        node = _substitute_operation(operation, environment)
+        for axis, value in reversed(tuple(environment.items())):
+            node = Let(axis, value, (node,))
+        return node
+
+    for node in nodes:
+        if isinstance(node, (Movement, Compute)):
+            output.append(bound(node, bindings))
+        elif isinstance(node, Let):
+            value = node.value.substitute(bindings)
+            if value.constant_value is None:
+                raise TransformRefused("materialized Let is not constant")
+            output.extend(_materialize_finite_units(
+                node.body,
+                {**bindings, node.axis: value.constant_value},
+            ))
+        elif isinstance(node, Loop):
+            lower = node.lo.substitute(bindings)
+            upper = node.hi.substitute(bindings)
+            if lower.constant_value is None or upper.constant_value is None:
+                raise TransformRefused("materialized Loop is not finite")
+            for value in range(lower.constant_value, upper.constant_value):
+                output.extend(_materialize_finite_units(
+                    node.body,
+                    {**bindings, node.axis: value},
+                ))
+        elif isinstance(node, Cond):
+            predicate = node.pred.substitute(bindings)
+            verdict = predicate.evaluate({})
+            if verdict is None:
+                raise TransformRefused("materialized Cond is unresolved")
+            output.extend(_materialize_finite_units(
+                node.then_body if verdict else node.else_body,
+                bindings,
+            ))
+        elif isinstance(node, Switch):
+            expression = node.expression.substitute(bindings)
+            if expression.constant_value is None:
+                raise TransformRefused("materialized Switch is unresolved")
+            output.extend(_materialize_finite_units(
+                dict(node.cases).get(
+                    expression.constant_value,
+                    node.otherwise,
+                ),
+                bindings,
+            ))
+    return tuple(output)
+
+
 def rewrite_operation(
     program: Program,
     operation: Movement | Compute,
@@ -1058,6 +1112,100 @@ def _unroll_runs(
                 output.extend(body[index:stop])
             else:
                 output.extend(sorted(materialized, key=key))
+            index = stop
+        return tuple(output)
+
+    return program.with_body(edit_body(program.body), check=False)
+
+
+def _schedule_runs(
+    program: Program,
+    *,
+    regions,
+    selector: Callable[[Movement | Compute], bool],
+    schedule: Callable[[tuple[Movement | Compute, ...]], tuple[Movement | Compute, ...]],
+) -> Program:
+    """Materialize selected finite operation runs and schedule their occurrences."""
+
+    if not callable(selector) or not callable(schedule):
+        raise IRTypeError("_schedule_runs expects callable selector and schedule")
+    selected = {}
+
+    def selection_status(node):
+        key = id(node)
+        cached = selected.get(key, ...)
+        if cached is not ...:
+            return cached
+        if isinstance(node, (Movement, Compute)):
+            result = bool(selector(node))
+        else:
+            found = False
+            result = None
+            for body in child_bodies(node):
+                for child in body:
+                    status = selection_status(child)
+                    if status is False:
+                        result = False
+                        break
+                    if status is True:
+                        found = True
+                if result is False:
+                    break
+            if result is not False:
+                result = True if found else None
+        selected[key] = result
+        return result
+
+    def selected_unit(node):
+        return selection_status(node) is True
+
+    def edit_body(body, active_region=None, bindings=None):
+        bindings = dict(bindings or {})
+        rebuilt = []
+        current_region = active_region
+        for node in body:
+            if isinstance(node, Region):
+                current_region = node.tag
+                rebuilt.append(node)
+                continue
+            if selected_unit(node):
+                rebuilt.append(node)
+                continue
+            if isinstance(node, Let):
+                value = node.value.constant_value
+                child_bindings = bindings if value is None \
+                    else {**bindings, node.axis: value}
+                node = Let(
+                    node.axis,
+                    node.value,
+                    edit_body(node.body, current_region, child_bindings),
+                )
+            else:
+                node = _rebuild_children(
+                    node,
+                    lambda child: edit_body(child, current_region, bindings),
+                )[0]
+            rebuilt.append(node)
+        body = tuple(rebuilt)
+        if not _in_regions(current_region, regions):
+            return body
+        output = []
+        index = 0
+        while index < len(body):
+            if not selected_unit(body[index]):
+                output.append(body[index])
+                index += 1
+                continue
+            stop = index
+            while stop < len(body) and selected_unit(body[stop]):
+                stop += 1
+            try:
+                materialized = _materialize_finite_units(
+                    body[index:stop], bindings)
+            except TransformRefused:
+                output.extend(body[index:stop])
+            else:
+                output.extend(schedule(materialized))
             index = stop
         return tuple(output)
 
