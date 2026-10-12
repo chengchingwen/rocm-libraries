@@ -281,6 +281,20 @@ def test_lowering_folds_the_layout_address_into_the_allocation():
     assert fold(0, 7 * 128 + 7 * 16) == 7 * 128 + 7 * 16
 
 
+def test_lowering_spells_physical_valu_addresses_through_the_x_ring():
+    fold = _function(_LEAVES, "allocated_valu_offset")
+    symbol = _function(
+        _LEAVES,
+        "allocated_valu_symbol",
+        {"allocated_valu_offset": fold},
+    )
+
+    assert symbol("A", 192, 64, 1, 0) == "ValuA_X0_I0"
+    assert symbol("A", 192, 64, 1, 64 + 16) == "ValuA_X1_I0+16"
+    assert symbol("A", 192, 64, 1, 128 + 48) == "ValuA_X2_I0+48"
+    assert symbol("A", 256, 32, 1, 2 * 128) == "ValuA_X0_I0"
+
+
 def test_tdmsplit_calculates_the_remaining_vg_divisor():
     # The IR dump states PU * VA / VG, so the allocation reports the terms and
     # not only their product.  MKN splits B's prefetch unit from 8 tiles to 4.

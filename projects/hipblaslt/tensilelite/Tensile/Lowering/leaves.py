@@ -40,6 +40,15 @@ def allocated_valu_offset(span, linear):
     return linear % int(span) if span and int(span) > 0 else linear
 
 
+def allocated_valu_symbol(tc, span, per_block, inner_unroll, linear):
+    """Spell a physical layout address through its allocated ``Valu*_X*_I*`` ring."""
+    physical = allocated_valu_offset(span, linear)
+    block, offset = divmod(physical, max(1, int(per_block)))
+    buffer, iui = divmod(block, max(1, int(inner_unroll)))
+    symbol = "Valu%s_X%u_I%u" % (tc, buffer, iui)
+    return symbol if offset == 0 else "%s+%u" % (symbol, offset)
+
+
 @dataclass
 class MfmaTileContext:
     """The loop-order-invariant constants a per-tile WMMA emit needs.  Built ONCE per kiter,
@@ -146,14 +155,21 @@ class LeafEmitters:
             return max(1, int(self.reg_depth.get(tc, 1)))
         return max(1, int(self.reg_depth or 1))
 
-    def _valuStart(self, tc) -> int:
-        return int(getattr(self.writer.states, _VALU_STATE[tc]).startVgprValu)
-
     def _valuSpan(self, kernel, tc) -> int:
         """Allocated Valu registers for `tc`; 0 when UseLoopModel did not size them."""
         if not kernel.get("UseLoopModel"):
             return 0
         return int(getattr(self.writer.states, _VALU_STATE[tc]).numVgprValu)
+
+    def _valuSymbol(self, kernel, tc, linear):
+        state = getattr(self.writer.states, _VALU_STATE[tc])
+        return allocated_valu_symbol(
+            tc,
+            self._valuSpan(kernel, tc),
+            state.numVgprValuPerBlock,
+            kernel["InnerUnroll"],
+            linear,
+        )
 
     # ------------------------------------------------------------------ WMMA compute leaf
     def buildMfmaContext(self, kernel, tPA, tPB) -> MfmaTileContext:
@@ -259,8 +275,8 @@ class LeafEmitters:
         idxB = idx1 if ctx.tile01B else idx0
 
         if baseA is not None and unitA is not None:
-            aStr = vgpr(self._valuStart(tPA["tensorChar"]) + allocated_valu_offset(
-                self._valuSpan(kernel, tPA["tensorChar"]),
+            aStr = vgpr(self._valuSymbol(
+                kernel, tPA["tensorChar"],
                 baseA + unitA * ctx.vgprPerInputA), ctx.vgprPerInputA)
         else:
             aStr_base = w.generateSrcStrForMFMA(
@@ -268,8 +284,8 @@ class LeafEmitters:
                 mA, u, iui, idxA, unrollLoopIdx)
             aStr = vgpr(aStr_base, ctx.vgprPerInputA)
         if baseB is not None and unitB is not None:
-            bStr = vgpr(self._valuStart(tPB["tensorChar"]) + allocated_valu_offset(
-                self._valuSpan(kernel, tPB["tensorChar"]),
+            bStr = vgpr(self._valuSymbol(
+                kernel, tPB["tensorChar"],
                 baseB + unitB * ctx.vgprPerInputB), ctx.vgprPerInputB)
         else:
             bStr_base = w.generateSrcStrForMFMA(
@@ -300,8 +316,8 @@ class LeafEmitters:
             mA_idx, selA = w.mxsTileSpanScaleSel(kernel, tPA["MX"], idxA)
             self._checkRegBuffer(tPA["MX"]["tensorChar"], mMXA, "wmma scale source A")
             if baseMXA is not None and unitMXA is not None:
-                mxaStr = vgpr(self._valuStart(tPA["MX"]["tensorChar"]) + allocated_valu_offset(
-                    self._valuSpan(kernel, tPA["MX"]["tensorChar"]),
+                mxaStr = vgpr(self._valuSymbol(
+                    kernel, tPA["MX"]["tensorChar"],
                     baseMXA + unitMXA * ctx.vgprPerInputMXSA), ctx.vgprPerInputMXSA)
             else:
                 mxaStr = vgpr(w.generateSrcStrForMFMA(
@@ -311,8 +327,8 @@ class LeafEmitters:
             mB_idx, selB = w.mxsTileSpanScaleSel(kernel, tPB["MX"], idxB)
             self._checkRegBuffer(tPB["MX"]["tensorChar"], mMXB, "wmma scale source B")
             if baseMXB is not None and unitMXB is not None:
-                mxbStr = vgpr(self._valuStart(tPB["MX"]["tensorChar"]) + allocated_valu_offset(
-                    self._valuSpan(kernel, tPB["MX"]["tensorChar"]),
+                mxbStr = vgpr(self._valuSymbol(
+                    kernel, tPB["MX"]["tensorChar"],
                     baseMXB + unitMXB * ctx.vgprPerInputMXSB), ctx.vgprPerInputMXSB)
             else:
                 mxbStr = vgpr(w.generateSrcStrForMFMA(
@@ -620,8 +636,8 @@ class LeafEmitters:
                        ctx.wtRegStride * (regSlot if regSlot is not None
                                          else regTileIdx // ctx.tilePerRead))
                       + fragReg)
-            dst = (vgpr(self._valuStart(tc) + allocated_valu_offset(
-                       self._valuSpan(kernel, tc), regBase + int(regOff)), ctx.blockWidth)
+            dst = (vgpr(self._valuSymbol(
+                       kernel, tc, regBase + int(regOff)), ctx.blockWidth)
                    if regBase is not None else
                    vgpr("Valu%s_X%u_I%u+%u" % (tc, bufferIdx, iui, int(regOff)),
                         ctx.blockWidth))
