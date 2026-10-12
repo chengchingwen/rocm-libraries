@@ -15,12 +15,12 @@ edits (seconds, versus ~20 min for the serial pytest run).
 
 ```bash
 # the gate
-PYTHONPATH=.:build_tmp/tensilelite/rocisa:Tensile/Tests/unit:Tensile/Tests/unit/characterization/LoopModel \
-    python -m pytest -q Tensile/Tests/unit/characterization/LoopModel
+PYTHONPATH=.:build_tmp/tensilelite/rocisa:tensilelite/Tests/unit:tensilelite/Tests/unit/characterization/LoopModel \
+    python -m pytest -q tensilelite/Tests/unit/characterization/LoopModel
 
 # the inner loop
-PYTHONPATH=.:build_tmp/tensilelite/rocisa:Tensile/Tests/unit:Tensile/Tests/unit/characterization/LoopModel \
-    python Tensile/Tests/unit/characterization/LoopModel/check_goldens.py
+PYTHONPATH=.:build_tmp/tensilelite/rocisa:tensilelite/Tests/unit:tensilelite/Tests/unit/characterization/LoopModel \
+    python tensilelite/Tests/unit/characterization/LoopModel/check_goldens.py
 
 # regenerate after an INTENDED behaviour change (never to make a red test green)
 LOOPMODEL_GOLDEN_UPDATE=1 PYTHONPATH=... python -m pytest -q <the golden file>

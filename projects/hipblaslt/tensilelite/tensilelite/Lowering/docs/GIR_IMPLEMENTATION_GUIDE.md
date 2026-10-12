@@ -1,9 +1,9 @@
 # The GIR lowering — implementation guide
 
-How `Tensile/Lowering/` actually works, module by module and analysis by analysis.
+How `tensilelite/Lowering/` actually works, module by module and analysis by analysis.
 
 The layer above is specified by
-`Tensile/LoopModel/docs/LOOPIR_API_PROPOSAL.md`; together they describe the
+`tensilelite/LoopModel/docs/LOOPIR_API_PROPOSAL.md`; together they describe the
 `UseLoopModel` path.
 
 It also complements `lowering-design.md`, the design whitepaper from #107 — **that document says

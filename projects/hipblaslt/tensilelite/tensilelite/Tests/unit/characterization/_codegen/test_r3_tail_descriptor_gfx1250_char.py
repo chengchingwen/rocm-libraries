@@ -26,7 +26,7 @@ import config_harness as _cfgh
 
 pytestmark = pytest.mark.unit
 
-_CFG = "Tensile/Tests/common/gemm/gfx12/loopmodel_mxf8_gfx1250.yaml"
+_CFG = "tensilelite/Tests/common/gemm/gfx12/loopmodel_mxf8_gfx1250.yaml"
 
 _ISSUER = re.compile(r"tensor_load_to_lds s\[sgprtdm(\w+?)Group0:")
 _REWIND = re.compile(r"s_sub_u32 s\[sgprtdm(\w+?)Group0\+2\].*rewind to the chunk")

@@ -3,7 +3,7 @@
 """Sort the (theta, op) functions into MODEL (intrinsic) vs DECISION (policy-dependent).
 
 Run from the tensilelite root:
-    python Tensile/Tests/unit/characterization/LoopModel/classify_operand_functions.py
+    python tensilelite/Tests/unit/characterization/LoopModel/classify_operand_functions.py
 
 The test from the plan: does the answer change if PLR or the register budget changes? Mechanically:
 a function is a DECISION if it takes S / dr / group / W as a parameter, or transitively calls one
@@ -11,7 +11,7 @@ that does. Everything else is intrinsic to theta and belongs on the operand.
 """
 import ast, collections, pathlib
 
-PKG = pathlib.Path("Tensile/LoopModel")
+PKG = pathlib.Path("tensilelite/LoopModel")
 POLICY_ARGS = {"S", "dr", "dr_g", "W", "group", "depth", "shift", "off"}
 
 defs, calls, home = {}, collections.defaultdict(set), {}

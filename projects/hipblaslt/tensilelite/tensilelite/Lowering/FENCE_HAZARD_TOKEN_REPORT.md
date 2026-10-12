@@ -3,8 +3,8 @@
 Every analysis, pass, verifier, emitter and StinkyTofu component that participates in deciding
 **where a barrier goes** and **what it names**, with pseudocode and rationale.
 
-Scope: `Tensile/Lowering/gir/analyses/`, `Tensile/Lowering/gir/passes/`, `gir/verify.py`,
-`gir_to_rocisa.py`, `Tensile/Lowering/tool/`, and the StinkyTofu passes that consume the result
+Scope: `tensilelite/Lowering/gir/analyses/`, `tensilelite/Lowering/gir/passes/`, `gir/verify.py`,
+`gir_to_rocisa.py`, `tensilelite/Lowering/tool/`, and the StinkyTofu passes that consume the result
 (`/Workspace/mi450-dev/shared/stinkytofu/src/transforms/asm/`).
 
 ---
@@ -521,7 +521,7 @@ wave's read; a preceding fence must then name a token this refill carries.
 `check_register_slots`, `check_block_scope_covered`, `check_rotation_waw`.
 
 ### The third invariant, in the test suite
-`Tensile/Tests/unit/test_gir.py::test_a_fence_names_every_buffer_LIVE_ACROSS_it_not_just_the_edges_that_placed_it`
+`tensilelite/Tests/unit/test_gir.py::test_a_fence_names_every_buffer_LIVE_ACROSS_it_not_just_the_edges_that_placed_it`
 — **a barrier is permeable per token**. It must name both ends of every edge it stands inside, not
 only the edges the cover charged to it. A minimal-cover naming would be sound only if barriers were
 opaque; they are not.
@@ -687,7 +687,7 @@ narrowings were inert for exactly this reason.
 
 ---
 
-## 14. Verification tooling — `Tensile/Lowering/tool/`
+## 14. Verification tooling — `tensilelite/Lowering/tool/`
 
 ### `fence_token_check.py`
 Re-derives separation from the hazard edges and the fences **actually present in the final body**,

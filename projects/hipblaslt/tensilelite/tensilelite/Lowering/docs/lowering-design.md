@@ -11,9 +11,9 @@ for the lowering; if it disagrees with the plan (`sharded-forging-hartmanis.md`)
 wins**. Still open: R4 (scaffold-anchor `Tag`/`guard_site`, GSU-on), `transfer_size`, and the §13
 Phase-4/5 items (LoopIR srcs/dsts, 6-axis Coord, VgprPartition>1, wave-spec).
 
-**Cross-references:** LoopModel (the θ decoder + LoopIR) — `Tensile/LoopModel/`; the LoopIR
-node classes — `Tensile/LoopModel/ir.py`; the 6-mode iteration vocabulary —
-`Tensile/LoopModel/translate.py`; the StinkyTofu Analysis/Pass model —
+**Cross-references:** LoopModel (the θ decoder + LoopIR) — `tensilelite/LoopModel/`; the LoopIR
+node classes — `tensilelite/LoopModel/ir.py`; the 6-mode iteration vocabulary —
+`tensilelite/LoopModel/translate.py`; the StinkyTofu Analysis/Pass model —
 `/Workspace/mi450-dev/shared/stinkytofu/`.
 
 ---
@@ -1071,7 +1071,7 @@ walker is deleted).
   verifier, gen-SSA queries). This + **extensibility** (sparse/MX/F32-emul; non-KMN +
   register groups #89; TDMSplit/MX #90; mxf8 #106; wave-spec later — all GEMM-dataflow
   additions, not special cases) justifies GIR as a real IR over a flat timeline.
-  GIR unit tests: `Tensile/Tests/unit/test_gir.py` (GIR itself) + `test_gir_to_rocisa.py`
+  GIR unit tests: `tensilelite/Tests/unit/test_gir.py` (GIR itself) + `test_gir_to_rocisa.py`
   (the pure emit-plan half), sharing `gir_fixtures.py`.
 - `gir_to_rocisa.py` / `leaves.py` exercised in a real build (leaf emitters touch LDS-token
   state); the USER runs numerics.
@@ -1084,7 +1084,7 @@ walker is deleted).
 ## 12. Module layout
 
 ```
-Tensile/Lowering/
+tensilelite/Lowering/
   lowering-design.md          # this document
   loopir_to_gir.py            # layer 1->2 (the only place LoopIR Expr is read); build_gir (R-ONCE)
   gir_to_rocisa.py            # layer 2->3: GirToRocisa drives LeafEmitters from the emit plan;

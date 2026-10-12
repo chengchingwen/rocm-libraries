@@ -115,7 +115,7 @@ outside that region passes**.
 UseLoopModel (§5). That is the result #259 and #265 were waiting for, and it is the first evidence
 about them that is not matrix evidence.
 
-Standing test: `Tensile/Tests/unit/test_parity_sweep.py`.
+Standing test: `tensilelite/Tests/unit/test_parity_sweep.py`.
 
 ## 4. Open question (not a #259 blocker)
 

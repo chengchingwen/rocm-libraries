@@ -168,6 +168,7 @@ namespace rocisa
                 s);
         }
     }
+
     // What a GIR action does.  Values mirror StinkyTofu's GirActionKind; the converter casts.
     enum class GirActionKind : uint8_t
     {

@@ -1,4 +1,4 @@
-# ADR 0009 -- the prose removed from Tensile/Lowering
+# ADR 0009 -- the prose removed from tensilelite/Lowering
 
 Status: accepted.  Date: 2026-08-30.
 
@@ -1316,7 +1316,7 @@ AND THE PART THIS CANNOT SEE. The agent-discriminating arms that DO exist in the
 (`s_bitcmp1_b32 s[sgprWaveIdx],0` / `s_cbranch_scc1 label_SkipStaggerA`, from
 `KernelWriterAssembly._applyStaggerTDM`) are SCAFFOLD-owned and have no GIR node at all. So this
 analysis is sound only relative to GIR's own tree, and the real deadlock surface is closed at the
-emission layer instead -- see `Tensile/Lowering/uniform_emission.py`, which runs the same question
+emission layer instead -- see `tensilelite/Lowering/uniform_emission.py`, which runs the same question
 over the stream where those arms are visible. Both are wanted: this one guards the DECODER, the emission one
 guards the BACKEND.
 
@@ -1959,7 +1959,7 @@ The premise under which a rotation WAW needs no ledger row of its own.
 
     Non-interference covers WAW as well as WAR, so ordering a rotating buffer really means
     `WAR and WAW`.  Our ledger files only the WAR (`ledger.py`: RAW-residency,
-    inplace-WAR/rotation-WAR, crossing-RAW, readahead-residency; `grep -rni waw Tensile/LoopModel`
+    inplace-WAR/rotation-WAR, crossing-RAW, readahead-residency; `grep -rni waw tensilelite/LoopModel`
     returns nothing).  That is CORRECT, but only under a premise the decoder never established:
 
         "Where every written generation is read and the read covers the write ... the WAW is
@@ -3463,7 +3463,7 @@ Row length, in elements, along the LDS image's INNER axis -- of ONE REGION when 
 
     IMPORTED BY `Components/LraTileAssignment.py`, which is the one place a layer below this one
     reaches up into `Lowering`.  That direction is deliberate and narrow: this module imports
-    NOTHING, and the alternative homes are worse.  `Tensile/Common/` looks right by layering but
+    NOTHING, and the alternative homes are worse.  `tensilelite/Common/` looks right by layering but
     its package `__init__` imports rocisa, which would make this arithmetic un-unit-testable in
     the pure-Python environment -- the very reason the module was split out of `leaves.py`.
     Duplicating the formula is what caused the defect below.
@@ -5753,7 +5753,7 @@ The premise under which a rotation WAW needs no ledger row of its own.
 
     Non-interference covers WAW as well as WAR, so ordering a rotating buffer really means
     `WAR and WAW`.  Our ledger files only the WAR (`ledger.py`: RAW-residency,
-    inplace-WAR/rotation-WAR, crossing-RAW, readahead-residency; `grep -rni waw Tensile/LoopModel`
+    inplace-WAR/rotation-WAR, crossing-RAW, readahead-residency; `grep -rni waw tensilelite/LoopModel`
     returns nothing).  That is CORRECT, but only under a premise the decoder never established:
 
         "Where every written generation is read and the read covers the write ... the WAW is
@@ -6772,7 +6772,7 @@ Row length, in elements, along the LDS image's INNER axis -- of ONE REGION when 
 
     IMPORTED BY `Components/LraTileAssignment.py`, which is the one place a layer below this one
     reaches up into `Lowering`.  That direction is deliberate and narrow: this module imports
-    NOTHING, and the alternative homes are worse.  `Tensile/Common/` looks right by layering but
+    NOTHING, and the alternative homes are worse.  `tensilelite/Common/` looks right by layering but
     
 ```
 
@@ -9020,7 +9020,7 @@ The premise under which a rotation WAW needs no ledger row of its own.
 
     Non-interference covers WAW as well as WAR, so ordering a rotating buffer really means
     `WAR and WAW`.  Our ledger files only the WAR (`ledger.py`: RAW-residency,
-    inplace-WAR/rotation-WAR, crossing-RAW, readahead-residency; `grep -rni waw Tensile/LoopModel`
+    inplace-WAR/rotation-WAR, crossing-RAW, readahead-residency; `grep -rni waw tensilelite/LoopModel`
     returns nothing).  That is CORRECT, but only under a premise the decoder never established:
     
 ```

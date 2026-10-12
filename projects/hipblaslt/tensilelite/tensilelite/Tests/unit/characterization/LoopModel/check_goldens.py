@@ -6,8 +6,8 @@ Reads exactly the files `test_loopmodel_golden_char.py` reads and reports the sa
 pytest suite stays the gate, this is what you run between edits. Serial pytest takes ~8 minutes,
 this takes seconds.
 
-    PYTHONPATH=.:Tensile/Tests/unit:Tensile/Tests/unit/characterization/LoopModel \\
-        python Tensile/Tests/unit/characterization/LoopModel/check_goldens.py
+    PYTHONPATH=.:tensilelite/Tests/unit:tensilelite/Tests/unit/characterization/LoopModel \\
+        python tensilelite/Tests/unit/characterization/LoopModel/check_goldens.py
 
 Exit status is 0 when every cell matches, 1 otherwise; changed cells are printed with the loop
 order, the stored digest and the produced one.

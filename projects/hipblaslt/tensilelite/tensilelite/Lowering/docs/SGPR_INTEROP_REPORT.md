@@ -20,7 +20,7 @@ excluded). Counts below are from that scan.
 
 ## 0. The headline: we already interoperate, through four primitives
 
-`Tensile/Lowering/gir_to_rocisa.py` writes **no SGPR directly**. Its entire interaction with machine
+`tensilelite/Lowering/gir_to_rocisa.py` writes **no SGPR directly**. Its entire interaction with machine
 state is four scaffold calls (plus one query):
 
 | call | what it moves |

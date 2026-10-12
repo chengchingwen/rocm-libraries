@@ -1220,7 +1220,7 @@ text}, and broke the moment the wrong expression was corrected.
 \draw[ar] (kwa) -- (geo);
 \draw[ar] (lv) -- (geo);
 \node[wbox,below=6mm of geo,text width=52mm] (com)
-   {\bad{rejected:} \texttt{Tensile/Common/} --- the right home by layering,
+   {\bad{rejected:} \texttt{tensilelite/Common/} --- the right home by layering,
     but its \texttt{\_\_init\_\_} imports rocisa};
 \draw[ar,draw=warn,dashed] (geo) -- (com);
 \end{tikzpicture}
@@ -1372,8 +1372,8 @@ one extra mode with extent 0 in $\theta$ --- no new level kind. What blocks it i
 {\scriptsize
 \begin{tabular}{@{}p{0.30\textwidth}p{0.64\textwidth}@{}}
 \toprule
-\texttt{Tensile/LoopModel/} & \key{the schedule model}: what happens \emph{when}. $\theta$, the peel, the ledger, the certificate. Every gate is either totality or honesty \\
-\texttt{Tensile/Lowering/} & \key{the dataflow lowering}: \emph{where} each value lives. GIR, the analyses, the passes, the emitter. Each package carries its own gap list and cost map in-tree \\
+\texttt{tensilelite/LoopModel/} & \key{the schedule model}: what happens \emph{when}. $\theta$, the peel, the ledger, the certificate. Every gate is either totality or honesty \\
+\texttt{tensilelite/Lowering/} & \key{the dataflow lowering}: \emph{where} each value lives. GIR, the analyses, the passes, the emitter. Each package carries its own gap list and cost map in-tree \\
 \bottomrule
 \end{tabular}}
 

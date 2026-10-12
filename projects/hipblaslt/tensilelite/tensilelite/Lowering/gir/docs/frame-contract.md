@@ -1,7 +1,7 @@
 # The GIR frame contract
 
 The CFG-free frame facts GIR hands StinkyTofu. Produced by
-`Tensile/Lowering/gir/frame_contract.py`, consumed by
+`tensilelite/Lowering/gir/frame_contract.py`, consumed by
 `stinkytofu/src/analysis/asm/GirFrameAnalysis.cpp`, and carried out of band as module plugin data
 under the key `gir.frame_contract` — it never appears in the emitted assembly.
 

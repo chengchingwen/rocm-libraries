@@ -1,7 +1,7 @@
-## `Tensile/Lowering/` — the GIR lowering stack, in full
+## `tensilelite/Lowering/` — the GIR lowering stack, in full
 
 This report describes every module, class, function and method in the Python package rooted at
-`Tensile/Lowering/`: what each piece exists to solve, how it computes its answer, and why it is
+`tensilelite/Lowering/`: what each piece exists to solve, how it computes its answer, and why it is
 built the way it is. It is written to be read with nothing but this text and the source tree.
 
 ### 0. How to read this report
@@ -13,7 +13,7 @@ docstrings — e.g. `#235`, `#183`), this report keeps at most a bare parentheti
 for readers who have the tracker open; **no claim in this report requires reading one**, and each
 historical defect referenced is described in place.
 
-**Citations.** Source locations are `path:line`, repo-relative to `tensilelite/Tensile/`. All line
+**Citations.** Source locations are `path:line`, repo-relative to `tensilelite/tensilelite/`. All line
 numbers in this document were read off the files at the time of writing; if the file has since
 moved, search for the quoted identifier.
 
@@ -38,7 +38,7 @@ off-IR checkers. §16 is how the package is tested, §17 the failure catalogue, 
 
 The `UseLoopModel` code-generation path has three layers.
 
-**Layer 1, LoopIR** (produced by `Tensile/LoopModel/`, outside this package) states *what the
+**Layer 1, LoopIR** (produced by `tensilelite/LoopModel/`, outside this package) states *what the
 schedule is*: which operations exist, at which loop level, in what order, and how far ahead of
 their consumers they run. It is a **tree**, it is **rolled** (one node per *kind* of operation, not
 one per dynamic instance), and its buffer indices are **formulas** — an expression like
@@ -134,7 +134,7 @@ ordinary English or with each other; the collisions are called out.
 #### 2.1 Layer map
 
 ```
-θ ──emit_mainloop──► LoopIR tree + ledger              (Tensile/LoopModel/, layer 1)
+θ ──emit_mainloop──► LoopIR tree + ledger              (tensilelite/LoopModel/, layer 1)
         │  loopir_to_gir.lower_to_gir                  unroll the pipeline stages into a CFG,
         ▼                                              attach the Gen SSA
       GIR  ──run_pipeline──► finalized GIR             shape → reg → tokens → collect → place
@@ -245,7 +245,7 @@ are the ones that were not checked.
 There are four export lists, and they are deliberately different sizes. The counts below were
 taken by parsing each `__all__` literal, not by eye.
 
-- **`Tensile/Lowering/__init__.py:14`** exports exactly **four** names:
+- **`tensilelite/Lowering/__init__.py:14`** exports exactly **four** names:
   `lower_to_gir`, `lower_params_to_gir`, `build_gir`, `gir_text`. This is the surface
   `KernelWriter` uses. Anything a consumer outside this package needs should arrive through one of
   these four.
@@ -328,7 +328,7 @@ recalled:
 
 | importer | what it takes | why here |
 |---|---|---|
-| `Components/LraTileAssignment.py:35` | `lds_geometry.region_row_elems` | the reason is recorded at `lds_geometry.py:118-124` — the alternative home, `Tensile/Common/`, imports rocisa in its package `__init__`, which would make this arithmetic un-unit-testable in the pure-Python environment |
+| `Components/LraTileAssignment.py:35` | `lds_geometry.region_row_elems` | the reason is recorded at `lds_geometry.py:118-124` — the alternative home, `tensilelite/Common/`, imports rocisa in its package `__init__`, which would make this arithmetic un-unit-testable in the pure-Python environment |
 | `Components/LocalRead.py:37` | `lds_geometry.region_row_elems` **and `fold_inner_offset`** (`:762`, `:1683`) | the scaffold read path must produce the *same* address the GIR read leaf does; `fold_inner_offset` (§17.11) is the piecewise in-region offset and this is its only non-`Lowering` consumer |
 | `Component.py:75, 237` | `tdm_split.split_of` | one gate: is this operand region-split at all |
 | `KernelWriterAssembly.py:116` | `tdm_split.split_of` / `any_split` / `derive` — 12 call sites (`:1023`, `:7603`, `:11352`, `:11387`, `:11470`, `:11500`, `:19125`, `:19127`, `:19413`, `:19510`, `:20364`, `:20440`) | the descriptor and address emission on the *scaffold* path |
@@ -342,7 +342,7 @@ so `Components/`, `Lowering/` and `SolutionStructs/` can all depend on it withou
 property.
 
 **One genuine cycle, broken by a lazy import — do not "clean this up".**
-`Tensile/Lowering/__init__.py` imports `loopir_to_gir`, which imports `..LoopModel`; so
+`tensilelite/Lowering/__init__.py` imports `loopir_to_gir`, which imports `..LoopModel`; so
 `LoopModel/bridge.py` cannot import `Tensile.Lowering` at module scope without closing a cycle at
 interpreter start-up. It therefore does the import **inside the function**, and says so:
 
@@ -358,7 +358,7 @@ Hoisting those four lines to the top of `bridge.py` breaks `import Tensile.Lower
 the failure surfaces as an unrelated-looking `ImportError` during `KernelWriter` construction. The
 layer map of §2.1 shows the *data* dependency as one-directional, and it is; this is a Python
 packaging artefact of `Lowering/__init__.py` eagerly importing the front end. The clean fix, if
-anyone wants one, is to make `Tensile/Lowering/__init__.py` lazy about `loopir_to_gir` rather than
+anyone wants one, is to make `tensilelite/Lowering/__init__.py` lazy about `loopir_to_gir` rather than
 to move the import in `bridge.py`.
 
 ---
@@ -1286,7 +1286,7 @@ A thin wrapper over `list[BackEdge]` with four members.
   `GenReaching.run` (`gir/analyses/gen_reaching.py:134`), which needs the transfers that apply
   when control leaves a block.
 - **`entering(label)` (`:87`)** — back edges whose **target (header)** is `label`. **Currently has
-  no caller anywhere in the tree** (verified by grep over all of `Tensile/`). It is the natural
+  no caller anywhere in the tree** (verified by grep over all of `tensilelite/`). It is the natural
   counterpart of `leaving` and is kept for symmetry; a maintainer should know it is untested by
   use.
 - **`is_back_edge(src, target)` (`:91`)** — membership test, O(|edges|) by linear scan. **Also has
@@ -1799,7 +1799,7 @@ onto every GIR verb as `Move.deps` / `Mma.deps` (`gir/nodes.py:108`, `:133`), a 
 ```
 
 `kind` is drawn from a **closed set of four**, defined in layer 1 at
-`Tensile/LoopModel/ir.py:500-502`:
+`tensilelite/LoopModel/ir.py:500-502`:
 
 ```
 RAW_KINDS = { "RAW-residency", "crossing-RAW" }        true dependences
@@ -1829,14 +1829,14 @@ importable and unit-testable with no compiled `rocisa` present. The import is na
 predicate over one string — and deliberate: the hazard-kind vocabulary is layer 1's, and
 duplicating the classification here would create a second table to keep in sync.
 
-`is_war(kind)` (`Tensile/LoopModel/ir.py:505`) **raises** on a kind outside the closed set rather
+`is_war(kind)` (`tensilelite/LoopModel/ir.py:505`) **raises** on a kind outside the closed set rather
 than answering `False`. That is the important half. Eight call sites used to dispatch on
 `kind.endswith("WAR")`, a suffix test standing in for a classification: a new anti-dependence whose
 name does not happen to end in those three letters silently joins the true-dependence arm, and a
 new true dependence that does end in them silently joins the anti-dependence arm. Neither shows up
 as an error; both show up as a wrongly ordered schedule. The measured instance was that the suffix
 test forced copy-last placement on `crossing-RAW` obligations that needed copy-*first*
-(`Tensile/LoopModel/ir.py:484-499`). Because `DepDefuse.add` calls `is_war` unfiltered, **this
+(`tensilelite/LoopModel/ir.py:484-499`). Because `DepDefuse.add` calls `is_war` unfiltered, **this
 analysis is the point at which an unknown dependency kind anywhere in the program becomes a loud
 `ValueError`** — a property that matters more than anything it returns (§6.3.5).
 
@@ -4376,7 +4376,7 @@ scaffold (TensileLite, hand-written):
                        └──────────(skip)────────┘        prologue and drain are SHARED by both
                                                           paths; a small T merely skips the loop
 
-LoopIR (layer 1, produced by Tensile/LoopModel/):
+LoopIR (layer 1, produced by tensilelite/LoopModel/):
         Cond { prologue ──► steady loop ──► drain }   else   { short0 ──► short1 ──► … }
                                                           two DISJOINT arms; the else arm is a
                                                           complete unpipelined emission of the
@@ -6814,7 +6814,7 @@ Collected so a future maintainer meets them here rather than in a debugger.
 
 #### 11.18 Test map for `gir/passes/`
 
-All under `Tensile/Tests/unit/test_gir.py` unless stated; all rocisa-free, so they run under a plain
+All under `tensilelite/Tests/unit/test_gir.py` unless stated; all rocisa-free, so they run under a plain
 `pytest` with no compiled extension.
 
 | target | tests |
@@ -7480,7 +7480,7 @@ the emitted kernel — `s_bitcmp1_b32 s[sgprWaveIdx],0` followed by
 `s_cbranch_scc1 label_SkipStaggerA`, emitted by the TensileLite scaffold's stagger logic — are
 **scaffold-owned and have no GIR node at all**. `G-UNIFORM` is therefore sound only relative to
 GIR's own tree. The real deadlock surface is closed at a second, independent layer:
-`Tensile/Lowering/uniform_emission.py` runs the same question over the emitted instruction stream,
+`tensilelite/Lowering/uniform_emission.py` runs the same question over the emitted instruction stream,
 where those arms are visible. Both are wanted, and the division is: **this one guards the decoder,
 the emission one guards the back end.**
 
@@ -8656,7 +8656,7 @@ side already proved the pattern works.
 mode is absent or the mode argument is `None`, or the stored value is `None`. Linear scan over the
 coordinate tuple, which is 3–6 entries.
 
-**This function is dead.** `grep -rn _coord_val` over the whole `Tensile/` tree finds only the
+**This function is dead.** `grep -rn _coord_val` over the whole `tensilelite/` tree finds only the
 definition. It is the residue of the single-mode `role_to_mode` era described in §13.2: back then
 "A's tile index" *was* one coordinate lookup, and this was that lookup. `_project` replaced it, and
 nothing has called it since. It should be deleted; it is retained here in the coverage list because
@@ -11184,9 +11184,9 @@ can tell a measurement from an opinion.
 
 ### 15. `loopir_to_gir.py` — lowering the schedule IR into GIR
 
-`Tensile/Lowering/loopir_to_gir.py` is 898 lines and holds 21 named definitions. It is the single
+`tensilelite/Lowering/loopir_to_gir.py` is 898 lines and holds 21 named definitions. It is the single
 translation pass from layer 1 to layer 2: it consumes the rolled, symbolic LoopIR tree that
-`Tensile/LoopModel/` produces and emits the unrolled, concrete GIR `Program` that every analysis and
+`tensilelite/LoopModel/` produces and emits the unrolled, concrete GIR `Program` that every analysis and
 pass in §6–§8 operates on. It is also, by design, **the only module in the package that reads a
 LoopIR `Expr`** — the small symbolic index-expression object layer 1 uses for buffer slots and loop
 bounds. Everything downstream of this file sees integers, tuples and `Gen` values.
@@ -14033,7 +14033,7 @@ model to copy for any future derived quantity in this file.
 
 **One stale test to remove while here.**
 `test_prefetch_index_still_matches_the_scaffolds_own_constant`
-(`Tests/unit/test_gir_to_rocisa.py:272`) reads `Tensile/KernelWriter.py` as text, extracts the line
+(`Tests/unit/test_gir_to_rocisa.py:272`) reads `tensilelite/KernelWriter.py` as text, extracts the line
 after `pfi = `, and asserts it equals
 `1 if kernel["PrefetchGlobalRead"] < 3 else kernel["PrefetchGlobalRead"] - 1`. That line still exists
 (`KernelWriter.py:3156`) so the test passes, but its failure message names
@@ -14288,7 +14288,7 @@ debugging cycle measured in days.
 Every other module in this package reasons about *events*: which operation happens, in what order,
 which buffer generation it touches, where a pointer flip goes. These two reason about *numbers* —
 the byte offset a `ds_read` actually carries, the constant the descriptor's region step is
-initialised with, the length of one LDS row. They are the only place in `Tensile/Lowering/` that
+initialised with, the length of one LDS row. They are the only place in `tensilelite/Lowering/` that
 computes an address.
 
 They are also the only two modules in the package with **zero project imports**. `tdm_split.py`
@@ -14331,7 +14331,7 @@ Three consequences follow, and all three are worth defending:
    does `from ..Lowering.lds_geometry import region_row_elems`, and
    `Components/LocalRead.py:36-37` imports both modules. That is an inversion of the normal
    layering, and it is deliberate. The docstring at `Lowering/lds_geometry.py:118-124` records the
-   alternative that was rejected: `Tensile/Common/` is the right home *by layering*, but its
+   alternative that was rejected: `tensilelite/Common/` is the right home *by layering*, but its
    package `__init__` imports rocisa, so moving the arithmetic there would destroy exactly the
    testability that motivated the split. The remaining alternative — duplicating the formula in
    `Components/` — is what caused the defect described in §17.9.
@@ -15557,7 +15557,7 @@ files import nothing.
 
 ### 18. The standalone checkers and the independent simulator
 
-Four modules in `Tensile/Lowering/` are not on the LoopIR → GIR → rocisa path at all. They do not
+Four modules in `tensilelite/Lowering/` are not on the LoopIR → GIR → rocisa path at all. They do not
 produce instructions, they do not mutate the IR, and three of the four are never called by shipped
 code. They exist to *disprove* claims the main path makes about itself:
 
@@ -17117,7 +17117,7 @@ off."*
 
 #### 19.2 The complete failure catalogue
 
-Every raise site in `Tensile/Lowering/`, grouped by the stage it fires in. The count is 110
+Every raise site in `tensilelite/Lowering/`, grouped by the stage it fires in. The count is 110
 `raise`/`assert` statements across 25 of the 48 `.py` files. Locations are exact; messages are
 paraphrased where they are long.
 
@@ -17664,7 +17664,7 @@ this table is either new or was missed.
 ##### 19.3.1 Inventory, and the numbers as measured
 
 Five test modules plus one shared fixture module cover this package. All live in
-`Tensile/Tests/unit/`. Counts below are **collected test counts**, not `def test_` counts — the
+`tensilelite/Tests/unit/`. Counts below are **collected test counts**, not `def test_` counts — the
 difference is large because several suites are parametrized over a loop-order × split × prefetch
 matrix.
 
@@ -17699,9 +17699,9 @@ module scope. So the naive invocation fails during **conftest collection**, befo
 runs:
 
 ```
-$ python3 -m pytest Tensile/Tests/unit/test_gir.py
-ImportError while loading conftest '.../Tensile/Tests/unit/conftest.py'.
-  Tensile/Tests/unit/streamk5_test_helpers.py:10: in <module>
+$ python3 -m pytest tensilelite/Tests/unit/test_gir.py
+ImportError while loading conftest '.../tensilelite/Tests/unit/conftest.py'.
+  tensilelite/Tests/unit/streamk5_test_helpers.py:10: in <module>
       from Tensile.KernelWriterAssembly import KernelWriterAssembly
   E   ImportError: cannot import name 'rocIsa' from 'rocisa'
 ```
@@ -17710,7 +17710,7 @@ The working invocation is `--noconftest` plus an explicit `PYTHONPATH`, run from
 directory (the conftest is also what normally puts the package root on `sys.path`):
 
 ```
-$ cd Tensile/Tests/unit
+$ cd tensilelite/Tests/unit
 $ PYTHONPATH=<tensilelite-root> python3 -m pytest --noconftest -p no:cacheprovider \
       test_gir.py test_gir_to_rocisa.py test_value_placement.py \
       test_uniform_placement.py test_tdm_split.py
@@ -18424,7 +18424,7 @@ means an interleaved emission of two kernels rebuilds each time.
 
 #### 19.7 A short checklist for a change to this package
 
-1. **Re-run the pure suite first.** `cd Tensile/Tests/unit && PYTHONPATH=<root> python3 -m pytest
+1. **Re-run the pure suite first.** `cd tensilelite/Tests/unit && PYTHONPATH=<root> python3 -m pytest
    --noconftest -p no:cacheprovider test_gir.py test_value_placement.py test_tdm_split.py` — 660
    assertions, under a minute, no build.
 2. **Did you add a raise?** Then it needs a test that *triggers* it. The suite's own rule: a check
@@ -18792,7 +18792,7 @@ useful part.
 
 ---
 
-That closes the section. Every module in `Tensile/Lowering/` has at least one entry in the failure
+That closes the section. Every module in `tensilelite/Lowering/` has at least one entry in the failure
 catalogue (§19.2), the test map (§19.3) or this index (§19.8); every raise, assert and documented
 degradation is enumerated with its trigger and its remedy; the four extension recipes name the
 concrete symbols to touch; and the gaps in §19.5 are stated with what closing each would cost rather
@@ -18806,11 +18806,11 @@ a place that answered when it should have refused.
 
 ### 20. Complexity, cost and optimisation opportunities
 
-This section is about **compile time**: how many Python operations the `Tensile/Lowering/` stack
+This section is about **compile time**: how many Python operations the `tensilelite/Lowering/` stack
 performs to turn one θ point into one finalized `Program` plus its emitted rocisa, where those
 operations concentrate, and what a future maintainer should change first if the number gets in the
 way. It is also the section that closes the coverage of the package: every definition in
-`Tensile/Lowering/` that the earlier sections describe *functionally* is described here again in
+`tensilelite/Lowering/` that the earlier sections describe *functionally* is described here again in
 **cost** terms — its asymptotic shape, the practical value of its `n`, and how often it runs.
 
 Nothing here is estimated. Every millisecond figure below was measured by running the pure-Python

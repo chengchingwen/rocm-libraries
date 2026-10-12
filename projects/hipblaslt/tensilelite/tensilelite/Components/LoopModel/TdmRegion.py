@@ -13,7 +13,7 @@ from rocisa.container import sgpr
 from rocisa.instruction import SAddCU32, SAddU32, SAddU64, SCSelectB32, SCmpEQU32, SCmpLtU32, \
     SLShiftLeftB32, SLShiftRightB32, SMovB32, SOrB32, SSubBU32, SSubU32
 
-from Tensile.Components import TDMSplit as _tdm_split
+from .. import TDMSplit as _tdm_split
 from ...ExecutionPolicy import isPersistent, isStreamK
 from ..TensorDataMover import TensorDataMoverLoad
 from ..TDMFuse import tdmSetIncsSgpr

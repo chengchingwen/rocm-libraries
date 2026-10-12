@@ -3,7 +3,7 @@
 The code states the claim in one line (Constraint 2, tightened to a 5–10% prose budget).
 Everything that used to sit beside it is here, unedited, keyed by where it was.
 
-## `Tensile/LoopModel/__init__.py <module>` (module)
+## `tensilelite/LoopModel/__init__.py <module>` (module)
 
 ```
 LoopModel — the θ schedule-model decoder, ported into TensileLite (was `spacetime` in the
@@ -14,21 +14,21 @@ TensileLite / AMD vocabulary.  The `adapter` package maps TensileLite parameters
 nothing in the core imports it.  Build a θ directly, or via `adapter.params_to_theta`.
 
 The named example configurations are NOT here: they are test fixtures, consumed only by the unit
-tests, and live with them in `Tensile/Tests/unit/loopmodel_scenarios.py` beside `gir_fixtures.py`.
+tests, and live with them in `tensilelite/Tests/unit/loopmodel_scenarios.py` beside `gir_fixtures.py`.
 They were in this package as `scenarios.py` and had no library consumer.
 
 θ = (tile, path, ord, off, S, ρ, Φ).  S is DERIVED from (ord, register-axis tile);
 the reuse scheme is the fragment's rate-group partition (a `tile` value), not a flag.
 ```
 
-## `Tensile/LoopModel/__init__.py:1` (comment)
+## `tensilelite/LoopModel/__init__.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/adapter/__init__.py <module>` (module)
+## `tensilelite/LoopModel/adapter/__init__.py <module>` (module)
 
 ```
 The adapter: TensileLite Solution -> theta. The only place AMD/TensileLite vocabulary appears.
@@ -45,14 +45,14 @@ nothing about the schedule model. `build.py` knows the schedule model and nothin
 Was two modules, `bridge.py` and `translate.py`, which split one job along no particular line.
 ```
 
-## `Tensile/LoopModel/adapter/__init__.py:1` (comment)
+## `tensilelite/LoopModel/adapter/__init__.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/adapter/build.py.params_to_theta` (function)
+## `tensilelite/LoopModel/adapter/build.py.params_to_theta` (function)
 
 ```
 Translate a TensileLite-param dict into a CANONICAL θ point.
@@ -64,7 +64,7 @@ Translate a TensileLite-param dict into a CANONICAL θ point.
     axis, plus reuse over the substep).  S is then DERIVED, not flagged.
 ```
 
-## `Tensile/LoopModel/adapter/build.py._place_read_offsets` (function)
+## `tensilelite/LoopModel/adapter/build.py._place_read_offsets` (function)
 
 ```
 Write `off(read, <level>) = PLR` for each requesting op-class, at ITS OWN read-ahead level.
@@ -80,7 +80,7 @@ Write `off(read, <level>) = PLR` for each requesting op-class, at ITS OWN read-a
     approximation is what put the MX scale rings' read-ahead on the axis their load spans.
 ```
 
-## `Tensile/LoopModel/adapter/build.py._fit_register_budget` (function)
+## `tensilelite/LoopModel/adapter/build.py._fit_register_budget` (function)
 
 ```
 DERIVE THE REGISTER PARTITION from the budget (#315/#318): how many fan tiles stay at the
@@ -107,14 +107,14 @@ DERIVE THE REGISTER PARTITION from the budget (#315/#318): how many fan tiles st
     `OutputLoopIR` dump), and then this is a no-op — the same standing `ReadVectorElems` has.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:1` (comment)
+## `tensilelite/LoopModel/adapter/build.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/adapter/build.py:79` (comment)
+## `tensilelite/LoopModel/adapter/build.py:79` (comment)
 
 ```
 # NOTE (MI shape): the default MI 16×16×64 matches the PAPER's base GEMM (paper line 52) and gives
@@ -122,14 +122,14 @@ DERIVE THE REGISTER PARTITION from the budget (#315/#318): how many fan tiles st
 # CATALOG fp16 opcode is actually 16×16×32 (8 VGPRs/frag); K=64 fp16 is not a real single opcode.  (ADR 0007 #15)
 ```
 
-## `Tensile/LoopModel/adapter/build.py:95` (comment)
+## `tensilelite/LoopModel/adapter/build.py:95` (comment)
 
 ```
 # PER-OPERAND overrides. -1 = "use the whole-kernel preset" (PrefetchGlobalRead /
 # PrefetchLocalRead / NumLdsBlk respectively), which is the historical single-value behaviour.  (ADR 0007 #14)
 ```
 
-## `Tensile/LoopModel/adapter/build.py:102` (comment)
+## `tensilelite/LoopModel/adapter/build.py:102` (comment)
 
 ```
 # {operand: elements ONE shared->register instruction moves per lane} — the movement quantum's
@@ -137,14 +137,14 @@ DERIVE THE REGISTER PARTITION from the budget (#315/#318): how many fan tiles st
 # bridge fills it from the writer.  (ADR 0007 #12)
 ```
 
-## `Tensile/LoopModel/adapter/build.py:106` (comment)
+## `tensilelite/LoopModel/adapter/build.py:106` (comment)
 
 ```
 # {operand: ir.QuantumMap} — the §2.2 movement quantum, SUPPLIED. Two Exprs over the tile
 # coordinate (`carrier`, `slot`); load-vs-broadcast is the RANGE of `slot`, not a tag.  (ADR 0007 #11)
 ```
 
-## `Tensile/LoopModel/adapter/build.py:164` (comment)
+## `tensilelite/LoopModel/adapter/build.py:164` (comment)
 
 ```
 # Prefetch depths are the copy (PGR) / read (PLR) retime offsets — Lemma 1's peel is general in
@@ -152,7 +152,7 @@ DERIVE THE REGISTER PARTITION from the budget (#315/#318): how many fan tiles st
 # was an artificial limit that broke PGR>=3; removed.  (ADR 0007 #10)
 ```
 
-## `Tensile/LoopModel/adapter/build.py:187` (comment)
+## `tensilelite/LoopModel/adapter/build.py:187` (comment)
 
 ```
 # REGIONS ONE WAVE OCCUPIES (#245).  Sizes the READ's tile axis and decides whether the read
@@ -160,21 +160,21 @@ DERIVE THE REGISTER PARTITION from the budget (#315/#318): how many fan tiles st
 # hand-built param dict) = the split factor, i.e. the previous behaviour exactly.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:193` (comment)
+## `tensilelite/LoopModel/adapter/build.py:193` (comment)
 
 ```
 # DU (shared K): ONE axis at the FINEST split; a coarser operand is present on it at a
 # stride.  See ADR 0006.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:218` (comment)
+## `tensilelite/LoopModel/adapter/build.py:218` (comment)
 
 ```
 # canonical-mode name sets for role/region/grouping binding (only >1 modes survive in ord;
 # naming a dropped mode is harmless — the core intersects with the present inner modes).
 ```
 
-## `Tensile/LoopModel/adapter/build.py:244` (comment)
+## `tensilelite/LoopModel/adapter/build.py:244` (comment)
 
 ```
 # §2.2's CARRIER GROUP IN θ'S OWN VOCABULARY. `ReadPhi` is Φ (movement instances merged into
@@ -182,7 +182,7 @@ DERIVE THE REGISTER PARTITION from the budget (#315/#318): how many fan tiles st
 # — the sub-wave partition, a `tile` of the lane mode).  (ADR 0007 #7)
 ```
 
-## `Tensile/LoopModel/adapter/build.py:319` (comment)
+## `tensilelite/LoopModel/adapter/build.py:319` (comment)
 
 ```
 # Bind `grouping_mode` to the in-region fan (when it exists) so the fan folds into
@@ -190,14 +190,14 @@ DERIVE THE REGISTER PARTITION from the budget (#315/#318): how many fan tiles st
 # for BOTH A and B.  Absent fan (extent 1) => no grouping mode, as before.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:332` (comment)
+## `tensilelite/LoopModel/adapter/build.py:332` (comment)
 
 ```
 # copy-hop region split = HOW MANY regions this operand's copy moves, which is its own count on
 # each region axis — `aDU`, not the shared axis extent.  (ADR 0007 #5)
 ```
 
-## `Tensile/LoopModel/adapter/build.py:344` (comment)
+## `tensilelite/LoopModel/adapter/build.py:344` (comment)
 
 ```
 # The ALLOCATION bound, which is not symmetric with the register side. VGPR buffers we can grow
@@ -205,7 +205,7 @@ DERIVE THE REGISTER PARTITION from the budget (#315/#318): how many fan tiles st
 # checks it against MaxLDS, so a ring DEEPER than it reserved writes past the allocation.  (ADR 0007 #3)
 ```
 
-## `Tensile/LoopModel/adapter/build.py:361` (comment)
+## `tensilelite/LoopModel/adapter/build.py:361` (comment)
 
 ```
 # `free_split` is `aMT`/`bMT` -- the FREE-axis region count -- carried as a number so the
@@ -213,7 +213,7 @@ DERIVE THE REGISTER PARTITION from the budget (#315/#318): how many fan tiles st
 # NOT `splitA`/`splitB`, which are `mSplit * aDU` and fold the reduction axis in.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:422` (comment)
+## `tensilelite/LoopModel/adapter/build.py:422` (comment)
 
 ```
 # A fused group pairs its members BY REGION INDEX (§4.3), which is only well-defined when
@@ -221,28 +221,28 @@ DERIVE THE REGISTER PARTITION from the budget (#315/#318): how many fan tiles st
 # no region-1 instance of MXSA to pair with A's.  (ADR 0007 #2)
 ```
 
-## `Tensile/LoopModel/adapter/build.py:461` (comment)
+## `tensilelite/LoopModel/adapter/build.py:461` (comment)
 
 ```
 # the role comes off the HOP the offset retimes, so the key cannot drift from the
 # trajectory it describes (`Hop.role`, theta.HOP_ROLE).
 ```
 
-## `Tensile/LoopModel/adapter/build.py:467` (comment)
+## `tensilelite/LoopModel/adapter/build.py:467` (comment)
 
 ```
 # THE LEVEL NEEDS THE BUILT θ (it is the hop's PRESENCE, §2.2's absorption included),
 # so the entry is deferred to `_place_read_offsets` below rather than guessed here.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:584` (comment)
+## `tensilelite/LoopModel/adapter/build.py:584` (comment)
 
 ```
 # SCORE WHAT THE ALLOCATOR EMITS, not the model's ragged footprint — see
 # `geometry.operand_emitted_regs`.  (ADR 0007 #1)
 ```
 
-## `Tensile/LoopModel/adapter/fragments.py._per_operand` (function)
+## `tensilelite/LoopModel/adapter/fragments.py._per_operand` (function)
 
 ```
 Resolve a per-operand override `<base><operand>` against the whole-kernel `preset`.
@@ -253,7 +253,7 @@ Resolve a per-operand override `<base><operand>` against the whole-kernel `prese
     accumulator — simply takes the preset.
 ```
 
-## `Tensile/LoopModel/adapter/fragments.py._frag_elems` (function)
+## `tensilelite/LoopModel/adapter/fragments.py._frag_elems` (function)
 
 ```
 Elements one lane holds for one MI-tile fragment = MIInputPerThread.
@@ -265,7 +265,7 @@ Elements one lane holds for one MI-tile fragment = MIInputPerThread.
     16×16×128 fp8 A → 64 elems → 16 regs (WMMA guide §3/§8, verified vs the source).
 ```
 
-## `Tensile/LoopModel/adapter/fragments.py._acc_frag_elems` (function)
+## `tensilelite/LoopModel/adapter/fragments.py._acc_frag_elems` (function)
 
 ```
 Elements one lane holds of the ACCUMULATOR fragment = `MI_M · MI_N · MatrixInstB / 32`.
@@ -285,7 +285,7 @@ Elements one lane holds of the ACCUMULATOR fragment = `MI_M · MI_N · MatrixIns
     `d`-dial budget solve unanswerable.
 ```
 
-## `Tensile/LoopModel/adapter/fragments.py._mx_frag_elems` (function)
+## `tensilelite/LoopModel/adapter/fragments.py._mx_frag_elems` (function)
 
 ```
 MX scale elements per lane = MIInputPerThread(data) // MXBlock · duplicateFactor,
@@ -293,7 +293,7 @@ MX scale elements per lane = MIInputPerThread(data) // MXBlock · duplicateFacto
     e.g. SCALE MXBlock=32, 16×16×128: 64//32 · 2 = 4 elems → 1 VGPR (guide §6.1).
 ```
 
-## `Tensile/LoopModel/adapter/fragments.py._coalesce` (function)
+## `tensilelite/LoopModel/adapter/fragments.py._coalesce` (function)
 
 ```
 Consecutive substeps sharing one loaded register group ~ numReadsIterCoalesced.
@@ -301,14 +301,14 @@ Consecutive substeps sharing one loaded register group ~ numReadsIterCoalesced.
     width.  (LRVW/VW = 4/2 = 2 for the default two-rate kernel.)
 ```
 
-## `Tensile/LoopModel/adapter/fragments.py:1` (comment)
+## `tensilelite/LoopModel/adapter/fragments.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py.canonical_loop_order` (function)
+## `tensilelite/LoopModel/adapter/loop_order.py.canonical_loop_order` (function)
 
 ```
 The CANONICAL SPELLING of a LoopOrder value: the 3-letter shortcut when the word keeps each
@@ -330,7 +330,7 @@ The CANONICAL SPELLING of a LoopOrder value: the 3-letter shortcut when the word
     validation has one authority.
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py._canonical_ord` (function)
+## `tensilelite/LoopModel/adapter/loop_order.py._canonical_ord` (function)
 
 ```
 Build the 6 canonical Modes and emit them in the LoopOrder word order, dropping extent-1
@@ -376,7 +376,7 @@ Build the 6 canonical Modes and emit them in the LoopOrder word order, dropping 
     tree" and "reorders 12 of 96" is Q34.
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py.inner_ord_of` (function)
+## `tensilelite/LoopModel/adapter/loop_order.py.inner_ord_of` (function)
 
 ```
 The INNER (intra-chunk) modes of an ord list — those with a concrete (>0) extent.  A tiny
@@ -384,56 +384,56 @@ The INNER (intra-chunk) modes of an ord list — those with a concrete (>0) exte
     Theta to call).
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:1` (comment)
+## `tensilelite/LoopModel/adapter/loop_order.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:15` (comment)
+## `tensilelite/LoopModel/adapter/loop_order.py:15` (comment)
 
 ```
 # The canonical 6-mode vocabulary + LoopOrder word encoding (§A/§D).
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:22` (comment)
+## `tensilelite/LoopModel/adapter/loop_order.py:22` (comment)
 
 ```
 #: TILE axis -> its STORAGE-REGION axis.  An extent-1 inner mode survives ONLY when its paired
 #: split mode is live — see `_canonical_ord`.
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:123` (comment)
+## `tensilelite/LoopModel/adapter/loop_order.py:123` (comment)
 
 ```
 # THE K REGION AXIS IS THREE MODES, NOT ONE: `K_split` (the GCD of the operands' DU factors,
 # SHARED) times `K_splitA` and `K_splitB` (each operand's own residual, `own // gcd`).  (ADR 0007 #18)
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:133` (comment)
+## `tensilelite/LoopModel/adapter/loop_order.py:133` (comment)
 
 ```
 # canonical Mode NAMES kept generic-but-role-tagged so geometry's role test still works:
 # the physical mode name is the role name; extents drive m/n/k classification via broadcast.
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:144` (comment)
+## `tensilelite/LoopModel/adapter/loop_order.py:144` (comment)
 
 ```
 # `_word_to_modes` speaks the 6-letter K/M/N word, so the K region factorization is expanded
 # HERE: wherever the word places K's region axis, emit the shared link then the two residuals.  (ADR 0007 #17)
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:151` (comment)
+## `tensilelite/LoopModel/adapter/loop_order.py:151` (comment)
 
 ```
 # SET the OUTER DepthU reduction level `iter` (extent=0 → dynamic/runtime trip = K//DU), as the
 # OUTERMOST entry of `ord` (§2.4 point 1, §5.3.1 `levels = [iter] + [substep, m, n, …]`).  (ADR 0007 #16)
 ```
 
-## `Tensile/LoopModel/adapter/solution.py.kernel_to_params` (function)
+## `tensilelite/LoopModel/adapter/solution.py.kernel_to_params` (function)
 
 ```
 Translate a TensileLite Solution dict into the decoder's TensileLite-param dict.
@@ -460,7 +460,7 @@ Translate a TensileLite Solution dict into the decoder's TensileLite-param dict.
     
 ```
 
-## `Tensile/LoopModel/adapter/solution.py._read_quantum` (function)
+## `tensilelite/LoopModel/adapter/solution.py._read_quantum` (function)
 
 ```
 {operand: ((axis, factor), ...)} — which tile coordinates ONE read instruction covers.
@@ -489,7 +489,7 @@ Translate a TensileLite Solution dict into the decoder's TensileLite-param dict.
     create the pair) were each an address assumption in disguise.
 ```
 
-## `Tensile/LoopModel/adapter/solution.py._read_vector_elems` (function)
+## `tensilelite/LoopModel/adapter/solution.py._read_vector_elems` (function)
 
 ```
 {operand: elements one shared→register instruction moves per lane} — §2.2's quantum domain.
@@ -515,7 +515,7 @@ Translate a TensileLite Solution dict into the decoder's TensileLite-param dict.
     declared and refuses a widening, so a rounding surprise is a loud failure, never a silent one.
 ```
 
-## `Tensile/LoopModel/adapter/solution.py.kernel_to_ir_text` (function)
+## `tensilelite/LoopModel/adapter/solution.py.kernel_to_ir_text` (function)
 
 ```
 Return the rolled θ-IR (render_stream) for `kernel`, plus the θ translation notes and
@@ -523,14 +523,14 @@ Return the rolled θ-IR (render_stream) for `kernel`, plus the θ translation no
     caller can write it without risk to codegen.
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:1` (comment)
+## `tensilelite/LoopModel/adapter/solution.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:15` (comment)
+## `tensilelite/LoopModel/adapter/solution.py:15` (comment)
 
 ```
 # The decoder's render_* helpers use a few unicode glyphs (theta, Sigma, times, middle
@@ -538,14 +538,14 @@ Return the rolled θ-IR (render_stream) for `kernel`, plus the θ translation no
 # (unicode makes `file` report "binary" and trips some editors/diff tools).
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:46` (comment)
+## `tensilelite/LoopModel/adapter/solution.py:46` (comment)
 
 ```
 # LDS double-buffer count — the REAL kernel-derived value (2=double, 1=single/in-place),
 # not an assumption; drives in_place_shared in translate.py.
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:58` (comment)
+## `tensilelite/LoopModel/adapter/solution.py:58` (comment)
 
 ```
 # rho / agents (§2.4): how many agents cooperate on one tile.  Its own input, not derived
@@ -553,21 +553,21 @@ Return the rolled θ-IR (render_stream) for `kernel`, plus the θ translation no
 # present.  (ADR 0007 #21)
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:64` (comment)
+## `tensilelite/LoopModel/adapter/solution.py:64` (comment)
 
 ```
 # How many of those regions ONE WAVE occupies (#245): the copy writes every region, a
 # wave reaches only the ones its own free-axis offset lands in.  (ADR 0007 #20)
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:75` (comment)
+## `tensilelite/LoopModel/adapter/solution.py:75` (comment)
 
 ```
 # THE MOVEMENT QUANTUM (§2.2) — computed HERE, where the layout is knowable, and handed to
 # θ in GEMM terms.  See `_read_quantum`.
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:78` (comment)
+## `tensilelite/LoopModel/adapter/solution.py:78` (comment)
 
 ```
 # §2.2's carrier group as Φ and ρ — the two numbers θ derives the `QuantumMap` from
@@ -575,28 +575,28 @@ Return the rolled θ-IR (render_stream) for `kernel`, plus the θ translation no
 # (how many instances one instruction merges, and the sub-agent span they spread over),
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:111` (comment)
+## `tensilelite/LoopModel/adapter/solution.py:111` (comment)
 
 ```
 # MIWaveTile is stored per-operand (MIWaveTileA/B) on a derived Solution; the decoder
 # wants the [WT0, WT1] pair.
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:183` (comment)
+## `tensilelite/LoopModel/adapter/solution.py:183` (comment)
 
 ```
 # `lrvwUnrollMXS*`: the scale's own unroll-major read width, else 1 element (the
 # tile-major branch reads one scale per instruction).
 ```
 
-## `Tensile/LoopModel/adapter/target.py:1` (comment)
+## `tensilelite/LoopModel/adapter/target.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/emit/__init__.py <module>` (module)
+## `tensilelite/LoopModel/emit/__init__.py <module>` (module)
 
 ```
 emit_can (paper §5.3) — the θ → rolled region-tree IR driver.
@@ -621,7 +621,7 @@ the §5.3.1 tree restructure.
 No TensileLite / AMD vocabulary; stdlib + LoopModel core only.
 ```
 
-## `Tensile/LoopModel/emit/__init__.py.build_ir` (function)
+## `tensilelite/LoopModel/emit/__init__.py.build_ir` (function)
 
 ```
 The rolled theta-nest IR (paper 5.2/5.3): one Loop per ord inner mode, one Inst per
@@ -629,7 +629,7 @@ The rolled theta-nest IR (paper 5.2/5.3): one Loop per ord inner mode, one Inst 
     the partial unroll. See ADR 0005.
 ```
 
-## `Tensile/LoopModel/emit/__init__.py.loop_shape` (function)
+## `tensilelite/LoopModel/emit/__init__.py.loop_shape` (function)
 
 ```
 Decide, from θ alone, whether the ord yields ONE uniform steady body (cleanly
@@ -639,7 +639,7 @@ Decide, from θ alone, whether the ord yields ONE uniform steady body (cleanly
     
 ```
 
-## `Tensile/LoopModel/emit/__init__.py._Emitter` (class)
+## `tensilelite/LoopModel/emit/__init__.py._Emitter` (class)
 
 ```
 Builds the rolled theta-nest IR. One instance per (theta, S).
@@ -649,14 +649,14 @@ Builds the rolled theta-nest IR. One instance per (theta, S).
     
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:1` (comment)
+## `tensilelite/LoopModel/emit/__init__.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:46` (comment)
+## `tensilelite/LoopModel/emit/__init__.py:46` (comment)
 
 ```
 # The issuing AGENT for every instance in a single-role kernel (§5.2: ρ → `Inst.a` and `Loop.role`;
@@ -664,7 +664,7 @@ Builds the rolled theta-nest IR. One instance per (theta, S).
 # repeated at each emit site.  (ADR 0007 #25)
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:70` (comment)
+## `tensilelite/LoopModel/emit/__init__.py:70` (comment)
 
 ```
 # PRESENCE-DERIVED partition key (no m/n/k literal): each inner mode's key is the SET of
@@ -672,7 +672,7 @@ Builds the rolled theta-nest IR. One instance per (theta, S).
 # Contiguity of that key in ord is the multi-body test — general for any operand count.
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:91` (comment)
+## `tensilelite/LoopModel/emit/__init__.py:91` (comment)
 
 ```
 # PRECONDITION Q (§2.2). The quantum is SUPPLIED on the hop (translate <- bridge <- the
@@ -680,7 +680,7 @@ Builds the rolled theta-nest IR. One instance per (theta, S).
 # instruction covers is an address fact and θ is address-opaque (§2.1).  (ADR 0007 #24)
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:97` (comment)
+## `tensilelite/LoopModel/emit/__init__.py:97` (comment)
 
 ```
 # ONE obligation, ONE discharge: drop an Await a preceding instruction on the same path
@@ -688,7 +688,7 @@ Builds the rolled theta-nest IR. One instance per (theta, S).
 # boundary that is actually emitted rather than a redundant restatement of it.
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:101` (comment)
+## `tensilelite/LoopModel/emit/__init__.py:101` (comment)
 
 ```
 # No wait-count lowering: each Await keeps count=-1 (unset), the named dependency IS the
@@ -696,7 +696,7 @@ Builds the rolled theta-nest IR. One instance per (theta, S).
 # Await.kind values — nothing rewrites them between build and check.
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:108` (comment)
+## `tensilelite/LoopModel/emit/__init__.py:108` (comment)
 
 ```
 # NAME THE θ THAT FAILED. This raise runs inside a joblib worker during a whole-matrix
@@ -704,7 +704,7 @@ Builds the rolled theta-nest IR. One instance per (theta, S).
 # mxf8 run that turned a one-line defect into a guess-and-rebuild loop.  (ADR 0007 #22)
 ```
 
-## `Tensile/LoopModel/emit/copies.py._nest_copy_runs` (function)
+## `tensilelite/LoopModel/emit/copies.py._nest_copy_runs` (function)
 
 ```
 Fold each maximal run of copies in an ordered body into one ord-ordered nest.
@@ -718,7 +718,7 @@ Fold each maximal run of copies in an ordered body into one ord-ordered nest.
         pass leaves it alone.
 ```
 
-## `Tensile/LoopModel/emit/copies.py._site_awaits` (function)
+## `tensilelite/LoopModel/emit/copies.py._site_awaits` (function)
 
 ```
 Build the Await tuple for the (opname, role) consume site from its ledger obligations.
@@ -732,7 +732,7 @@ Build the Await tuple for the (opname, role) consume site from its ledger obliga
         register-group WARs (the RAW residency, the shared ring) are carried by every split.
 ```
 
-## `Tensile/LoopModel/emit/copies.py._nest_copies` (function)
+## `tensilelite/LoopModel/emit/copies.py._nest_copies` (function)
 
 ```
 Order the chunk's copies by the ORD, not by operand — one nest, first-touch merged.
@@ -741,14 +741,14 @@ Order the chunk's copies by the ORD, not by operand — one nest, first-touch me
         
 ```
 
-## `Tensile/LoopModel/emit/copies.py:1` (comment)
+## `tensilelite/LoopModel/emit/copies.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/emit/copies.py:28` (comment)
+## `tensilelite/LoopModel/emit/copies.py:28` (comment)
 
 ```
 # The issuing AGENT for every instance in a single-role kernel (§5.2: ρ → `Inst.a` and `Loop.role`;
@@ -756,7 +756,7 @@ Order the chunk's copies by the ORD, not by operand — one nest, first-touch me
 # repeated at each emit site.  (ADR 0007 #31)
 ```
 
-## `Tensile/LoopModel/emit/copies.py:78` (comment)
+## `tensilelite/LoopModel/emit/copies.py:78` (comment)
 
 ```
 # A Φ-fused movement's obligations are keyed by the MOVEMENT, because one cooperative
@@ -764,21 +764,21 @@ Order the chunk's copies by the ORD, not by operand — one nest, first-touch me
 # member's consume site resolves to its own per-op-class obligations PLUS the movement's.  (ADR 0007 #30)
 ```
 
-## `Tensile/LoopModel/emit/copies.py:89` (comment)
+## `tensilelite/LoopModel/emit/copies.py:89` (comment)
 
 ```
 # the dep is the producer ENDPOINT plus the generation qualifiers that pick which
 # instance: the chunk the consumer reads, and (per-region π) its region.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:106` (comment)
+## `tensilelite/LoopModel/emit/copies.py:106` (comment)
 
 ```
 # per-movement bytes: each member contributes its OWN per-region share (tile / its own
 # split), so a region movement of a split member is tile/split, an unsplit member whole.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:124` (comment)
+## `tensilelite/LoopModel/emit/copies.py:124` (comment)
 
 ```
 # `part` is the intra-tile transfer index of ONE movement (1 here — we do not model
@@ -786,14 +786,14 @@ Order the chunk's copies by the ORD, not by operand — one nest, first-touch me
 # supplied by the enclosing region Loop.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:141` (comment)
+## `tensilelite/LoopModel/emit/copies.py:141` (comment)
 
 ```
 # the buffer slot is REGION-INVARIANT (all regions of a chunk land in the same ring
 # generation), so it is computed once for the rolled copy, not per region.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:153` (comment)
+## `tensilelite/LoopModel/emit/copies.py:153` (comment)
 
 ```
 # drain step under Bind(iter=T−M+t): use the STEADY symbolic slot (keyed on iter,
@@ -801,7 +801,7 @@ Order the chunk's copies by the ORD, not by operand — one nest, first-touch me
 # deepest operand drops FIRST — copy present iff off_p ≤ M−1−t (§5.3.1 point 2).
 ```
 
-## `Tensile/LoopModel/emit/copies.py:163` (comment)
+## `tensilelite/LoopModel/emit/copies.py:163` (comment)
 
 ```
 # PROLOGUE copies fill EMPTY (not-yet-read) buffers → no vacating read → no WAR.
@@ -809,21 +809,21 @@ Order the chunk's copies by the ORD, not by operand — one nest, first-touch me
 # needed.  (ADR 0007 #28)
 ```
 
-## `Tensile/LoopModel/emit/copies.py:184` (comment)
+## `tensilelite/LoopModel/emit/copies.py:184` (comment)
 
 ```
 # The COPY nests over EVERY ord level -- including the agent-served ones the read/compute
 # nest dropped.  Both the sort order and the extent map need the full list.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:189` (comment)
+## `tensilelite/LoopModel/emit/copies.py:189` (comment)
 
 ```
 # levels come from the ENUMERATION axes: every axis a movement is enumerated by must
 # exist as an enclosing loop.  (ADR 0007 #27)
 ```
 
-## `Tensile/LoopModel/emit/helpers.py._check_peel_is_emittable` (function)
+## `tensilelite/LoopModel/emit/helpers.py._check_peel_is_emittable` (function)
 
 ```
 Refuse a θ whose peel `build_ir` cannot express — instead of emitting a DIFFERENT schedule.
@@ -832,7 +832,7 @@ Refuse a θ whose peel `build_ir` cannot express — instead of emitting a DIFFE
     
 ```
 
-## `Tensile/LoopModel/emit/helpers.py._scope_of` (function)
+## `tensilelite/LoopModel/emit/helpers.py._scope_of` (function)
 
 ```
 The PROC-SCOPE the discharge of obligation `ob` must reach (§2.4, §5.2's scope ladder).
@@ -841,7 +841,7 @@ The PROC-SCOPE the discharge of obligation `ob` must reach (§2.4, §5.2's scope
     
 ```
 
-## `Tensile/LoopModel/emit/helpers.py._reduction_inner_mode` (function)
+## `tensilelite/LoopModel/emit/helpers.py._reduction_inner_mode` (function)
 
 ```
 `(name, extent)` of the ord-level READ-AHEAD LEVEL, used at its one call site purely as a
@@ -855,7 +855,7 @@ The PROC-SCOPE the discharge of obligation `ob` must reach (§2.4, §5.2's scope
     sufficient for a "is there one" test and nothing more is read from it.
 ```
 
-## `Tensile/LoopModel/emit/helpers.py._read_hop_quantum` (function)
+## `tensilelite/LoopModel/emit/helpers.py._read_hop_quantum` (function)
 
 ```
 The `ir.QuantumMap` of `op`'s shared->register read, or None for the identity merge.
@@ -866,7 +866,7 @@ The `ir.QuantumMap` of `op`'s shared->register read, or None for the identity me
     `.regs` for the registers it writes).
 ```
 
-## `Tensile/LoopModel/emit/helpers.py._resolve_ft` (function)
+## `tensilelite/LoopModel/emit/helpers.py._resolve_ft` (function)
 
 ```
 Rewrite a subtree, RESOLVING every first-touch guard on `mode` to a known outcome:
@@ -878,7 +878,7 @@ Rewrite a subtree, RESOLVING every first-touch guard on `mode` to a known outcom
     and why this cannot be a local edit at the guard site.
 ```
 
-## `Tensile/LoopModel/emit/helpers.py._peel_first_touch` (function)
+## `tensilelite/LoopModel/emit/helpers.py._peel_first_touch` (function)
 
 ```
 §5.1 multi-body: HOIST first-touch guards on THIS loop's mode into the loop STRUCTURE.
@@ -893,7 +893,7 @@ Rewrite a subtree, RESOLVING every first-touch guard on `mode` to a known outcom
     guard then stays, which is correct, just costlier.
 ```
 
-## `Tensile/LoopModel/emit/helpers.py._region_note` (function)
+## `tensilelite/LoopModel/emit/helpers.py._region_note` (function)
 
 ```
 Under the per-region π (`theta.per_region_completion`), the region mode whose value
@@ -907,7 +907,7 @@ Under the per-region π (`theta.per_region_completion`), the region mode whose v
     only the emitted discharge point is instance-named.
 ```
 
-## `Tensile/LoopModel/emit/helpers.py._region_mode_of` (function)
+## `tensilelite/LoopModel/emit/helpers.py._region_mode_of` (function)
 
 ```
 The inner mode that ENUMERATES this fused group's storage regions, or None if the group
@@ -919,7 +919,7 @@ The inner mode that ENUMERATES this fused group's storage regions, or None if th
     
 ```
 
-## `Tensile/LoopModel/emit/helpers.py._enum_axes` (function)
+## `tensilelite/LoopModel/emit/helpers.py._enum_axes` (function)
 
 ```
 The axes that ENUMERATE this movement's regions — the REPRESENTATIVE member's own, not
@@ -929,7 +929,7 @@ The axes that ENUMERATE this movement's regions — the REPRESENTATIVE member's 
     
 ```
 
-## `Tensile/LoopModel/emit/helpers.py._group_region_modes` (function)
+## `tensilelite/LoopModel/emit/helpers.py._group_region_modes` (function)
 
 ```
 EVERY region axis this movement spans — the union over its members, not one member's.
@@ -938,7 +938,7 @@ EVERY region axis this movement spans — the union over its members, not one me
     
 ```
 
-## `Tensile/LoopModel/emit/helpers.py._group_guard` (function)
+## `tensilelite/LoopModel/emit/helpers.py._group_guard` (function)
 
 ```
 `Cond` predicates restricting a group-restricted read to the coordinates it OWNS.
@@ -947,7 +947,7 @@ EVERY region axis this movement spans — the union over its members, not one me
     
 ```
 
-## `Tensile/LoopModel/emit/helpers.py._axis_stride` (function)
+## `tensilelite/LoopModel/emit/helpers.py._axis_stride` (function)
 
 ```
 How many values of axis `g` this movement skips between issues.
@@ -962,7 +962,7 @@ How many values of axis `g` this movement skips between issues.
     most one axis), so this is a guard, not a branch anyone takes.
 ```
 
-## `Tensile/LoopModel/emit/helpers.py._bulk_hop` (function)
+## `tensilelite/LoopModel/emit/helpers.py._bulk_hop` (function)
 
 ```
 `op`'s BULK (cooperative, whole-tile) hop, or None if it has none.
@@ -972,14 +972,14 @@ How many values of axis `g` this movement skips between issues.
     gets a confident wrong answer (it names a reduction axis where a region axis belongs).
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:1` (comment)
+## `tensilelite/LoopModel/emit/helpers.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:25` (comment)
+## `tensilelite/LoopModel/emit/helpers.py:25` (comment)
 
 ```
 # The issuing AGENT for every instance in a single-role kernel (§5.2: ρ → `Inst.a` and `Loop.role`;
@@ -987,7 +987,7 @@ How many values of axis `g` this movement skips between issues.
 # repeated at each emit site.  (ADR 0007 #33)
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:185` (comment)
+## `tensilelite/LoopModel/emit/helpers.py:185` (comment)
 
 ```
 # the COPY HOP's presence set names the region axis, and is empty when the tile is not
@@ -995,14 +995,14 @@ How many values of axis `g` this movement skips between issues.
 # same one question, asked of the hop instead of reconstructed from two fields.
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:290` (comment)
+## `tensilelite/LoopModel/emit/helpers.py:290` (comment)
 
 ```
 # a *-WAR's consumer is the REFILLER: the shared ring is refilled by the copy, a register
 # group by the read itself.
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:305` (comment)
+## `tensilelite/LoopModel/emit/helpers.py:305` (comment)
 
 ```
 # "reads" = every INPUT operand that ends in a register fragment (two-hop shared→reg AND one-
@@ -1010,14 +1010,14 @@ How many values of axis `g` this movement skips between issues.
 # copy (its single hop lands in registers) and awaits on the VMEM (load) counter.  (ADR 0007 #32)
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:309` (comment)
+## `tensilelite/LoopModel/emit/helpers.py:309` (comment)
 
 ```
 # a "scale" operand = an INPUT read beyond the two matmul inputs (an extra elementwise/
 # broadcast operand, §7.1) — presence-derived, no "MX" name test.
 ```
 
-## `Tensile/LoopModel/emit/nest.py.build_level` (function)
+## `tensilelite/LoopModel/emit/nest.py.build_level` (function)
 
 ```
 Rolled region node for level `li..`.  Body = reads whose read_level is this mode
@@ -1028,7 +1028,7 @@ Rolled region node for level `li..`.  Body = reads whose read_level is this mode
         a fully-peeled level resets to 0 every `off` at levels INNER to it.
 ```
 
-## `Tensile/LoopModel/emit/nest.py._drain_step` (function)
+## `tensilelite/LoopModel/emit/nest.py._drain_step` (function)
 
 ```
 One drain step (paper §5.3.1 `i = T−M+t`): the ROLLED read/wmma nest (reduction stays a
@@ -1042,14 +1042,14 @@ One drain step (paper §5.3.1 `i = T−M+t`): the ROLLED read/wmma nest (reducti
         copies/reads use the SAME steady `Expr(var=iter, …)` placement — no special `T−Δ` slot.
 ```
 
-## `Tensile/LoopModel/emit/nest.py:1` (comment)
+## `tensilelite/LoopModel/emit/nest.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/emit/nest.py:27` (comment)
+## `tensilelite/LoopModel/emit/nest.py:27` (comment)
 
 ```
 # The issuing AGENT for every instance in a single-role kernel (§5.2: ρ → `Inst.a` and `Loop.role`;
@@ -1057,14 +1057,14 @@ One drain step (paper §5.3.1 `i = T−M+t`): the ROLLED read/wmma nest (reducti
 # repeated at each emit site.  (ADR 0007 #38)
 ```
 
-## `Tensile/LoopModel/emit/nest.py:43` (comment)
+## `tensilelite/LoopModel/emit/nest.py:43` (comment)
 
 ```
 # AWAITS from the ledger (step 9b): the wmma consumes each read operand's REGISTER residency
 # (X@register RAW).  One Await per read operand, derived from its obligation (dscnt/vmem).
 ```
 
-## `Tensile/LoopModel/emit/nest.py:48` (comment)
+## `tensilelite/LoopModel/emit/nest.py:48` (comment)
 
 ```
 # REGISTER PLACEMENT the wmma CONSUMES, PER READ OPERAND — the name-determining tile coord
@@ -1072,7 +1072,7 @@ One drain step (paper §5.3.1 `i = T−M+t`): the ROLLED read/wmma nest (reducti
 # (`_read_placement` with dr=0): the value a PRIOR iteration's read-ahead deposited.  (ADR 0007 #37)
 ```
 
-## `Tensile/LoopModel/emit/nest.py:69` (comment)
+## `tensilelite/LoopModel/emit/nest.py:69` (comment)
 
 ```
 # NLL suppression (drain last steps): a read that VARIES over the reduction substep
@@ -1080,7 +1080,7 @@ One drain step (paper §5.3.1 `i = T−M+t`): the ROLLED read/wmma nest (reducti
 # that read crosses into the OUT-OF-BOUNDS next reduction chunk.  (ADR 0007 #36)
 ```
 
-## `Tensile/LoopModel/emit/nest.py:77` (comment)
+## `tensilelite/LoopModel/emit/nest.py:77` (comment)
 
 ```
 # register-group ownership: this read fills ONE group, so it belongs only at the
@@ -1088,35 +1088,35 @@ One drain step (paper §5.3.1 `i = T−M+t`): the ROLLED read/wmma nest (reducti
 # outside first-touch, matching how those two already nest.
 ```
 
-## `Tensile/LoopModel/emit/nest.py:82` (comment)
+## `tensilelite/LoopModel/emit/nest.py:82` (comment)
 
 ```
 # first-touch: wrap in `mode == <anchor>` for each enclosing invariant mode (outermost
 # first, so the outermost guard is the outermost node).  (ADR 0007 #35)
 ```
 
-## `Tensile/LoopModel/emit/nest.py:92` (comment)
+## `tensilelite/LoopModel/emit/nest.py:92` (comment)
 
 ```
 # The wmma sits at `leaf_mode` -- the deepest level the accumulator varies over -- and the
 # nest continues below it for any level the output does not traverse.
 ```
 
-## `Tensile/LoopModel/emit/nest.py:109` (comment)
+## `tensilelite/LoopModel/emit/nest.py:109` (comment)
 
 ```
 # HOISTED ABOVE THE WHOLE INNER NEST, so the grouping mode is not a loop variable
 # here and `_group_guard`'s predicate would reference a name that is not in scope.  (ADR 0007 #34)
 ```
 
-## `Tensile/LoopModel/emit/nest.py:132` (comment)
+## `tensilelite/LoopModel/emit/nest.py:132` (comment)
 
 ```
 # deepest operand drops FIRST: a copy is present iff off_p ≤ M−1−t.  The steady copy_insts
 # emits every copy; drop the drained ones by off (§5.3.1 point 2, no OOB copy_p(T)).
 ```
 
-## `Tensile/LoopModel/emit/reads.py._read_groups` (function)
+## `tensilelite/LoopModel/emit/reads.py._read_groups` (function)
 
 ```
 How many INSTRUCTIONS this operand's read is split into, and which register groups each
@@ -1126,7 +1126,7 @@ How many INSTRUCTIONS this operand's read is split into, and which register grou
         
 ```
 
-## `Tensile/LoopModel/emit/reads.py.read_inst` (function)
+## `tensilelite/LoopModel/emit/reads.py.read_inst` (function)
 
 ```
 `shift` = the PLR read-ahead applied to THIS read's reduction coord (default dr).  The
@@ -1135,7 +1135,7 @@ How many INSTRUCTIONS this operand's read is split into, and which register grou
         see `_read_groups`); the coord and size are the fragment's either way.
 ```
 
-## `Tensile/LoopModel/emit/reads.py._first_touch_modes` (function)
+## `tensilelite/LoopModel/emit/reads.py._first_touch_modes` (function)
 
 ```
 Enclosing inner modes the op is INVARIANT over — non-presence modes at an ord position
@@ -1145,7 +1145,7 @@ Enclosing inner modes the op is INVARIANT over — non-presence modes at an ord 
         
 ```
 
-## `Tensile/LoopModel/emit/reads.py._read_anchor` (function)
+## `tensilelite/LoopModel/emit/reads.py._read_anchor` (function)
 
 ```
 `{invariant mode: value}` at which `op`'s read-ahead must fire — the ANCHOR (#331).
@@ -1154,7 +1154,7 @@ Enclosing inner modes the op is INVARIANT over — non-presence modes at an ord 
         
 ```
 
-## `Tensile/LoopModel/emit/reads.py._fill_read_inst` (function)
+## `tensilelite/LoopModel/emit/reads.py._fill_read_inst` (function)
 
 ```
 One DIRECT (unshifted) prologue read of `op` at the concrete presence-coord `coord_dict`
@@ -1166,7 +1166,7 @@ One DIRECT (unshifted) prologue read of `op` at the concrete presence-coord `coo
         prologue read at a fixed coord must show a resolvable buffer + its register group.
 ```
 
-## `Tensile/LoopModel/emit/reads.py.fill_reads` (function)
+## `tensilelite/LoopModel/emit/reads.py.fill_reads` (function)
 
 ```
 PROLOGUE read-ahead fill (Lemma 3d, §5.3.1 pt5): pre-issue exactly the first-trip reads
@@ -1176,14 +1176,14 @@ PROLOGUE read-ahead fill (Lemma 3d, §5.3.1 pt5): pre-issue exactly the first-tr
         register gens the steady body's first trip consumes; no wmma.
 ```
 
-## `Tensile/LoopModel/emit/reads.py:1` (comment)
+## `tensilelite/LoopModel/emit/reads.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/emit/reads.py:27` (comment)
+## `tensilelite/LoopModel/emit/reads.py:27` (comment)
 
 ```
 # The issuing AGENT for every instance in a single-role kernel (§5.2: ρ → `Inst.a` and `Loop.role`;
@@ -1191,35 +1191,35 @@ PROLOGUE read-ahead fill (Lemma 3d, §5.3.1 pt5): pre-issue exactly the first-tr
 # repeated at each emit site.  (ADR 0007 #45)
 ```
 
-## `Tensile/LoopModel/emit/reads.py:62` (comment)
+## `tensilelite/LoopModel/emit/reads.py:62` (comment)
 
 ```
 # The read's awaits come from the ledger at the site (op, "read"): its RAW residency on
 # whatever filled the buffer, plus any in-place refill WAR.  (ADR 0007 #44)
 ```
 
-## `Tensile/LoopModel/emit/reads.py:67` (comment)
+## `tensilelite/LoopModel/emit/reads.py:67` (comment)
 
 ```
 # The fold converts the shifted PRESENCE POINT back to the TILE that names its carrier
 # group (§2.2); `read_fold` is the one derivation, shared with `_first_touch_modes`.
 ```
 
-## `Tensile/LoopModel/emit/reads.py:73` (comment)
+## `tensilelite/LoopModel/emit/reads.py:73` (comment)
 
 ```
 # `advance=shift` records the §5.3.1 pt5 SHAPE on the node: 0 = INPLACE (in place, one line
 # before its own wmma), non-zero = PREFETCH (hoisted).  σ_c defers only a hoisted refill.
 ```
 
-## `Tensile/LoopModel/emit/reads.py:91` (comment)
+## `tensilelite/LoopModel/emit/reads.py:91` (comment)
 
 ```
 # A PARTIALLY FOLDED axis is at or inner to the read level (it is still in presence), so it
 # is not in the slice above; it is added here with its modulus.  (ADR 0007 #42)
 ```
 
-## `Tensile/LoopModel/emit/reads.py:132` (comment)
+## `tensilelite/LoopModel/emit/reads.py:132` (comment)
 
 ```
 # PROLOGUE fill: the registers are EMPTY (nothing has read them yet), so there is no
@@ -1227,7 +1227,7 @@ PROLOGUE read-ahead fill (Lemma 3d, §5.3.1 pt5): pre-issue exactly the first-tr
 # `_copy_inst(war=False)` already applies to the prologue ramp copies.  (ADR 0007 #40)
 ```
 
-## `Tensile/LoopModel/emit/reads.py:150` (comment)
+## `tensilelite/LoopModel/emit/reads.py:150` (comment)
 
 ```
 # `preloaded_tiles` derives the per-group `dr_g` itself (§5.3.1 pt5: prologue depth =
@@ -1235,7 +1235,7 @@ PROLOGUE read-ahead fill (Lemma 3d, §5.3.1 pt5): pre-issue exactly the first-tr
 # is 0 — one shape, consistently.  (ADR 0007 #39)
 ```
 
-## `Tensile/LoopModel/fuse.py <module>` (module)
+## `tensilelite/LoopModel/fuse.py <module>` (module)
 
 ```
 The Φ fuse GROUPING — which operands share one aliased TDM descriptor.
@@ -1261,7 +1261,7 @@ each scale one, because A is ~32x the bytes of a scale and an equal split would 
 waves.  `KernelWriterAssembly.tdmWaveSelect` emits both; the range form needs no power-of-two.
 ```
 
-## `Tensile/LoopModel/fuse.py.wave_ranges` (function)
+## `tensilelite/LoopModel/fuse.py.wave_ranges` (function)
 
 ```
 `[(member_index, first_wave, count)]` for one group, or None for the parity rule.
@@ -1274,7 +1274,7 @@ waves.  `KernelWriterAssembly.tdmWaveSelect` emits both; the range form needs no
     
 ```
 
-## `Tensile/LoopModel/fuse.py.fuse_groups` (function)
+## `tensilelite/LoopModel/fuse.py.fuse_groups` (function)
 
 ```
 The Φ groups for `fuse`, restricted to operands actually `present`.
@@ -1285,7 +1285,7 @@ The Φ groups for `fuse`, restricted to operands actually `present`.
     
 ```
 
-## `Tensile/LoopModel/fuse.py.needs_mx` (function)
+## `tensilelite/LoopModel/fuse.py.needs_mx` (function)
 
 ```
 Is `fuse` MEANINGLESS without MX scales — i.e. does it lose every group without them?
@@ -1297,7 +1297,7 @@ Is `fuse` MEANINGLESS without MX scales — i.e. does it lose every group withou
     
 ```
 
-## `Tensile/LoopModel/fuse.py.crosses_data_and_scale` (function)
+## `tensilelite/LoopModel/fuse.py.crosses_data_and_scale` (function)
 
 ```
 Does any group mix a DATA operand with a SCALE one?
@@ -1308,28 +1308,28 @@ Does any group mix a DATA operand with a SCALE one?
     
 ```
 
-## `Tensile/LoopModel/fuse.py:1` (comment)
+## `tensilelite/LoopModel/fuse.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/fuse.py:27` (comment)
+## `tensilelite/LoopModel/fuse.py:27` (comment)
 
 ```
 # operand names are θ op-class names, which coincide with the scaffold's `tensorChar`
 # ('A', 'B', 'MXSA', 'MXSB') — the two vocabularies agree here, so no translation is needed.
 ```
 
-## `Tensile/LoopModel/fuse.py:36` (comment)
+## `tensilelite/LoopModel/fuse.py:36` (comment)
 
 ```
 # 6 (`all4`) — DISCRIMINATOR, not a shipping grouping. Every operand in ONE group at one wave
 # each, so it is the only point with a 3+-member group and NO unfused operand.  (ADR 0007 #47)
 ```
 
-## `Tensile/LoopModel/geometry.py <module>` (module)
+## `tensilelite/LoopModel/geometry.py <module>` (module)
 
 ```
 Geometry — the ONE module that owns the layout arithmetic.
@@ -1355,7 +1355,7 @@ Inputs are STRUCTURAL θ facts, not fitted numbers:
   * the operand's rate-group partition count — the authored MT-half split (from PLR).
 ```
 
-## `Tensile/LoopModel/geometry.py.axis_tiles` (function)
+## `tensilelite/LoopModel/geometry.py.axis_tiles` (function)
 
 ```
 Number of compute-atom tiles along one axis = size of logical_divide(tile, atom) in
@@ -1365,7 +1365,7 @@ Number of compute-atom tiles along one axis = size of logical_divide(tile, atom)
     per-wave tile count feeding ord.
 ```
 
-## `Tensile/LoopModel/geometry.py.broadcast_axes` (function)
+## `tensilelite/LoopModel/geometry.py.broadcast_axes` (function)
 
 ```
 The intra-iteration loop axes this operand is CONSTANT over (does NOT depend on).  A[m,k] is
@@ -1375,7 +1375,7 @@ The intra-iteration loop axes this operand is CONSTANT over (does NOT depend on)
     read placement.  (Formerly called `nullspace` — the stride-0 axes of the data map.)
 ```
 
-## `Tensile/LoopModel/geometry.py._quantum_candidate_axes` (function)
+## `tensilelite/LoopModel/geometry.py._quantum_candidate_axes` (function)
 
 ```
 `[(name, extent), ...]` in ord order (outer→inner) — the axes a per-lane hop's quantum may
@@ -1386,7 +1386,7 @@ The intra-iteration loop axes this operand is CONSTANT over (does NOT depend on)
     consulting presence here would close a loop.
 ```
 
-## `Tensile/LoopModel/geometry.py.derive_quantum` (function)
+## `tensilelite/LoopModel/geometry.py.derive_quantum` (function)
 
 ```
 §2.2's carrier group as `Φ` applied to `ρ` — the `ir.QuantumMap` DERIVED, not supplied.
@@ -1395,7 +1395,7 @@ The intra-iteration loop axes this operand is CONSTANT over (does NOT depend on)
     
 ```
 
-## `Tensile/LoopModel/geometry.py.hop_quantum` (function)
+## `tensilelite/LoopModel/geometry.py.hop_quantum` (function)
 
 ```
 This hop's `QuantumMap`: the explicit override if one was supplied, else `Φ∘ρ` derived.
@@ -1404,7 +1404,7 @@ This hop's `QuantumMap`: the explicit override if one was supplied, else `Φ∘�
     deviation from §2.2, not the default path.
 ```
 
-## `Tensile/LoopModel/geometry.py.quantum_factors` (function)
+## `tensilelite/LoopModel/geometry.py.quantum_factors` (function)
 
 ```
 `{axis: factor}` — how many CONSECUTIVE coordinates of each axis one instruction of a
@@ -1415,7 +1415,7 @@ This hop's `QuantumMap`: the explicit override if one was supplied, else `Φ∘�
     
 ```
 
-## `Tensile/LoopModel/geometry.py.quantum_axes` (function)
+## `tensilelite/LoopModel/geometry.py.quantum_axes` (function)
 
 ```
 The intra-iteration axes ONE INSTRUCTION of a per-lane hop spans WHOLE (§2.2).
@@ -1426,7 +1426,7 @@ The intra-iteration axes ONE INSTRUCTION of a per-lane hop spans WHOLE (§2.2).
     coordinates that still vary.  Callers that need the partial case read `quantum_factors`.
 ```
 
-## `Tensile/LoopModel/geometry.py.hop_broadcast` (function)
+## `tensilelite/LoopModel/geometry.py.hop_broadcast` (function)
 
 ```
 The intra-iteration axes ONE INSTANCE OF THIS HOP does not vary over — presence PER HOP
@@ -1436,7 +1436,7 @@ The intra-iteration axes ONE INSTANCE OF THIS HOP does not vary over — presenc
     
 ```
 
-## `Tensile/LoopModel/geometry.py.hop_fold` (function)
+## `tensilelite/LoopModel/geometry.py.hop_fold` (function)
 
 ```
 `{axis: factor}` for the axes this hop's quantum folds only PARTIALLY (`1 < factor < extent`).
@@ -1445,7 +1445,7 @@ The intra-iteration axes ONE INSTANCE OF THIS HOP does not vary over — presenc
     
 ```
 
-## `Tensile/LoopModel/geometry.py.free_tiles` (function)
+## `tensilelite/LoopModel/geometry.py.free_tiles` (function)
 
 ```
 Tiles the operand fans over = product of extents of its OWN free presence modes
@@ -1454,7 +1454,7 @@ Tiles the operand fans over = product of extents of its OWN free presence modes
     name→Mode re-lookup (that scanner existed only because the presence family was string-only).
 ```
 
-## `Tensile/LoopModel/geometry.py.k_tiles` (function)
+## `tensilelite/LoopModel/geometry.py.k_tiles` (function)
 
 ```
 Reduction substeps per kiter = product of extents of the REDUCTION modes
@@ -1466,7 +1466,7 @@ Reduction substeps per kiter = product of extents of the REDUCTION modes
     over-count #212 measured (C = 4 x 2 x 16 = 128 registers for a tile that holds 4 x 16 = 64).
 ```
 
-## `Tensile/LoopModel/geometry.py.reduction_tiles` (function)
+## `tensilelite/LoopModel/geometry.py.reduction_tiles` (function)
 
 ```
 Reduction substeps THIS operand traverses = product of extents of its presence modes that
@@ -1475,7 +1475,7 @@ Reduction substeps THIS operand traverses = product of extents of its presence m
     operand's presence, which is what `presence_tiles` multiplies out.
 ```
 
-## `Tensile/LoopModel/geometry.py.presence_tiles` (function)
+## `tensilelite/LoopModel/geometry.py.presence_tiles` (function)
 
 ```
 Distinct tiles of `op` one kiter touches = product of extents of its WHOLE presence set
@@ -1484,7 +1484,7 @@ Distinct tiles of `op` one kiter touches = product of extents of its WHOLE prese
     which silently assumed every operand is present on the reduction (#212).
 ```
 
-## `Tensile/LoopModel/geometry.py.wmma_grid` (function)
+## `tensilelite/LoopModel/geometry.py.wmma_grid` (function)
 
 ```
 (free-tiles of input-0, free-tiles of input-1, k_tiles) for one kiter — the matmul grid
@@ -1493,7 +1493,7 @@ Distinct tiles of `op` one kiter touches = product of extents of its WHOLE prese
     kernel with a different input count is out of the matmul-primitive scope (§7.1).
 ```
 
-## `Tensile/LoopModel/geometry.py.frag_regs` (function)
+## `tensilelite/LoopModel/geometry.py.frag_regs` (function)
 
 ```
 Registers one fragment occupies per lane, DERIVED by recasting the per-lane element
@@ -1503,7 +1503,7 @@ Registers one fragment occupies per lane, DERIVED by recasting the per-lane elem
     (2B) → scale 2 → 8 regs.  Falls back to a byte ceiling when elem_bytes ∤ reg_bytes.
 ```
 
-## `Tensile/LoopModel/geometry.py.readahead_level_of` (function)
+## `tensilelite/LoopModel/geometry.py.readahead_level_of` (function)
 
 ```
 `(level_name, level_extent, region_span)` — the ONE derivation of the level a local
@@ -1514,7 +1514,7 @@ Registers one fragment occupies per lane, DERIVED by recasting the per-lane elem
     
 ```
 
-## `Tensile/LoopModel/geometry.py.readahead_level` (function)
+## `tensilelite/LoopModel/geometry.py.readahead_level` (function)
 
 ```
 `readahead_level_of` for a built θ.  With `op`, the PER-OP-CLASS level (its broadcast axes
@@ -1524,7 +1524,7 @@ Registers one fragment occupies per lane, DERIVED by recasting the per-lane elem
     
 ```
 
-## `Tensile/LoopModel/geometry.py.group_owned_tiles` (function)
+## `tensilelite/LoopModel/geometry.py.group_owned_tiles` (function)
 
 ```
 Fan tiles ONE register group OWNS — its share of `grouping_mode`'s values (§2.8 move 1).
@@ -1533,7 +1533,7 @@ Fan tiles ONE register group OWNS — its share of `grouping_mode`'s values (§2
     (there the fan is not partitioned into groups at all; it stays in the rate).
 ```
 
-## `Tensile/LoopModel/geometry.py.group_unit_tiles` (function)
+## `tensilelite/LoopModel/geometry.py.group_unit_tiles` (function)
 
 ```
 THE UNIT: fan tiles ONE BUFFER of this group holds, derived from `ord` AND the split.
@@ -1542,7 +1542,7 @@ THE UNIT: fan tiles ONE BUFFER of this group holds, derived from `ord` AND the s
     
 ```
 
-## `Tensile/LoopModel/geometry.py.group_fan_reloads` (function)
+## `tensilelite/LoopModel/geometry.py.group_fan_reloads` (function)
 
 ```
 Buffer-generations the FAN contributes to `R` = owned tiles / tiles-per-buffer.
@@ -1551,7 +1551,7 @@ Buffer-generations the FAN contributes to `R` = owned tiles / tiles-per-buffer.
     
 ```
 
-## `Tensile/LoopModel/geometry.py._rate_broadcast` (function)
+## `tensilelite/LoopModel/geometry.py._rate_broadcast` (function)
 
 ```
 The axes a register group is CONSTANT over for its RATE/live-peak — the "two-map reading"
@@ -1568,7 +1568,7 @@ The axes a register group is CONSTANT over for its RATE/live-peak — the "two-m
     
 ```
 
-## `Tensile/LoopModel/geometry.py._group_value_seq` (function)
+## `tensilelite/LoopModel/geometry.py._group_value_seq` (function)
 
 ```
 The distinct value id a rate-group holds at each step = projection of the step coord
@@ -1576,7 +1576,7 @@ The distinct value id a rate-group holds at each step = projection of the step c
     per-fragment reading).
 ```
 
-## `Tensile/LoopModel/geometry.py.group_rate` (function)
+## `tensilelite/LoopModel/geometry.py.group_rate` (function)
 
 ```
 R — reload rate = # distinct values ONE register group of ONE fragment holds per reduction chunk
@@ -1587,7 +1587,7 @@ R — reload rate = # distinct values ONE register group of ONE fragment holds p
     lo/hi are R=4 whether or not M is region-split; whole-fan R=8 is the over-count to avoid.
 ```
 
-## `Tensile/LoopModel/geometry.py.group_live_peak` (function)
+## `tensilelite/LoopModel/geometry.py.group_live_peak` (function)
 
 ```
 L — the live peak, the derived FLOOR (§2.6 table row 2).  Peak simultaneously-live
@@ -1598,7 +1598,7 @@ L — the live peak, the derived FLOOR (§2.6 table row 2).  Peak simultaneously
     
 ```
 
-## `Tensile/LoopModel/geometry.py._reg_read_off` (function)
+## `tensilelite/LoopModel/geometry.py._reg_read_off` (function)
 
 ```
 The register read-prefetch depth `off(read, ·)` = the PLR read-ahead, read from the
@@ -1611,7 +1611,7 @@ The register read-prefetch depth `off(read, ·)` = the PLR read-ahead, read from
     
 ```
 
-## `Tensile/LoopModel/geometry.py._free_tile_index_seq` (function)
+## `tensilelite/LoopModel/geometry.py._free_tile_index_seq` (function)
 
 ```
 The operand's OWN free-axis tile index at each step = the mixed-radix combine of THIS
@@ -1620,7 +1620,7 @@ The operand's OWN free-axis tile index at each step = the mixed-radix combine of
     are simultaneously held under this ord).  Presence-derived — no operand-name / role test.
 ```
 
-## `Tensile/LoopModel/geometry.py.resident_free_tiles` (function)
+## `tensilelite/LoopModel/geometry.py.resident_free_tiles` (function)
 
 ```
 The number of the operand's free-axis tiles SIMULTANEOUSLY RESIDENT under `ord` — the
@@ -1636,7 +1636,7 @@ The number of the operand's free-axis tiles SIMULTANEOUSLY RESIDENT under `ord` 
     instead of a rate-group's value.
 ```
 
-## `Tensile/LoopModel/geometry.py.lds_buffers` (function)
+## `tensilelite/LoopModel/geometry.py.lds_buffers` (function)
 
 ```
 S_shared: the shared ring BUFFER depth (per reduction chunk) (§2.4/§2.6).
@@ -1645,7 +1645,7 @@ S_shared: the shared ring BUFFER depth (per reduction chunk) (§2.4/§2.6).
     
 ```
 
-## `Tensile/LoopModel/geometry.py.operand_generations` (function)
+## `tensilelite/LoopModel/geometry.py.operand_generations` (function)
 
 ```
 Σ over REGISTER rate-groups of the group's depth (generation count) — from derive_S.
@@ -1653,7 +1653,7 @@ S_shared: the shared ring BUFFER depth (per reduction chunk) (§2.4/§2.6).
     that must not be summed into register generations (§6.2 keeps placements separate).
 ```
 
-## `Tensile/LoopModel/geometry.py.group_regs` (function)
+## `tensilelite/LoopModel/geometry.py.group_regs` (function)
 
 ```
 Register width of ONE reuse group = its share of the fragment's registers.
@@ -1661,7 +1661,7 @@ Register width of ONE reuse group = its share of the fragment's registers.
     `size_of(group)` of them, occupies frag_regs·size_of/total_slots registers.
 ```
 
-## `Tensile/LoopModel/geometry.py.operand_footprint_regs` (function)
+## `tensilelite/LoopModel/geometry.py.operand_footprint_regs` (function)
 
 ```
 Physical VGPRs for this operand.
@@ -1685,7 +1685,7 @@ Physical VGPRs for this operand.
     width) × resident_free_tiles (feature #4 residency, §2.6 line 279).
 ```
 
-## `Tensile/LoopModel/geometry.py.operand_emitted_regs` (function)
+## `tensilelite/LoopModel/geometry.py.operand_emitted_regs` (function)
 
 ```
 VGPRs the ALLOCATOR will actually reserve for this operand — `region x max_g W_g x |fan| x
@@ -1710,7 +1710,7 @@ VGPRs the ALLOCATOR will actually reserve for this operand — `region x max_g W
     allocator is tile-major, which is the other half of #320.
 ```
 
-## `Tensile/LoopModel/geometry.py._region_count` (function)
+## `tensilelite/LoopModel/geometry.py._region_count` (function)
 
 ```
 Regions the operand's REGISTERS are replicated over — the WAVE's region span, not the
@@ -1727,7 +1727,7 @@ Regions the operand's REGISTERS are replicated over — the WAVE's region span, 
     storage-disjoint regions; it cannot create data, so the footprint must not move.
 ```
 
-## `Tensile/LoopModel/geometry.py.operand_buffer_regs` (function)
+## `tensilelite/LoopModel/geometry.py.operand_buffer_regs` (function)
 
 ```
 Registers this operand loads per kiter = PRESENCE tiles × frag_regs (§2.1).
@@ -1739,7 +1739,7 @@ Registers this operand loads per kiter = PRESENCE tiles × frag_regs (§2.1).
     unchanged — and drops the factor for one that is not, with no role or name test.
 ```
 
-## `Tensile/LoopModel/geometry.py.plan_transfers` (function)
+## `tensilelite/LoopModel/geometry.py.plan_transfers` (function)
 
 ```
 Instructions this hop issues per kiter.  A 'tdm' bulk hop issues `hop.split` (one
@@ -1747,28 +1747,28 @@ Instructions this hop issues per kiter.  A 'tdm' bulk hop issues `hop.split` (on
     load-size.
 ```
 
-## `Tensile/LoopModel/geometry.py:1` (comment)
+## `tensilelite/LoopModel/geometry.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/geometry.py:41` (comment)
+## `tensilelite/LoopModel/geometry.py:41` (comment)
 
 ```
 # Tile counts — tile extent ÷ compute atom, in element space (the honest extent source).
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/geometry.py:55` (comment)
+## `tensilelite/LoopModel/geometry.py:55` (comment)
 
 ```
 # Per-operand access layout — the honest spatial object.
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/geometry.py:69` (comment)
+## `tensilelite/LoopModel/geometry.py:69` (comment)
 
 ```
 # An AGENT-SERVED region axis is broadcast for every data consumer (#245): the wave reads,
@@ -1776,14 +1776,14 @@ Instructions this hop issues per kiter.  A 'tdm' bulk hop issues `hop.split` (on
 # free_modes, register naming, the #288 wmma projection and the footprint cannot disagree.  (ADR 0007 #55)
 ```
 
-## `Tensile/LoopModel/geometry.py:99` (comment)
+## `tensilelite/LoopModel/geometry.py:99` (comment)
 
 ```
 # carrier = t // Φ either way: Φ tiles ride one instruction, and the instruction's ordinal IS
 # the register base.  ρ changes only WHERE those Φ tiles live, hence only the SLOT.
 ```
 
-## `Tensile/LoopModel/geometry.py:104` (comment)
+## `tensilelite/LoopModel/geometry.py:104` (comment)
 
 ```
 # The group does not divide evenly over the sub-agents, so some agent would carry a
@@ -1791,7 +1791,7 @@ Instructions this hop issues per kiter.  A 'tdm' bulk hop issues `hop.split` (on
 # is right for neither (§2.2 names only the even sub-wave partition).
 ```
 
-## `Tensile/LoopModel/geometry.py:108` (comment)
+## `tensilelite/LoopModel/geometry.py:108` (comment)
 
 ```
 # DISTRIBUTED (§2.2): the Φ tiles are spread over `rho` sub-agents, so `rho` of them share
@@ -1799,91 +1799,91 @@ Instructions this hop issues per kiter.  A 'tdm' bulk hop issues `hop.split` (on
 # rather than flagged.  (ADR 0007 #54)
 ```
 
-## `Tensile/LoopModel/geometry.py:136` (comment)
+## `tensilelite/LoopModel/geometry.py:136` (comment)
 
 ```
 # The operand's flat tile index, ord order with the innermost axis fastest — the same
 # flattening `tile_flat` uses, so `carrier` is evaluated on the coordinate it was written for.
 ```
 
-## `Tensile/LoopModel/geometry.py:180` (comment)
+## `tensilelite/LoopModel/geometry.py:180` (comment)
 
 ```
 # §2.2: the axes ONE instruction SPANS are absent from the hop's presence, exactly as a
 # bulk copy's inner axes are.  (ADR 0007 #53)
 ```
 
-## `Tensile/LoopModel/geometry.py:204` (comment)
+## `tensilelite/LoopModel/geometry.py:204` (comment)
 
 ```
 # Free / reduction extents / wmma grid — PRESENCE-derived, no operand-name/role literals.
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/geometry.py:262` (comment)
+## `tensilelite/LoopModel/geometry.py:262` (comment)
 
 ```
 # Fragment register width — via latalg.recast_count (integer ceil), not a layout op.
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/geometry.py:280` (comment)
+## `tensilelite/LoopModel/geometry.py:280` (comment)
 
 ```
 # Register groups: what one group owns, how fast it turns over, how much is live
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/geometry.py:370` (comment)
+## `tensilelite/LoopModel/geometry.py:370` (comment)
 
 ```
 # PARTIALLY FOLDED: the axis KEEPS `extent // q` presence points, so the fan contributes
 # that many generations, not `extent`.  (ADR 0007 #51)
 ```
 
-## `Tensile/LoopModel/geometry.py:548` (comment)
+## `tensilelite/LoopModel/geometry.py:548` (comment)
 
 ```
 # No shared placement — a one-hop global->register (DTV) operand (§5.3.1). There is no LDS
 # ring to have a depth, so any number here would be a fiction.  (ADR 0007 #49)
 ```
 
-## `Tensile/LoopModel/geometry.py:563` (comment)
+## `tensilelite/LoopModel/geometry.py:563` (comment)
 
 ```
 # Sizing: how many instructions a hop costs, and how many registers it occupies
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/geometry.py:583` (comment)
+## `tensilelite/LoopModel/geometry.py:583` (comment)
 
 ```
 # Register footprint — generations × width × tiles  (the product, §6.2).
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/geometry.py:622` (comment)
+## `tensilelite/LoopModel/geometry.py:622` (comment)
 
 ```
 # the ACCUMULATOR: one live value per output tile, held across the WHOLE reduction — no
 # rotating ring (§6.1), no read-ahead residency.  (ADR 0007 #48)
 ```
 
-## `Tensile/LoopModel/geometry.py:697` (comment)
+## `tensilelite/LoopModel/geometry.py:697` (comment)
 
 ```
 # Instruction counts.
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/geometry.py:733` (comment)
+## `tensilelite/LoopModel/geometry.py:733` (comment)
 
 ```
 # The compute grid.
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/ir.py <module>` (module)
+## `tensilelite/LoopModel/ir.py <module>` (module)
 
 ```
 IR vocabulary — the totally-ordered instruction stream the decoder emits.
@@ -1929,7 +1929,7 @@ Keep the invariant: θ + this IR stay address-free; addresses live in the enrich
 in TensileLite's decoder.
 ```
 
-## `Tensile/LoopModel/ir.py.Counter` (class)
+## `tensilelite/LoopModel/ir.py.Counter` (class)
 
 ```
 COMPLETION CLASSES (§2.7): "a nameable set of operations a synchronization primitive can
@@ -1942,7 +1942,7 @@ COMPLETION CLASSES (§2.7): "a nameable set of operations a synchronization prim
     the class.  A backend targeting a counter machine maps these to its own instructions.
 ```
 
-## `Tensile/LoopModel/ir.py.QuantumMap` (class)
+## `tensilelite/LoopModel/ir.py.QuantumMap` (class)
 
 ```
 How an op-class's TILES merge into the instructions that move them (§2.2, Precondition Q).
@@ -1951,7 +1951,7 @@ How an op-class's TILES merge into the instructions that move them (§2.2, Preco
     
 ```
 
-## `Tensile/LoopModel/ir.py.Load` (class)
+## `tensilelite/LoopModel/ir.py.Load` (class)
 
 ```
 A named transfer op: move `tokens` from `src` space to `dst` space.
@@ -1960,7 +1960,7 @@ A named transfer op: move `tokens` from `src` space to `dst` space.
     
 ```
 
-## `Tensile/LoopModel/ir.py._term` (function)
+## `tensilelite/LoopModel/ir.py._term` (function)
 
 ```
 One linear term, normalized to `(mode, coef, div)` = `coef · (env[mode] // div)`.
@@ -1969,7 +1969,7 @@ One linear term, normalized to `(mode, coef, div)` = `coef · (env[mode] // div)
     
 ```
 
-## `Tensile/LoopModel/ir.py.Expr` (class)
+## `tensilelite/LoopModel/ir.py.Expr` (class)
 
 ```
 A tiny symbolic index expression over loop-mode names.  Two shapes the rolled IR needs:
@@ -1981,7 +1981,7 @@ A tiny symbolic index expression over loop-mode names.  Two shapes the rolled IR
     when set it supersedes `var`.  `eval(env)` concretizes when the renderer unrolls.
 ```
 
-## `Tensile/LoopModel/ir.py.Pred` (class)
+## `tensilelite/LoopModel/ir.py.Pred` (class)
 
 ```
 A structured predicate: compare an index `Expr` against an integer.  `lhs op rhs`.
@@ -1990,7 +1990,7 @@ A structured predicate: compare an index `Expr` against an integer.  `lhs op rhs
     
 ```
 
-## `Tensile/LoopModel/ir.py.Placement` (class)
+## `tensilelite/LoopModel/ir.py.Placement` (class)
 
 ```
 The LOGICAL storage an instance reads/writes (§5.2) — NOT the physical register color.
@@ -1999,7 +1999,7 @@ The LOGICAL storage an instance reads/writes (§5.2) — NOT the physical regist
     
 ```
 
-## `Tensile/LoopModel/ir.py.is_war` (function)
+## `tensilelite/LoopModel/ir.py.is_war` (function)
 
 ```
 True iff `kind` is an ANTI-dependency (the writer waits for prior readers, §2.4 line 99).
@@ -2008,7 +2008,7 @@ True iff `kind` is an ANTI-dependency (the writer waits for prior readers, §2.4
     are different facts, and only one of them is safe to schedule on.
 ```
 
-## `Tensile/LoopModel/ir.py.Await` (class)
+## `tensilelite/LoopModel/ir.py.Await` (class)
 
 ```
 A NAMED-dependency discharge point (§5.4): the value `dep` on completion class
@@ -2031,7 +2031,7 @@ A NAMED-dependency discharge point (§5.4): the value `dep` on completion class
     
 ```
 
-## `Tensile/LoopModel/ir.py.Inst` (class)
+## `tensilelite/LoopModel/ir.py.Inst` (class)
 
 ```
 One op-class instance at its presence level (§5.2): a `Load` or `Mma` payload, its
@@ -2039,7 +2039,7 @@ One op-class instance at its presence level (§5.2): a `Load` or `Mma` payload, 
     op-class — the loop nest around it supplies the iterations; nothing is enumerated.
 ```
 
-## `Tensile/LoopModel/ir.py.Loop` (class)
+## `tensilelite/LoopModel/ir.py.Loop` (class)
 
 ```
 A real loop node of the rolled nest: `for <mode> in range(extent)`.  `body` is a
@@ -2050,7 +2050,7 @@ A real loop node of the rolled nest: `for <mode> in range(extent)`.  `body` is a
     
 ```
 
-## `Tensile/LoopModel/ir.py.Branch` (class)
+## `tensilelite/LoopModel/ir.py.Branch` (class)
 
 ```
 Explicit register-rotation control (user decision): a switch on `selector = mode % S`,
@@ -2059,7 +2059,7 @@ Explicit register-rotation control (user decision): a switch on `selector = mode
     first-class control structure, not just an index expression.
 ```
 
-## `Tensile/LoopModel/ir.py.Bind` (class)
+## `tensilelite/LoopModel/ir.py.Bind` (class)
 
 ```
 Bind an OUTER loop induction (`mode`, e.g. `iter`) to a concrete/symbolic VALUE over a
@@ -2071,7 +2071,7 @@ Bind an OUTER loop induction (`mode`, e.g. `iter`) to a concrete/symbolic VALUE 
     defined).  A walker pushes `env[mode] = value` (or carries it symbolically) when descending.
 ```
 
-## `Tensile/LoopModel/ir.py.Peel` (class)
+## `tensilelite/LoopModel/ir.py.Peel` (class)
 
 ```
 A prologue/drain peel node (Lemma 1): the hoisted first-`k` (`kind='prologue'`) or
@@ -2080,7 +2080,7 @@ A prologue/drain peel node (Lemma 1): the hoisted first-`k` (`kind='prologue'`) 
     boundary term).
 ```
 
-## `Tensile/LoopModel/ir.py.Cond` (class)
+## `tensilelite/LoopModel/ir.py.Cond` (class)
 
 ```
 A first-class conditional over the reduction trip count — the peel's VALIDITY guard
@@ -2094,7 +2094,7 @@ A first-class conditional over the reduction trip count — the peel's VALIDITY 
     
 ```
 
-## `Tensile/LoopModel/ir.py.group` (function)
+## `tensilelite/LoopModel/ir.py.group` (function)
 
 ```
 The tiles sharing `t`'s carrier — the coordinates ONE instruction serves (its preimage).
@@ -2104,7 +2104,7 @@ The tiles sharing `t`'s carrier — the coordinates ONE instruction serves (its 
         away, not adjacent).
 ```
 
-## `Tensile/LoopModel/ir.py.free_vars` (function)
+## `tensilelite/LoopModel/ir.py.free_vars` (function)
 
 ```
 The mode names this expression references — its free variables under an env.
@@ -2114,7 +2114,7 @@ The mode names this expression references — its free variables under an env.
         set.  `Bind.bound_env` and the structural validator both need it.
 ```
 
-## `Tensile/LoopModel/ir.py.at` (function)
+## `tensilelite/LoopModel/ir.py.at` (function)
 
 ```
 Concrete Placement with each slot Expr evaluated to its buffer VALUE but PRESERVING the
@@ -2123,7 +2123,7 @@ Concrete Placement with each slot Expr evaluated to its buffer VALUE but PRESERV
         emit `Expr(add=value, mod=W)`, not a bare `cst(value)` (mod=0) which would drop the width.
 ```
 
-## `Tensile/LoopModel/ir.py.ranged_bodies` (function)
+## `tensilelite/LoopModel/ir.py.ranged_bodies` (function)
 
 ```
 `[(lo, hi, nodes)]` — each sub-body with the half-open iteration range it runs over.
@@ -2134,7 +2134,7 @@ Concrete Placement with each slot Expr evaluated to its buffer VALUE but PRESERV
         outer runtime loop), meaning "to the end".
 ```
 
-## `Tensile/LoopModel/ir.py.body` (function)
+## `tensilelite/LoopModel/ir.py.body` (function)
 
 ```
 The SINGLE body — valid only on a single-body loop.  Raises on a multi-body loop
@@ -2143,7 +2143,7 @@ The SINGLE body — valid only on a single-body loop.  Raises on a multi-body lo
         code uses `bodies` (all instructions) or `ranged_bodies()` (with each body's range).
 ```
 
-## `Tensile/LoopModel/ir.py.bound_env` (function)
+## `tensilelite/LoopModel/ir.py.bound_env` (function)
 
 ```
 `env` with `mode` bound to `value` IFF `value` is statically resolvable in `env`
@@ -2153,42 +2153,42 @@ The SINGLE body — valid only on a single-body loop.  Raises on a multi-body lo
         steady loop (Step 2), never pinning a wrong concrete generation.
 ```
 
-## `Tensile/LoopModel/ir.py:1` (comment)
+## `tensilelite/LoopModel/ir.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/ir.py:53` (comment)
+## `tensilelite/LoopModel/ir.py:53` (comment)
 
 ```
 # Spaces and completion counters.
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/ir.py:96` (comment)
+## `tensilelite/LoopModel/ir.py:96` (comment)
 
 ```
 # The movement quantum — how tiles merge into one instruction (§2.2)
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/ir.py:146` (comment)
+## `tensilelite/LoopModel/ir.py:146` (comment)
 
 ```
 # The instruction ops.
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/ir.py:198` (comment)
+## `tensilelite/LoopModel/ir.py:198` (comment)
 
 ```
 # Rolled θ-nest IR (paper Chapter 5 "emit IR").  See ADR 0006.
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/ir.py:326` (comment)
+## `tensilelite/LoopModel/ir.py:326` (comment)
 
 ```
 # `free_vars` is the ONE authority on which names an Expr reads (its own docstring says
@@ -2196,14 +2196,14 @@ The SINGLE body — valid only on a single-body loop.  Raises on a multi-body lo
 # would now also have to learn the term divisor.  Same set, one derivation.
 ```
 
-## `Tensile/LoopModel/ir.py:373` (comment)
+## `tensilelite/LoopModel/ir.py:373` (comment)
 
 ```
 # `keep_unresolved` is OPT-IN and OFF for the codegen path, which must always get a
 # concrete Placement.  (ADR 0007 #58)
 ```
 
-## `Tensile/LoopModel/ir.py:467` (comment)
+## `tensilelite/LoopModel/ir.py:467` (comment)
 
 ```
 # display extent (§5.2 line 339, Q19 ADOPTED). For an `outer`
@@ -2211,28 +2211,28 @@ The SINGLE body — valid only on a single-body loop.  Raises on a multi-body lo
 # backend lowers to a back-edge (e.g.  (ADR 0007 #57)
 ```
 
-## `Tensile/LoopModel/ir.py:474` (comment)
+## `tensilelite/LoopModel/ir.py:474` (comment)
 
 ```
 # runtime-trip, peeled level (the shared-ring / reduction axis); False
 # = a statically-unrolled inner mode.  (ADR 0007 #56)
 ```
 
-## `Tensile/LoopModel/ir.py:570` (comment)
+## `tensilelite/LoopModel/ir.py:570` (comment)
 
 ```
 # construction (Lemma 1 peels the pipelined loop) — the structural
 # marker for walkers, consistent with Loop/Branch.
 ```
 
-## `Tensile/LoopModel/ir.py:595` (comment)
+## `tensilelite/LoopModel/ir.py:595` (comment)
 
 ```
 # walker uses (consistent with Loop/Branch/Peel `outer`).  False for
 # the peel-validity guard (an ordinary conditional, not a step split).
 ```
 
-## `Tensile/LoopModel/latalg.py <module>` (module)
+## `tensilelite/LoopModel/latalg.py <module>` (module)
 
 ```
 latalg — the minimal layout arithmetic the decoder core needs, with NO CuTe/PyCuTe dependency.
@@ -2253,7 +2253,7 @@ stride), or a product of independent extents.  We implement exactly that surface
 composes strides, reads an address, or handles the general nested CuTe layout.
 ```
 
-## `Tensile/LoopModel/latalg.py.tile_split` (function)
+## `tensilelite/LoopModel/latalg.py.tile_split` (function)
 
 ```
 Stands in for `logical_divide(Layout((n,),(1,)), Layout((t,),(1,))).shape` on a
@@ -2264,7 +2264,7 @@ Stands in for `logical_divide(Layout((n,),(1,)), Layout((t,),(1,))).shape` on a
     load-bearing.
 ```
 
-## `Tensile/LoopModel/latalg.py.recast_count` (function)
+## `tensilelite/LoopModel/latalg.py.recast_count` (function)
 
 ```
 Stands in for `recast(Layout((elems,),(1,)), scale).size` = ceil(elems / scale): packing
@@ -2272,14 +2272,14 @@ Stands in for `recast(Layout((elems,),(1,)), scale).size` = ceil(elems / scale):
     rounds up (recast((4,),4)=1, recast((1,),4)=1, recast((16,),2)=8).
 ```
 
-## `Tensile/LoopModel/latalg.py:1` (comment)
+## `tensilelite/LoopModel/latalg.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/ledger.py <module>` (module)
+## `tensilelite/LoopModel/ledger.py <module>` (module)
 
 ```
 The obligation ledger (paper §4) — hazards that MUST be discharged, and the empty-ledger gate.
@@ -2293,7 +2293,7 @@ only.  `build_ir` (the emit_can driver, `emit.py`) consumes `build_ledger`.
   walk_insts / all_awaits / _region_bodies   tree traversal helpers the gate uses
 ```
 
-## `Tensile/LoopModel/ledger.py.Endpoint` (class)
+## `tensilelite/LoopModel/ledger.py.Endpoint` (class)
 
 ```
 One end of an obligation — WHICH op-class, at WHICH placement or site, at WHICH coordinate.
@@ -2302,7 +2302,7 @@ One end of an obligation — WHICH op-class, at WHICH placement or site, at WHIC
     
 ```
 
-## `Tensile/LoopModel/ledger.py.movement_name` (function)
+## `tensilelite/LoopModel/ledger.py.movement_name` (function)
 
 ```
 The PRODUCER identity of `opname`'s global→shared movement (§2.8 move 9, Φ).
@@ -2318,7 +2318,7 @@ The PRODUCER identity of `opname`'s global→shared movement (§2.8 move 9, Φ).
     already keys the completion token off the same thing, and they must not drift.
 ```
 
-## `Tensile/LoopModel/ledger.py.build_ledger` (function)
+## `tensilelite/LoopModel/ledger.py.build_ledger` (function)
 
 ```
 One RAW-residency per hop + one WAR per S rate-group.
@@ -2327,7 +2327,7 @@ One RAW-residency per hop + one WAR per S rate-group.
     
 ```
 
-## `Tensile/LoopModel/ledger.py.discharge_once` (function)
+## `tensilelite/LoopModel/ledger.py.discharge_once` (function)
 
 ```
 Drop an `Await` that a preceding instruction in the same execution path already established.
@@ -2336,7 +2336,7 @@ Drop an `Await` that a preceding instruction in the same execution path already 
     
 ```
 
-## `Tensile/LoopModel/ledger.py.walk_insts` (function)
+## `tensilelite/LoopModel/ledger.py.walk_insts` (function)
 
 ```
 Pre-order walk of the rolled θ-nest yielding every `Inst` (one per op-class per presence
@@ -2344,7 +2344,7 @@ Pre-order walk of the rolled θ-nest yielding every `Inst` (one per op-class per
     `tree` is the node list build_ir returns (or a nested body).
 ```
 
-## `Tensile/LoopModel/ledger.py._region_bodies` (function)
+## `tensilelite/LoopModel/ledger.py._region_bodies` (function)
 
 ```
 The instruction lists that form ONE emitted TRIP each — the σ_c ordering unit.  A trip is a
@@ -2356,7 +2356,7 @@ The instruction lists that form ONE emitted TRIP each — the σ_c ordering unit
     trip (the inner Loops/Branches/Conds) is flattened INTO that trip, in program order.
 ```
 
-## `Tensile/LoopModel/ledger.py.check_ledger_discharged` (function)
+## `tensilelite/LoopModel/ledger.py.check_ledger_discharged` (function)
 
 ```
 §5.5 empty-ledger gate, PER-EDGE (paper line 427: "each producer→consumer obligation is
@@ -2390,7 +2390,7 @@ The instruction lists that form ONE emitted TRIP each — the σ_c ordering unit
     
 ```
 
-## `Tensile/LoopModel/ledger.py.render` (function)
+## `tensilelite/LoopModel/ledger.py.render` (function)
 
 ```
 Display form.  Reads like the old string so dumps stay familiar, but it is DERIVED
@@ -2398,14 +2398,14 @@ Display form.  Reads like the old string so dumps stay familiar, but it is DERIV
         `<GIR: … A+B>` tags in the emitted assembly.
 ```
 
-## `Tensile/LoopModel/ledger.py:1` (comment)
+## `tensilelite/LoopModel/ledger.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/ledger.py:125` (comment)
+## `tensilelite/LoopModel/ledger.py:125` (comment)
 
 ```
 # Same Φ rule as the copy-hop residency above, and for the same reason on BOTH ends:
@@ -2413,49 +2413,49 @@ Display form.  Reads like the old string so dumps stay familiar, but it is DERIV
 # read.  Two per-member obligations would be two accounts against one instruction.
 ```
 
-## `Tensile/LoopModel/ledger.py:132` (comment)
+## `tensilelite/LoopModel/ledger.py:132` (comment)
 
 ```
 # Read-ahead residency O_r (Lemma 3d): a first-trip read the steady body cannot discharge
 # must be pre-issued in the prologue, else the ledger is non-empty.  (ADR 0007 #65)
 ```
 
-## `Tensile/LoopModel/ledger.py:169` (comment)
+## `tensilelite/LoopModel/ledger.py:169` (comment)
 
 ```
 # each trip re-runs the body; a boundary from outside does not survive into trip 2,
 # and the body's own copies invalidate it anyway.
 ```
 
-## `Tensile/LoopModel/ledger.py:250` (comment)
+## `tensilelite/LoopModel/ledger.py:250` (comment)
 
 ```
 # `inline_outer` = descend the OUTER-level Branch that wraps a DRAIN step (the peel's
 # `Bind` binds each drain step's reduction chunk residue via a Branch(outer=True)).  (ADR 0007 #63)
 ```
 
-## `Tensile/LoopModel/ledger.py:277` (comment)
+## `tensilelite/LoopModel/ledger.py:277` (comment)
 
 ```
 # each drain step is `Bind(iter=T−M+t, body=...)`; flat() inlines the Bind
 # body so the σ_c order gate inspects that trip's instructions.
 ```
 
-## `Tensile/LoopModel/ledger.py:309` (comment)
+## `tensilelite/LoopModel/ledger.py:309` (comment)
 
 ```
 # `len(body)` for an operand with NO read in this trip: past every index, so the
 # copy-first peel skeleton stays a violation exactly as it was under the existential.
 ```
 
-## `Tensile/LoopModel/ledger.py:317` (comment)
+## `tensilelite/LoopModel/ledger.py:317` (comment)
 
 ```
 # (b3) order, CROSSING RAW: the copy must be emitted BEFORE this operand's reads in the steady
 # body, because those reads consume the chunk it fills (§5.3.1 pt5).  (ADR 0007 #61)
 ```
 
-## `Tensile/LoopModel/ledger.py:385` (comment)
+## `tensilelite/LoopModel/ledger.py:385` (comment)
 
 ```
 # (c) READ-AHEAD RESIDENCY (Lemma 3d): each `readahead-residency` obligation requires its coord
@@ -2463,7 +2463,7 @@ Display form.  Reads like the old string so dumps stay familiar, but it is DERIV
 # body.  (ADR 0007 #59)
 ```
 
-## `Tensile/LoopModel/ledger.py:441` (comment)
+## `tensilelite/LoopModel/ledger.py:441` (comment)
 
 ```
 # (b) order: per region, every WAR-refill copy must be preceded by the vacating read. ONLY the
@@ -2471,7 +2471,7 @@ Display form.  Reads like the old string so dumps stay familiar, but it is DERIV
 # "an S=delta refill copy").  (ADR 0007 #62)
 ```
 
-## `Tensile/LoopModel/operand_view.py <module>` (module)
+## `tensilelite/LoopModel/operand_view.py <module>` (module)
 
 ```
 What an operand IS: the facts derivable from theta alone, with no policy in them.
@@ -2481,14 +2481,14 @@ budget, and every one of them does. A view, not a move: theta owns the operands,
 cannot reach its own theta.
 ```
 
-## `Tensile/LoopModel/operand_view.py:1` (comment)
+## `tensilelite/LoopModel/operand_view.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/prefetch.py <module>` (module)
+## `tensilelite/LoopModel/prefetch.py <module>` (module)
 
 ```
 How far ahead each load runs, and everything that follows from it.
@@ -2498,7 +2498,7 @@ prefetch steps per group, the peel depth around them, what the prologue must pre
 and where each instruction is placed.
 ```
 
-## `Tensile/LoopModel/prefetch.py.readahead_reach` (function)
+## `tensilelite/LoopModel/prefetch.py.readahead_reach` (function)
 
 ```
 How many whole reduction chunks the prefetch crosses into -- the MAX over groups.
@@ -2507,7 +2507,7 @@ How many whole reduction chunks the prefetch crosses into -- the MAX over groups
     per-instruction `_readahead_depth` takes the MIN and must not be unified with this.
 ```
 
-## `Tensile/LoopModel/prefetch.py.copy_must_be_first` (function)
+## `tensilelite/LoopModel/prefetch.py.copy_must_be_first` (function)
 
 ```
 Must `op`'s shared copy be emitted BEFORE this trip's reads? (§5.3.1 pt5.)
@@ -2535,7 +2535,7 @@ Must `op`'s shared copy be emitted BEFORE this trip's reads? (§5.3.1 pt5.)
     standalone predicate for choosing the branch.
 ```
 
-## `Tensile/LoopModel/prefetch.py.chunk_crossing_violations` (function)
+## `tensilelite/LoopModel/prefetch.py.chunk_crossing_violations` (function)
 
 ```
 The §5.3.1 pt5 coupling `off(copy, iter) >= r + 1`, per operand — [] when θ is emittable.
@@ -2554,7 +2554,7 @@ The §5.3.1 pt5 coupling `off(copy, iter) >= r + 1`, per operand — [] when θ 
     Returns [(operand, dr_g, r, off_copy, required)] for each operand that violates it.
 ```
 
-## `Tensile/LoopModel/prefetch.py.PeelDepths` (class)
+## `tensilelite/LoopModel/prefetch.py.PeelDepths` (class)
 
 ```
 The peel depth `M_ℓ` **per level** (§5.3.1, 2026-08-14 update) — ONE source of truth for the
@@ -2590,7 +2590,7 @@ The peel depth `M_ℓ` **per level** (§5.3.1, 2026-08-14 update) — ONE source
     
 ```
 
-## `Tensile/LoopModel/prefetch.py.peel_depths` (function)
+## `tensilelite/LoopModel/prefetch.py.peel_depths` (function)
 
 ```
 Build the per-level `PeelDepths` for `theta` (§2.4/§5.3.1).
@@ -2607,7 +2607,7 @@ Build the per-level `PeelDepths` for `theta` (§2.4/§5.3.1).
     literals.
 ```
 
-## `Tensile/LoopModel/prefetch.py.BoundaryHoist` (class)
+## `tensilelite/LoopModel/prefetch.py.BoundaryHoist` (class)
 
 ```
 One instance of §5.3.1's CROSS-LEVEL BOUNDARY TERM (Lemma 1).
@@ -2634,7 +2634,7 @@ One instance of §5.3.1's CROSS-LEVEL BOUNDARY TERM (Lemma 1).
     
 ```
 
-## `Tensile/LoopModel/prefetch.py._leading_inner_coords` (function)
+## `tensilelite/LoopModel/prefetch.py._leading_inner_coords` (function)
 
 ```
 The relocated instances — the paper's *"exactly `[inner-coord 0 .. δ)` of the current outer
@@ -2642,7 +2642,7 @@ The relocated instances — the paper's *"exactly `[inner-coord 0 .. δ)` of the
     the outer offset relocates), so the set is simply its leading δ values.
 ```
 
-## `Tensile/LoopModel/prefetch.py.boundary_hoists` (function)
+## `tensilelite/LoopModel/prefetch.py.boundary_hoists` (function)
 
 ```
 Every cross-level boundary term `theta` carries (see `BoundaryHoist`), outer level first.
@@ -2672,7 +2672,7 @@ Every cross-level boundary term `theta` carries (see `BoundaryHoist`), outer lev
     level exists (§5.3.2's persistent `gtile`, #113).
 ```
 
-## `Tensile/LoopModel/prefetch.py.preloaded_tiles` (function)
+## `tensilelite/LoopModel/prefetch.py.preloaded_tiles` (function)
 
 ```
 The coords loaded before the loop, so the first trip has data.
@@ -2682,7 +2682,7 @@ The coords loaded before the loop, so the first trip has data.
     named failure -- the pipe filled once and never refilled. ADR 0004.
 ```
 
-## `Tensile/LoopModel/prefetch.py.prefetch_steps_for` (function)
+## `tensilelite/LoopModel/prefetch.py.prefetch_steps_for` (function)
 
 ```
 `dr_g` — the per-group read-ahead depth, DERIVED from the §2.6 floor (`W_g ≥ L`).
@@ -2710,7 +2710,7 @@ The coords loaded before the loop, so the first trip has data.
     state until this function existed: the fill ran at the global `dr` while the steady ran at 0.)
 ```
 
-## `Tensile/LoopModel/prefetch.py.prefetch_refusal` (function)
+## `tensilelite/LoopModel/prefetch.py.prefetch_refusal` (function)
 
 ```
 Why `prefetch_steps_for` returned less than the REQUESTED `dr` — or None if it did not.
@@ -2739,7 +2739,7 @@ Why `prefetch_steps_for` returned less than the REQUESTED `dr` — or None if it
     two cannot disagree about why a depth was refused.
 ```
 
-## `Tensile/LoopModel/prefetch.py.prefetch_refusals` (function)
+## `tensilelite/LoopModel/prefetch.py.prefetch_refusals` (function)
 
 ```
 Every (op, group) whose PLR request the derivation could not honour.
@@ -2748,7 +2748,7 @@ Every (op, group) whose PLR request the derivation could not honour.
     is the only state in which the emitted schedule matches the requested one.
 ```
 
-## `Tensile/LoopModel/prefetch.py._readahead_depth` (function)
+## `tensilelite/LoopModel/prefetch.py._readahead_depth` (function)
 
 ```
 The prefetch depth for one read INSTRUCTION -- the MIN over the groups it fills.
@@ -2757,7 +2757,7 @@ The prefetch depth for one read INSTRUCTION -- the MIN over the groups it fills.
     different consumer. ADR 0004.
 ```
 
-## `Tensile/LoopModel/prefetch.py._readahead_shift` (function)
+## `tensilelite/LoopModel/prefetch.py._readahead_shift` (function)
 
 ```
 The steady prefetch advance for `op`, as `(distance, strides, n_pres, extents)`.
@@ -2765,7 +2765,7 @@ The steady prefetch advance for `op`, as `(distance, strides, n_pres, extents)`.
     Built from the DERIVED depth, so a group at depth 0 gets distance 0. ADR 0004.
 ```
 
-## `Tensile/LoopModel/prefetch.py.loads_in_place` (function)
+## `tensilelite/LoopModel/prefetch.py.loads_in_place` (function)
 
 ```
 True when the read-ahead refill writes the very name its own leaf's `wmma` is reading — the
@@ -2790,7 +2790,7 @@ True when the read-ahead refill writes the very name its own leaf's `wmma` is re
     is exactly the case σ_c CAN rescue, which is why it is the condition.
 ```
 
-## `Tensile/LoopModel/prefetch.py._read_placement` (function)
+## `tensilelite/LoopModel/prefetch.py._read_placement` (function)
 
 ```
 Symbolic register Placement for op's read: per group, slot = the mixed-radix rate-mode
@@ -2822,7 +2822,7 @@ Symbolic register Placement for op's read: per group, slot = the mixed-radix rat
     dr=0 ⇒ no read-ahead.
 ```
 
-## `Tensile/LoopModel/prefetch.py.resolve_quantum` (function)
+## `tensilelite/LoopModel/prefetch.py.resolve_quantum` (function)
 
 ```
 Report the SUPPLIED per-hop quantum — `{operand: ((axis, factor), ...)}`.
@@ -2833,7 +2833,7 @@ Report the SUPPLIED per-hop quantum — `{operand: ((axis, factor), ...)}`.
     the other per-placement steps.
 ```
 
-## `Tensile/LoopModel/prefetch.py._generation_map` (function)
+## `tensilelite/LoopModel/prefetch.py._generation_map` (function)
 
 ```
 `coord -> (shared generation, register slots)` for every point of `op`'s read presence.
@@ -2853,7 +2853,7 @@ Report the SUPPLIED per-hop quantum — `{operand: ((axis, factor), ...)}`.
     also not span two `Valu*_X*` bases, which has no encoding.
 ```
 
-## `Tensile/LoopModel/prefetch.py.hop_quantum_axes` (function)
+## `tensilelite/LoopModel/prefetch.py.hop_quantum_axes` (function)
 
 ```
 The axes one instruction of this hop covers, and by what factor (the movement quantum).
@@ -2861,7 +2861,7 @@ The axes one instruction of this hop covers, and by what factor (the movement qu
     Supplied by the adapter, never derived here -- theta is address-opaque. ADR 0004.
 ```
 
-## `Tensile/LoopModel/prefetch.py.M` (function)
+## `tensilelite/LoopModel/prefetch.py.M` (function)
 
 ```
 `M` at the REDUCTION CHUNK — the one level `build_ir` currently peels.  A coarser outer
@@ -2869,7 +2869,7 @@ The axes one instruction of this hop covers, and by what factor (the movement qu
         reports every level that WANTS a peel, so the two cannot silently disagree.
 ```
 
-## `Tensile/LoopModel/prefetch.py.copy_off` (function)
+## `tensilelite/LoopModel/prefetch.py.copy_off` (function)
 
 ```
 `{op_name: δ}` for the COPY op-classes at the reduction chunk — the staggered-peel input
@@ -2877,14 +2877,14 @@ The axes one instruction of this hop covers, and by what factor (the movement qu
         drain).
 ```
 
-## `Tensile/LoopModel/prefetch.py:1` (comment)
+## `tensilelite/LoopModel/prefetch.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/prefetch.py:119` (comment)
+## `tensilelite/LoopModel/prefetch.py:119` (comment)
 
 ```
 # §5.3.1 pt5 (rewritten): the coupling is `off(copy,iter) >= r`; the `+1` is demanded
@@ -2892,7 +2892,7 @@ The axes one instruction of this hop covers, and by what factor (the movement qu
 # current trip still reads.  (ADR 0007 #80)
 ```
 
-## `Tensile/LoopModel/prefetch.py:213` (comment)
+## `tensilelite/LoopModel/prefetch.py:213` (comment)
 
 ```
 # THE SENSE IS PER OP-CLASS, THE ROLE IS PER HOP (#212 axis 3). Everything below reads
@@ -2900,14 +2900,14 @@ The axes one instruction of this hop covers, and by what factor (the movement qu
 # from a store round trip's read-BACK.  (ADR 0007 #79)
 ```
 
-## `Tensile/LoopModel/prefetch.py:238` (comment)
+## `tensilelite/LoopModel/prefetch.py:238` (comment)
 
 ```
 # the substep read-ahead's REACH into whole chunks (§5.3.1: M is the max over all op-classes,
 # with the read's SUBSTEP off converted to whole iters).
 ```
 
-## `Tensile/LoopModel/prefetch.py:245` (comment)
+## `tensilelite/LoopModel/prefetch.py:245` (comment)
 
 ```
 # THE REACH IS DERIVED, NOT REQUESTED. `readahead_reach` runs the §2.6 clamp per group before
@@ -2915,14 +2915,14 @@ The axes one instruction of this hop covers, and by what factor (the movement qu
 # grew `M` around a read-ahead the steady body never issues (see `readahead_reach`).  (ADR 0007 #78)
 ```
 
-## `Tensile/LoopModel/prefetch.py:347` (comment)
+## `tensilelite/LoopModel/prefetch.py:347` (comment)
 
 ```
 # LEMMA 3d's OUTER FACTOR IS A PRESENCE POINT, NOT A TILE (§5.3.1). "the first presence
 # point is the whole first carrier group, all `q` of its `ρ`/`Φ` members, not tile 0 alone.  (ADR 0007 #77)
 ```
 
-## `Tensile/LoopModel/prefetch.py:429` (comment)
+## `tensilelite/LoopModel/prefetch.py:429` (comment)
 
 ```
 # single-group: one depth for the whole operand, still DERIVED (a single-group fragment can be
@@ -2930,7 +2930,7 @@ The axes one instruction of this hop covers, and by what factor (the movement qu
 # width split at all.  (ADR 0007 #76)
 ```
 
-## `Tensile/LoopModel/prefetch.py:478` (comment)
+## `tensilelite/LoopModel/prefetch.py:478` (comment)
 
 ```
 # CAPACITY FIRST (cheap, Lemma 3b's `W >= L`), THEN ASSIGNMENT (the actual admission test).
@@ -2938,14 +2938,14 @@ The axes one instruction of this hop covers, and by what factor (the movement qu
 # map still writes over a value consumed later.  See `register_reuse_verdict`.
 ```
 
-## `Tensile/LoopModel/prefetch.py:579` (comment)
+## `tensilelite/LoopModel/prefetch.py:579` (comment)
 
 ```
 # THE RELOAD TRAVERSAL, not the presence set — see `reload_modes` for why this is a shared
 # function rather than an inline filter, and for the status of the free-sibling exclusion.
 ```
 
-## `Tensile/LoopModel/prefetch.py:582` (comment)
+## `tensilelite/LoopModel/prefetch.py:582` (comment)
 
 ```
 # PRESENCE POINTS, NOT TILES (§2.2 / §5.3.1). A quantum-folded axis contributes `N/q` group
@@ -2953,42 +2953,42 @@ The axes one instruction of this hop covers, and by what factor (the movement qu
 # >= n_pres` all count carrier groups.  (ADR 0007 #69)
 ```
 
-## `Tensile/LoopModel/prefetch.py:587` (comment)
+## `tensilelite/LoopModel/prefetch.py:587` (comment)
 
 ```
 # THE SAME LEVEL `prefetch_distance_for` ADVANCES ALONG (#321) — this guard and that conversion
 # are two halves of one rule, so they must test the same axis.  (ADR 0007 #68)
 ```
 
-## `Tensile/LoopModel/prefetch.py:594` (comment)
+## `tensilelite/LoopModel/prefetch.py:594` (comment)
 
 ```
 # INNER = the ord modes strictly INNER to the reduction substep — a property of `ord`, not of
 # this operand (the paper splits the whole order, then intersects each factor with presence).  (ADR 0007 #67)
 ```
 
-## `Tensile/LoopModel/prefetch.py:666` (comment)
+## `tensilelite/LoopModel/prefetch.py:666` (comment)
 
 ```
 # SHARED SOURCE BUFFER (`src_slot`): which LDS multibuffer generation the read's data
 # lives in.  See ADR 0006.
 ```
 
-## `Tensile/LoopModel/prefetch.py:671` (comment)
+## `tensilelite/LoopModel/prefetch.py:671` (comment)
 
 ```
 # the shared ring rotates over the reduction chunk.  DERIVED from θ — no literal, and the
 # SAME accessor peel_depths/lds_buffers use, so the three can never disagree.
 ```
 
-## `Tensile/LoopModel/prefetch.py:675` (comment)
+## `tensilelite/LoopModel/prefetch.py:675` (comment)
 
 ```
 # ONE shift for the whole read: the coord and the slot must advance together.
 # See ADR 0006.
 ```
 
-## `Tensile/LoopModel/presence.py.prefetch_axis_name` (function)
+## `tensilelite/LoopModel/presence.py.prefetch_axis_name` (function)
 
 ```
 The level `off(read, ·)` lives on — `theta.readahead_level`, the OUTERMOST mode of the
@@ -2996,7 +2996,7 @@ The level `off(read, ·)` lives on — `theta.readahead_level`, the OUTERMOST mo
     when the reduction is outermost (`KMN`); see `readahead_level_of` for the measurements.
 ```
 
-## `Tensile/LoopModel/presence.py.op_class_level` (function)
+## `tensilelite/LoopModel/presence.py.op_class_level` (function)
 
 ```
 The LEVEL an op-class is emitted at — its HOME level (§5.3.1 line 523, "placed by ITS OWN
@@ -3011,7 +3011,7 @@ The LEVEL an op-class is emitted at — its HOME level (§5.3.1 line 523, "place
     Returns None for an op-class with no level (a legacy θ carrying no outer mode).
 ```
 
-## `Tensile/LoopModel/presence.py.group_value_span` (function)
+## `tensilelite/LoopModel/presence.py.group_value_span` (function)
 
 ```
 The `grouping_mode` VALUE SUBSET a register group owns (§2.6: a group is a partition of the
@@ -3019,7 +3019,7 @@ The `grouping_mode` VALUE SUBSET a register group owns (§2.6: a group is a part
     not group-split.  EQUAL partition (current): group i owns [i·part_vals, (i+1)·part_vals).
 ```
 
-## `Tensile/LoopModel/presence.py.varying_axes` (function)
+## `tensilelite/LoopModel/presence.py.varying_axes` (function)
 
 ```
 The inner modes op's shared→register READ varies over (its presence set, §2.1) — the
@@ -3047,7 +3047,7 @@ The inner modes op's shared→register READ varies over (its presence set, §2.1
     empty this is the historical per-tile answer exactly.
 ```
 
-## `Tensile/LoopModel/presence.py.reload_modes` (function)
+## `tensilelite/LoopModel/presence.py.reload_modes` (function)
 
 ```
 The modes the prefetch advances through: presence minus the free-axis region siblings.
@@ -3056,7 +3056,7 @@ The modes the prefetch advances through: presence minus the free-axis region sib
     BOUNDS the shift, which then rolls the chunk. ADR 0004.
 ```
 
-## `Tensile/LoopModel/presence.py.sibling_free_axes` (function)
+## `tensilelite/LoopModel/presence.py.sibling_free_axes` (function)
 
 ```
 `op`'s region modes that ENUMERATE storage-disjoint siblings rather than reload — the
@@ -3085,7 +3085,7 @@ The modes the prefetch advances through: presence minus the free-axis region sib
     its free tiles instead, so the bound follows the TILES rather than the label.
 ```
 
-## `Tensile/LoopModel/presence.py._sibling_outer_to_reduction` (function)
+## `tensilelite/LoopModel/presence.py._sibling_outer_to_reduction` (function)
 
 ```
 Is one of `op`'s free siblings OUTER, in `ord`, to the reduction it rotates over?
@@ -3093,7 +3093,7 @@ Is one of `op`'s free siblings OUTER, in `ord`, to the reduction it rotates over
     This is the configuration in which the group cannot read ahead — see `_readahead_depth`.
 ```
 
-## `Tensile/LoopModel/presence.py.axis_is_live` (function)
+## `tensilelite/LoopModel/presence.py.axis_is_live` (function)
 
 ```
 Does this ord block contain any axis with more than one value?
@@ -3104,7 +3104,7 @@ Does this ord block contain any axis with more than one value?
     the axes.
 ```
 
-## `Tensile/LoopModel/presence.py.prefetch_axis_mode` (function)
+## `tensilelite/LoopModel/presence.py.prefetch_axis_mode` (function)
 
 ```
 The reduction SUBSTEP axis: the innermost reduction inner mode WITH MORE THAN ONE VALUE.
@@ -3131,7 +3131,7 @@ The reduction SUBSTEP axis: the innermost reduction inner mode WITH MORE THAN ON
     lost: `readahead_level_of` carries it (a collapsed leading axis is skipped there).
 ```
 
-## `Tensile/LoopModel/presence.py.ring_axes` (function)
+## `tensilelite/LoopModel/presence.py.ring_axes` (function)
 
 ```
 The inner modes one register group cycles distinct values over, in ord order.
@@ -3140,7 +3140,7 @@ The inner modes one register group cycles distinct values over, in ord order.
     Extent-1 modes are dropped as nullspace. ADR 0004.
 ```
 
-## `Tensile/LoopModel/presence.py.ring_slot` (function)
+## `tensilelite/LoopModel/presence.py.ring_slot` (function)
 
 ```
 The rotation slot Expr for a group of width `d`: the MIXED-RADIX index over the group's
@@ -3156,7 +3156,7 @@ The rotation slot Expr for a group of width `d`: the MIXED-RADIX index over the 
     than something to re-check.
 ```
 
-## `Tensile/LoopModel/presence.py._reduction_rate_mode` (function)
+## `tensilelite/LoopModel/presence.py._reduction_rate_mode` (function)
 
 ```
 The single innermost REDUCTION rate mode (role 'k') of `op`'s register group, as
@@ -3165,7 +3165,7 @@ The single innermost REDUCTION rate mode (role 'k') of `op`'s register group, as
     rate modes would need a mixed-radix flat shift (deferred — guarded at the call site).
 ```
 
-## `Tensile/LoopModel/presence.py.axis_strides` (function)
+## `tensilelite/LoopModel/presence.py.axis_strides` (function)
 
 ```
 `stride_ord(m)` for a set of inner modes: the product of extents of the modes INNER to
@@ -3189,7 +3189,7 @@ The single innermost REDUCTION rate mode (role 'k') of `op`'s register group, as
     that decides it.
 ```
 
-## `Tensile/LoopModel/presence.py.hop_extents` (function)
+## `tensilelite/LoopModel/presence.py.hop_extents` (function)
 
 ```
 `{mode: extent}` as the operand's READ HOP sees them — its presence extents (§2.2).
@@ -3199,7 +3199,7 @@ The single innermost REDUCTION rate mode (role 'k') of `op`'s register group, as
     `geometry.hop_fold`, and everything that counts presence points reads the result from here.
 ```
 
-## `Tensile/LoopModel/presence.py.read_fold` (function)
+## `tensilelite/LoopModel/presence.py.read_fold` (function)
 
 ```
 `{mode: q}` — the PARTIAL quantum factor of the operand's read hop (§2.2), or `{}`.
@@ -3218,7 +3218,7 @@ The single innermost REDUCTION rate mode (role 'k') of `op`'s register group, as
     exactly where it matters.
 ```
 
-## `Tensile/LoopModel/presence.py.broadcast_width` (function)
+## `tensilelite/LoopModel/presence.py.broadcast_width` (function)
 
 ```
 How many times `op`'s whole register-name space is re-traversed before any value dies.
@@ -3227,7 +3227,7 @@ How many times `op`'s whole register-name space is re-traversed before any value
     `reloads_whole_set`, over reload modes. ADR 0004.
 ```
 
-## `Tensile/LoopModel/presence.py.position_terms` (function)
+## `tensilelite/LoopModel/presence.py.position_terms` (function)
 
 ```
 `(terms, L)` for the FLAT PRESENCE POSITION `P = Σ stride(m)·point(m)`, as an `Expr` linear
@@ -3246,7 +3246,7 @@ How many times `op`'s whole register-name space is re-traversed before any value
     crossed reduction chunks `q`-fold early).  They call this instead.
 ```
 
-## `Tensile/LoopModel/presence.py._shifted_coord` (function)
+## `tensilelite/LoopModel/presence.py._shifted_coord` (function)
 
 ```
 `op`'s read coord with the prefetch applied, per presence mode.
@@ -3255,7 +3255,7 @@ How many times `op`'s whole register-name space is re-traversed before any value
     targets the next tile, not the next substep of this one. ADR 0004.
 ```
 
-## `Tensile/LoopModel/presence.py._shifted_rate_slot` (function)
+## `tensilelite/LoopModel/presence.py._shifted_rate_slot` (function)
 
 ```
 The rotation slot the prefetched read writes, as an Expr.
@@ -3264,7 +3264,7 @@ The rotation slot the prefetched read writes, as an Expr.
     would name different registers. ADR 0004.
 ```
 
-## `Tensile/LoopModel/presence.py.quantum_tile_cap` (function)
+## `tensilelite/LoopModel/presence.py.quantum_tile_cap` (function)
 
 ```
 How many of `op`'s free tiles ONE instruction of `hop` could carry, from the TARGET.
@@ -3278,7 +3278,7 @@ How many of `op`'s free tiles ONE instruction of `hop` could carry, from the TAR
     fragment", i.e. one tile.
 ```
 
-## `Tensile/LoopModel/presence.py.is_uniform_over` (function)
+## `tensilelite/LoopModel/presence.py.is_uniform_over` (function)
 
 ```
 Is the generation map constant WITHIN each quantum block of `axes`?
@@ -3293,14 +3293,14 @@ Is the generation map constant WITHIN each quantum block of `axes`?
     merge in pairs instead of being refused outright.
 ```
 
-## `Tensile/LoopModel/presence.py:1` (comment)
+## `tensilelite/LoopModel/presence.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/presence.py:89` (comment)
+## `tensilelite/LoopModel/presence.py:89` (comment)
 
 ```
 # ONE DERIVATION, asked of the read hop. `geometry.hop_broadcast` already answers "what does
@@ -3308,14 +3308,14 @@ Is the generation map constant WITHIN each quantum block of `axes`?
 # instruction SPANS (`geometry.quantum_axes`).  (ADR 0007 #75)
 ```
 
-## `Tensile/LoopModel/presence.py:227` (comment)
+## `tensilelite/LoopModel/presence.py:227` (comment)
 
 ```
 # radix chain over the rate modes, innermost fastest — the same order `_shifted_rate_slot`
 # builds its digit fields in, read from the same `ring_axes` extents.
 ```
 
-## `Tensile/LoopModel/registers.py <module>` (module)
+## `tensilelite/LoopModel/registers.py <module>` (module)
 
 ```
 The register ring: when each name is loaded, when it is read, and how wide the ring
@@ -3326,7 +3326,7 @@ must be to keep those apart.
 moves a reload until neither fires.
 ```
 
-## `Tensile/LoopModel/registers.py.chunks_crossed` (function)
+## `tensilelite/LoopModel/registers.py.chunks_crossed` (function)
 
 ```
 `r` — how many reduction CHUNKS ahead `op`'s substep read-ahead reaches (§5.3.1 pt5,
@@ -3345,7 +3345,7 @@ moves a reload until neither fires.
     `dr_g = 0` (a Shape-B in-place group) does no look-ahead and so reaches `r = 0`.
 ```
 
-## `Tensile/LoopModel/registers.py.prefetch_distance_for` (function)
+## `tensilelite/LoopModel/registers.py.prefetch_distance_for` (function)
 
 ```
 The FLAT-POSITION advance a per-group depth `dr_g` produces — the ONE conversion (§5.3.1 pt5).
@@ -3362,7 +3362,7 @@ The FLAT-POSITION advance a per-group depth `dr_g` produces — the ONE conversi
     bug on the very quantity the admission test exists to police.
 ```
 
-## `Tensile/LoopModel/registers.py.reloads_whole_set` (function)
+## `tensilelite/LoopModel/registers.py.reloads_whole_set` (function)
 
 ```
 Is every one of `op`'s registers live across a full outer pass, so all must reload at once?
@@ -3372,7 +3372,7 @@ Is every one of `op`'s registers live across a full outer pass, so all must relo
     Collapsing them cost 96 miscomparing cells. ADR 0004.
 ```
 
-## `Tensile/LoopModel/registers.py.RegisterTimeline` (class)
+## `tensilelite/LoopModel/registers.py.RegisterTimeline` (class)
 
 ```
 The read/write event trace of one group's rotation names — the ONE walk (#331).
@@ -3385,7 +3385,7 @@ The read/write event trace of one group's rotation names — the ONE walk (#331)
     the placement stayed put — the 2026-08-28 miscompile.
 ```
 
-## `Tensile/LoopModel/registers.py._register_timeline` (function)
+## `tensilelite/LoopModel/registers.py._register_timeline` (function)
 
 ```
 Build the `RegisterTimeline` for `(op, group)` at rotation width `W` and advance `shift`.
@@ -3407,7 +3407,7 @@ Build the `RegisterTimeline` for `(op, group)` at rotation width `W` and advance
     trace, and every caller's answer in that case is the trivial one.
 ```
 
-## `Tensile/LoopModel/registers.py._uses_before_load` (function)
+## `tensilelite/LoopModel/registers.py._uses_before_load` (function)
 
 ```
 `{name: [(t, wanted, held)]}` — every STEADY-chunk consume that finds the wrong generation
@@ -3429,7 +3429,7 @@ Build the `RegisterTimeline` for `(op, group)` at rotation width `W` and advance
     not stale, and only a genuinely missing generation is reported.
 ```
 
-## `Tensile/LoopModel/registers.py._overwrites_live_register` (function)
+## `tensilelite/LoopModel/registers.py._overwrites_live_register` (function)
 
 ```
 `{name: [last consume, ...]}` for every steady-chunk write that lands on a name whose
@@ -3443,7 +3443,7 @@ Build the `RegisterTimeline` for `(op, group)` at rotation width `W` and advance
     depth the verdict had already rejected.  Same events in, same conflicts out.
 ```
 
-## `Tensile/LoopModel/registers.py.register_reuse_verdict` (function)
+## `tensilelite/LoopModel/registers.py.register_reuse_verdict` (function)
 
 ```
 `safe` | `inplace` | `clobber` — the ASSIGNMENT test for a read-ahead of `shift` (§2.6).
@@ -3475,7 +3475,7 @@ Build the `RegisterTimeline` for `(op, group)` at rotation width `W` and advance
     rather than a copy of this one.
 ```
 
-## `Tensile/LoopModel/registers.py.reload_positions` (function)
+## `tensilelite/LoopModel/registers.py.reload_positions` (function)
 
 ```
 `{register name: coord}` -- the loop position each reload must follow, or None if there
@@ -3485,14 +3485,14 @@ Build the `RegisterTimeline` for `(op, group)` at rotation width `W` and advance
     re-walked against the schedule it creates. ADR 0004.
 ```
 
-## `Tensile/LoopModel/registers.py:1` (comment)
+## `tensilelite/LoopModel/registers.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/registers.py:103` (comment)
+## `tensilelite/LoopModel/registers.py:103` (comment)
 
 ```
 # AN EXTENT-1 MODE IS NULLSPACE, the same rule `ring_axes` states: it has one value, so the
@@ -3500,14 +3500,14 @@ Build the `RegisterTimeline` for `(op, group)` at rotation width `W` and advance
 # "not outer".  (ADR 0007 #72)
 ```
 
-## `Tensile/LoopModel/registers.py:177` (comment)
+## `tensilelite/LoopModel/registers.py:177` (comment)
 
 ```
 # THE ANCHOR IS A GUARD ON THE ISSUING STEP, so it filters WRITES only — the wmmas keep
 # consuming at every step regardless of where the refill was moved to.
 ```
 
-## `Tensile/LoopModel/registers.py:279` (comment)
+## `tensilelite/LoopModel/registers.py:279` (comment)
 
 ```
 # STARVATION IS THE AUTHORITY (#332). `_uses_before_load` is the complete correctness test —
@@ -3515,7 +3515,7 @@ Build the `RegisterTimeline` for `(op, group)` at rotation width `W` and advance
 # write case below, which cannot starve a read without also leaving one stale.  (ADR 0007 #71)
 ```
 
-## `Tensile/LoopModel/registers.py:308` (comment)
+## `tensilelite/LoopModel/registers.py:308` (comment)
 
 ```
 # THE ANCHOR MUST LIE IN THE SAME TRIP AS THE REFILL.  A consume that survives the back
@@ -3523,14 +3523,14 @@ Build the `RegisterTimeline` for `(op, group)` at rotation width `W` and advance
 # the answer is the clobber the verdict already gives.  This is the admission test.
 ```
 
-## `Tensile/LoopModel/registers.py:324` (comment)
+## `tensilelite/LoopModel/registers.py:324` (comment)
 
 ```
 # THE FIXPOINT. `at` is the guard the emitter will actually put on this read
 # (`emit._read_anchor` builds the same dict from this return value).  (ADR 0007 #70)
 ```
 
-## `Tensile/LoopModel/render.py <module>` (module)
+## `tensilelite/LoopModel/render.py <module>` (module)
 
 ```
 Rendering — human-readable DEBUG VIEWS of the IR (not the IR itself).
@@ -3553,7 +3553,7 @@ can be checked by hand.  (No collapse view — the rolled IR is already collapse
 render_stream + ir.py "Re-adding address support".)
 ```
 
-## `Tensile/LoopModel/render.py._loop_header` (function)
+## `tensilelite/LoopModel/render.py._loop_header` (function)
 
 ```
 The loop header text.  OUTER (runtime, pipelined) loop: `for <iter> while (<back-edge pred>)`
@@ -3562,7 +3562,7 @@ The loop header text.  OUTER (runtime, pipelined) loop: `for <iter> while (<back
     field, no string) or an int repeat count for an inner loop.
 ```
 
-## `Tensile/LoopModel/render.py._subbody_header` (function)
+## `tensilelite/LoopModel/render.py._subbody_header` (function)
 
 ```
 The header for ONE sub-body of a §5.1 multi-body loop, over its OWN half-open range.
@@ -3578,7 +3578,7 @@ The header for ONE sub-body of a §5.1 multi-body loop, over its OWN half-open r
     to that value (no loop), anything wider is a real loop over the sub-range.
 ```
 
-## `Tensile/LoopModel/render.py._coord_of` (function)
+## `tensilelite/LoopModel/render.py._coord_of` (function)
 
 ```
 The op's coord as text: symbolic mode names in the rolled view, concrete indices in the
@@ -3586,7 +3586,7 @@ The op's coord as text: symbolic mode names in the rolled view, concrete indices
     Expr value is a SHIFTED coord (the PLR read-ahead: substep k renders/evals as (k+dr)%S).
 ```
 
-## `Tensile/LoopModel/render.py._shape_str` (function)
+## `tensilelite/LoopModel/render.py._shape_str` (function)
 
 ```
 The §2.2 MOVEMENT QUANTUM and the §5.3.1 pt5 read-ahead ADVANCE, neither of which was
@@ -3604,7 +3604,7 @@ The §2.2 MOVEMENT QUANTUM and the §5.3.1 pt5 read-ahead ADVANCE, neither of wh
     only inferable from where the line happened to sit.
 ```
 
-## `Tensile/LoopModel/render.py._await_line` (function)
+## `tensilelite/LoopModel/render.py._await_line` (function)
 
 ```
 A named-dependency discharge point (§5.4): the NAMED dep is the primitive; the lowered
@@ -3618,7 +3618,7 @@ A named-dependency discharge point (§5.4): the NAMED dep is the primitive; the 
     a defect and is shown as such rather than being quietly abbreviated to its dep name.
 ```
 
-## `Tensile/LoopModel/render.py.render_stream` (function)
+## `tensilelite/LoopModel/render.py.render_stream` (function)
 
 ```
 The ONE IR view both entry points call.  raw > unroll > rolled.  `unroll` expands the
@@ -3631,7 +3631,7 @@ The ONE IR view both entry points call.  raw > unroll > rolled.  `unroll` expand
     so there is nothing left to fold.  See the "Re-adding address support" note in ir.py.
 ```
 
-## `Tensile/LoopModel/render.py.render_ir` (function)
+## `tensilelite/LoopModel/render.py.render_ir` (function)
 
 ```
 Print the ROLLED θ-nest: `for <mode> in range(N):` loop headers, each op-class ONE line at
@@ -3646,7 +3646,7 @@ Print the ROLLED θ-nest: `for <mode> in range(N):` loop headers, each op-class 
     output that cannot appear, which reads as a broken renderer rather than a stale docstring.
 ```
 
-## `Tensile/LoopModel/render.py.render_unrolled` (function)
+## `tensilelite/LoopModel/render.py.render_unrolled` (function)
 
 ```
 Expand the rolled nest into the concrete interleaved stream: walk the loop nest with a
@@ -3655,7 +3655,7 @@ Expand the rolled nest into the concrete interleaved stream: walk the loop nest 
     Enumeration lives ONLY here; a step's read and wmma stay adjacent (correct unroll).
 ```
 
-## `Tensile/LoopModel/render.py._region_and_agent_lines` (function)
+## `tensilelite/LoopModel/render.py._region_and_agent_lines` (function)
 
 ```
 The REGION and AGENT facts, which no other line of this table carries (#287).
@@ -3679,7 +3679,7 @@ The REGION and AGENT facts, which no other line of this table carries (#287).
     premise stood for a day.  Emitted only when there is something to say.
 ```
 
-## `Tensile/LoopModel/render.py.render_schedule` (function)
+## `tensilelite/LoopModel/render.py.render_schedule` (function)
 
 ```
 One row per (operand, register group): the whole policy, checkable by hand.
@@ -3689,21 +3689,21 @@ One row per (operand, register group): the whole policy, checkable by hand.
     
 ```
 
-## `Tensile/LoopModel/render.py:1` (comment)
+## `tensilelite/LoopModel/render.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/render.py:38` (comment)
+## `tensilelite/LoopModel/render.py:38` (comment)
 
 ```
 # Per-op formatting.
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/render.py:80` (comment)
+## `tensilelite/LoopModel/render.py:80` (comment)
 
 ```
 # A Cond's MEANING is its GENERIC `kind` (backend-agnostic paper vocabulary; the core sets this,
@@ -3711,7 +3711,7 @@ One row per (operand, register group): the whole policy, checkable by hand.
 # reads as standalone GEMM pseudocode without opening GIR or knowing any scaffold labels.
 ```
 
-## `Tensile/LoopModel/render.py:112` (comment)
+## `tensilelite/LoopModel/render.py:112` (comment)
 
 ```
 # `{ax}=(formula)` — the DATA index this read accesses along `ax`, a read-ahead SHIFT of
@@ -3719,7 +3719,7 @@ One row per (operand, register group): the whole policy, checkable by hand.
 # subscript (the old `K_inner[(K_inner+1)%2]` read like an array-of-array).
 ```
 
-## `Tensile/LoopModel/render.py:172` (comment)
+## `tensilelite/LoopModel/render.py:172` (comment)
 
 ```
 # the wmma CONSUMES a per-operand register residence (a {operand: Placement} dict, same slots the
@@ -3727,7 +3727,7 @@ One row per (operand, register group): the whole policy, checkable by hand.
 # vgpr the wmma reads — matching the ds_read dest (user point #1: wmma source must carry the group).
 ```
 
-## `Tensile/LoopModel/render.py:182` (comment)
+## `tensilelite/LoopModel/render.py:182` (comment)
 
 ```
 # THE OPERAND NAMES COME OFF THE NODE. This line hardcoded `C[...] += A*B`, so `Mma.a`, `Mma.b`
@@ -3735,21 +3735,21 @@ One row per (operand, register group): the whole policy, checkable by hand.
 # wrong operand rendered identically to one that named the right one.  (ADR 0007 #84)
 ```
 
-## `Tensile/LoopModel/render.py:217` (comment)
+## `tensilelite/LoopModel/render.py:217` (comment)
 
 ```
 # Raw dump — the actual IR dataclasses, no interpretation by the renderer.
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/render.py:276` (comment)
+## `tensilelite/LoopModel/render.py:276` (comment)
 
 ```
 # ROLLED view — the IR as it is stored: a loop nest, each op-class once (§5.2).
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/render.py:300` (comment)
+## `tensilelite/LoopModel/render.py:300` (comment)
 
 ```
 # §5.1 multi-body: a SEQUENCE of sub-loops, each over its own half-open range —
@@ -3757,28 +3757,28 @@ One row per (operand, register group): the whole policy, checkable by hand.
 # there is no enclosing `for` to nest them under.  See _subbody_header.
 ```
 
-## `Tensile/LoopModel/render.py:307` (comment)
+## `tensilelite/LoopModel/render.py:307` (comment)
 
 ```
 # Branch is a register-ROTATION selector, NOT a guard: `rotate buf = mode % S`,
 # each arm labelled by the buffer residue it selects (§6.1 register ring).
 ```
 
-## `Tensile/LoopModel/render.py:337` (comment)
+## `tensilelite/LoopModel/render.py:337` (comment)
 
 ```
 # UNROLLED view — expand the leaves, interleave read;wmma (a VIEW, §5.3 9a).
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/render.py:366` (comment)
+## `tensilelite/LoopModel/render.py:366` (comment)
 
 ```
 # PINNED-residue branch (a peel-unrolled reduction substep): the arm key IS the
 # mode's concrete value — bind it into env so nested coords/slots evaluate to it.
 ```
 
-## `Tensile/LoopModel/render.py:375` (comment)
+## `tensilelite/LoopModel/render.py:375` (comment)
 
 ```
 # a peel-step iter binding: push the bound value into env (concrete for prologue;
@@ -3786,14 +3786,14 @@ One row per (operand, register group): the whole policy, checkable by hand.
 # render symbolically since T is runtime).
 ```
 
-## `Tensile/LoopModel/render.py:381` (comment)
+## `tensilelite/LoopModel/render.py:381` (comment)
 
 ```
 # honor a RESOLVED guard in this concrete env (first-touch `mode==0`, drain NLL `k
 # < n_s−dr`) — the unrolled stream shows only the arm that actually executes.  (ADR 0007 #83)
 ```
 
-## `Tensile/LoopModel/render.py:394` (comment)
+## `tensilelite/LoopModel/render.py:394` (comment)
 
 ```
 # a Load carries a single Placement (evaluate it to concrete slots for this env); a
@@ -3801,14 +3801,14 @@ One row per (operand, register group): the whole policy, checkable by hand.
 # pass the dict through so _mma_line evaluates each source's slots against env.
 ```
 
-## `Tensile/LoopModel/render.py:417` (comment)
+## `tensilelite/LoopModel/render.py:417` (comment)
 
 ```
 # Geometry table — every derived number, checkable by hand.
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/render.py:469` (comment)
+## `tensilelite/LoopModel/render.py:469` (comment)
 
 ```
 # THE DOWNGRADE, NAMED. `readmode` prints `dr_g` and this line says whether that `dr_g` is the
@@ -3816,14 +3816,14 @@ One row per (operand, register group): the whole policy, checkable by hand.
 # is the derivation overriding the request — never a silent outcome.  (ADR 0007 #82)
 ```
 
-## `Tensile/LoopModel/render.py:486` (comment)
+## `tensilelite/LoopModel/render.py:486` (comment)
 
 ```
 # LEVELS: the full ord permutation, outer→inner, marking the OUTER pipelined levels (extent
 # symbolic/0 → the reduction chunk / persist) vs the INNER unrolled modes (concrete extent).
 ```
 
-## `Tensile/LoopModel/render.py:496` (comment)
+## `tensilelite/LoopModel/render.py:496` (comment)
 
 ```
 # IN ORD ORDER, like every other list in this block.  `sorted()` over a set printed
@@ -3831,21 +3831,21 @@ One row per (operand, register group): the whole policy, checkable by hand.
 # orderings of the same modes, one line apart, with nothing saying they differ.
 ```
 
-## `Tensile/LoopModel/render.py:502` (comment)
+## `tensilelite/LoopModel/render.py:502` (comment)
 
 ```
 # off: the first-class retime matrix {(op, role, level): δ} (§2.4) — per (op-class × level),
 # where the op-class is (operand, hop role).  Rendered `A:copy@iter=2`.
 ```
 
-## `Tensile/LoopModel/render.py:555` (comment)
+## `tensilelite/LoopModel/render.py:555` (comment)
 
 ```
 # THE ASYMMETRY, SPELLED OUT.  This is #170/#245's whole shape: agent on one hop,
 # coordinate on the other, in one operand.  Collapsing it to a single answer is the bug.
 ```
 
-## `Tensile/LoopModel/render.py:563` (comment)
+## `tensilelite/LoopModel/render.py:563` (comment)
 
 ```
 # THE REGION COUNT, not just the axes. Without it `MXSA region axes ('M_split',)` reads as
@@ -3853,21 +3853,21 @@ One row per (operand, register group): the whole policy, checkable by hand.
 # gates on `operand_regions > 1`, correctly omits MXSA entirely.  (ADR 0007 #81)
 ```
 
-## `Tensile/LoopModel/render.py:574` (comment)
+## `tensilelite/LoopModel/render.py:574` (comment)
 
 ```
 # The decision table (`schedule.Schedule`) — what the decoder decided, per operand.
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/render.py:596` (comment)
+## `tensilelite/LoopModel/render.py:596` (comment)
 
 ```
 #: The wording of every adapter note, keyed by its `Note.kind`. The compute path records the
 #: numbers; this is the only place the sentence exists.
 ```
 
-## `Tensile/LoopModel/schedule.py <module>` (module)
+## `tensilelite/LoopModel/schedule.py <module>` (module)
 
 ```
 Every derived per-operand DECISION, in one place.
@@ -3888,7 +3888,7 @@ legitimately asks at depth 0 while the steady body asks at theta's own, and coll
 be a behaviour change rather than a refactor.
 ```
 
-## `Tensile/LoopModel/schedule.py._assignment_width` (function)
+## `tensilelite/LoopModel/schedule.py._assignment_width` (function)
 
 ```
 Narrowest `W` in `[lo, hi]` whose rotation MAP admits the requested read-ahead, else `lo`.
@@ -3897,7 +3897,7 @@ Narrowest `W` in `[lo, hi]` whose rotation MAP admits the requested read-ahead, 
     
 ```
 
-## `Tensile/LoopModel/schedule.py.group_width` (function)
+## `tensilelite/LoopModel/schedule.py.group_width` (function)
 
 ```
 W — the rotation width = the value S stores, searched in the band [L, R] (§2.6 row 3).
@@ -3920,7 +3920,7 @@ W — the rotation width = the value S stores, searched in the band [L, R] (§2.
     
 ```
 
-## `Tensile/LoopModel/schedule.py.derive_S` (function)
+## `tensilelite/LoopModel/schedule.py.derive_S` (function)
 
 ```
 The per-tile-group buffer-ring depth map S.  Each group's depth is its rotation width
@@ -3929,7 +3929,7 @@ The per-tile-group buffer-ring depth map S.  Each group's depth is its rotation 
     keyed by their LABEL (Fragment.groups()).
 ```
 
-## `Tensile/LoopModel/schedule.py.build_S` (function)
+## `tensilelite/LoopModel/schedule.py.build_S` (function)
 
 ```
 The full depth map: derived register floors PLUS the off-driven cross-iteration shared
@@ -3937,21 +3937,21 @@ The full depth map: derived register floors PLUS the off-driven cross-iteration 
     Returns (S, floor) where floor is the pure derived register floor (for reporting).
 ```
 
-## `Tensile/LoopModel/schedule.py:1` (comment)
+## `tensilelite/LoopModel/schedule.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/schedule.py:40` (comment)
+## `tensilelite/LoopModel/schedule.py:40` (comment)
 
 ```
 #: which loop axis the lookahead is counted along -- derived per operand from ord, NOT fixed
 #: to K (#321: at DepthU=64 there is no K inner axis at all and the prefetch went silently inert)
 ```
 
-## `Tensile/LoopModel/schedule.py:45` (comment)
+## `tensilelite/LoopModel/schedule.py:45` (comment)
 
 ```
 #: the same lookahead as an offset in this operand's own load order, which is what the address
@@ -3959,42 +3959,42 @@ The full depth map: derived register floors PLUS the off-driven cross-iteration 
 #: innermost; every place that used one meaning the other has been a bug.
 ```
 
-## `Tensile/LoopModel/schedule.py:119` (comment)
+## `tensilelite/LoopModel/schedule.py:119` (comment)
 
 ```
 # The register depth map S -- the first decision everything downstream reads
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/schedule.py:126` (comment)
+## `tensilelite/LoopModel/schedule.py:126` (comment)
 
 ```
 # A DTV OPERAND HAS NO SHARED PLACEMENT (`global->register` only), so the substep read-ahead
 # this widens for does not exist and the off lookup is meaningless.  Guard on the hop.
 ```
 
-## `Tensile/LoopModel/schedule.py:130` (comment)
+## `tensilelite/LoopModel/schedule.py:130` (comment)
 
 ```
 # THE REQUEST IS `off(READ, substep)` — WHAT PLR SET — not `prefetch_depth`, which returns
 # `S_shared`, the LDS ring size (a DIFFERENT quantity; its own docstring says so).  (ADR 0007 #87)
 ```
 
-## `Tensile/LoopModel/schedule.py:135` (comment)
+## `tensilelite/LoopModel/schedule.py:135` (comment)
 
 ```
 # SIZE FOR THE REQUESTED DEPTH — `PLR` IS AN INPUT, `W` IS DERIVED. The user asks for a read-
 # ahead depth; the ring width is ours to choose.  (ADR 0007 #86)
 ```
 
-## `Tensile/LoopModel/schedule.py:191` (comment)
+## `tensilelite/LoopModel/schedule.py:191` (comment)
 
 ```
 # reduction — no mainloop rotating ring (§6.1); its footprint is the
 # separate accumulator term (§7), not a multibuffer depth entry.
 ```
 
-## `Tensile/LoopModel/sigma_c.py <module>` (module)
+## `tensilelite/LoopModel/sigma_c.py <module>` (module)
 
 ```
 σ_c ordering (paper §5.3.1 point 4 / emit_can step 9a): the refill-after-read freeze.
@@ -4016,7 +4016,7 @@ Both are the same §2.4 line 99 WAR, one per placement.  No TensileLite / AMD vo
 LoopModel core only.
 ```
 
-## `Tensile/LoopModel/sigma_c.py._movement` (function)
+## `tensilelite/LoopModel/sigma_c.py._movement` (function)
 
 ```
 The movement `Inst` node `n` denotes, looking THROUGH a rolled region loop and through a
@@ -4030,7 +4030,7 @@ The movement `Inst` node `n` denotes, looking THROUGH a rolled region loop and t
     the node denotes — only whether it is issued this pass.
 ```
 
-## `Tensile/LoopModel/sigma_c.py._rebuilt` (function)
+## `tensilelite/LoopModel/sigma_c.py._rebuilt` (function)
 
 ```
 `n` with σ_c applied to each of its sub-bodies (the freeze holds at EVERY level, not just
@@ -4038,7 +4038,7 @@ The movement `Inst` node `n` denotes, looking THROUGH a rolled region loop and t
     nest).
 ```
 
-## `Tensile/LoopModel/sigma_c.py.move_reloads_after_last_use` (function)
+## `tensilelite/LoopModel/sigma_c.py.move_reloads_after_last_use` (function)
 
 ```
 Apply σ_c to a straight-line body, and recursively to every sub-body within it.
@@ -4075,21 +4075,21 @@ Apply σ_c to a straight-line body, and recursively to every sub-body within it.
     shared refill, so the shared copy stays last.
 ```
 
-## `Tensile/LoopModel/sigma_c.py:1` (comment)
+## `tensilelite/LoopModel/sigma_c.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/sigma_c.py:119` (comment)
+## `tensilelite/LoopModel/sigma_c.py:119` (comment)
 
 ```
 # A copy whose chunk THIS trip's read-ahead crosses into (`off == r`, §5.3.1 pt5) is a RAW
 # producer for those reads and must LEAD them — never deferred.  (ADR 0007 #88)
 ```
 
-## `Tensile/LoopModel/theta.py <module>` (module)
+## `tensilelite/LoopModel/theta.py <module>` (module)
 
 ```
 θ — the canonical Spacetime-layout point the decoder consumes.
@@ -4114,7 +4114,7 @@ specific generator's params.  S is derived, not flagged — the reuse scheme is 
 value (the fragment rate-group partition), validated to reproduce the flagship [lo:4,hi:2].
 ```
 
-## `Tensile/LoopModel/theta.py.Mode` (class)
+## `tensilelite/LoopModel/theta.py.Mode` (class)
 
 ```
 One tiled traversal axis: a name and its extent.  `theta.ord` is a list of these — the
@@ -4125,7 +4125,7 @@ One tiled traversal axis: a name and its extent.  `theta.ord` is a list of these
     
 ```
 
-## `Tensile/LoopModel/theta.py.Fragment` (class)
+## `tensilelite/LoopModel/theta.py.Fragment` (class)
 
 ```
 The register-buffer structure of an operand's VGPR placement.
@@ -4134,7 +4134,7 @@ The register-buffer structure of an operand's VGPR placement.
     
 ```
 
-## `Tensile/LoopModel/theta.py.trajectory_sense` (function)
+## `tensilelite/LoopModel/theta.py.trajectory_sense` (function)
 
 ```
 FORWARD (toward the compute) or REVERSE (away from it) for one op-class.
@@ -4145,7 +4145,7 @@ FORWARD (toward the compute) or REVERSE (away from it) for one op-class.
     which is exactly the confusion this function exists to end, so it raises instead of picking.
 ```
 
-## `Tensile/LoopModel/theta.py.Hop` (class)
+## `tensilelite/LoopModel/theta.py.Hop` (class)
 
 ```
 One leg of an operand's staging trajectory (path).  Carries transfer granularity and its
@@ -4157,7 +4157,7 @@ One leg of an operand's staging trajectory (path).  Carries transfer granularity
     
 ```
 
-## `Tensile/LoopModel/theta.py.Operand` (class)
+## `tensilelite/LoopModel/theta.py.Operand` (class)
 
 ```
 One tensor trajectory in generic geometry.
@@ -4166,7 +4166,7 @@ One tensor trajectory in generic geometry.
     
 ```
 
-## `Tensile/LoopModel/theta.py.Resort` (class)
+## `tensilelite/LoopModel/theta.py.Resort` (class)
 
 ```
 One `resort(mode → agent)` (§2.8 move 2): a looped mode traversed by the AGENTS instead of
@@ -4176,7 +4176,7 @@ One `resort(mode → agent)` (§2.8 move 2): a looped mode traversed by the AGEN
     
 ```
 
-## `Tensile/LoopModel/theta.py.Rho` (class)
+## `tensilelite/LoopModel/theta.py.Rho` (class)
 
 ```
 ρ = agent assignment + role partition (§2.9 line 244).
@@ -4185,7 +4185,7 @@ One `resort(mode → agent)` (§2.8 move 2): a looped mode traversed by the AGEN
     
 ```
 
-## `Tensile/LoopModel/theta.py.Note` (class)
+## `tensilelite/LoopModel/theta.py.Note` (class)
 
 ```
 One thing the adapter recorded about this theta, for the `--output-loop-ir` dump.
@@ -4196,7 +4196,7 @@ One thing the adapter recorded about this theta, for the `--output-loop-ir` dump
     
 ```
 
-## `Tensile/LoopModel/theta.py.DepthMap` (class)
+## `tensilelite/LoopModel/theta.py.DepthMap` (class)
 
 ```
 `S_Λ : Q(Λ) → ℕ₊` (Definition 1) — depth per PLACEMENT Λ, per rotating coordinate.
@@ -4205,7 +4205,7 @@ One thing the adapter recorded about this theta, for the `--output-loop-ir` dump
     
 ```
 
-## `Tensile/LoopModel/theta.py.is_outer` (function)
+## `tensilelite/LoopModel/theta.py.is_outer` (function)
 
 ```
 True iff this is an OUTER (dynamic / runtime-trip) pipelined level — the peel and
@@ -4213,7 +4213,7 @@ True iff this is an OUTER (dynamic / runtime-trip) pipelined level — the peel 
         intrinsic outer/inner test; `outer_modes()`/`inner_modes()` are just this filter.
 ```
 
-## `Tensile/LoopModel/theta.py.group_broadcast` (function)
+## `tensilelite/LoopModel/theta.py.group_broadcast` (function)
 
 ```
 The axes a group is constant over.  Uniform across a fragment's slots, so this is
@@ -4221,7 +4221,7 @@ The axes a group is constant over.  Uniform across a fragment's slots, so this i
         symmetry and ignored).
 ```
 
-## `Tensile/LoopModel/theta.py.policy_of` (function)
+## `tensilelite/LoopModel/theta.py.policy_of` (function)
 
 ```
 This group's W-in-[L,R] choice: an explicit int, 'unroll' (W=R), 'overlap' (W=L_pf),
@@ -4230,7 +4230,7 @@ This group's W-in-[L,R] choice: an explicit int, 'unroll' (W=R), 'overlap' (W=L_
         hi='inplace') and lets an autotuner pass an explicit interior W.
 ```
 
-## `Tensile/LoopModel/theta.py.at` (function)
+## `tensilelite/LoopModel/theta.py.at` (function)
 
 ```
 The resort entries at any of `levels`, for one hop ROLE (default `read`).
@@ -4242,7 +4242,7 @@ The resort entries at any of `levels`, for one hop ROLE (default `read`).
         otherwise fire on a mode carrying both a read and a copy entry.
 ```
 
-## `Tensile/LoopModel/theta.py.copy_agents` (function)
+## `tensilelite/LoopModel/theta.py.copy_agents` (function)
 
 ```
 How many agents cooperate on `opname`'s global→shared COPY — the Φ group's wave share.
@@ -4257,7 +4257,7 @@ How many agents cooperate on `opname`'s global→shared COPY — the Φ group's 
         every single-wave kernel and anything built without the target's wave facts.
 ```
 
-## `Tensile/LoopModel/theta.py.served_modes` (function)
+## `tensilelite/LoopModel/theta.py.served_modes` (function)
 
 ```
 The modes the AGENTS traverse INSTEAD OF the coordinate — §2.8 move 2's domain, as the
@@ -4268,7 +4268,7 @@ The modes the AGENTS traverse INSTEAD OF the coordinate — §2.8 move 2's domai
         
 ```
 
-## `Tensile/LoopModel/theta.py.span_over` (function)
+## `tensilelite/LoopModel/theta.py.span_over` (function)
 
 ```
 The `level`-level agent span of whichever resorted mode lies in `modes` — ρ as the
@@ -4282,7 +4282,7 @@ The `level`-level agent span of whichever resorted mode lies in `modes` — ρ a
         
 ```
 
-## `Tensile/LoopModel/theta.py.agent_distributed` (function)
+## `tensilelite/LoopModel/theta.py.agent_distributed` (function)
 
 ```
 Are this op-class's shared-staged hazards CROSS-AGENT (§2.4)?
@@ -4291,7 +4291,7 @@ Are this op-class's shared-staged hazards CROSS-AGENT (§2.4)?
         
 ```
 
-## `Tensile/LoopModel/theta.py.movement_units` (function)
+## `tensilelite/LoopModel/theta.py.movement_units` (function)
 
 ```
 The COPY MOVEMENTS this θ emits, as `[(unit_key, members, n_regions)]` — the ONE
@@ -4301,7 +4301,7 @@ The COPY MOVEMENTS this θ emits, as `[(unit_key, members, n_regions)]` — the 
         
 ```
 
-## `Tensile/LoopModel/theta.py.levels` (function)
+## `tensilelite/LoopModel/theta.py.levels` (function)
 
 ```
 The FULL level permutation, outer→inner (§5.3.1 `levels = [iter] + [substep, m, n, …]`)
@@ -4309,7 +4309,7 @@ The FULL level permutation, outer→inner (§5.3.1 `levels = [iter] + [substep, 
         skeleton walk these; `levels[0]` is the outermost level (the one peeled separately).
 ```
 
-## `Tensile/LoopModel/theta.py.outer_modes` (function)
+## `tensilelite/LoopModel/theta.py.outer_modes` (function)
 
 ```
 The OUTER pipelined levels (a problem-dimension trip, `Mode.is_outer`), in ord order —
@@ -4319,7 +4319,7 @@ The OUTER pipelined levels (a problem-dimension trip, `Mode.is_outer`), in ord o
         Callers wanting *the reduction chunk* must use `reduction_chunk_mode()`, NOT an index.
 ```
 
-## `Tensile/LoopModel/theta.py.reduction_chunk_mode` (function)
+## `tensilelite/LoopModel/theta.py.reduction_chunk_mode` (function)
 
 ```
 The outer level the REDUCTION CHUNK advances on — the INNERMOST outer level, since
@@ -4330,7 +4330,7 @@ The outer level the REDUCTION CHUNK advances on — the INNERMOST outer level, s
         
 ```
 
-## `Tensile/LoopModel/theta.py.inner_modes` (function)
+## `tensilelite/LoopModel/theta.py.inner_modes` (function)
 
 ```
 The INTRA-reduction chunk modes only (the inner K substep + the M/N fan), in ord order.  The §2.6
@@ -4340,7 +4340,7 @@ The INTRA-reduction chunk modes only (the inner K substep + the M/N fan), in ord
         product.  For a legacy θ (no outer mode) this is the whole `ord`, unchanged.
 ```
 
-## `Tensile/LoopModel/theta.py.off_at` (function)
+## `tensilelite/LoopModel/theta.py.off_at` (function)
 
 ```
 The retime offset `off(op-class, level)` (§2.4 `off : (op-class × level) → ℤ`, a
@@ -4350,7 +4350,7 @@ The retime offset `off(op-class, level)` (§2.4 `off : (op-class × level) → �
         
 ```
 
-## `Tensile/LoopModel/theta.py.presence_modes` (function)
+## `tensilelite/LoopModel/theta.py.presence_modes` (function)
 
 ```
 The inner Modes an op-class VARIES over (its presence set, §2.1) = the inner modes minus
@@ -4360,7 +4360,7 @@ The inner Modes an op-class VARIES over (its presence set, §2.1) = the inner mo
         
 ```
 
-## `Tensile/LoopModel/theta.py.agent_served_modes` (function)
+## `tensilelite/LoopModel/theta.py.agent_served_modes` (function)
 
 ```
 The THIRD kind of inner axis: traversed by the AGENTS, not by the coordinate (§2.8 move
@@ -4370,7 +4370,7 @@ The THIRD kind of inner axis: traversed by the AGENTS, not by the coordinate (§
         
 ```
 
-## `Tensile/LoopModel/theta.py.reduction_modes` (function)
+## `tensilelite/LoopModel/theta.py.reduction_modes` (function)
 
 ```
 `reduction_modes = {inner modes} \ pres(output)` (§2.1 line 82, PAPER-CONFIRMED Q18):
@@ -4381,7 +4381,7 @@ The THIRD kind of inner axis: traversed by the AGENTS, not by the coordinate (§
         translate always constructs the accumulator).
 ```
 
-## `Tensile/LoopModel/theta.py.free_modes` (function)
+## `tensilelite/LoopModel/theta.py.free_modes` (function)
 
 ```
 `op`'s FREE presence Modes = presence minus the reduction modes (§2.6).  An operand's
@@ -4389,7 +4389,7 @@ The THIRD kind of inner axis: traversed by the AGENTS, not by the coordinate (§
         operand-name test.
 ```
 
-## `Tensile/LoopModel/theta.py.tensor_instrs_per_kiter` (function)
+## `tensilelite/LoopModel/theta.py.tensor_instrs_per_kiter` (function)
 
 ```
 DISTINCT global->shared instructions per kiter (one shared counter tracks all).
@@ -4398,7 +4398,7 @@ DISTINCT global->shared instructions per kiter (one shared counter tracks all).
         ({MXSA,MXSB}) emits one (§2.8 move 9, region-indexed fusion).
 ```
 
-## `Tensile/LoopModel/theta.py.regions_of` (function)
+## `tensilelite/LoopModel/theta.py.regions_of` (function)
 
 ```
 The region indices `op`'s `group` has rows for, in order.  `[None]` = one whole-tile
@@ -4406,7 +4406,7 @@ The region indices `op`'s `group` has rows for, in order.  `[None]` = one whole-
         one placement per operand.
 ```
 
-## `Tensile/LoopModel/theta.py.groups_of` (function)
+## `tensilelite/LoopModel/theta.py.groups_of` (function)
 
 ```
 {group: depth} for one placement of `op`.  With `region=None` this folds every region's
@@ -4414,21 +4414,21 @@ The region indices `op`'s `group` has rows for, in order.  `[None]` = one whole-
         — via `get`, which raises rather than pick when they do not.
 ```
 
-## `Tensile/LoopModel/theta.py:1` (comment)
+## `tensilelite/LoopModel/theta.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/theta.py:37` (comment)
+## `tensilelite/LoopModel/theta.py:37` (comment)
 
 ```
 # tile — modes and the register-axis rate-group partition
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/theta.py:114` (comment)
+## `tensilelite/LoopModel/theta.py:114` (comment)
 
 ```
 # hop (src, dst) -> op-class role.  A one-hop DTV trajectory (global→register) IS the read; the
@@ -4436,7 +4436,7 @@ The region indices `op`'s `group` has rows for, in order.  `[None]` = one whole-
 # op-class has a role the moment `stage` splices its path on.
 ```
 
-## `Tensile/LoopModel/theta.py:208` (comment)
+## `tensilelite/LoopModel/theta.py:208` (comment)
 
 ```
 # : (`copy_agents` WAS HERE. How many agents cooperate on this op-class's copy is a ρ fact and
@@ -4444,21 +4444,21 @@ The region indices `op`'s `group` has rows for, in order.  `[None]` = one whole-
 # sibling : of.  (ADR 0007 #95)
 ```
 
-## `Tensile/LoopModel/theta.py:241` (comment)
+## `tensilelite/LoopModel/theta.py:241` (comment)
 
 ```
 # ρ — agent assignment + role partition (§2.8 moves 2 & 8, §2.9 line 244)
 # ===========================================================================
 ```
 
-## `Tensile/LoopModel/theta.py:247` (comment)
+## `tensilelite/LoopModel/theta.py:247` (comment)
 
 ```
 #: The finest level a synchronization scope may name (§5.2's ladder floor).  Anything finer is a
 #: distribution fact only.
 ```
 
-## `Tensile/LoopModel/theta.py:252` (comment)
+## `tensilelite/LoopModel/theta.py:252` (comment)
 
 ```
 # : A resort entry's HOP ROLE. `read` is the classification half — which modes the agents traverse
@@ -4466,7 +4466,7 @@ The region indices `op`'s `group` has rows for, in order.  `[None]` = one whole-
 # MOVEMENT half — how many agents cooperate on one op-class's global→shared copy, i.e.  (ADR 0007 #94)
 ```
 
-## `Tensile/LoopModel/theta.py:368` (comment)
+## `tensilelite/LoopModel/theta.py:368` (comment)
 
 ```
 # INCLUDING the outer reduction level `iter` (extent==0) and any
@@ -4474,7 +4474,7 @@ The region indices `op`'s `group` has rows for, in order.  `[None]` = one whole-
 # / inner_modes(); `levels()` is the whole list (§5.3.1).
 ```
 
-## `Tensile/LoopModel/theta.py:380` (comment)
+## `tensilelite/LoopModel/theta.py:380` (comment)
 
 ```
 # off: {(op_name, role, level_name): δ} — §2.4's retime matrix over (op-class × level), where
@@ -4482,14 +4482,14 @@ The region indices `op`'s `group` has rows for, in order.  `[None]` = one whole-
 # `off_at(op, role, level)`; never index this dict directly.
 ```
 
-## `Tensile/LoopModel/theta.py:386` (comment)
+## `tensilelite/LoopModel/theta.py:386` (comment)
 
 ```
 # (no `reduction_modes` field: the contraction axes are DERIVED by `reduction_names()` from the
 # accumulator's presence, §2.1 line 82.  (ADR 0007 #92)
 ```
 
-## `Tensile/LoopModel/theta.py:524` (comment)
+## `tensilelite/LoopModel/theta.py:524` (comment)
 
 ```
 # AN AGENT-SERVED AXIS IS NOT A REDUCTION. `inner \\ pres(output)` is a SUBTRACTION, so
@@ -4497,7 +4497,7 @@ The region indices `op`'s `group` has rows for, in order.  `[None]` = one whole-
 # left the output's presence because the AGENTS traverse it, not because it is contracted.  (ADR 0007 #90)
 ```
 
-## `Tensile/LoopModel/theta.py:551` (comment)
+## `tensilelite/LoopModel/theta.py:551` (comment)
 
 ```
 # (mode_roles() removed: the core no longer labels modes m/n/k — §7.1 index-agnostic.  Roles
@@ -4505,7 +4505,7 @@ The region indices `op`'s `group` has rows for, in order.  `[None]` = one whole-
 # free_names(op) / reduction_names().  loop_shape uses the operand-presence set as its key.)
 ```
 
-## `Tensile/LoopModel/validate.py <module>` (module)
+## `tensilelite/LoopModel/validate.py <module>` (module)
 
 ```
 validate_loopir — the PERMANENT structural gate that the emitted LoopIR is proper, standalone,
@@ -4534,7 +4534,7 @@ The properties (from the reference spec + the paper §5.3.1 skeleton):
      so an unguarded step t>=1 would copy a nonexistent reduction chunk.
 ```
 
-## `Tensile/LoopModel/validate.py._unbound_placement_refs` (function)
+## `tensilelite/LoopModel/validate.py._unbound_placement_refs` (function)
 
 ```
 Every (Inst, mode) where the Inst's placement references a mode NO enclosing binder binds.
@@ -4551,7 +4551,7 @@ Every (Inst, mode) where the Inst's placement references a mode NO enclosing bin
     not a mode, so it is never "unbound".
 ```
 
-## `Tensile/LoopModel/validate.py.validate_loopir` (function)
+## `tensilelite/LoopModel/validate.py.validate_loopir` (function)
 
 ```
 Return a list of structural-defect strings for the rolled IR `ir` (EMPTY = valid GEMM
@@ -4560,7 +4560,7 @@ Return a list of structural-defect strings for the rolled IR `ir` (EMPTY = valid
     has one) so the gate does not redo it.
 ```
 
-## `Tensile/LoopModel/validate.py.rho_consistency` (function)
+## `tensilelite/LoopModel/validate.py.rho_consistency` (function)
 
 ```
 R1's safety argument (#303): does ρ agree with the three live agent authorities?
@@ -4569,14 +4569,14 @@ R1's safety argument (#303): does ρ agree with the three live agent authorities
     
 ```
 
-## `Tensile/LoopModel/validate.py:1` (comment)
+## `tensilelite/LoopModel/validate.py:1` (comment)
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 ```
 
-## `Tensile/LoopModel/validate.py:38` (comment)
+## `tensilelite/LoopModel/validate.py:38` (comment)
 
 ```
 #: `reg_group` restricts a group-restricted read to the grouping-mode values that register group
@@ -4584,7 +4584,7 @@ R1's safety argument (#303): does ρ agree with the three live agent authorities
 #: `first_touch`: a predicate over loop modes only, no scaffold vocabulary.
 ```
 
-## `Tensile/LoopModel/validate.py:139` (comment)
+## `tensilelite/LoopModel/validate.py:139` (comment)
 
 ```
 # STRICT `T > M`. The paper's §5.2 skeleton writes `>=` and its NB blesses either, but the
@@ -4592,14 +4592,14 @@ R1's safety argument (#303): does ρ agree with the three live agent authorities
 # executes") presumes a PRE-TESTED header.  (ADR 0007 #102)
 ```
 
-## `Tensile/LoopModel/validate.py:158` (comment)
+## `tensilelite/LoopModel/validate.py:158` (comment)
 
 ```
 # M==0 degenerate: a bare steady loop is only valid when there is genuinely NO peel — a
 # prologue/drain sitting at top level (outside a guard) is defect P1 (must be Cond-wrapped).
 ```
 
-## `Tensile/LoopModel/validate.py:196` (comment)
+## `tensilelite/LoopModel/validate.py:196` (comment)
 
 ```
 # P3 (the real assertion) + P5 (its concrete-slot half): NO placement may reference a mode that
@@ -4607,21 +4607,21 @@ R1's safety argument (#303): does ρ agree with the three live agent authorities
 # `_unbound_placement_refs`.  (ADR 0007 #101)
 ```
 
-## `Tensile/LoopModel/validate.py:228` (comment)
+## `tensilelite/LoopModel/validate.py:228` (comment)
 
 ```
 # every sub-body must satisfy σ_c independently — a multi-body steady loop (§5.1) has one
 # trip per body, so checking only `bodies[0]` would leave the rest unchecked.
 ```
 
-## `Tensile/LoopModel/validate.py:231` (comment)
+## `tensilelite/LoopModel/validate.py:231` (comment)
 
 ```
 # the refill copies are the σ_c-ordered tail: the LAST top-level nodes of the body that
 # are shared-dest Loads (copies). Assert no read/wmma follows the first copy.  (ADR 0007 #100)
 ```
 
-## `Tensile/LoopModel/validate.py:234` (comment)
+## `tensilelite/LoopModel/validate.py:234` (comment)
 
 ```
 # only an `S=δ` refill is required to be last (§5.3.1 point 4 is scoped to "an
@@ -4632,19 +4632,19 @@ R1's safety argument (#303): does ρ agree with the three live agent authorities
 
 # Pass 2 — the rest of the docstring, and the standalone comments
 
-## `Tensile/LoopModel/__init__.py:1`
+## `tensilelite/LoopModel/__init__.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/adapter/__init__.py:1`
+## `tensilelite/LoopModel/adapter/__init__.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/adapter/build.py.Splits`
+## `tensilelite/LoopModel/adapter/build.py.Splits`
 
 ```
 How TDMSplit cuts each operand's tile: per-operand MT, shared DU, and how many regions
@@ -4652,7 +4652,7 @@ How TDMSplit cuts each operand's tile: per-operand MT, shared DU, and how many r
     
 ```
 
-## `Tensile/LoopModel/adapter/build.py.Ord`
+## `tensilelite/LoopModel/adapter/build.py.Ord`
 
 ```
 The loop nest this LoopOrder gives: the six modes in order, each operand's regions, and
@@ -4660,7 +4660,7 @@ The loop nest this LoopOrder gives: the six modes in order, each operand's regio
     
 ```
 
-## `Tensile/LoopModel/adapter/build.py._build_fragments`
+## `tensilelite/LoopModel/adapter/build.py._build_fragments`
 
 ```
 Each operand's register fragment: its width policy, its region labels, and the MX scale
@@ -4668,7 +4668,7 @@ Each operand's register fragment: its width policy, its region labels, and the M
     
 ```
 
-## `Tensile/LoopModel/adapter/build.py._place_read_offsets`
+## `tensilelite/LoopModel/adapter/build.py._place_read_offsets`
 
 ```
 Write `off(read, <level>) = PLR` for each requesting op-class, at its own read-ahead
@@ -4676,7 +4676,7 @@ Write `off(read, <level>) = PLR` for each requesting op-class, at its own read-a
     
 ```
 
-## `Tensile/LoopModel/adapter/build.py._fit_register_budget`
+## `tensilelite/LoopModel/adapter/build.py._fit_register_budget`
 
 ```
 derive the register partition from the budget/: how many fan tiles stay at the derived
@@ -4684,295 +4684,295 @@ derive the register partition from the budget/: how many fan tiles stay at the d
     
 ```
 
-## `Tensile/LoopModel/adapter/build.py:1`
+## `tensilelite/LoopModel/adapter/build.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:78`
+## `tensilelite/LoopModel/adapter/build.py:78`
 
 ```
 # note (MI shape): the default MI 16×16×64 matches the paper's base GEMM and gives substep =
 ```
 
-## `Tensile/LoopModel/adapter/build.py:79`
+## `tensilelite/LoopModel/adapter/build.py:79`
 
 ```
 # DepthU/MI_K = 128/64 = 2 (the a/b that makes the flagship two-rate).
 ```
 
-## `Tensile/LoopModel/adapter/build.py:93`
+## `tensilelite/LoopModel/adapter/build.py:93`
 
 ```
 # PER-operand overrides.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:97`
+## `tensilelite/LoopModel/adapter/build.py:97`
 
 ```
 # The MX scales get the same per-operand knobs the data operands have.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:99`
+## `tensilelite/LoopModel/adapter/build.py:99`
 
 ```
 # {operand: elements ONE shared->register instruction moves per lane} — the movement quantum's
 ```
 
-## `Tensile/LoopModel/adapter/build.py:100`
+## `tensilelite/LoopModel/adapter/build.py:100`
 
 ```
 # domain which is the target's instruction selection and so has no Solution key; the bridge
 ```
 
-## `Tensile/LoopModel/adapter/build.py:102`
+## `tensilelite/LoopModel/adapter/build.py:102`
 
 ```
 # {operand: ir.QuantumMap} — the movement quantum, supplied.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:104`
+## `tensilelite/LoopModel/adapter/build.py:104`
 
 ```
 # pi (internal, see PARAM_HELP): default matches the backend today.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:161`
+## `tensilelite/LoopModel/adapter/build.py:161`
 
 ```
 # Prefetch depths are the copy (PGR) / read (PLR) retime offsets —'s peel is general in off
 ```
 
-## `Tensile/LoopModel/adapter/build.py:162`
+## `tensilelite/LoopModel/adapter/build.py:162`
 
 ```
 # (any depth), so these are NOT capped: dg=PGR, dl=PLR verbatim.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:175`
+## `tensilelite/LoopModel/adapter/build.py:175`
 
 ```
 # POSITIONAL LIST right-padded with 1s: per-operand/per-axis split, 1 = no split. Legacy bool:
 ```
 
-## `Tensile/LoopModel/adapter/build.py:176`
+## `tensilelite/LoopModel/adapter/build.py:176`
 
 ```
 # True → [2,2] (split both MT), False → [1,1].  (ADR 0007 #9)
 ```
 
-## `Tensile/LoopModel/adapter/build.py:183`
+## `tensilelite/LoopModel/adapter/build.py:183`
 
 ```
 # regions ONE wave occupies.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:187`
+## `tensilelite/LoopModel/adapter/build.py:187`
 
 ```
 # DU (shared K): ONE axis at the finest split; a coarser operand is present on it at a stride.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:211`
+## `tensilelite/LoopModel/adapter/build.py:211`
 
 ```
 # canonical-mode name sets for role/region/grouping binding (only >1 modes survive in ord;
 ```
 
-## `Tensile/LoopModel/adapter/build.py:212`
+## `tensilelite/LoopModel/adapter/build.py:212`
 
 ```
 # naming a dropped mode is harmless — the core intersects with the present inner modes).
 ```
 
-## `Tensile/LoopModel/adapter/build.py:215`
+## `tensilelite/LoopModel/adapter/build.py:215`
 
 ```
 # the read'S region is the agent'S.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:228`
+## `tensilelite/LoopModel/adapter/build.py:228`
 
 ```
 # the read hop'S payload is PER operand, and `lrvw` is only the data operands' answer.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:231`
+## `tensilelite/LoopModel/adapter/build.py:231`
 
 ```
 # the movement quantum is supplied never derived here.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:234`
+## `tensilelite/LoopModel/adapter/build.py:234`
 
 ```
 # A wave that does NOT cover every region makes the read'S region agent-relative.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:237`
+## `tensilelite/LoopModel/adapter/build.py:237`
 
 ```
 # 's carrier group in θ'S own vocabulary.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:278`
+## `tensilelite/LoopModel/adapter/build.py:278`
 
 ```
 # derived from ρ, not from `ReadRho` / a per-hop boolean R3).
 ```
 
-## `Tensile/LoopModel/adapter/build.py:294`
+## `tensilelite/LoopModel/adapter/build.py:294`
 
 ```
 # retime δ is NOT on the hop — it is theta.off_map (built below), read via off_at.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:297`
+## `tensilelite/LoopModel/adapter/build.py:297`
 
 ```
 # 2-hop: a bulk 'tdm' global→shared copy (carrying its region split) + a per-lane ds_read.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:311`
+## `tensilelite/LoopModel/adapter/build.py:311`
 
 ```
 # Bind `grouping_mode` to the in-region fan (when it exists) so the fan folds into
 ```
 
-## `Tensile/LoopModel/adapter/build.py:312`
+## `tensilelite/LoopModel/adapter/build.py:312`
 
 ```
 # |part|×region and NOT into the rate — this is what prevents the fan double-count for both
 ```
 
-## `Tensile/LoopModel/adapter/build.py:323`
+## `tensilelite/LoopModel/adapter/build.py:323`
 
 ```
 # copy-hop region split = how many regions this operand's copy moves, which is its own count on
 ```
 
-## `Tensile/LoopModel/adapter/build.py:324`
+## `tensilelite/LoopModel/adapter/build.py:324`
 
 ```
 # each region axis — `aDU`, not the shared axis extent.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:328`
+## `tensilelite/LoopModel/adapter/build.py:328`
 
 ```
 # S_shared PER operand: the depth is a map, not a scalar).
 ```
 
-## `Tensile/LoopModel/adapter/build.py:332`
+## `tensilelite/LoopModel/adapter/build.py:332`
 
 ```
 # the MX scale rings are their own, preset to their parent'S.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:335`
+## `tensilelite/LoopModel/adapter/build.py:335`
 
 ```
 # The allocation bound, which is not symmetric with the register side.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:350`
+## `tensilelite/LoopModel/adapter/build.py:350`
 
 ```
 # `free_split` is `aMT`/`bMT` -- the free-axis region count -- carried as a number so the
 ```
 
-## `Tensile/LoopModel/adapter/build.py:351`
+## `tensilelite/LoopModel/adapter/build.py:351`
 
 ```
 # sibling bound has an anchor that survives a mode reassignment.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:361`
+## `tensilelite/LoopModel/adapter/build.py:361`
 
 ```
 # C — the output/accumulator op-class line 80, paper-confirmed Q18).
 ```
 
-## `Tensile/LoopModel/adapter/build.py:368`
+## `tensilelite/LoopModel/adapter/build.py:368`
 
 ```
 # MX scales follow their parent: same grouping_mode + region_modes + floor policy so.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:371`
+## `tensilelite/LoopModel/adapter/build.py:371`
 
 ```
 # the scale ring uses its parent'S fragment builder, not a second inline `Fragment`.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:410`
+## `tensilelite/LoopModel/adapter/build.py:410`
 
 ```
 # A fused group pairs its members by region index which is only well-defined when every
 ```
 
-## `Tensile/LoopModel/adapter/build.py:411`
+## `tensilelite/LoopModel/adapter/build.py:411`
 
 ```
 # member has the same region count — a mixed-split group (e.g.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:443`
+## `tensilelite/LoopModel/adapter/build.py:443`
 
 ```
 # the read-ahead level, one derivation shared with the core.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:448`
+## `tensilelite/LoopModel/adapter/build.py:448`
 
 ```
 # the role comes off the hop the offset retimes, so the key cannot drift from the
 ```
 
-## `Tensile/LoopModel/adapter/build.py:449`
+## `tensilelite/LoopModel/adapter/build.py:449`
 
 ```
 # trajectory it describes (`Hop.role`, theta.HOP_ROLE).
 ```
 
-## `Tensile/LoopModel/adapter/build.py:454`
+## `tensilelite/LoopModel/adapter/build.py:454`
 
 ```
 # the level needs the built θ (it is the hop's presence,'s absorption included), so the
 ```
 
-## `Tensile/LoopModel/adapter/build.py:455`
+## `tensilelite/LoopModel/adapter/build.py:455`
 
 ```
 # entry is deferred to `_place_read_offsets` below rather than guessed here.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:458`
+## `tensilelite/LoopModel/adapter/build.py:458`
 
 ```
 # π: region completion granularity (internal toggle; False matches the backend today).
 ```
 
-## `Tensile/LoopModel/adapter/build.py:538`
+## `tensilelite/LoopModel/adapter/build.py:538`
 
 ```
 # score what the allocator emits, not the model's ragged footprint — see
 ```
 
-## `Tensile/LoopModel/adapter/build.py:539`
+## `tensilelite/LoopModel/adapter/build.py:539`
 
 ```
 # `geometry.operand_emitted_regs`.
 ```
 
-## `Tensile/LoopModel/adapter/build.py:550`
+## `tensilelite/LoopModel/adapter/build.py:550`
 
 ```
 # try the deep count downward; the first that fits is the largest, i.e.
 ```
 
-## `Tensile/LoopModel/adapter/fragments.py._mx_frag_elems`
+## `tensilelite/LoopModel/adapter/fragments.py._mx_frag_elems`
 
 ```
 MX scale elements per lane = MIInputPerThread(data) // MXBlock · duplicateFactor,
@@ -4980,13 +4980,13 @@ MX scale elements per lane = MIInputPerThread(data) // MXBlock · duplicateFacto
     
 ```
 
-## `Tensile/LoopModel/adapter/fragments.py:1`
+## `tensilelite/LoopModel/adapter/fragments.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py.canonical_loop_order`
+## `tensilelite/LoopModel/adapter/loop_order.py.canonical_loop_order`
 
 ```
 The canonical spelling of a LoopOrder value: the 3-letter shortcut when the word keeps
@@ -4994,7 +4994,7 @@ The canonical spelling of a LoopOrder value: the 3-letter shortcut when the word
     
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py._word_to_modes`
+## `tensilelite/LoopModel/adapter/loop_order.py._word_to_modes`
 
 ```
 Map a 6-letter axis word to the ordered list of canonical mode-role names (outer->inner):
@@ -5002,7 +5002,7 @@ Map a 6-letter axis word to the ordered list of canonical mode-role names (outer
     
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py._canonical_ord`
+## `tensilelite/LoopModel/adapter/loop_order.py._canonical_ord`
 
 ```
 Build the 6 canonical Modes and emit them in the LoopOrder word order, dropping extent-1
@@ -5010,85 +5010,85 @@ Build the 6 canonical Modes and emit them in the LoopOrder word order, dropping 
     
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:1`
+## `tensilelite/LoopModel/adapter/loop_order.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:11`
+## `tensilelite/LoopModel/adapter/loop_order.py:11`
 
 ```
 # The canonical 6-mode vocabulary + LoopOrder word encoding/.
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:13`
+## `tensilelite/LoopModel/adapter/loop_order.py:13`
 
 ```
 # Each of K/M/N contributes a (split-region, inner-remainder) pair.
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:22`
+## `tensilelite/LoopModel/adapter/loop_order.py:22`
 
 ```
 # LoopOrder is a WORD over the axis letters {K, M, N} — memorable, no lookup table.  See ADR 0006.
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:65`
+## `tensilelite/LoopModel/adapter/loop_order.py:65`
 
 ```
 # the K region axis is three modes, NOT ONE: `K_split` (the gcd of the operands' DU factors,
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:66`
+## `tensilelite/LoopModel/adapter/loop_order.py:66`
 
 ```
 # shared) times `K_splitA` and `K_splitB` (each operand's own residual, `own // gcd`).
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:75`
+## `tensilelite/LoopModel/adapter/loop_order.py:75`
 
 ```
 # canonical Mode names kept generic-but-role-tagged so geometry's role test still works: the
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:76`
+## `tensilelite/LoopModel/adapter/loop_order.py:76`
 
 ```
 # physical mode name is the role name; extents drive m/n/k classification via broadcast.
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:82`
+## `tensilelite/LoopModel/adapter/loop_order.py:82`
 
 ```
 # a degenerate tile axis survives iff its own region axis is live — see the docstring
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:86`
+## `tensilelite/LoopModel/adapter/loop_order.py:86`
 
 ```
 # `_word_to_modes` speaks the 6-letter K/M/N word, so the K region factorization is expanded
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:87`
+## `tensilelite/LoopModel/adapter/loop_order.py:87`
 
 ```
 # here: wherever the word places K's region axis, emit the shared link then the two residuals.
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:93`
+## `tensilelite/LoopModel/adapter/loop_order.py:93`
 
 ```
 # SET the outer DepthU reduction level `iter` (extent=0 → dynamic/runtime trip = K//DU), as the
 ```
 
-## `Tensile/LoopModel/adapter/loop_order.py:94`
+## `tensilelite/LoopModel/adapter/loop_order.py:94`
 
 ```
 # outermost entry of `ord` point 1, `levels = [iter] + [substep, m, n, …]`).
 ```
 
-## `Tensile/LoopModel/adapter/solution.py.kernel_to_ir_text`
+## `tensilelite/LoopModel/adapter/solution.py.kernel_to_ir_text`
 
 ```
 Return the rolled θ-IR (render_stream) for `kernel`, plus the θ translation notes and the
@@ -5096,151 +5096,151 @@ Return the rolled θ-IR (render_stream) for `kernel`, plus the θ translation no
     
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:1`
+## `tensilelite/LoopModel/adapter/solution.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:12`
+## `tensilelite/LoopModel/adapter/solution.py:12`
 
 ```
 # The decoder's render_* helpers use a few unicode glyphs (theta, Sigma, times, middle dot,
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:13`
+## `tensilelite/LoopModel/adapter/solution.py:13`
 
 ```
 # subscripts).
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:42`
+## `tensilelite/LoopModel/adapter/solution.py:42`
 
 ```
 # LDS double-buffer count — the real kernel-derived value (2=double, 1=single/in-place),
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:43`
+## `tensilelite/LoopModel/adapter/solution.py:43`
 
 ```
 # not an assumption; drives in_place_shared in translate.py.
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:52`
+## `tensilelite/LoopModel/adapter/solution.py:52`
 
 ```
 # Φ move 9) — the fuse, derived, never requested.
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:54`
+## `tensilelite/LoopModel/adapter/solution.py:54`
 
 ```
 # rho / agents: how many agents cooperate on one tile.
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:56`
+## `tensilelite/LoopModel/adapter/solution.py:56`
 
 ```
 # region split move 1) — passed through, NOT defaulted off.
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:58`
+## `tensilelite/LoopModel/adapter/solution.py:58`
 
 ```
 # How many of those regions ONE wave occupies: the copy writes every region, a wave reaches
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:59`
+## `tensilelite/LoopModel/adapter/solution.py:59`
 
 ```
 # only the ones its own free-axis offset lands in.
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:62`
+## `tensilelite/LoopModel/adapter/solution.py:62`
 
 ```
 # microscaling — passed through for the same reason `TDMSplit` is.
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:65`
+## `tensilelite/LoopModel/adapter/solution.py:65`
 
 ```
 # phase-1 scope: default schedule, no new search axes.
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:67`
+## `tensilelite/LoopModel/adapter/solution.py:67`
 
 ```
 # the read hop'S instruction payload, per operand — the movement quantum's domain.
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:69`
+## `tensilelite/LoopModel/adapter/solution.py:69`
 
 ```
 # the movement quantum — computed here, where the layout is knowable, and handed to θ in
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:70`
+## `tensilelite/LoopModel/adapter/solution.py:70`
 
 ```
 # GEMM terms.
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:72`
+## `tensilelite/LoopModel/adapter/solution.py:72`
 
 ```
 # 's carrier group as Φ and ρ — the two numbers θ derives the `QuantumMap` from
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:73`
+## `tensilelite/LoopModel/adapter/solution.py:73`
 
 ```
 # (`geometry.derive_quantum`).
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:83`
+## `tensilelite/LoopModel/adapter/solution.py:83`
 
 ```
 # MIWaveTile is stored per-operand (MIWaveTileA/B) on a derived Solution; the decoder wants the
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:84`
+## `tensilelite/LoopModel/adapter/solution.py:84`
 
 ```
 # [WT0, WT1] pair.
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:89`
+## `tensilelite/LoopModel/adapter/solution.py:89`
 
 ```
 # bytes/element from the compute input datatype (numBytes = numRegisters*4).
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:112`
+## `tensilelite/LoopModel/adapter/solution.py:112`
 
 ```
 # `lrvwUnrollMXS*`: the scale's own unroll-major read width, else 1 element (the tile-major
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:113`
+## `tensilelite/LoopModel/adapter/solution.py:113`
 
 ```
 # branch reads one scale per instruction).
 ```
 
-## `Tensile/LoopModel/adapter/solution.py:124`
+## `tensilelite/LoopModel/adapter/solution.py:124`
 
 ```
 # any remaining non-ascii -> '?' so the file is guaranteed plain ascii text
 ```
 
-## `Tensile/LoopModel/adapter/target.py:1`
+## `tensilelite/LoopModel/adapter/target.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/emit/__init__.py.build_ir`
+## `tensilelite/LoopModel/emit/__init__.py.build_ir`
 
 ```
 The rolled theta-nest IR.2/5.3): one Loop per ord inner mode, one Inst per op-class at
@@ -5248,7 +5248,7 @@ The rolled theta-nest IR.2/5.3): one Loop per ord inner mode, one Inst per op-cl
     
 ```
 
-## `Tensile/LoopModel/emit/__init__.py.loop_shape`
+## `tensilelite/LoopModel/emit/__init__.py.loop_shape`
 
 ```
 Decide, from θ alone, whether the ord yields ONE uniform steady body (cleanly loopable)
@@ -5256,115 +5256,115 @@ Decide, from θ alone, whether the ord yields ONE uniform steady body (cleanly l
     
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:1`
+## `tensilelite/LoopModel/emit/__init__.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:25`
+## `tensilelite/LoopModel/emit/__init__.py:25`
 
 ```
 # The issuing agent for every instance in a single-role kernel: ρ → `Inst.a` and `Loop.role`; "an
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:26`
+## `tensilelite/LoopModel/emit/__init__.py:26`
 
 ```
 # unspecialized kernel is the single-role special case").
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:46`
+## `tensilelite/LoopModel/emit/__init__.py:46`
 
 ```
 # presence-derived partition key (no m/n/k literal): each inner mode's key is the SET of
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:47`
+## `tensilelite/LoopModel/emit/__init__.py:47`
 
 ```
 # operands present on it (a reduction mode → all inputs; a free mode → its own operand subset).
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:58`
+## `tensilelite/LoopModel/emit/__init__.py:58`
 
 ```
 # render the keys as sorted operand-name tuples for a readable report (not branch logic).
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:63`
+## `tensilelite/LoopModel/emit/__init__.py:63`
 
 ```
 # `ord` cleanliness.
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:66`
+## `tensilelite/LoopModel/emit/__init__.py:66`
 
 ```
 # precondition Q.
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:70`
+## `tensilelite/LoopModel/emit/__init__.py:70`
 
 ```
 # ONE obligation, ONE discharge: drop an Await a preceding instruction on the same path already
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:71`
+## `tensilelite/LoopModel/emit/__init__.py:71`
 
 ```
 # established (ledger.discharge_once).
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:73`
+## `tensilelite/LoopModel/emit/__init__.py:73`
 
 ```
 # No wait-count lowering: each Await keeps count=-1 (unset), the named dependency is the
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:74`
+## `tensilelite/LoopModel/emit/__init__.py:74`
 
 ```
 # output/ count-inserting backend).
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:76`
+## `tensilelite/LoopModel/emit/__init__.py:76`
 
 ```
 # the structural gate.
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:79`
+## `tensilelite/LoopModel/emit/__init__.py:79`
 
 ```
 # name the θ that failed.
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:117`
+## `tensilelite/LoopModel/emit/__init__.py:117`
 
 ```
 # A read-ahead residency gets no Await of its own.
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:147`
+## `tensilelite/LoopModel/emit/__init__.py:147`
 
 ```
 # trailing drain steps that suppress the read-ahead = the derived chunk reach `r`.
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:158`
+## `tensilelite/LoopModel/emit/__init__.py:158`
 
 ```
 # no σ_c here — and that absence is the point, not an omission.
 ```
 
-## `Tensile/LoopModel/emit/__init__.py:170`
+## `tensilelite/LoopModel/emit/__init__.py:170`
 
 ```
 # strict `T > M`, not `T >= M`.
 ```
 
-## `Tensile/LoopModel/emit/copies.py._site_awaits`
+## `tensilelite/LoopModel/emit/copies.py._site_awaits`
 
 ```
 Build the Await tuple for the (opname, role) consume site from its ledger
@@ -5372,193 +5372,193 @@ Build the Await tuple for the (opname, role) consume site from its ledger
         
 ```
 
-## `Tensile/LoopModel/emit/copies.py:1`
+## `tensilelite/LoopModel/emit/copies.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:25`
+## `tensilelite/LoopModel/emit/copies.py:25`
 
 ```
 # The issuing agent for every instance in a single-role kernel: ρ → `Inst.a` and `Loop.role`; "an
 ```
 
-## `Tensile/LoopModel/emit/copies.py:26`
+## `tensilelite/LoopModel/emit/copies.py:26`
 
 ```
 # unspecialized kernel is the single-role special case").
 ```
 
-## `Tensile/LoopModel/emit/copies.py:36`
+## `tensilelite/LoopModel/emit/copies.py:36`
 
 ```
 # σ_c first, nesting second, and the order is not stylistic.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:60`
+## `tensilelite/LoopModel/emit/copies.py:60`
 
 ```
 # A Φ-fused movement's obligations are keyed by the movement, because one cooperative
 ```
 
-## `Tensile/LoopModel/emit/copies.py:61`
+## `tensilelite/LoopModel/emit/copies.py:61`
 
 ```
 # instruction owes one thing (ledger).
 ```
 
-## `Tensile/LoopModel/emit/copies.py:70`
+## `tensilelite/LoopModel/emit/copies.py:70`
 
 ```
 # the dep is the producer endpoint plus the generation qualifiers that pick which
 ```
 
-## `Tensile/LoopModel/emit/copies.py:71`
+## `tensilelite/LoopModel/emit/copies.py:71`
 
 ```
 # instance: the chunk the consumer reads, and (per-region π) its region.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:82`
+## `tensilelite/LoopModel/emit/copies.py:82`
 
 ```
 # ONE movement instance = the region-`region` group of this fused set (AB0 = {A0,B0}).
 ```
 
-## `Tensile/LoopModel/emit/copies.py:85`
+## `tensilelite/LoopModel/emit/copies.py:85`
 
 ```
 # a token is the θ op-class name, always — never a synthesized string.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:87`
+## `tensilelite/LoopModel/emit/copies.py:87`
 
 ```
 # per-movement bytes: each member contributes its own per-region share (tile / its own
 ```
 
-## `Tensile/LoopModel/emit/copies.py:88`
+## `tensilelite/LoopModel/emit/copies.py:88`
 
 ```
 # split), so a region movement of a split member is tile/split, an unsplit member whole.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:91`
+## `tensilelite/LoopModel/emit/copies.py:91`
 
 ```
 # the region is a coordinate, left symbolic because the enclosing `Loop(region_mode)`.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:94`
+## `tensilelite/LoopModel/emit/copies.py:94`
 
 ```
 # awaits from the ledger (step 9b): the copy's consume site is (op, "copy") — its RAW.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:105`
+## `tensilelite/LoopModel/emit/copies.py:105`
 
 ```
 # `part` is the intra-tile transfer index of ONE movement (1 here — we do not model sub-
 ```
 
-## `Tensile/LoopModel/emit/copies.py:106`
+## `tensilelite/LoopModel/emit/copies.py:106`
 
 ```
 # tile transfer fan-out on the copy).
 ```
 
-## `Tensile/LoopModel/emit/copies.py:121`
+## `tensilelite/LoopModel/emit/copies.py:121`
 
 ```
 # the buffer slot is region-invariant (all regions of a chunk land in the same ring
 ```
 
-## `Tensile/LoopModel/emit/copies.py:122`
+## `tensilelite/LoopModel/emit/copies.py:122`
 
 ```
 # generation), so it is computed once for the rolled copy, not per region.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:130`
+## `tensilelite/LoopModel/emit/copies.py:130`
 
 ```
 # The fully-peeled (short-loop) arm.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:133`
+## `tensilelite/LoopModel/emit/copies.py:133`
 
 ```
 # drain step under Bind(iter=T−M+t): use the steady symbolic slot (keyed on iter,
 ```
 
-## `Tensile/LoopModel/emit/copies.py:134`
+## `tensilelite/LoopModel/emit/copies.py:134`
 
 ```
 # which Bind defines to T−M+t), so the drain shares the one residue timeline.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:142`
+## `tensilelite/LoopModel/emit/copies.py:142`
 
 ```
 # prologue copies fill empty (not-yet-read) buffers → no vacating read → no WAR.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:146`
+## `tensilelite/LoopModel/emit/copies.py:146`
 
 ```
 # A region-split copy is ONE op-class at its region level line 523: "the.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:150`
+## `tensilelite/LoopModel/emit/copies.py:150`
 
 ```
 # filed at the innermost axis it is enumerated by, so all of them enclose it
 ```
 
-## `Tensile/LoopModel/emit/copies.py:158`
+## `tensilelite/LoopModel/emit/copies.py:158`
 
 ```
 # The copy nests over every ord level -- including the agent-served ones the read/compute
 ```
 
-## `Tensile/LoopModel/emit/copies.py:159`
+## `tensilelite/LoopModel/emit/copies.py:159`
 
 ```
 # nest dropped.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:163`
+## `tensilelite/LoopModel/emit/copies.py:163`
 
 ```
 # levels come from the enumeration axes: every axis a movement is enumerated by must
 ```
 
-## `Tensile/LoopModel/emit/copies.py:164`
+## `tensilelite/LoopModel/emit/copies.py:164`
 
 ```
 # exist as an enclosing loop.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:178`
+## `tensilelite/LoopModel/emit/copies.py:178`
 
 ```
 # no `n == ext[m]` check.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:180`
+## `tensilelite/LoopModel/emit/copies.py:180`
 
 ```
 # presence on an enclosing axis is A stride, and first-touch is its degenerate.
 ```
 
-## `Tensile/LoopModel/emit/copies.py:190`
+## `tensilelite/LoopModel/emit/copies.py:190`
 
 ```
 # NOT `_peel_first_touch` here, unlike the reads.
 ```
 
-## `Tensile/LoopModel/emit/helpers.py._check_peel_is_emittable`
+## `tensilelite/LoopModel/emit/helpers.py._check_peel_is_emittable`
 
 ```
 Refuse a θ whose peel `build_ir` cannot express — instead of emitting a different
@@ -5566,7 +5566,7 @@ Refuse a θ whose peel `build_ir` cannot express — instead of emitting a diffe
     
 ```
 
-## `Tensile/LoopModel/emit/helpers.py._reduction_inner_mode`
+## `tensilelite/LoopModel/emit/helpers.py._reduction_inner_mode`
 
 ```
 `(name, extent)` of the ord-level read-ahead level, used at its one call site purely as a
@@ -5574,7 +5574,7 @@ Refuse a θ whose peel `build_ir` cannot express — instead of emitting a diffe
     
 ```
 
-## `Tensile/LoopModel/emit/helpers.py._resolve_ft`
+## `tensilelite/LoopModel/emit/helpers.py._resolve_ft`
 
 ```
 Rewrite a subtree, resolving every first-touch guard on `mode` to a known outcome:
@@ -5583,7 +5583,7 @@ Rewrite a subtree, resolving every first-touch guard on `mode` to a known outcom
     
 ```
 
-## `Tensile/LoopModel/emit/helpers.py._region_note`
+## `tensilelite/LoopModel/emit/helpers.py._region_note`
 
 ```
 Under the per-region π (`theta.per_region_completion`), the region mode whose value
@@ -5591,7 +5591,7 @@ Under the per-region π (`theta.per_region_completion`), the region mode whose v
     
 ```
 
-## `Tensile/LoopModel/emit/helpers.py._region_mode_of`
+## `tensilelite/LoopModel/emit/helpers.py._region_mode_of`
 
 ```
 The inner mode that enumerates this fused group's storage regions, or None if the group
@@ -5599,7 +5599,7 @@ The inner mode that enumerates this fused group's storage regions, or None if th
     
 ```
 
-## `Tensile/LoopModel/emit/helpers.py._enum_axes`
+## `tensilelite/LoopModel/emit/helpers.py._enum_axes`
 
 ```
 The axes that enumerate this movement's regions — the representative member's own, not
@@ -5607,109 +5607,109 @@ The axes that enumerate this movement's regions — the representative member's 
     
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:1`
+## `tensilelite/LoopModel/emit/helpers.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:25`
+## `tensilelite/LoopModel/emit/helpers.py:25`
 
 ```
 # The issuing agent for every instance in a single-role kernel: ρ → `Inst.a` and `Loop.role`; "an
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:26`
+## `tensilelite/LoopModel/emit/helpers.py:26`
 
 ```
 # unspecialized kernel is the single-role special case").
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:45`
+## `tensilelite/LoopModel/emit/helpers.py:45`
 
 ```
 # A read `off` at an outer level is accepted, deepens the peel, AND is applied to nothing.
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:65`
+## `tensilelite/LoopModel/emit/helpers.py:65`
 
 ```
 # A negative `off` is ill-typed.
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:151`
+## `tensilelite/LoopModel/emit/helpers.py:151`
 
 ```
 # the copy hop's presence set names the region axis, and is empty when the tile is not split
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:152`
+## `tensilelite/LoopModel/emit/helpers.py:152`
 
 ```
 # line 583) — so the `op.split <= 1` test and the region_modes scan are the same one question,
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:232`
+## `tensilelite/LoopModel/emit/helpers.py:232`
 
 ```
 # X@shared is consumed by the read; X@register by the WMMA.
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:234`
+## `tensilelite/LoopModel/emit/helpers.py:234`
 
 ```
 # a *-WAR's consumer is the refiller: the shared ring is refilled by the copy, a register group
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:235`
+## `tensilelite/LoopModel/emit/helpers.py:235`
 
 ```
 # by the read itself.
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:245`
+## `tensilelite/LoopModel/emit/helpers.py:245`
 
 ```
 # "reads" = every input operand that ends in a register fragment (two-hop shared→reg AND one-
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:246`
+## `tensilelite/LoopModel/emit/helpers.py:246`
 
 ```
 # hop DTV global→reg); each is emitted at its presence level.
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:248`
+## `tensilelite/LoopModel/emit/helpers.py:248`
 
 ```
 # a "scale" operand = an input read beyond the two matmul inputs (an extra elementwise/
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:249`
+## `tensilelite/LoopModel/emit/helpers.py:249`
 
 ```
 # broadcast operand, — presence-derived, no "MX" name test.
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:253`
+## `tensilelite/LoopModel/emit/helpers.py:253`
 
 ```
 # THIS USED TO RE-DERIVE THE RULE AND GET THE EMPTY CASE WRONG.  See ADR 0006.
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:255`
+## `tensilelite/LoopModel/emit/helpers.py:255`
 
 ```
 # the WMMA is placed by its own presence, not by the nest's depth.
 ```
 
-## `Tensile/LoopModel/emit/helpers.py:262`
+## `tensilelite/LoopModel/emit/helpers.py:262`
 
 ```
 # COARSE copy has empty inner presence → the reduction-chunk level; a REGION-SPLIT copy.  See ADR 0006.
 ```
 
-## `Tensile/LoopModel/emit/nest.py._drain_step`
+## `tensilelite/LoopModel/emit/nest.py._drain_step`
 
 ```
 One drain step `i = T−M+t`): the rolled read/wmma nest (reduction stays a `for k`
@@ -5718,151 +5718,151 @@ One drain step `i = T−M+t`): the rolled read/wmma nest (reduction stays a `for
         
 ```
 
-## `Tensile/LoopModel/emit/nest.py:1`
+## `tensilelite/LoopModel/emit/nest.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/emit/nest.py:25`
+## `tensilelite/LoopModel/emit/nest.py:25`
 
 ```
 # The issuing agent for every instance in a single-role kernel: ρ → `Inst.a` and `Loop.role`; "an
 ```
 
-## `Tensile/LoopModel/emit/nest.py:26`
+## `tensilelite/LoopModel/emit/nest.py:26`
 
 ```
 # unspecialized kernel is the single-role special case").
 ```
 
-## `Tensile/LoopModel/emit/nest.py:36`
+## `tensilelite/LoopModel/emit/nest.py:36`
 
 ```
 # symbolic leaf wmma: coord is the loop indices, block from region math (symbolic mi/ni)
 ```
 
-## `Tensile/LoopModel/emit/nest.py:40`
+## `tensilelite/LoopModel/emit/nest.py:40`
 
 ```
 # awaits from the ledger (step 9b): the wmma consumes each read operand's register
 ```
 
-## `Tensile/LoopModel/emit/nest.py:41`
+## `tensilelite/LoopModel/emit/nest.py:41`
 
 ```
 # residency (X@register RAW).
 ```
 
-## `Tensile/LoopModel/emit/nest.py:45`
+## `tensilelite/LoopModel/emit/nest.py:45`
 
 ```
 # register placement the wmma consumes, PER read operand — the name-determining tile coord
 ```
 
-## `Tensile/LoopModel/emit/nest.py:46`
+## `tensilelite/LoopModel/emit/nest.py:46`
 
 ```
 # + rotation the source vgpr carries.
 ```
 
-## `Tensile/LoopModel/emit/nest.py:55`
+## `tensilelite/LoopModel/emit/nest.py:55`
 
 ```
 # an anchored refill is emitted after this level'S consumers.
 ```
 
-## `Tensile/LoopModel/emit/nest.py:60`
+## `tensilelite/LoopModel/emit/nest.py:60`
 
 ```
 # nll suppression (drain last steps): a read that varies over the reduction substep
 ```
 
-## `Tensile/LoopModel/emit/nest.py:61`
+## `tensilelite/LoopModel/emit/nest.py:61`
 
 ```
 # carries the read-ahead-shifted coord `(k+dr)%n_s`; on the ahead substeps (k ≥ n_s−dr)
 ```
 
-## `Tensile/LoopModel/emit/nest.py:64`
+## `tensilelite/LoopModel/emit/nest.py:64`
 
 ```
 # A read-ahead read is out of bounds on the last peel step exactly when its.
 ```
 
-## `Tensile/LoopModel/emit/nest.py:67`
+## `tensilelite/LoopModel/emit/nest.py:67`
 
 ```
 # register-group ownership: this read fills ONE group, so it belongs only at the
 ```
 
-## `Tensile/LoopModel/emit/nest.py:68`
+## `tensilelite/LoopModel/emit/nest.py:68`
 
 ```
 # grouping mode's values that group owns.
 ```
 
-## `Tensile/LoopModel/emit/nest.py:71`
+## `tensilelite/LoopModel/emit/nest.py:71`
 
 ```
 # first-touch: wrap in `mode == <anchor>` for each enclosing invariant mode (outermost
 ```
 
-## `Tensile/LoopModel/emit/nest.py:72`
+## `tensilelite/LoopModel/emit/nest.py:72`
 
 ```
 # first, so the outermost guard is the outermost node).
 ```
 
-## `Tensile/LoopModel/emit/nest.py:81`
+## `tensilelite/LoopModel/emit/nest.py:81`
 
 ```
 # The wmma sits at `leaf_mode` -- the deepest level the accumulator varies over -- and the
 ```
 
-## `Tensile/LoopModel/emit/nest.py:82`
+## `tensilelite/LoopModel/emit/nest.py:82`
 
 ```
 # nest continues below it for any level the output does not traverse.
 ```
 
-## `Tensile/LoopModel/emit/nest.py:87`
+## `tensilelite/LoopModel/emit/nest.py:87`
 
 ```
 # ...then the anchored refills, after every consumer this level contains.
 ```
 
-## `Tensile/LoopModel/emit/nest.py:91`
+## `tensilelite/LoopModel/emit/nest.py:91`
 
 ```
 # A read whose presence the quantum emptied sits at the chunk level, and `build_level` has.
 ```
 
-## `Tensile/LoopModel/emit/nest.py:98`
+## `tensilelite/LoopModel/emit/nest.py:98`
 
 ```
 # hoisted above the whole inner nest, so the grouping mode is not a loop variable
 ```
 
-## `Tensile/LoopModel/emit/nest.py:99`
+## `tensilelite/LoopModel/emit/nest.py:99`
 
 ```
 # here and `_group_guard`'s predicate would reference a name that is not in scope.
 ```
 
-## `Tensile/LoopModel/emit/nest.py:114`
+## `tensilelite/LoopModel/emit/nest.py:114`
 
 ```
 # drain chunk index i = T − M + t (paper), as a symbolic Expr over the trip symbol T.
 ```
 
-## `Tensile/LoopModel/emit/nest.py:116`
+## `tensilelite/LoopModel/emit/nest.py:116`
 
 ```
 # deepest operand drops first: a copy is present iff off_p ≤ M−1−t.
 ```
 
-## `Tensile/LoopModel/emit/reads.py._read_groups`
+## `tensilelite/LoopModel/emit/reads.py._read_groups`
 
 ```
 How many instructions this operand's read is split into, and which register groups
@@ -5870,7 +5870,7 @@ How many instructions this operand's read is split into, and which register grou
         
 ```
 
-## `Tensile/LoopModel/emit/reads.py._first_touch_modes`
+## `tensilelite/LoopModel/emit/reads.py._first_touch_modes`
 
 ```
 Enclosing inner modes the op is invariant over — non-presence modes at an ord
@@ -5878,7 +5878,7 @@ Enclosing inner modes the op is invariant over — non-presence modes at an ord
         
 ```
 
-## `Tensile/LoopModel/emit/reads.py._fill_read_inst`
+## `tensilelite/LoopModel/emit/reads.py._fill_read_inst`
 
 ```
 One direct (unshifted) prologue read of `op` at the concrete presence-coord
@@ -5886,7 +5886,7 @@ One direct (unshifted) prologue read of `op` at the concrete presence-coord
         
 ```
 
-## `Tensile/LoopModel/emit/reads.py.fill_reads`
+## `tensilelite/LoopModel/emit/reads.py.fill_reads`
 
 ```
 prologue read-ahead fill: pre-issue exactly the first-trip reads whose residency
@@ -5895,163 +5895,163 @@ prologue read-ahead fill: pre-issue exactly the first-trip reads whose residency
         
 ```
 
-## `Tensile/LoopModel/emit/reads.py:1`
+## `tensilelite/LoopModel/emit/reads.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/emit/reads.py:25`
+## `tensilelite/LoopModel/emit/reads.py:25`
 
 ```
 # The issuing agent for every instance in a single-role kernel: ρ → `Inst.a` and `Loop.role`; "an
 ```
 
-## `Tensile/LoopModel/emit/reads.py:26`
+## `tensilelite/LoopModel/emit/reads.py:26`
 
 ```
 # unspecialized kernel is the single-role special case").
 ```
 
-## `Tensile/LoopModel/emit/reads.py:54`
+## `tensilelite/LoopModel/emit/reads.py:54`
 
 ```
 # The read's awaits come from the ledger at the site (op, "read"): its RAW residency on
 ```
 
-## `Tensile/LoopModel/emit/reads.py:55`
+## `tensilelite/LoopModel/emit/reads.py:55`
 
 ```
 # whatever filled the buffer, plus any in-place refill WAR.
 ```
 
-## `Tensile/LoopModel/emit/reads.py:57`
+## `tensilelite/LoopModel/emit/reads.py:57`
 
 ```
 # PLR read-ahead: the read at flat presence position P fetches P+shift
 ```
 
-## `Tensile/LoopModel/emit/reads.py:59`
+## `tensilelite/LoopModel/emit/reads.py:59`
 
 ```
 # The fold converts the shifted presence point back to the tile that names its carrier
 ```
 
-## `Tensile/LoopModel/emit/reads.py:60`
+## `tensilelite/LoopModel/emit/reads.py:60`
 
 ```
 # group `read_fold` is the one derivation, shared with `_first_touch_modes`.
 ```
 
-## `Tensile/LoopModel/emit/reads.py:65`
+## `tensilelite/LoopModel/emit/reads.py:65`
 
 ```
 # `advance=shift` records the shape on the node: 0 = inplace (in place, one line before its
 ```
 
-## `Tensile/LoopModel/emit/reads.py:66`
+## `tensilelite/LoopModel/emit/reads.py:66`
 
 ```
 # own wmma), non-zero = prefetch (hoisted).
 ```
 
-## `Tensile/LoopModel/emit/reads.py:76`
+## `tensilelite/LoopModel/emit/reads.py:76`
 
 ```
 # A chunk-level read has no enclosing inner mode.
 ```
 
-## `Tensile/LoopModel/emit/reads.py:81`
+## `tensilelite/LoopModel/emit/reads.py:81`
 
 ```
 # A partially folded axis is at or inner to the read level (it is still in presence), so it
 ```
 
-## `Tensile/LoopModel/emit/reads.py:82`
+## `tensilelite/LoopModel/emit/reads.py:82`
 
 ```
 # is not in the slice above; it is added here with its modulus.
 ```
 
-## `Tensile/LoopModel/emit/reads.py:103`
+## `tensilelite/LoopModel/emit/reads.py:103`
 
 ```
 # ONE read, ONE position.
 ```
 
-## `Tensile/LoopModel/emit/reads.py:115`
+## `tensilelite/LoopModel/emit/reads.py:115`
 
 ```
 # prologue fill: the registers are empty (nothing has read them yet), so there is no
 ```
 
-## `Tensile/LoopModel/emit/reads.py:116`
+## `tensilelite/LoopModel/emit/reads.py:116`
 
 ```
 # vacating read and the rotation/in-place WAR does not apply — the same reasoning
 ```
 
-## `Tensile/LoopModel/emit/reads.py:131`
+## `tensilelite/LoopModel/emit/reads.py:131`
 
 ```
 # `preloaded_tiles` derives the per-group `dr_g` itself: prologue depth = steady
 ```
 
-## `Tensile/LoopModel/emit/reads.py:132`
+## `tensilelite/LoopModel/emit/reads.py:132`
 
 ```
 # advance = dr_g), so an inplace group fills nothing here and its steady advance is 0 —
 ```
 
-## `Tensile/LoopModel/fuse.py:1`
+## `tensilelite/LoopModel/fuse.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/fuse.py:5`
+## `tensilelite/LoopModel/fuse.py:5`
 
 ```
 # operand names are θ op-class names, which coincide with the scaffold's `tensorChar` ('A', 'B',
 ```
 
-## `Tensile/LoopModel/fuse.py:6`
+## `tensilelite/LoopModel/fuse.py:6`
 
 ```
 # 'mxsa', 'mxsb') — the two vocabularies agree here, so no translation is needed.
 ```
 
-## `Tensile/LoopModel/fuse.py:14`
+## `tensilelite/LoopModel/fuse.py:14`
 
 ```
 # 6 (`all4`) — discriminator, not a shipping grouping.
 ```
 
-## `Tensile/LoopModel/fuse.py:16`
+## `tensilelite/LoopModel/fuse.py:16`
 
 ```
 # 7 (`mix31`) — discriminator.
 ```
 
-## `Tensile/LoopModel/fuse.py:23`
+## `tensilelite/LoopModel/fuse.py:23`
 
 ```
 # : wave shares per group member — how many waves of the group's slice each member gets, as.
 ```
 
-## `Tensile/LoopModel/fuse.py:35`
+## `tensilelite/LoopModel/fuse.py:35`
 
 ```
 # why `5` is parity AND NOT `[[1,1],[1,1]]`.
 ```
 
-## `Tensile/LoopModel/fuse.py:56`
+## `tensilelite/LoopModel/fuse.py:56`
 
 ```
 # : The groupings the scaffold can realize today.
 ```
 
-## `Tensile/LoopModel/geometry.py.axis_tiles`
+## `tensilelite/LoopModel/geometry.py.axis_tiles`
 
 ```
 Number of compute-atom tiles along one axis = size of logical_divide(tile, atom) in
@@ -6059,7 +6059,7 @@ Number of compute-atom tiles along one axis = size of logical_divide(tile, atom)
     
 ```
 
-## `Tensile/LoopModel/geometry.py._quantum_candidate_axes`
+## `tensilelite/LoopModel/geometry.py._quantum_candidate_axes`
 
 ```
 `[(name, extent),...]` in ord order (outer→inner) — the axes a per-lane hop's quantum may
@@ -6067,7 +6067,7 @@ Number of compute-atom tiles along one axis = size of logical_divide(tile, atom)
     
 ```
 
-## `Tensile/LoopModel/geometry.py.quantum_factors`
+## `tensilelite/LoopModel/geometry.py.quantum_factors`
 
 ```
 `{axis: factor}` — how many consecutive coordinates of each axis one instruction of a
@@ -6075,7 +6075,7 @@ Number of compute-atom tiles along one axis = size of logical_divide(tile, atom)
     
 ```
 
-## `Tensile/LoopModel/geometry.py.hop_broadcast`
+## `tensilelite/LoopModel/geometry.py.hop_broadcast`
 
 ```
 The intra-iteration axes ONE instance of this hop does not vary over — presence PER hop
@@ -6083,7 +6083,7 @@ The intra-iteration axes ONE instance of this hop does not vary over — presenc
     
 ```
 
-## `Tensile/LoopModel/geometry.py.hop_fold`
+## `tensilelite/LoopModel/geometry.py.hop_fold`
 
 ```
 `{axis: factor}` for the axes this hop's quantum folds only partially (`1 < factor <
@@ -6091,7 +6091,7 @@ The intra-iteration axes ONE instance of this hop does not vary over — presenc
     
 ```
 
-## `Tensile/LoopModel/geometry.py.free_tiles`
+## `tensilelite/LoopModel/geometry.py.free_tiles`
 
 ```
 Tiles the operand fans over = product of extents of its own free presence modes
@@ -6099,7 +6099,7 @@ Tiles the operand fans over = product of extents of its own free presence modes
     
 ```
 
-## `Tensile/LoopModel/geometry.py.k_tiles`
+## `tensilelite/LoopModel/geometry.py.k_tiles`
 
 ```
 Reduction substeps per kiter = product of extents of the reduction modes
@@ -6107,7 +6107,7 @@ Reduction substeps per kiter = product of extents of the reduction modes
     
 ```
 
-## `Tensile/LoopModel/geometry.py.reduction_tiles`
+## `tensilelite/LoopModel/geometry.py.reduction_tiles`
 
 ```
 Reduction substeps this operand traverses = product of extents of its presence modes that
@@ -6115,7 +6115,7 @@ Reduction substeps this operand traverses = product of extents of its presence m
     
 ```
 
-## `Tensile/LoopModel/geometry.py.wmma_grid`
+## `tensilelite/LoopModel/geometry.py.wmma_grid`
 
 ```
 (free-tiles of input-0, free-tiles of input-1, k_tiles) for one kiter — the matmul grid
@@ -6123,7 +6123,7 @@ Reduction substeps this operand traverses = product of extents of its presence m
     
 ```
 
-## `Tensile/LoopModel/geometry.py.frag_regs`
+## `tensilelite/LoopModel/geometry.py.frag_regs`
 
 ```
 Registers one fragment occupies per lane, derived by recasting the per-lane element
@@ -6131,7 +6131,7 @@ Registers one fragment occupies per lane, derived by recasting the per-lane elem
     
 ```
 
-## `Tensile/LoopModel/geometry.py.readahead_level_of`
+## `tensilelite/LoopModel/geometry.py.readahead_level_of`
 
 ```
 `(level_name, level_extent, region_span)` — the ONE derivation of the level a local read-
@@ -6140,7 +6140,7 @@ Registers one fragment occupies per lane, derived by recasting the per-lane elem
     
 ```
 
-## `Tensile/LoopModel/geometry.py._rate_broadcast`
+## `tensilelite/LoopModel/geometry.py._rate_broadcast`
 
 ```
 The axes a register group is constant over for its rate/live-peak — the "two-map
@@ -6148,7 +6148,7 @@ The axes a register group is constant over for its rate/live-peak — the "two-m
     
 ```
 
-## `Tensile/LoopModel/geometry.py._group_value_seq`
+## `tensilelite/LoopModel/geometry.py._group_value_seq`
 
 ```
 The distinct value id a rate-group holds at each step = projection of the step coord onto
@@ -6157,7 +6157,7 @@ The distinct value id a rate-group holds at each step = projection of the step c
     
 ```
 
-## `Tensile/LoopModel/geometry.py.group_rate`
+## `tensilelite/LoopModel/geometry.py.group_rate`
 
 ```
 R — reload rate = # distinct values ONE register group of ONE fragment holds per
@@ -6166,7 +6166,7 @@ R — reload rate = # distinct values ONE register group of ONE fragment holds p
     
 ```
 
-## `Tensile/LoopModel/geometry.py._reg_read_off`
+## `tensilelite/LoopModel/geometry.py._reg_read_off`
 
 ```
 The register read-prefetch depth `off(read, ·)` = the PLR read-ahead, read from the
@@ -6174,7 +6174,7 @@ The register read-prefetch depth `off(read, ·)` = the PLR read-ahead, read from
     
 ```
 
-## `Tensile/LoopModel/geometry.py._free_tile_index_seq`
+## `tensilelite/LoopModel/geometry.py._free_tile_index_seq`
 
 ```
 The operand's own free-axis tile index at each step = the mixed-radix combine of this
@@ -6183,7 +6183,7 @@ The operand's own free-axis tile index at each step = the mixed-radix combine of
     
 ```
 
-## `Tensile/LoopModel/geometry.py.resident_free_tiles`
+## `tensilelite/LoopModel/geometry.py.resident_free_tiles`
 
 ```
 The number of the operand's free-axis tiles simultaneously resident under `ord` — the
@@ -6191,7 +6191,7 @@ The number of the operand's free-axis tiles simultaneously resident under `ord` 
     
 ```
 
-## `Tensile/LoopModel/geometry.py.operand_emitted_regs`
+## `tensilelite/LoopModel/geometry.py.operand_emitted_regs`
 
 ```
 VGPRs the allocator will actually reserve for this operand — `region x max_g W_g x |fan|
@@ -6199,7 +6199,7 @@ VGPRs the allocator will actually reserve for this operand — `region x max_g W
     
 ```
 
-## `Tensile/LoopModel/geometry.py._region_count`
+## `tensilelite/LoopModel/geometry.py._region_count`
 
 ```
 Regions the operand's registers are replicated over — the wave's region span, not the
@@ -6207,7 +6207,7 @@ Regions the operand's registers are replicated over — the wave's region span, 
     
 ```
 
-## `Tensile/LoopModel/geometry.py.operand_tile_bytes`
+## `tensilelite/LoopModel/geometry.py.operand_tile_bytes`
 
 ```
 shared bytes for one operand's whole tile across the wave — presence-derived, same fix
@@ -6215,253 +6215,253 @@ shared bytes for one operand's whole tile across the wave — presence-derived, 
     
 ```
 
-## `Tensile/LoopModel/geometry.py:1`
+## `tensilelite/LoopModel/geometry.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/geometry.py:19`
+## `tensilelite/LoopModel/geometry.py:19`
 
 ```
 # Tile counts — tile extent ÷ compute atom, in element space (the honest extent source).
 ```
 
-## `Tensile/LoopModel/geometry.py:24`
+## `tensilelite/LoopModel/geometry.py:24`
 
 ```
 # tile count = latalg.n_tiles (was logical_divide(...).shape[1]).
 ```
 
-## `Tensile/LoopModel/geometry.py:30`
+## `tensilelite/LoopModel/geometry.py:30`
 
 ```
 # Per-operand access layout — the honest spatial object.
 ```
 
-## `Tensile/LoopModel/geometry.py:39`
+## `tensilelite/LoopModel/geometry.py:39`
 
 ```
 # An agent-served region axis is broadcast for every data consumer: the wave reads, computes
 ```
 
-## `Tensile/LoopModel/geometry.py:40`
+## `tensilelite/LoopModel/geometry.py:40`
 
 ```
 # and accumulates inside its own region.
 ```
 
-## `Tensile/LoopModel/geometry.py:62`
+## `tensilelite/LoopModel/geometry.py:62`
 
 ```
 # carrier = t // Φ either way: Φ tiles ride one instruction, and the instruction's ordinal is
 ```
 
-## `Tensile/LoopModel/geometry.py:63`
+## `tensilelite/LoopModel/geometry.py:63`
 
 ```
 # the register base.
 ```
 
-## `Tensile/LoopModel/geometry.py:67`
+## `tensilelite/LoopModel/geometry.py:67`
 
 ```
 # The group does not divide evenly over the sub-agents, so some agent would carry a
 ```
 
-## `Tensile/LoopModel/geometry.py:68`
+## `tensilelite/LoopModel/geometry.py:68`
 
 ```
 # fraction of a tile.
 ```
 
-## `Tensile/LoopModel/geometry.py:70`
+## `tensilelite/LoopModel/geometry.py:70`
 
 ```
 # distributed: the Φ tiles are spread over `rho` sub-agents, so `rho` of them share ONE
 ```
 
-## `Tensile/LoopModel/geometry.py:71`
+## `tensilelite/LoopModel/geometry.py:71`
 
 ```
 # register and the lane decides which — a broadcast, expressed by collapsing the slot
 ```
 
-## `Tensile/LoopModel/geometry.py:91`
+## `tensilelite/LoopModel/geometry.py:91`
 
 ```
 # The operand's flat tile index, ord order with the innermost axis fastest — the same
 ```
 
-## `Tensile/LoopModel/geometry.py:92`
+## `tensilelite/LoopModel/geometry.py:92`
 
 ```
 # flattening `tile_flat` uses, so `carrier` is evaluated on the coordinate it was written for.
 ```
 
-## `Tensile/LoopModel/geometry.py:106`
+## `tensilelite/LoopModel/geometry.py:106`
 
 ```
 # every coordinate rides the carrier of its own group's leader
 ```
 
-## `Tensile/LoopModel/geometry.py:128`
+## `tensilelite/LoopModel/geometry.py:128`
 
 ```
 # : the axes ONE instruction spans are absent from the hop's presence, exactly as a bulk
 ```
 
-## `Tensile/LoopModel/geometry.py:129`
+## `tensilelite/LoopModel/geometry.py:129`
 
 ```
 # copy's inner axes are.
 ```
 
-## `Tensile/LoopModel/geometry.py:131`
+## `tensilelite/LoopModel/geometry.py:131`
 
 ```
 # The region axis enters the hop's presence only when the tile is actually split.
 ```
 
-## `Tensile/LoopModel/geometry.py:151`
+## `tensilelite/LoopModel/geometry.py:151`
 
 ```
 # Free / reduction extents / wmma grid — presence-derived, no operand-name/role literals.
 ```
 
-## `Tensile/LoopModel/geometry.py:198`
+## `tensilelite/LoopModel/geometry.py:198`
 
 ```
 # Fragment register width — via latalg.recast_count (integer ceil), not a layout op.
 ```
 
-## `Tensile/LoopModel/geometry.py:213`
+## `tensilelite/LoopModel/geometry.py:213`
 
 ```
 # Register groups: what one group owns, how fast it turns over, how much is live
 ```
 
-## `Tensile/LoopModel/geometry.py:231`
+## `tensilelite/LoopModel/geometry.py:231`
 
 ```
 # A collapsed region-leading axis means the read-ahead crosses regions.
 ```
 
-## `Tensile/LoopModel/geometry.py:288`
+## `tensilelite/LoopModel/geometry.py:288`
 
 ```
 # partially folded: the axis keeps `extent // q` presence points, so the fan contributes
 ```
 
-## `Tensile/LoopModel/geometry.py:289`
+## `tensilelite/LoopModel/geometry.py:289`
 
 ```
 # that many generations, not `extent`.
 ```
 
-## `Tensile/LoopModel/geometry.py:304`
+## `tensilelite/LoopModel/geometry.py:304`
 
 ```
 # name-vs-reload is an `ord` fact, NOT A structural ONE.
 ```
 
-## `Tensile/LoopModel/geometry.py:325`
+## `tensilelite/LoopModel/geometry.py:325`
 
 ```
 # the rate counts generations, so A folded axis contributes `N/q`, NOT `N`.
 ```
 
-## `Tensile/LoopModel/geometry.py:337`
+## `tensilelite/LoopModel/geometry.py:337`
 
 ```
 # the fan contributes buffers, NOT tiles.
 ```
 
-## `Tensile/LoopModel/geometry.py:348`
+## `tensilelite/LoopModel/geometry.py:348`
 
 ```
 # `off` overrides, so a caller can ask "what would the peak be at depth d?" instead of only.
 ```
 
-## `Tensile/LoopModel/geometry.py:351`
+## `tensilelite/LoopModel/geometry.py:351`
 
 ```
 # the joint (free-tile, rotation-slot) name space not one collapsed ring.
 ```
 
-## `Tensile/LoopModel/geometry.py:354`
+## `tensilelite/LoopModel/geometry.py:354`
 
 ```
 # the free tile modes the rate projection drops — these name storage, they do not reload it
 ```
 
-## `Tensile/LoopModel/geometry.py:365`
+## `tensilelite/LoopModel/geometry.py:365`
 
 ```
 # `off` is in reduction substeps, the name'S traversal is in positions.
 ```
 
-## `Tensile/LoopModel/geometry.py:435`
+## `tensilelite/LoopModel/geometry.py:435`
 
 ```
 # No shared placement — a one-hop global->register (DTV) operand.
 ```
 
-## `Tensile/LoopModel/geometry.py:449`
+## `tensilelite/LoopModel/geometry.py:449`
 
 ```
 # Sizing: how many instructions a hop costs, and how many registers it occupies
 ```
 
-## `Tensile/LoopModel/geometry.py:469`
+## `tensilelite/LoopModel/geometry.py:469`
 
 ```
 # Register footprint — generations × width × tiles (the product,.
 ```
 
-## `Tensile/LoopModel/geometry.py:485`
+## `tensilelite/LoopModel/geometry.py:485`
 
 ```
 # the accumulator: one live value per output tile, held across the whole reduction — no
 ```
 
-## `Tensile/LoopModel/geometry.py:486`
+## `tensilelite/LoopModel/geometry.py:486`
 
 ```
 # rotating ring no read-ahead residency.
 ```
 
-## `Tensile/LoopModel/geometry.py:493`
+## `tensilelite/LoopModel/geometry.py:493`
 
 ```
 # |part| = # grouping-mode values in each part.
 ```
 
-## `Tensile/LoopModel/geometry.py:499`
+## `tensilelite/LoopModel/geometry.py:499`
 
 ```
 # `|part|` is A residency, NOT an extent — the ord half of (feature #4).
 ```
 
-## `Tensile/LoopModel/geometry.py:501`
+## `tensilelite/LoopModel/geometry.py:501`
 
 ```
 # footprint = region × Σ_part( W_part × |part| ) × frag_regs (paper's 4 orthogonal factors)
 ```
 
-## `Tensile/LoopModel/geometry.py:534`
+## `tensilelite/LoopModel/geometry.py:534`
 
 ```
 # Instruction counts.
 ```
 
-## `Tensile/LoopModel/geometry.py:562`
+## `tensilelite/LoopModel/geometry.py:562`
 
 ```
 # The compute grid.
 ```
 
-## `Tensile/LoopModel/ir.py.Counter`
+## `tensilelite/LoopModel/ir.py.Counter`
 
 ```
 completion classes: "a nameable set of operations a synchronization primitive can wait
@@ -6469,7 +6469,7 @@ completion classes: "a nameable set of operations a synchronization primitive ca
     
 ```
 
-## `Tensile/LoopModel/ir.py.Await`
+## `tensilelite/LoopModel/ir.py.Await`
 
 ```
 A named-dependency discharge point: the value `dep` on completion class `counter` must be
@@ -6477,7 +6477,7 @@ A named-dependency discharge point: the value `dep` on completion class `counter
     
 ```
 
-## `Tensile/LoopModel/ir.py.Inst`
+## `tensilelite/LoopModel/ir.py.Inst`
 
 ```
 One op-class instance at its presence level: a `Load` or `Mma` payload, its logical
@@ -6485,7 +6485,7 @@ One op-class instance at its presence level: a `Load` or `Mma` payload, its logi
     
 ```
 
-## `Tensile/LoopModel/ir.py.Branch`
+## `tensilelite/LoopModel/ir.py.Branch`
 
 ```
 Explicit register-rotation control (user decision): a switch on `selector = mode % S`,
@@ -6493,7 +6493,7 @@ Explicit register-rotation control (user decision): a switch on `selector = mode
     
 ```
 
-## `Tensile/LoopModel/ir.py.Peel`
+## `tensilelite/LoopModel/ir.py.Peel`
 
 ```
 A prologue/drain peel node: the hoisted first-`k` (`kind='prologue'`) or last-`k`
@@ -6502,7 +6502,7 @@ A prologue/drain peel node: the hoisted first-`k` (`kind='prologue'`) or last-`k
     
 ```
 
-## `Tensile/LoopModel/ir.py.Cond`
+## `tensilelite/LoopModel/ir.py.Cond`
 
 ```
 A first-class conditional over the reduction trip count — the peel's validity guard
@@ -6510,7 +6510,7 @@ A first-class conditional over the reduction trip count — the peel's validity 
     
 ```
 
-## `Tensile/LoopModel/ir.py.group`
+## `tensilelite/LoopModel/ir.py.group`
 
 ```
 The tiles sharing `t`'s carrier — the coordinates ONE instruction serves (its
@@ -6518,7 +6518,7 @@ The tiles sharing `t`'s carrier — the coordinates ONE instruction serves (its
         
 ```
 
-## `Tensile/LoopModel/ir.py.semantic`
+## `tensilelite/LoopModel/ir.py.semantic`
 
 ```
 Identity for folding a run of equal-semantic ops: ops equal here differ only by
@@ -6526,7 +6526,7 @@ Identity for folding a run of equal-semantic ops: ops equal here differ only by
         
 ```
 
-## `Tensile/LoopModel/ir.py._runtime`
+## `tensilelite/LoopModel/ir.py._runtime`
 
 ```
 True iff Expr `e` references a symbol absent from `env` (a runtime problem
@@ -6534,7 +6534,7 @@ True iff Expr `e` references a symbol absent from `env` (a runtime problem
         
 ```
 
-## `Tensile/LoopModel/ir.py.at`
+## `tensilelite/LoopModel/ir.py.at`
 
 ```
 Concrete Placement with each slot Expr evaluated to its buffer value but preserving
@@ -6542,7 +6542,7 @@ Concrete Placement with each slot Expr evaluated to its buffer value but preserv
         
 ```
 
-## `Tensile/LoopModel/ir.py.bound_env`
+## `tensilelite/LoopModel/ir.py.bound_env`
 
 ```
 `env` with `mode` bound to `value` iff `value` is statically resolvable in `env`
@@ -6550,169 +6550,169 @@ Concrete Placement with each slot Expr evaluated to its buffer value but preserv
         
 ```
 
-## `Tensile/LoopModel/ir.py:1`
+## `tensilelite/LoopModel/ir.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/ir.py:11`
+## `tensilelite/LoopModel/ir.py:11`
 
 ```
 # Spaces and completion counters.
 ```
 
-## `Tensile/LoopModel/ir.py:37`
+## `tensilelite/LoopModel/ir.py:37`
 
 ```
 # The single extension point: a (src, dst) hop maps to the completion class that tracks it.
 ```
 
-## `Tensile/LoopModel/ir.py:48`
+## `tensilelite/LoopModel/ir.py:48`
 
 ```
 # The movement quantum — how tiles merge into one instruction
 ```
 
-## `Tensile/LoopModel/ir.py:92`
+## `tensilelite/LoopModel/ir.py:92`
 
 ```
 # The instruction ops.
 ```
 
-## `Tensile/LoopModel/ir.py:105`
+## `tensilelite/LoopModel/ir.py:105`
 
 ```
 # shape: the read-ahead advance this transfer carries, in flat presence positions.
 ```
 
-## `Tensile/LoopModel/ir.py:107`
+## `tensilelite/LoopModel/ir.py:107`
 
 ```
 # movement quantum: an `ir.QuantumMap` — `carrier(t)` (which instruction carries tile `t`).
 ```
 
-## `Tensile/LoopModel/ir.py:130`
+## `tensilelite/LoopModel/ir.py:130`
 
 ```
 # "A0(k0)*B0(k0)" — the 8-wmma group issued together
 ```
 
-## `Tensile/LoopModel/ir.py:134`
+## `tensilelite/LoopModel/ir.py:134`
 
 ```
 # ops fold together iff they belong to the same wmma block (the hardware group)
 ```
 
-## `Tensile/LoopModel/ir.py:140`
+## `tensilelite/LoopModel/ir.py:140`
 
 ```
 # Rolled θ-nest IRChapter 5 "emit IR").
 ```
 
-## `Tensile/LoopModel/ir.py:165`
+## `tensilelite/LoopModel/ir.py:165`
 
 ```
 # (terms, add, ((coef, div, ext), …)) →.
 ```
 
-## `Tensile/LoopModel/ir.py:167`
+## `tensilelite/LoopModel/ir.py:167`
 
 ```
 # + (add + Σ coef·env[m]) // div over carry_terms=((mode,coef),…).
 ```
 
-## `Tensile/LoopModel/ir.py:229`
+## `tensilelite/LoopModel/ir.py:229`
 
 ```
 # generic comparison dispatch — one table, evaluated the same way everywhere (no per-call ifs).
 ```
 
-## `Tensile/LoopModel/ir.py:253`
+## `tensilelite/LoopModel/ir.py:253`
 
 ```
 # `free_vars` is the ONE authority on which names an Expr reads (its own docstring says
 ```
 
-## `Tensile/LoopModel/ir.py:254`
+## `tensilelite/LoopModel/ir.py:254`
 
 ```
 # so); re-listing them here is what left `digits`-only expressions looking constant and
 ```
 
-## `Tensile/LoopModel/ir.py:295`
+## `tensilelite/LoopModel/ir.py:295`
 
 ```
 # `keep_unresolved` is opt-in and off for the codegen path, which must always get a
 ```
 
-## `Tensile/LoopModel/ir.py:296`
+## `tensilelite/LoopModel/ir.py:296`
 
 ```
 # concrete Placement.
 ```
 
-## `Tensile/LoopModel/ir.py:308`
+## `tensilelite/LoopModel/ir.py:308`
 
 ```
 # see ADR 0006.  See ADR 0006.
 ```
 
-## `Tensile/LoopModel/ir.py:358`
+## `tensilelite/LoopModel/ir.py:358`
 
 ```
 # : `anchor` — position, never value.
 ```
 
-## `Tensile/LoopModel/ir.py:366`
+## `tensilelite/LoopModel/ir.py:366`
 
 ```
 # display extent line 339, Q19 adopted).
 ```
 
-## `Tensile/LoopModel/ir.py:371`
+## `tensilelite/LoopModel/ir.py:371`
 
 ```
 # runtime-trip, peeled level (the shared-ring / reduction axis); False
 ```
 
-## `Tensile/LoopModel/ir.py:372`
+## `tensilelite/LoopModel/ir.py:372`
 
 ```
 # = a statically-unrolled inner mode.
 ```
 
-## `Tensile/LoopModel/ir.py:408`
+## `tensilelite/LoopModel/ir.py:408`
 
 ```
 # outer-level residue binding, the peel's Bind) — the structural
 ```
 
-## `Tensile/LoopModel/ir.py:409`
+## `tensilelite/LoopModel/ir.py:409`
 
 ```
 # marker, not a name.
 ```
 
-## `Tensile/LoopModel/ir.py:451`
+## `tensilelite/LoopModel/ir.py:451`
 
 ```
 # construction peels the pipelined loop) — the structural marker for
 ```
 
-## `Tensile/LoopModel/ir.py:452`
+## `tensilelite/LoopModel/ir.py:452`
 
 ```
 # walkers, consistent with Loop/Branch.
 ```
 
-## `Tensile/LoopModel/ir.py:470`
+## `tensilelite/LoopModel/ir.py:470`
 
 ```
 # walker uses (consistent with Loop/Branch/Peel `outer`).
 ```
 
-## `Tensile/LoopModel/latalg.py.tile_split`
+## `tensilelite/LoopModel/latalg.py.tile_split`
 
 ```
 Stands in for `logical_divide(Layout((n,),(1,)), Layout((t,),(1,))).shape` on a
@@ -6720,7 +6720,7 @@ Stands in for `logical_divide(Layout((n,),(1,)), Layout((t,),(1,))).shape` on a
     
 ```
 
-## `Tensile/LoopModel/latalg.py.recast_count`
+## `tensilelite/LoopModel/latalg.py.recast_count`
 
 ```
 Stands in for `recast(Layout((elems,),(1,)), scale).size` = ceil(elems / scale): packing
@@ -6728,13 +6728,13 @@ Stands in for `recast(Layout((elems,),(1,)), scale).size` = ceil(elems / scale):
     
 ```
 
-## `Tensile/LoopModel/latalg.py:1`
+## `tensilelite/LoopModel/latalg.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/ledger.py.Endpoint`
+## `tensilelite/LoopModel/ledger.py.Endpoint`
 
 ```
 One end of an obligation — which op-class, at which placement or site, at which
@@ -6742,7 +6742,7 @@ One end of an obligation — which op-class, at which placement or site, at whic
     
 ```
 
-## `Tensile/LoopModel/ledger.py.discharge_once`
+## `tensilelite/LoopModel/ledger.py.discharge_once`
 
 ```
 Drop an `Await` that a preceding instruction in the same execution path already
@@ -6750,7 +6750,7 @@ Drop an `Await` that a preceding instruction in the same execution path already
     
 ```
 
-## `Tensile/LoopModel/ledger.py.walk_insts`
+## `tensilelite/LoopModel/ledger.py.walk_insts`
 
 ```
 Pre-order walk of the rolled θ-nest yielding every `Inst` (one per op-class per presence
@@ -6758,7 +6758,7 @@ Pre-order walk of the rolled θ-nest yielding every `Inst` (one per op-class per
     
 ```
 
-## `Tensile/LoopModel/ledger.py.check_ledger_discharged`
+## `tensilelite/LoopModel/ledger.py.check_ledger_discharged`
 
 ```
 empty-ledger gate, PER-edge: "each producer→consumer obligation is covered by an `Await`
@@ -6767,199 +6767,199 @@ empty-ledger gate, PER-edge: "each producer→consumer obligation is covered by 
     
 ```
 
-## `Tensile/LoopModel/ledger.py:1`
+## `tensilelite/LoopModel/ledger.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/ledger.py:66`
+## `tensilelite/LoopModel/ledger.py:66`
 
 ```
 # A global→shared hop under Φ is ONE obligation for the whole movement — both.
 ```
 
-## `Tensile/LoopModel/ledger.py:72`
+## `tensilelite/LoopModel/ledger.py:72`
 
 ```
 # ONE obligation PER placement.
 ```
 
-## `Tensile/LoopModel/ledger.py:75`
+## `tensilelite/LoopModel/ledger.py:75`
 
 ```
 # in-place vs rotation.
 ```
 
-## `Tensile/LoopModel/ledger.py:78`
+## `tensilelite/LoopModel/ledger.py:78`
 
 ```
 # : the shared ring satisfies `S >= δ`, and at `S == δ` the refill is in place —.
 ```
 
-## `Tensile/LoopModel/ledger.py:86`
+## `tensilelite/LoopModel/ledger.py:86`
 
 ```
 # chunk-crossing residency "The chunk-crossing coupling").
 ```
 
-## `Tensile/LoopModel/ledger.py:99`
+## `tensilelite/LoopModel/ledger.py:99`
 
 ```
 # Same Φ rule as the copy-hop residency above, and for the same reason on both ends:
 ```
 
-## `Tensile/LoopModel/ledger.py:100`
+## `tensilelite/LoopModel/ledger.py:100`
 
 ```
 # one cooperative copy, one crossing obligation, matched by every member's crossing
 ```
 
-## `Tensile/LoopModel/ledger.py:105`
+## `tensilelite/LoopModel/ledger.py:105`
 
 ```
 # Read-ahead residency O_r: a first-trip read the steady body cannot discharge must be pre-
 ```
 
-## `Tensile/LoopModel/ledger.py:106`
+## `tensilelite/LoopModel/ledger.py:106`
 
 ```
 # issued in the prologue, else the ledger is non-empty.
 ```
 
-## `Tensile/LoopModel/ledger.py:119`
+## `tensilelite/LoopModel/ledger.py:119`
 
 ```
 # deterministic order.
 ```
 
-## `Tensile/LoopModel/ledger.py:141`
+## `tensilelite/LoopModel/ledger.py:141`
 
 ```
 # each trip re-runs the body; a boundary from outside does not survive into trip 2,
 ```
 
-## `Tensile/LoopModel/ledger.py:142`
+## `tensilelite/LoopModel/ledger.py:142`
 
 ```
 # and the body's own copies invalidate it anyway.
 ```
 
-## `Tensile/LoopModel/ledger.py:216`
+## `tensilelite/LoopModel/ledger.py:216`
 
 ```
 # `inline_outer` = descend the outer-level Branch that wraps a drain step (the peel's
 ```
 
-## `Tensile/LoopModel/ledger.py:217`
+## `tensilelite/LoopModel/ledger.py:217`
 
 ```
 # `Bind` binds each drain step's reduction chunk residue via a Branch(outer=True)).
 ```
 
-## `Tensile/LoopModel/ledger.py:232`
+## `tensilelite/LoopModel/ledger.py:232`
 
 ```
 # a nested outer Loop/Branch or a Peel is a separate trip — not inlined; handled by
 ```
 
-## `Tensile/LoopModel/ledger.py:233`
+## `tensilelite/LoopModel/ledger.py:233`
 
 ```
 # visit
 ```
 
-## `Tensile/LoopModel/ledger.py:244`
+## `tensilelite/LoopModel/ledger.py:244`
 
 ```
 # each drain step is `Bind(iter=T−M+t, body=...)`; flat() inlines the Bind
 ```
 
-## `Tensile/LoopModel/ledger.py:245`
+## `tensilelite/LoopModel/ledger.py:245`
 
 ```
 # body so the σ_c order gate inspects that trip's instructions.
 ```
 
-## `Tensile/LoopModel/ledger.py:263`
+## `tensilelite/LoopModel/ledger.py:263`
 
 ```
 # quantified over all reads line 185: `∀ r ∈ reads(gen t), ∀ w ∈ writes(gen t+S):. See.
 ```
 
-## `Tensile/LoopModel/ledger.py:276`
+## `tensilelite/LoopModel/ledger.py:276`
 
 ```
 # `len(body)` for an operand with no read in this trip: past every index, so the copy-
 ```
 
-## `Tensile/LoopModel/ledger.py:277`
+## `tensilelite/LoopModel/ledger.py:277`
 
 ```
 # first peel skeleton stays a violation exactly as it was under the existential.
 ```
 
-## `Tensile/LoopModel/ledger.py:284`
+## `tensilelite/LoopModel/ledger.py:284`
 
 ```
 # (b3) order, crossing RAW: the copy must be emitted before this operand's reads in the steady
 ```
 
-## `Tensile/LoopModel/ledger.py:285`
+## `tensilelite/LoopModel/ledger.py:285`
 
 ```
 # body, because those reads consume the chunk it fills.
 ```
 
-## `Tensile/LoopModel/ledger.py:312`
+## `tensilelite/LoopModel/ledger.py:312`
 
 ```
 # (b2) order, register ring: a hoisted in-place refill read must follow a wmma consuming its.
 ```
 
-## `Tensile/LoopModel/ledger.py:318`
+## `tensilelite/LoopModel/ledger.py:318`
 
 ```
 # A placement blanks the label of A single-group operand (`placement._read_placement`:.
 ```
 
-## `Tensile/LoopModel/ledger.py:346`
+## `tensilelite/LoopModel/ledger.py:346`
 
 ```
 # A refill consumes the mark.
 ```
 
-## `Tensile/LoopModel/ledger.py:352`
+## `tensilelite/LoopModel/ledger.py:352`
 
 ```
 # (c) read-ahead residency: each `readahead-residency` obligation requires its coord (a field
 ```
 
-## `Tensile/LoopModel/ledger.py:353`
+## `tensilelite/LoopModel/ledger.py:353`
 
 ```
 # on the producer endpoint) to be actually emitted as a register read in the prologue body.
 ```
 
-## `Tensile/LoopModel/ledger.py:367`
+## `tensilelite/LoopModel/ledger.py:367`
 
 ```
 # same structured shape the obligation carries: sorted ((mode, value), …)
 ```
 
-## `Tensile/LoopModel/ledger.py:382`
+## `tensilelite/LoopModel/ledger.py:382`
 
 ```
 # (b) order: per region, every WAR-refill copy must be preceded by the vacating read.
 ```
 
-## `Tensile/LoopModel/operand_view.py:1`
+## `tensilelite/LoopModel/operand_view.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/prefetch.py.PeelDepths`
+## `tensilelite/LoopModel/prefetch.py.PeelDepths`
 
 ```
 The peel depth `M_ℓ` **per level** 2026-08-14 update) — ONE source of truth for the peel
@@ -6967,7 +6967,7 @@ The peel depth `M_ℓ` **per level** 2026-08-14 update) — ONE source of truth 
     
 ```
 
-## `Tensile/LoopModel/prefetch.py._leading_inner_coords`
+## `tensilelite/LoopModel/prefetch.py._leading_inner_coords`
 
 ```
 The relocated instances — the paper's *"exactly `[inner-coord 0.. δ)` of the current
@@ -6975,7 +6975,7 @@ The relocated instances — the paper's *"exactly `[inner-coord 0.. δ)` of the 
     
 ```
 
-## `Tensile/LoopModel/prefetch.py.preloads_for_group`
+## `tensilelite/LoopModel/prefetch.py.preloads_for_group`
 
 ```
 Build the three-factor set for one group at depth `dr_g`, restricting the grouping mode
@@ -6983,7 +6983,7 @@ Build the three-factor set for one group at depth `dr_g`, restricting the groupi
     
 ```
 
-## `Tensile/LoopModel/prefetch.py.loads_in_place`
+## `tensilelite/LoopModel/prefetch.py.loads_in_place`
 
 ```
 True when the read-ahead refill writes the very name its own leaf's `wmma` is reading —
@@ -6991,7 +6991,7 @@ True when the read-ahead refill writes the very name its own leaf's `wmma` is re
     
 ```
 
-## `Tensile/LoopModel/prefetch.py._read_placement`
+## `tensilelite/LoopModel/prefetch.py._read_placement`
 
 ```
 Symbolic register Placement for op's read: per group, slot = the mixed-radix rate-mode
@@ -6999,7 +6999,7 @@ Symbolic register Placement for op's read: per group, slot = the mixed-radix rat
     
 ```
 
-## `Tensile/LoopModel/prefetch.py.copy_off`
+## `tensilelite/LoopModel/prefetch.py.copy_off`
 
 ```
 `{op_name: δ}` for the copy op-classes at the reduction chunk — the staggered-peel
@@ -7008,223 +7008,223 @@ Symbolic register Placement for op's read: per group, slot = the mixed-radix rat
         
 ```
 
-## `Tensile/LoopModel/prefetch.py:1`
+## `tensilelite/LoopModel/prefetch.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/prefetch.py:77`
+## `tensilelite/LoopModel/prefetch.py:77`
 
 ```
 # (rewritten): the coupling is `off(copy,iter) >= r`; the `+1` is demanded only in the
 ```
 
-## `Tensile/LoopModel/prefetch.py:78`
+## `tensilelite/LoopModel/prefetch.py:78`
 
 ```
 # `S=δ`-tight copy-last case, where copy-first would overwrite a slot the current trip
 ```
 
-## `Tensile/LoopModel/prefetch.py:124`
+## `tensilelite/LoopModel/prefetch.py:124`
 
 ```
 # the read-ahead level is PER op-class so it is resolved inside the `dr` fold below
 ```
 
-## `Tensile/LoopModel/prefetch.py:126`
+## `tensilelite/LoopModel/prefetch.py:126`
 
 ```
 # every (op-class, level) offset θ carries, as a per-op-class map — the staggered peel's input.
 ```
 
-## `Tensile/LoopModel/prefetch.py:129`
+## `tensilelite/LoopModel/prefetch.py:129`
 
 ```
 # the sense is PER op-class, the role is PER hop axis 3).
 ```
 
-## `Tensile/LoopModel/prefetch.py:145`
+## `tensilelite/LoopModel/prefetch.py:145`
 
 ```
 # M_ℓ = max_p off(p, ℓ), per level, in ord order.
 ```
 
-## `Tensile/LoopModel/prefetch.py:152`
+## `tensilelite/LoopModel/prefetch.py:152`
 
 ```
 # the substep read-ahead's reach into whole chunks: M is the max over all op-classes, with the
 ```
 
-## `Tensile/LoopModel/prefetch.py:153`
+## `tensilelite/LoopModel/prefetch.py:153`
 
 ```
 # read's substep off converted to whole iters).
 ```
 
-## `Tensile/LoopModel/prefetch.py:159`
+## `tensilelite/LoopModel/prefetch.py:159`
 
 ```
 # the reach is derived, NOT requested.
 ```
 
-## `Tensile/LoopModel/prefetch.py:163`
+## `tensilelite/LoopModel/prefetch.py:163`
 
 ```
 # keep ord order (dict insertion above already follows it, except for the chunk bump)
 ```
 
-## `Tensile/LoopModel/prefetch.py:215`
+## `tensilelite/LoopModel/prefetch.py:215`
 
 ```
 # lemma 3d's outer factor is A presence point, NOT A tile.
 ```
 
-## `Tensile/LoopModel/prefetch.py:220`
+## `tensilelite/LoopModel/prefetch.py:220`
 
 ```
 # A free sibling in `outer` is enumerated, NOT pinned line 644).
 ```
 
-## `Tensile/LoopModel/prefetch.py:227`
+## `tensilelite/LoopModel/prefetch.py:227`
 
 ```
 # per-mode value ranges for the inner factor; the grouping mode is restricted to gm_vals.
 ```
 
-## `Tensile/LoopModel/prefetch.py:234`
+## `tensilelite/LoopModel/prefetch.py:234`
 
 ```
 # the grouping mode may be outer (not inner); the loop below restricts it there per value.
 ```
 
-## `Tensile/LoopModel/prefetch.py:260`
+## `tensilelite/LoopModel/prefetch.py:260`
 
 ```
 # A broadcast-outer operand primes its whole name SET.
 ```
 
-## `Tensile/LoopModel/prefetch.py:292`
+## `tensilelite/LoopModel/prefetch.py:292`
 
 ```
 # single-group: one depth for the whole operand, still derived (a single-group fragment can be
 ```
 
-## `Tensile/LoopModel/prefetch.py:293`
+## `tensilelite/LoopModel/prefetch.py:293`
 
 ```
 # Shape B too — that is exactly the term-(ii) operand of a K-innermost order, which has no
 ```
 
-## `Tensile/LoopModel/prefetch.py:297`
+## `tensilelite/LoopModel/prefetch.py:297`
 
 ```
 # width-split: union per group, each at its own derived dr_g over its grouping-mode values.
 ```
 
-## `Tensile/LoopModel/prefetch.py:313`
+## `tensilelite/LoopModel/prefetch.py:313`
 
 ```
 # solved against the walk, NOT guessed Q37).
 ```
 
-## `Tensile/LoopModel/prefetch.py:318`
+## `tensilelite/LoopModel/prefetch.py:318`
 
 ```
 # capacity first (cheap,'s `W >= L`), then assignment (the actual admission test).
 ```
 
-## `Tensile/LoopModel/prefetch.py:321`
+## `tensilelite/LoopModel/prefetch.py:321`
 
 ```
 # the assignment verdict is taken over every group of the operand, not just this one.
 ```
 
-## `Tensile/LoopModel/prefetch.py:323`
+## `tensilelite/LoopModel/prefetch.py:323`
 
 ```
 # admission is "is there A legal position", NOT "is the default position legal".
 ```
 
-## `Tensile/LoopModel/prefetch.py:386`
+## `tensilelite/LoopModel/prefetch.py:386`
 
 ```
 # the reload traversal, not the presence set — see `reload_modes` for why this is a shared
 ```
 
-## `Tensile/LoopModel/prefetch.py:387`
+## `tensilelite/LoopModel/prefetch.py:387`
 
 ```
 # function rather than an inline filter, and for the status of the free-sibling exclusion.
 ```
 
-## `Tensile/LoopModel/prefetch.py:389`
+## `tensilelite/LoopModel/prefetch.py:389`
 
 ```
 # presence points, NOT tiles /.
 ```
 
-## `Tensile/LoopModel/prefetch.py:392`
+## `tensilelite/LoopModel/prefetch.py:392`
 
 ```
 # the same level `prefetch_distance_for` advances along — this guard and that conversion are
 ```
 
-## `Tensile/LoopModel/prefetch.py:393`
+## `tensilelite/LoopModel/prefetch.py:393`
 
 ```
 # two halves of one rule, so they must test the same axis.
 ```
 
-## `Tensile/LoopModel/prefetch.py:399`
+## `tensilelite/LoopModel/prefetch.py:399`
 
 ```
 # inner = the ord modes strictly inner to the reduction substep — a property of `ord`, not of
 ```
 
-## `Tensile/LoopModel/prefetch.py:400`
+## `tensilelite/LoopModel/prefetch.py:400`
 
 ```
 # this operand (thesplits the whole order, then intersects each factor with presence).
 ```
 
-## `Tensile/LoopModel/prefetch.py:425`
+## `tensilelite/LoopModel/prefetch.py:425`
 
 ```
 # read-ahead slot = the rate index of the shifted coord, not the unshifted slot plus `dr`.
 ```
 
-## `Tensile/LoopModel/prefetch.py:430`
+## `tensilelite/LoopModel/prefetch.py:430`
 
 ```
 # shared source buffer (`src_slot`): which LDS multibuffer generation the read's data lives in.
 ```
 
-## `Tensile/LoopModel/prefetch.py:434`
+## `tensilelite/LoopModel/prefetch.py:434`
 
 ```
 # the shared ring rotates over the reduction chunk.
 ```
 
-## `Tensile/LoopModel/prefetch.py:437`
+## `tensilelite/LoopModel/prefetch.py:437`
 
 ```
 # ONE shift for the whole read: the coord and the slot must advance together.
 ```
 
-## `Tensile/LoopModel/prefetch.py:486`
+## `tensilelite/LoopModel/prefetch.py:486`
 
 ```
 # the inner axis contributes the largest divisor of its extent that still fits the load
 ```
 
-## `Tensile/LoopModel/prefetch.py:495`
+## `tensilelite/LoopModel/prefetch.py:495`
 
 ```
 # an outer axis can only be added once the inner one is spanned whole
 ```
 
-## `Tensile/LoopModel/presence.py.prefetch_axis_name`
+## `tensilelite/LoopModel/presence.py.prefetch_axis_name`
 
 ```
 The level `off(read, ·)` lives on — `theta.readahead_level`, the outermost mode of the
@@ -7232,7 +7232,7 @@ The level `off(read, ·)` lives on — `theta.readahead_level`, the outermost mo
     
 ```
 
-## `Tensile/LoopModel/presence.py.op_class_level`
+## `tensilelite/LoopModel/presence.py.op_class_level`
 
 ```
 The level an op-class is emitted at — its home level line 523, "placed by its own
@@ -7240,7 +7240,7 @@ The level an op-class is emitted at — its home level line 523, "placed by its 
     
 ```
 
-## `Tensile/LoopModel/presence.py.group_value_span`
+## `tensilelite/LoopModel/presence.py.group_value_span`
 
 ```
 The `grouping_mode` value subset a register group owns: a group is a partition of the
@@ -7248,7 +7248,7 @@ The `grouping_mode` value subset a register group owns: a group is a partition o
     
 ```
 
-## `Tensile/LoopModel/presence.py.varying_axes`
+## `tensilelite/LoopModel/presence.py.varying_axes`
 
 ```
 The inner modes op's shared→register read varies over (its presence set, — the non-
@@ -7256,7 +7256,7 @@ The inner modes op's shared→register read varies over (its presence set, — t
     
 ```
 
-## `Tensile/LoopModel/presence.py.sibling_free_axes`
+## `tensilelite/LoopModel/presence.py.sibling_free_axes`
 
 ```
 `op`'s region modes that enumerate storage-disjoint siblings rather than reload — the
@@ -7264,7 +7264,7 @@ The inner modes op's shared→register read varies over (its presence set, — t
     
 ```
 
-## `Tensile/LoopModel/presence.py.ring_slot`
+## `tensilelite/LoopModel/presence.py.ring_slot`
 
 ```
 The rotation slot Expr for a group of width `d`: the mixed-radix index over the group's
@@ -7272,7 +7272,7 @@ The rotation slot Expr for a group of width `d`: the mixed-radix index over the 
     
 ```
 
-## `Tensile/LoopModel/presence.py._reduction_rate_mode`
+## `tensilelite/LoopModel/presence.py._reduction_rate_mode`
 
 ```
 The single innermost reduction rate mode (role 'k') of `op`'s register group, as (name,
@@ -7280,7 +7280,7 @@ The single innermost reduction rate mode (role 'k') of `op`'s register group, as
     
 ```
 
-## `Tensile/LoopModel/presence.py.axis_strides`
+## `tensilelite/LoopModel/presence.py.axis_strides`
 
 ```
 `stride_ord(m)` for a set of inner modes: the product of extents of the modes inner to
@@ -7289,7 +7289,7 @@ The single innermost reduction rate mode (role 'k') of `op`'s register group, as
     
 ```
 
-## `Tensile/LoopModel/presence.py.position_terms`
+## `tensilelite/LoopModel/presence.py.position_terms`
 
 ```
 `(terms, L)` for the flat presence position `P = Σ stride(m)·point(m)`, as an `Expr`
@@ -7297,43 +7297,43 @@ The single innermost reduction rate mode (role 'k') of `op`'s register group, as
     
 ```
 
-## `Tensile/LoopModel/presence.py:1`
+## `tensilelite/LoopModel/presence.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/presence.py:59`
+## `tensilelite/LoopModel/presence.py:59`
 
 ```
 # ONE derivation, asked of the read hop.
 ```
 
-## `Tensile/LoopModel/presence.py:78`
+## `tensilelite/LoopModel/presence.py:78`
 
 ```
 # the `{lo}{hi}` partition is A sibling enumerator too, and theists it in the same.
 ```
 
-## `Tensile/LoopModel/presence.py:85`
+## `tensilelite/LoopModel/presence.py:85`
 
 ```
 # The split is live but its mode is gone: the free tiles moved to another axis.
 ```
 
-## `Tensile/LoopModel/presence.py:132`
+## `tensilelite/LoopModel/presence.py:132`
 
 ```
 # radix chain over the rate modes, innermost fastest — the same order `_shifted_rate_slot`
 ```
 
-## `Tensile/LoopModel/presence.py:133`
+## `tensilelite/LoopModel/presence.py:133`
 
 ```
 # builds its digit fields in, read from the same `ring_axes` extents.
 ```
 
-## `Tensile/LoopModel/registers.py.chunks_crossed`
+## `tensilelite/LoopModel/registers.py.chunks_crossed`
 
 ```
 `r` — how many reduction chunks ahead `op`'s substep read-ahead reaches "The chunk-
@@ -7341,7 +7341,7 @@ The single innermost reduction rate mode (role 'k') of `op`'s register group, as
     
 ```
 
-## `Tensile/LoopModel/registers.py.reloads_whole_set`
+## `tensilelite/LoopModel/registers.py.reloads_whole_set`
 
 ```
 Is every one of `op`'s registers live across a full outer pass, so all must reload at
@@ -7349,7 +7349,7 @@ Is every one of `op`'s registers live across a full outer pass, so all must relo
     
 ```
 
-## `Tensile/LoopModel/registers.py._uses_before_load`
+## `tensilelite/LoopModel/registers.py._uses_before_load`
 
 ```
 `{name: [(t, wanted, held)]}` — every steady-chunk consume that finds the wrong
@@ -7357,7 +7357,7 @@ Is every one of `op`'s registers live across a full outer pass, so all must relo
     
 ```
 
-## `Tensile/LoopModel/registers.py._overwrites_live_register`
+## `tensilelite/LoopModel/registers.py._overwrites_live_register`
 
 ```
 `{name: [last consume,...]}` for every steady-chunk write that lands on a name whose
@@ -7366,7 +7366,7 @@ Is every one of `op`'s registers live across a full outer pass, so all must relo
     
 ```
 
-## `Tensile/LoopModel/registers.py.reload_positions`
+## `tensilelite/LoopModel/registers.py.reload_positions`
 
 ```
 `{register name: coord}` -- the loop position each reload must follow, or None if there
@@ -7374,91 +7374,91 @@ Is every one of `op`'s registers live across a full outer pass, so all must relo
     
 ```
 
-## `Tensile/LoopModel/registers.py:1`
+## `tensilelite/LoopModel/registers.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/registers.py:48`
+## `tensilelite/LoopModel/registers.py:48`
 
 ```
 # the reload traversal, NOT the presence SET — the same set `_readahead_shift` walks.
 ```
 
-## `Tensile/LoopModel/registers.py:53`
+## `tensilelite/LoopModel/registers.py:53`
 
 ```
 # the shift advances along the read-ahead level — the axis `off(read, ·)` is written on.
 ```
 
-## `Tensile/LoopModel/registers.py:57`
+## `tensilelite/LoopModel/registers.py:57`
 
 ```
 # A broadcast-outer operand reads ahead by A whole trip, NOT by A substep.
 ```
 
-## `Tensile/LoopModel/registers.py:75`
+## `tensilelite/LoopModel/registers.py:75`
 
 ```
 # an extent-1 mode is nullspace, the same rule `ring_axes` states: it has one value, so the
 ```
 
-## `Tensile/LoopModel/registers.py:76`
+## `tensilelite/LoopModel/registers.py:76`
 
 ```
 # traversal neither repeats under it nor advances through it, and it cannot make an outer mode
 ```
 
-## `Tensile/LoopModel/registers.py:97`
+## `tensilelite/LoopModel/registers.py:97`
 
 ```
 # two spaces, ONE walk.
 ```
 
-## `Tensile/LoopModel/registers.py:125`
+## `tensilelite/LoopModel/registers.py:125`
 
 ```
 # the anchor is A guard on the issuing step, so it filters writes only — the wmmas keep
 ```
 
-## `Tensile/LoopModel/registers.py:126`
+## `tensilelite/LoopModel/registers.py:126`
 
 ```
 # consuming at every step regardless of where the refill was moved to.
 ```
 
-## `Tensile/LoopModel/registers.py:182`
+## `tensilelite/LoopModel/registers.py:182`
 
 ```
 # starvation is the authority.
 ```
 
-## `Tensile/LoopModel/registers.py:188`
+## `tensilelite/LoopModel/registers.py:188`
 
 ```
 # A later consume is an unrescuable race at this position, and `sigma_c` is NOT a way.
 ```
 
-## `Tensile/LoopModel/registers.py:207`
+## `tensilelite/LoopModel/registers.py:207`
 
 ```
 # the anchor must lie in the same trip as the refill.
 ```
 
-## `Tensile/LoopModel/registers.py:211`
+## `tensilelite/LoopModel/registers.py:211`
 
 ```
 # ONE Inst has ONE position.
 ```
 
-## `Tensile/LoopModel/registers.py:221`
+## `tensilelite/LoopModel/registers.py:221`
 
 ```
 # the fixpoint.
 ```
 
-## `Tensile/LoopModel/render.py._coord_of`
+## `tensilelite/LoopModel/render.py._coord_of`
 
 ```
 The op's coord as text: symbolic mode names in the rolled view, concrete indices in the
@@ -7466,7 +7466,7 @@ The op's coord as text: symbolic mode names in the rolled view, concrete indices
     
 ```
 
-## `Tensile/LoopModel/render.py._reg_slots`
+## `tensilelite/LoopModel/render.py._reg_slots`
 
 ```
 The register residence of a wmma source Placement: `[buf..]` (single group) or
@@ -7475,7 +7475,7 @@ The register residence of a wmma source Placement: `[buf..]` (single group) or
     
 ```
 
-## `Tensile/LoopModel/render.py._await_line`
+## `tensilelite/LoopModel/render.py._await_line`
 
 ```
 A named-dependency discharge point: the named dep is the primitive; the lowered count (if
@@ -7483,7 +7483,7 @@ A named-dependency discharge point: the named dep is the primitive; the lowered 
     
 ```
 
-## `Tensile/LoopModel/render.py.render_ir`
+## `tensilelite/LoopModel/render.py.render_ir`
 
 ```
 Print the rolled θ-nest: `for <mode> in range(N):` loop headers, each op-class ONE line
@@ -7491,7 +7491,7 @@ Print the rolled θ-nest: `for <mode> in range(N):` loop headers, each op-class 
     
 ```
 
-## `Tensile/LoopModel/render.py.render_unrolled`
+## `tensilelite/LoopModel/render.py.render_unrolled`
 
 ```
 Expand the rolled nest into the concrete interleaved stream: walk the loop nest with a
@@ -7500,259 +7500,259 @@ Expand the rolled nest into the concrete interleaved stream: walk the loop nest 
     
 ```
 
-## `Tensile/LoopModel/render.py:1`
+## `tensilelite/LoopModel/render.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/render.py:19`
+## `tensilelite/LoopModel/render.py:19`
 
 ```
 # Per-op formatting.
 ```
 
-## `Tensile/LoopModel/render.py:47`
+## `tensilelite/LoopModel/render.py:47`
 
 ```
 # A Cond's meaning is its generic `kind` (backend-agnosticvocabulary; the core sets this, NOT a
 ```
 
-## `Tensile/LoopModel/render.py:48`
+## `tensilelite/LoopModel/render.py:48`
 
 ```
 # TensileLite scaffold name).
 ```
 
-## `Tensile/LoopModel/render.py:76`
+## `tensilelite/LoopModel/render.py:76`
 
 ```
 # `{ax}=(formula)` — the data index this read accesses along `ax`, a read-ahead shift
 ```
 
-## `Tensile/LoopModel/render.py:77`
+## `tensilelite/LoopModel/render.py:77`
 
 ```
 # of the loop var (e.g.
 ```
 
-## `Tensile/LoopModel/render.py:108`
+## `tensilelite/LoopModel/render.py:108`
 
 ```
 # a copy's coord must be shown, not just its op-class name.
 ```
 
-## `Tensile/LoopModel/render.py:123`
+## `tensilelite/LoopModel/render.py:123`
 
 ```
 # the wmma consumes a per-operand register residence (a {operand: Placement} dict, same slots
 ```
 
-## `Tensile/LoopModel/render.py:124`
+## `tensilelite/LoopModel/render.py:124`
 
 ```
 # the producing ds_read deposited).
 ```
 
-## `Tensile/LoopModel/render.py:132`
+## `tensilelite/LoopModel/render.py:132`
 
 ```
 # the operand names come off the node.
 ```
 
-## `Tensile/LoopModel/render.py:161`
+## `tensilelite/LoopModel/render.py:161`
 
 ```
 # Raw dump — the actual IR dataclasses, no interpretation by the renderer.
 ```
 
-## `Tensile/LoopModel/render.py:211`
+## `tensilelite/LoopModel/render.py:211`
 
 ```
 # rolled view — the IR as it is stored: a loop nest, each op-class once.
 ```
 
-## `Tensile/LoopModel/render.py:227`
+## `tensilelite/LoopModel/render.py:227`
 
 ```
 # multi-body: a sequence of sub-loops, each over its own half-open range — so
 ```
 
-## `Tensile/LoopModel/render.py:228`
+## `tensilelite/LoopModel/render.py:228`
 
 ```
 # each gets its own header (a binding when the range is a single value), and
 ```
 
-## `Tensile/LoopModel/render.py:233`
+## `tensilelite/LoopModel/render.py:233`
 
 ```
 # Branch is a register-rotation selector, NOT a guard: `rotate buf = mode % S`,
 ```
 
-## `Tensile/LoopModel/render.py:234`
+## `tensilelite/LoopModel/render.py:234`
 
 ```
 # each arm labelled by the buffer residue it selects register ring).
 ```
 
-## `Tensile/LoopModel/render.py:263`
+## `tensilelite/LoopModel/render.py:263`
 
 ```
 # unrolled view — expand the leaves, interleave read;wmma (a view, 9a).
 ```
 
-## `Tensile/LoopModel/render.py:276`
+## `tensilelite/LoopModel/render.py:276`
 
 ```
 # outer runtime loop: show one representative iteration
 ```
 
-## `Tensile/LoopModel/render.py:281`
+## `tensilelite/LoopModel/render.py:281`
 
 ```
 # each sub-body over its own range multi-body)
 ```
 
-## `Tensile/LoopModel/render.py:291`
+## `tensilelite/LoopModel/render.py:291`
 
 ```
 # pinned-residue branch (a peel-unrolled reduction substep): the arm key is the
 ```
 
-## `Tensile/LoopModel/render.py:292`
+## `tensilelite/LoopModel/render.py:292`
 
 ```
 # mode's concrete value — bind it into env so nested coords/slots evaluate to
 ```
 
-## `Tensile/LoopModel/render.py:300`
+## `tensilelite/LoopModel/render.py:300`
 
 ```
 # a peel-step iter binding: push the bound value into env (concrete for prologue; a
 ```
 
-## `Tensile/LoopModel/render.py:301`
+## `tensilelite/LoopModel/render.py:301`
 
 ```
 # symbolic `T−M+t` drain value stays unbound — shown, but the body's `iter`-slots
 ```
 
-## `Tensile/LoopModel/render.py:305`
+## `tensilelite/LoopModel/render.py:305`
 
 ```
 # honor a resolved guard in this concrete env (first-touch `mode==0`, drain nll `k
 ```
 
-## `Tensile/LoopModel/render.py:306`
+## `tensilelite/LoopModel/render.py:306`
 
 ```
 # < n_s−dr`) — the unrolled stream shows only the arm that actually executes.
 ```
 
-## `Tensile/LoopModel/render.py:318`
+## `tensilelite/LoopModel/render.py:318`
 
 ```
 # a Load carries a single Placement (evaluate it to concrete slots for this env); a
 ```
 
-## `Tensile/LoopModel/render.py:319`
+## `tensilelite/LoopModel/render.py:319`
 
 ```
 # wmma carries a PER-operand {operand: Placement} dict (consume-side reg residence)
 ```
 
-## `Tensile/LoopModel/render.py:321`
+## `tensilelite/LoopModel/render.py:321`
 
 ```
 # pin only what this env can resolve.
 ```
 
-## `Tensile/LoopModel/render.py:340`
+## `tensilelite/LoopModel/render.py:340`
 
 ```
 # Geometry table — every derived number, checkable by hand.
 ```
 
-## `Tensile/LoopModel/render.py:345`
+## `tensilelite/LoopModel/render.py:345`
 
 ```
 # three columns do NOT mean what their headings suggest, and each was measured misleading:
 ```
 
-## `Tensile/LoopModel/render.py:365`
+## `tensilelite/LoopModel/render.py:365`
 
 ```
 # register-ring widths W per rate-group — the register multibuffer, distinct from S_lds
 ```
 
-## `Tensile/LoopModel/render.py:391`
+## `tensilelite/LoopModel/render.py:391`
 
 ```
 # the downgrade, named.
 ```
 
-## `Tensile/LoopModel/render.py:406`
+## `tensilelite/LoopModel/render.py:406`
 
 ```
 # levels: the full ord permutation, outer→inner, marking the outer pipelined levels (extent
 ```
 
-## `Tensile/LoopModel/render.py:407`
+## `tensilelite/LoopModel/render.py:407`
 
 ```
 # symbolic/0 → the reduction chunk / persist) vs the inner unrolled modes (concrete extent).
 ```
 
-## `Tensile/LoopModel/render.py:416`
+## `tensilelite/LoopModel/render.py:416`
 
 ```
 # in ord order, like every other list in this block.
 ```
 
-## `Tensile/LoopModel/render.py:420`
+## `tensilelite/LoopModel/render.py:420`
 
 ```
 # off: the first-class retime matrix {(op, role, level): δ} — per (op-class × level), where the
 ```
 
-## `Tensile/LoopModel/render.py:421`
+## `tensilelite/LoopModel/render.py:421`
 
 ```
 # op-class is (operand, hop role).
 ```
 
-## `Tensile/LoopModel/render.py:429`
+## `tensilelite/LoopModel/render.py:429`
 
 ```
 # the legend must reproduce the table, and this one did not.
 ```
 
-## `Tensile/LoopModel/render.py:434`
+## `tensilelite/LoopModel/render.py:434`
 
 ```
 # shape, per register group.
 ```
 
-## `Tensile/LoopModel/render.py:455`
+## `tensilelite/LoopModel/render.py:455`
 
 ```
 # the asymmetry, spelled out.
 ```
 
-## `Tensile/LoopModel/render.py:462`
+## `tensilelite/LoopModel/render.py:462`
 
 ```
 # the region count, not just the axes.
 ```
 
-## `Tensile/LoopModel/render.py:471`
+## `tensilelite/LoopModel/render.py:471`
 
 ```
 # The decision table (`schedule.Schedule`) — what the decoder decided, per operand.
 ```
 
-## `Tensile/LoopModel/schedule.py._assignment_width`
+## `tensilelite/LoopModel/schedule.py._assignment_width`
 
 ```
 Narrowest `W` in `[lo, hi]` whose rotation map admits the requested read-ahead, else
@@ -7760,7 +7760,7 @@ Narrowest `W` in `[lo, hi]` whose rotation map admits the requested read-ahead, 
     
 ```
 
-## `Tensile/LoopModel/schedule.py.build_S`
+## `tensilelite/LoopModel/schedule.py.build_S`
 
 ```
 The full depth map: derived register floors plus the off-driven cross-iteration shared
@@ -7768,97 +7768,97 @@ The full depth map: derived register floors plus the off-driven cross-iteration 
     
 ```
 
-## `Tensile/LoopModel/schedule.py:1`
+## `tensilelite/LoopModel/schedule.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/schedule.py:70`
+## `tensilelite/LoopModel/schedule.py:70`
 
 ```
 # one Inst has one position, so the per-name anchors collapse to the guard they share
 ```
 
-## `Tensile/LoopModel/schedule.py:102`
+## `tensilelite/LoopModel/schedule.py:102`
 
 ```
 # The register depth map S -- the first decision everything downstream reads
 ```
 
-## `Tensile/LoopModel/schedule.py:108`
+## `tensilelite/LoopModel/schedule.py:108`
 
 ```
 # A DTV operand has no shared placement (`global->register` only), so the substep read-ahead
 ```
 
-## `Tensile/LoopModel/schedule.py:109`
+## `tensilelite/LoopModel/schedule.py:109`
 
 ```
 # this widens for does not exist and the off lookup is meaningless.
 ```
 
-## `Tensile/LoopModel/schedule.py:112`
+## `tensilelite/LoopModel/schedule.py:112`
 
 ```
 # the request is `off(read, substep)` — what PLR SET — not `prefetch_depth`, which returns
 ```
 
-## `Tensile/LoopModel/schedule.py:113`
+## `tensilelite/LoopModel/schedule.py:113`
 
 ```
 # `S_shared`, the LDS ring size (a different quantity; its own docstring says so).
 ```
 
-## `Tensile/LoopModel/schedule.py:117`
+## `tensilelite/LoopModel/schedule.py:117`
 
 ```
 # size for the requested depth — `PLR` is an input, `W` is derived.
 ```
 
-## `Tensile/LoopModel/schedule.py:133`
+## `tensilelite/LoopModel/schedule.py:133`
 
 ```
 # clamp, do NOT reject.
 ```
 
-## `Tensile/LoopModel/schedule.py:135`
+## `tensilelite/LoopModel/schedule.py:135`
 
 ```
 # `'floor'` is the old spelling of `'overlap'`, accepted, NOT rejected.
 ```
 
-## `Tensile/LoopModel/schedule.py:137`
+## `tensilelite/LoopModel/schedule.py:137`
 
 ```
 # `'pipeline'` = `max(L_pf, min(2, R))` — `L_pf` with a second floor of 2, and that floor
 ```
 
-## `Tensile/LoopModel/schedule.py:138`
+## `tensilelite/LoopModel/schedule.py:138`
 
 ```
 # is.
 ```
 
-## `Tensile/LoopModel/schedule.py:140`
+## `tensilelite/LoopModel/schedule.py:140`
 
 ```
 # the width must satisfy the assignment constraint too, not just the capacity peaks.
 ```
 
-## `Tensile/LoopModel/schedule.py:153`
+## `tensilelite/LoopModel/schedule.py:153`
 
 ```
 # reduction — no mainloop rotating ring its footprint is the separate
 ```
 
-## `Tensile/LoopModel/schedule.py:154`
+## `tensilelite/LoopModel/schedule.py:154`
 
 ```
 # accumulator term not a multibuffer depth entry.
 ```
 
-## `Tensile/LoopModel/sigma_c.py._movement`
+## `tensilelite/LoopModel/sigma_c.py._movement`
 
 ```
 The movement `Inst` node `n` denotes, looking through a rolled region loop and through a
@@ -7866,7 +7866,7 @@ The movement `Inst` node `n` denotes, looking through a rolled region loop and t
     
 ```
 
-## `Tensile/LoopModel/sigma_c.py._rebuilt`
+## `tensilelite/LoopModel/sigma_c.py._rebuilt`
 
 ```
 `n` with σ_c applied to each of its sub-bodies (the freeze holds at every level, not just
@@ -7875,31 +7875,31 @@ The movement `Inst` node `n` denotes, looking through a rolled region loop and t
     
 ```
 
-## `Tensile/LoopModel/sigma_c.py:1`
+## `tensilelite/LoopModel/sigma_c.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/sigma_c.py:56`
+## `tensilelite/LoopModel/sigma_c.py:56`
 
 ```
 # an anchored read is deferred too, whatever its WAR class.
 ```
 
-## `Tensile/LoopModel/sigma_c.py:65`
+## `tensilelite/LoopModel/sigma_c.py:65`
 
 ```
 # A copy whose chunk this trip's read-ahead crosses into (`off == r`, is a RAW producer for
 ```
 
-## `Tensile/LoopModel/sigma_c.py:66`
+## `tensilelite/LoopModel/sigma_c.py:66`
 
 ```
 # those reads and must lead them — never deferred.
 ```
 
-## `Tensile/LoopModel/theta.py.Resort`
+## `tensilelite/LoopModel/theta.py.Resort`
 
 ```
 One `resort(mode → agent)` move 2): a looped mode traversed by the agents instead of by
@@ -7907,7 +7907,7 @@ One `resort(mode → agent)` move 2): a looped mode traversed by the agents inst
     
 ```
 
-## `Tensile/LoopModel/theta.py.is_outer`
+## `tensilelite/LoopModel/theta.py.is_outer`
 
 ```
 True iff this is an outer (dynamic / runtime-trip) pipelined level — the peel and
@@ -7915,7 +7915,7 @@ True iff this is an outer (dynamic / runtime-trip) pipelined level — the peel 
         
 ```
 
-## `Tensile/LoopModel/theta.py.groups`
+## `tensilelite/LoopModel/theta.py.groups`
 
 ```
 The reuse-group labels (the group is identified by its label; its slot count is
@@ -7923,7 +7923,7 @@ The reuse-group labels (the group is identified by its label; its slot count is
         
 ```
 
-## `Tensile/LoopModel/theta.py.policy_of`
+## `tensilelite/LoopModel/theta.py.policy_of`
 
 ```
 This group's W-in-[L,R] choice: an explicit int, 'unroll' (W=R), 'overlap' (W=L_pf),
@@ -7931,7 +7931,7 @@ This group's W-in-[L,R] choice: an explicit int, 'unroll' (W=R), 'overlap' (W=L_
         
 ```
 
-## `Tensile/LoopModel/theta.py.opclass`
+## `tensilelite/LoopModel/theta.py.opclass`
 
 ```
 The op-class this entry belongs to, from `origin` — meaningful for a copy entry,
@@ -7939,7 +7939,7 @@ The op-class this entry belongs to, from `origin` — meaningful for a copy entr
         
 ```
 
-## `Tensile/LoopModel/theta.py.copy_agents`
+## `tensilelite/LoopModel/theta.py.copy_agents`
 
 ```
 How many agents cooperate on `opname`'s global→shared copy — the Φ group's wave
@@ -7947,7 +7947,7 @@ How many agents cooperate on `opname`'s global→shared copy — the Φ group's 
         
 ```
 
-## `Tensile/LoopModel/theta.py.served_modes`
+## `tensilelite/LoopModel/theta.py.served_modes`
 
 ```
 The modes the agents traverse instead of the coordinate — move 2's domain, as the
@@ -7955,7 +7955,7 @@ The modes the agents traverse instead of the coordinate — move 2's domain, as 
         
 ```
 
-## `Tensile/LoopModel/theta.py.span_over`
+## `tensilelite/LoopModel/theta.py.span_over`
 
 ```
 The `level`-level agent span of whichever resorted mode lies in `modes` — ρ as the
@@ -7963,7 +7963,7 @@ The `level`-level agent span of whichever resorted mode lies in `modes` — ρ a
         
 ```
 
-## `Tensile/LoopModel/theta.py.movement_units`
+## `tensilelite/LoopModel/theta.py.movement_units`
 
 ```
 The copy movements this θ emits, as `[(unit_key, members, n_regions)]` — the ONE
@@ -7972,7 +7972,7 @@ The copy movements this θ emits, as `[(unit_key, members, n_regions)]` — the 
         
 ```
 
-## `Tensile/LoopModel/theta.py.levels`
+## `tensilelite/LoopModel/theta.py.levels`
 
 ```
 The full level permutation, outer→inner `levels = [iter] + [substep, m, n, …]`) —
@@ -7980,7 +7980,7 @@ The full level permutation, outer→inner `levels = [iter] + [substep, m, n, …
         
 ```
 
-## `Tensile/LoopModel/theta.py.outer_modes`
+## `tensilelite/LoopModel/theta.py.outer_modes`
 
 ```
 The outer pipelined levels (a problem-dimension trip, `Mode.is_outer`), in ord order
@@ -7988,7 +7988,7 @@ The outer pipelined levels (a problem-dimension trip, `Mode.is_outer`), in ord o
         
 ```
 
-## `Tensile/LoopModel/theta.py.reduction_chunk_mode`
+## `tensilelite/LoopModel/theta.py.reduction_chunk_mode`
 
 ```
 The outer level the reduction chunk advances on — the innermost outer level, since
@@ -7997,7 +7997,7 @@ The outer level the reduction chunk advances on — the innermost outer level, s
         
 ```
 
-## `Tensile/LoopModel/theta.py.inner_modes`
+## `tensilelite/LoopModel/theta.py.inner_modes`
 
 ```
 The intra-reduction chunk modes only (the inner K substep + the M/N fan), in ord
@@ -8005,7 +8005,7 @@ The intra-reduction chunk modes only (the inner K substep + the M/N fan), in ord
         
 ```
 
-## `Tensile/LoopModel/theta.py.off_at`
+## `tensilelite/LoopModel/theta.py.off_at`
 
 ```
 The retime offset `off(op-class, level)` `off: (op-class × level) → ℤ`, a first-class
@@ -8013,7 +8013,7 @@ The retime offset `off(op-class, level)` `off: (op-class × level) → ℤ`, a f
         
 ```
 
-## `Tensile/LoopModel/theta.py.off_of`
+## `tensilelite/LoopModel/theta.py.off_of`
 
 ```
 `off_at` for the op-class this `hop` of `op` defines — the form to use when the
@@ -8022,7 +8022,7 @@ The retime offset `off(op-class, level)` `off: (op-class × level) → ℤ`, a f
         
 ```
 
-## `Tensile/LoopModel/theta.py.presence_modes`
+## `tensilelite/LoopModel/theta.py.presence_modes`
 
 ```
 The inner Modes an op-class varies over (its presence set, = the inner modes minus
@@ -8030,7 +8030,7 @@ The inner Modes an op-class varies over (its presence set, = the inner modes min
         
 ```
 
-## `Tensile/LoopModel/theta.py.agent_served_modes`
+## `tensilelite/LoopModel/theta.py.agent_served_modes`
 
 ```
 The third kind of inner axis: traversed by the agents, not by the coordinate move 2
@@ -8038,7 +8038,7 @@ The third kind of inner axis: traversed by the agents, not by the coordinate mov
         
 ```
 
-## `Tensile/LoopModel/theta.py.reduction_modes`
+## `tensilelite/LoopModel/theta.py.reduction_modes`
 
 ```
 `reduction_modes = inner modes minus pres(output)` line 82, paper-confirmed Q18): the
@@ -8047,181 +8047,181 @@ The third kind of inner axis: traversed by the agents, not by the coordinate mov
         
 ```
 
-## `Tensile/LoopModel/theta.py:1`
+## `tensilelite/LoopModel/theta.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/theta.py:16`
+## `tensilelite/LoopModel/theta.py:16`
 
 ```
 # tile — modes and the register-axis rate-group partition
 ```
 
-## `Tensile/LoopModel/theta.py:42`
+## `tensilelite/LoopModel/theta.py:42`
 
 ```
 # `parts` as an int N = split into N equal single-slot groups (the normal param form).
 ```
 
-## `Tensile/LoopModel/theta.py:81`
+## `tensilelite/LoopModel/theta.py:81`
 
 ```
 # vocabulary (§2.4 `off : (op-class × level) → ℤ`).  (ADR 0007 #97)
 ```
 
-## `Tensile/LoopModel/theta.py:83`
+## `tensilelite/LoopModel/theta.py:83`
 
 ```
 # hop (src, dst) -> op-class role.
 ```
 
-## `Tensile/LoopModel/theta.py:95`
+## `tensilelite/LoopModel/theta.py:95`
 
 ```
 # per OP-CLASS, and NOT the same thing as the hop role (#212 axis 3).  (ADR 0007 #96)
 ```
 
-## `Tensile/LoopModel/theta.py:97`
+## `tensilelite/LoopModel/theta.py:97`
 
 ```
 # how far along the memory hierarchy a space sits; a hop that decreases rank runs toward compute.
 ```
 
-## `Tensile/LoopModel/theta.py:122`
+## `tensilelite/LoopModel/theta.py:122`
 
 ```
 # 's carrier group, in the paper's own vocabulary: "a carrier group is exactly a `Φ` fuse.
 ```
 
-## `Tensile/LoopModel/theta.py:125`
+## `tensilelite/LoopModel/theta.py:125`
 
 ```
 # : is this hop'S storage region A property of the agent rather than of the coordinate?
 ```
 
-## `Tensile/LoopModel/theta.py:160`
+## `tensilelite/LoopModel/theta.py:160`
 
 ```
 # : (`copy_agents` was here.
 ```
 
-## `Tensile/LoopModel/theta.py:162`
+## `tensilelite/LoopModel/theta.py:162`
 
 ```
 # : How many storage-disjoint sibling regions this operand's free axis is cut into (1 = uncut).
 ```
 
-## `Tensile/LoopModel/theta.py:164`
+## `tensilelite/LoopModel/theta.py:164`
 
 ```
 # : How many of the operand's free regions **one agent** spans /.
 ```
 
-## `Tensile/LoopModel/theta.py:190`
+## `tensilelite/LoopModel/theta.py:190`
 
 ```
 # ρ — agent assignment + role partition moves 2 & 8, line 244)
 ```
 
-## `Tensile/LoopModel/theta.py:193`
+## `tensilelite/LoopModel/theta.py:193`
 
 ```
 # : The agent hierarchy, ordered coarse -> fine.
 ```
 
-## `Tensile/LoopModel/theta.py:200`
+## `tensilelite/LoopModel/theta.py:200`
 
 ```
 # : A resort entry's hop role.
 ```
 
-## `Tensile/LoopModel/theta.py:286`
+## `tensilelite/LoopModel/theta.py:286`
 
 ```
 # including the outer reduction level `iter` (extent==0) and any
 ```
 
-## `Tensile/LoopModel/theta.py:287`
+## `tensilelite/LoopModel/theta.py:287`
 
 ```
 # persistent level (also extent==0).
 ```
 
-## `Tensile/LoopModel/theta.py:293`
+## `tensilelite/LoopModel/theta.py:293`
 
 ```
 # ρ move 2 `resort` + move 8 `specialize`; line 244 "agent assignment + role.
 ```
 
-## `Tensile/LoopModel/theta.py:295`
+## `tensilelite/LoopModel/theta.py:295`
 
 ```
 # How many agents cooperate on one tile.
 ```
 
-## `Tensile/LoopModel/theta.py:297`
+## `tensilelite/LoopModel/theta.py:297`
 
 ```
 # off: {(op_name, role, level_name): δ} —'s retime matrix over (op-class × level), where the
 ```
 
-## `Tensile/LoopModel/theta.py:298`
+## `tensilelite/LoopModel/theta.py:298`
 
 ```
 # op-class is (operand, hop role) and `role` is one of theta.copy/read/store.
 ```
 
-## `Tensile/LoopModel/theta.py:300`
+## `tensilelite/LoopModel/theta.py:300`
 
 ```
 # π move 7, "discharge policy — which class names each obligation"): the completion.
 ```
 
-## `Tensile/LoopModel/theta.py:302`
+## `tensilelite/LoopModel/theta.py:302`
 
 ```
 # (no `reduction_modes` field: the contraction axes are derived by `reduction_names()` from the
 ```
 
-## `Tensile/LoopModel/theta.py:303`
+## `tensilelite/LoopModel/theta.py:303`
 
 ```
 # accumulator's presence, line 82.
 ```
 
-## `Tensile/LoopModel/theta.py:392`
+## `tensilelite/LoopModel/theta.py:392`
 
 ```
 # `Mode` is canonical here; the `*_names()` variants below are for the call sites that
 ```
 
-## `Tensile/LoopModel/theta.py:393`
+## `tensilelite/LoopModel/theta.py:393`
 
 ```
 # want strings (set algebra, and the GIR name lists).  (ADR 0007 #91)
 ```
 
-## `Tensile/LoopModel/theta.py:424`
+## `tensilelite/LoopModel/theta.py:424`
 
 ```
 # an agent-served axis is NOT A reduction.
 ```
 
-## `Tensile/LoopModel/theta.py:447`
+## `tensilelite/LoopModel/theta.py:447`
 
 ```
 # (mode_roles() removed: the core no longer labels modes m/n/k — index-agnostic.
 ```
 
-## `Tensile/LoopModel/theta.py:493`
+## `tensilelite/LoopModel/theta.py:493`
 
 ```
 # a named region with no row of its own falls back to the whole-tile placement
 ```
 
-## `Tensile/LoopModel/validate.py._placement_exprs`
+## `tensilelite/LoopModel/validate.py._placement_exprs`
 
 ```
 Every symbolic `Expr` an `Inst`'s placement carries: each register-group rotation slot,
@@ -8230,7 +8230,7 @@ Every symbolic `Expr` an `Inst`'s placement carries: each register-group rotatio
     
 ```
 
-## `Tensile/LoopModel/validate.py._unbound_placement_refs`
+## `tensilelite/LoopModel/validate.py._unbound_placement_refs`
 
 ```
 Every (Inst, mode) where the Inst's placement references a mode no enclosing binder
@@ -8238,7 +8238,7 @@ Every (Inst, mode) where the Inst's placement references a mode no enclosing bin
     
 ```
 
-## `Tensile/LoopModel/validate.py.validate_loopir`
+## `tensilelite/LoopModel/validate.py.validate_loopir`
 
 ```
 Return a list of structural-defect strings for the rolled IR `ir` (empty = valid GEMM
@@ -8246,7 +8246,7 @@ Return a list of structural-defect strings for the rolled IR `ir` (empty = valid
     
 ```
 
-## `Tensile/LoopModel/validate.py._end`
+## `tensilelite/LoopModel/validate.py._end`
 
 ```
 `op@at[:role][ coord]` — the Endpoint's fields, read as fields (they were a
@@ -8254,121 +8254,121 @@ Return a list of structural-defect strings for the rolled IR `ir` (empty = valid
             
 ```
 
-## `Tensile/LoopModel/validate.py:1`
+## `tensilelite/LoopModel/validate.py:1`
 
 ```
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 ```
 
-## `Tensile/LoopModel/validate.py:20`
+## `tensilelite/LoopModel/validate.py:20`
 
 ```
 # the runtime trip count is a problem dimension not a mode any binder introduces.
 ```
 
-## `Tensile/LoopModel/validate.py:108`
+## `tensilelite/LoopModel/validate.py:108`
 
 ```
 # strict `T > M`.
 ```
 
-## `Tensile/LoopModel/validate.py:125`
+## `tensilelite/LoopModel/validate.py:125`
 
 ```
 # M==0 degenerate: a bare steady loop is only valid when there is genuinely no peel — a
 ```
 
-## `Tensile/LoopModel/validate.py:126`
+## `tensilelite/LoopModel/validate.py:126`
 
 ```
 # prologue/drain sitting at top level (outside a guard) is defect P1 (must be Cond-
 ```
 
-## `Tensile/LoopModel/validate.py:134`
+## `tensilelite/LoopModel/validate.py:134`
 
 ```
 # every Inst must be reachable through the root Cond (or the bare steady loop); a top-level
 ```
 
-## `Tensile/LoopModel/validate.py:135`
+## `tensilelite/LoopModel/validate.py:135`
 
 ```
 # Inst sibling would run unconditionally before the guard.
 ```
 
-## `Tensile/LoopModel/validate.py:153`
+## `tensilelite/LoopModel/validate.py:153`
 
 ```
 # no Cond that pins an iter residue (iter%d == r) — the old inplace artifact
 ```
 
-## `Tensile/LoopModel/validate.py:163`
+## `tensilelite/LoopModel/validate.py:163`
 
 ```
 # P3 (the real assertion) + P5 (its concrete-slot half): no placement may reference a mode that
 ```
 
-## `Tensile/LoopModel/validate.py:164`
+## `tensilelite/LoopModel/validate.py:164`
 
 ```
 # no enclosing Loop/Bind/Branch binds.
 ```
 
-## `Tensile/LoopModel/validate.py:194`
+## `tensilelite/LoopModel/validate.py:194`
 
 ```
 # every sub-body must satisfy σ_c independently — a multi-body steady loop has one trip per
 ```
 
-## `Tensile/LoopModel/validate.py:195`
+## `tensilelite/LoopModel/validate.py:195`
 
 ```
 # body, so checking only `bodies[0]` would leave the rest unchecked.
 ```
 
-## `Tensile/LoopModel/validate.py:197`
+## `tensilelite/LoopModel/validate.py:197`
 
 ```
 # the refill copies are the σ_c-ordered tail: the last top-level nodes of the body that
 ```
 
-## `Tensile/LoopModel/validate.py:198`
+## `tensilelite/LoopModel/validate.py:198`
 
 ```
 # are shared-dest Loads (copies).
 ```
 
-## `Tensile/LoopModel/validate.py:200`
+## `tensilelite/LoopModel/validate.py:200`
 
 ```
 # only an `S=δ` refill is required to be last point 4 is scoped to "an S=delta
 ```
 
-## `Tensile/LoopModel/validate.py:201`
+## `tensilelite/LoopModel/validate.py:201`
 
 ```
 # refill copy"); a rotation-WAR copy is emitted first so this trip's chunk-crossing
 ```
 
-## `Tensile/LoopModel/validate.py:210`
+## `tensilelite/LoopModel/validate.py:210`
 
 ```
 # a read/wmma nest after a refill copy breaks σ_c (refill must be last)
 ```
 
-## `Tensile/LoopModel/validate.py:245`
+## `tensilelite/LoopModel/validate.py:245`
 
 ```
 # name the obligations, not just the count.
 ```
 
-## `Tensile/LoopModel/validate.py:276`
+## `tensilelite/LoopModel/validate.py:276`
 
 ```
 # The `els` arm runs when T < M, so the short trip [0,T) is STRICTLY shorter than its M peeled
 ```
 
-## `Tensile/LoopModel/validate.py:277`
+## `tensilelite/LoopModel/validate.py:277`
 
 ```
 # steps and T is runtime.  (ADR 0007 #98)

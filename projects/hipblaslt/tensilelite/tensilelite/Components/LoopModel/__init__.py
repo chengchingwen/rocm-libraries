@@ -4,7 +4,7 @@
 
 `KernelWriter` and `KernelWriterAssembly` keep only the seams; the bodies behind them are free
 functions here, taking the writer -- the shape `Components/Subtile` uses.  Living outside those
-modules is also what makes every `Tensile/LoopModel` and `Tensile/Lowering` import a plain
+modules is also what makes every `tensilelite/LoopModel` and `tensilelite/Lowering` import a plain
 module-level one.
 
 `Order` calculates the loop axes, `Theta` holds the cached schedule, `Registers` the Valu rings,
