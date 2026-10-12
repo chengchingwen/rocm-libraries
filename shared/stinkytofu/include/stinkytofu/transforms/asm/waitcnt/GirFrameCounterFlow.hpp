@@ -24,6 +24,12 @@ WaitInsertionPlan buildGirFrameWaitPlan(
     const std::function<bool(const BasicBlock&)>& covers,
     const std::function<bool(const StinkyInstruction&)>& alsoFences = {});
 
+/// Remove existing dscnt-only waits that cannot tighten the counter once `plan` is applied. The
+/// plan is still virtual: this reconciles generic DS waits with GIR waits before the latter are
+/// emitted, without weakening either producer's required drains.
+void removeObservedDsWaitsRedundantWithPlan(Function& function, const WaitInsertionPlan& plan,
+                                            const std::function<bool(const BasicBlock&)>& covers);
+
 /// Same-counter issues standing at or after `producerIndex` once control reaches `anchorIndex` in
 /// `anchorNode`, `span` frame-graph steps on; the producer itself counts as 1, so the wait that
 /// retires it is `n - 1`.  -1 when no path arrives with it outstanding.
