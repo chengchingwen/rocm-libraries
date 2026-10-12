@@ -68,6 +68,7 @@ DEFAULTS = {
     "PrefetchLocalReadA": -1, "PrefetchLocalReadB": -1,
     "ClusterLocalRead": 0, "ClusterLocalReadA": -1, "ClusterLocalReadB": -1,
     "VgprGroupA": -1, "VgprGroupB": -1, "VgprAllocA": -1, "VgprAllocB": -1,
+    "VgprAllocExplicitA": False, "VgprAllocExplicitB": False,
     "LDSBufferA": -1, "LDSBufferB": -1,
     "LDSBufferMXSA": -1, "LDSBufferMXSB": -1,
     "ReadVectorElems": {},
@@ -582,10 +583,11 @@ def _set_register_depths(theta, kernel):
         if side is None:
             continue
         value("PrefetchLocalRead", side)
-        value("ClusterLocalRead", side)
+        clr = value("ClusterLocalRead", side)
         vg = value("VgprGroup", side)
         depth = value("VgprAlloc", side)
-        if int(getattr(operand.fragment, "agent_group_size", 0) or 0) > 0:
+        if (clr and not bool(kernel.get("VgprAllocExplicit" + side, False))) \
+                or int(getattr(operand.fragment, "agent_group_size", 0) or 0) > 0:
             depth = min(depth, geometry._ring_period(theta, operand))
         operand.fragment.vgpr_group = vg
         unit = geometry.prefetch_unit_tiles(theta, operand)
@@ -721,6 +723,8 @@ def _shape_params(elem_bytes, kernel, mi, wt0, wt1):
         "VgprGroupB": kernel.get("VgprGroupB", -1),
         "VgprAllocA": kernel.get("VgprAllocA", -1),
         "VgprAllocB": kernel.get("VgprAllocB", -1),
+        "VgprAllocExplicitA": bool(kernel.get("VgprAllocExplicitA", False)),
+        "VgprAllocExplicitB": bool(kernel.get("VgprAllocExplicitB", False)),
         "ClusterLocalReadB": kernel.get("ClusterLocalReadB", -1),
         # The BITMASK and its two bits: HalfPLR=1 is A alone, so the pair is what theta reads.
         "HalfPLR": kernel.get("HalfPLR", 0),

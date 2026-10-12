@@ -1849,10 +1849,16 @@ class _Decoder:
         reads = []
         resident = {}
         previous_output = {}
+        wrap_edges = set()
+        hard_edges = set()
 
-        def add_edge(source, target):
+        def add_edge(source, target, *, wrap=False):
             if source != target:
                 edges[source].add(target)
+                if wrap:
+                    wrap_edges.add((source, target))
+                else:
+                    hard_edges.add((source, target))
 
         for index, operation in enumerate(operations):
             if isinstance(operation, Compute):
@@ -1920,7 +1926,7 @@ class _Decoder:
                     _previous_ordinal, previous = max(
                         lower or candidates, key=lambda item: item[0])
                     for user in users[key].get(previous, ()):
-                        add_edge(user, read_index)
+                        add_edge(user, read_index, wrap=not lower)
 
         for key_reads in reads_by_key.values():
             for (left, _left_value), (right, _right_value) in zip(
@@ -1945,6 +1951,27 @@ class _Decoder:
                 if indegree[target] == 0:
                     priority = 0 if isinstance(operations[target], Movement) else 1
                     heapq.heappush(ready, (priority, target))
+        if len(ordered) != len(operations) and wrap_edges:
+            for source, target in wrap_edges - hard_edges:
+                edges[source].discard(target)
+            indegree = [0] * len(operations)
+            for source in range(len(operations)):
+                for target in edges[source]:
+                    indegree[target] += 1
+            ready = []
+            for index, degree in enumerate(indegree):
+                if degree == 0:
+                    priority = 0 if isinstance(operations[index], Movement) else 1
+                    heapq.heappush(ready, (priority, index))
+            ordered = []
+            while ready:
+                _priority, index = heapq.heappop(ready)
+                ordered.append(index)
+                for target in sorted(edges[index]):
+                    indegree[target] -= 1
+                    if indegree[target] == 0:
+                        priority = 0 if isinstance(operations[target], Movement) else 1
+                        heapq.heappush(ready, (priority, target))
         if len(ordered) != len(operations):
             ordered = list(range(len(units)))
             changed = False

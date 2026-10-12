@@ -211,6 +211,50 @@ def test_folded_mxsb_refill_follows_its_last_broadcast_consumer(
     assert check_plan(build_gir(theta)) == []
 
 
+@pytest.mark.parametrize(
+    "order,split_a,split_b,side",
+    (
+        ("KMN", 1, 0, "A"),
+        ("KMN", 0, 1, "B"),
+        ("MKN", 2, 0, "A"),
+        ("MKN", 0, 1, "B"),
+    ),
+)
+def test_clustered_split_region_keeps_the_original_physical_unit(
+    order, split_a, split_b, side
+):
+    """A region becomes a ring digit; the next enumerator replaces it inside the CLR unit."""
+    from Tensile.LoopModel import traversal as geometry
+    from Tensile.LoopModel.schedule import BufferDepths
+
+    k = _kernel(_mxf8(32), _mi("fp8", (2, 2), (2, 2)),
+                1, 0, order, split_a, split_b, 2)
+    k.update(ClusterLocalRead=1, ClusterLocalReadA=1, ClusterLocalReadB=1,
+             SuppressNoLoadLoop=True)
+    params = kernel_to_params(k)
+    theta = adapter.params_to_theta(params)
+    operand = theta.op(side)
+    depths = BufferDepths(theta, include_shared=False)
+
+    assert params["VgprAlloc" + side] == 2
+    assert geometry.group_original_prefetch_unit_positions(theta, operand) == 2
+    assert geometry.group_register_positions(theta, operand) == 2
+    assert geometry.group_ring_depth(theta, operand, "g0", depths) == 2
+    assert check_plan(build_gir(theta)) == []
+
+
+def test_verifier_rejects_a_clustered_region_that_shrinks_the_physical_unit():
+    k = _kernel(_mxf8(32), _mi("fp8", (2, 2), (2, 2)),
+                1, 0, "KMN", 0, 1, 2)
+    k.update(ClusterLocalRead=1, ClusterLocalReadA=1, ClusterLocalReadB=1,
+             SuppressNoLoadLoop=True)
+    program = build_gir(adapter.params_to_theta(kernel_to_params(k)))
+    program.meta["register_unit_positions"]["B"] = 1
+
+    assert any("CLUSTERED-REGION-SHRINKS-UNIT" in finding
+               for finding in check_plan(program))
+
+
 def test_pgr3_decode_is_structurally_supported():
     """The decoder itself carries PGR3; Solution policy may still reject a concrete kernel."""
     k = {**_BASE, "PrefetchGlobalRead": 3, "NumLdsBlk": 3}
