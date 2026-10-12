@@ -57,7 +57,6 @@ from .loopir import (
 from .loopir.functional import (
     _append_region,
     _defer_loops,
-    _defer_paths,
     _drop_drain,
     _hoist_region,
     _repeat_steady,
@@ -70,7 +69,6 @@ from .schedule import (
     Schedule,
     _read_placement,
     _readahead_shift,
-    _splits_refill,
     build_S,
     copy_first_operands,
     loads_in_place,
@@ -481,13 +479,10 @@ class _Decoder:
         self.depths, _ = build_S(theta)
         self.schedule = Schedule(theta, self.depths)
         self._needs_refill_schedule = any(
-            _splits_refill(theta, operand, group, self.depths)
+            self.schedule.want(operand) > 0
             for operand in theta.operands
             if operand.trajectory.fragment_fill is not None
-            and operand.trajectory.fragment_fill.coverage is None
             and not operand.is_output
-            and self.schedule.want(operand) > 0
-            for group in operand.fragment.groups()
         )
         requested_steps = self.schedule.read_ahead_steps
         self._register_inplace = {
@@ -1224,17 +1219,6 @@ class _Decoder:
             and int(self.schedule.want(descriptor) or 0) > 0
         )
 
-    def _operation_needs_defer(self, operation):
-        if not self._operation_runs_ahead(operation):
-            return False
-        descriptor = self.operation_operand[operation._identity]
-        groups = self.operation_groups.get(operation._identity)
-        selected = tuple(groups or descriptor.fragment.groups())
-        return any(
-            (descriptor.name, group) in self._register_inplace
-            for group in selected
-        )
-
     def _read_retiming(self, operation):
         identity = operation._identity
         cached = self._read_retiming_cache.get(identity)
@@ -1858,12 +1842,6 @@ class _Decoder:
         unpacked = tuple(operation_of(unit) for unit in units)
         operations = tuple(item[0] for item in unpacked)
         environments = tuple(item[1] for item in unpacked)
-        for operation in operations:
-            if isinstance(operation, Movement) and operation.op is DS_LOAD:
-                descriptor = self.operation_operand.get(operation._identity)
-                hop = descriptor.trajectory.shared_read if descriptor is not None else None
-                if hop is not None and hop.coverage is not None:
-                    return units
 
         edges = [set() for _operation in operations]
         users = defaultdict(lambda: defaultdict(list))
@@ -1914,6 +1892,15 @@ class _Decoder:
                     resident[key] = value
                 reads.append((index, tuple(definitions)))
 
+        if not any(
+            min(positions) < read_index < max(positions)
+            for read_index, definitions in reads
+            for key, _value, _ordinal, _old_value in definitions
+            for positions in users[key].values()
+            if positions
+        ):
+            return None
+
         reads_by_key = defaultdict(list)
         for read_index, definitions in reads:
             for key, value, ordinal, old_value in definitions:
@@ -1959,16 +1946,45 @@ class _Decoder:
                     priority = 0 if isinstance(operations[target], Movement) else 1
                     heapq.heappush(ready, (priority, target))
         if len(ordered) != len(operations):
-            blocked = [index for index, degree in enumerate(indegree) if degree]
-            raise RuntimeError(
-                "LoopModel refill scheduling is cyclic under loop order %s; "
-                "blocked occurrences %s"
-                % (
-                    ",".join(axis.name for axis in self.theta.inner_axes()),
-                    blocked[:8],
-                )
+            ordered = list(range(len(units)))
+            changed = False
+            while True:
+                positions = {
+                    operation_index: position
+                    for position, operation_index in enumerate(ordered)
+                }
+                deferred = False
+                for read_index, definitions in reads:
+                    read_position = positions[read_index]
+                    last_use = max(
+                        (
+                            max(positions[user] for user in value_users)
+                            for key, _value, _ordinal, _old_value in definitions
+                            for value_users in users[key].values()
+                            if value_users
+                            and min(positions[user] for user in value_users)
+                            < read_position
+                            < max(positions[user] for user in value_users)
+                        ),
+                        default=read_position,
+                    )
+                    if last_use <= read_position:
+                        continue
+                    ordered.pop(read_position)
+                    ordered.insert(last_use, read_index)
+                    changed = deferred = True
+                    break
+                if not deferred:
+                    break
+            return (
+                tuple(units[index] for index in ordered)
+                if changed else None
             )
-        return tuple(units[index] for index in ordered)
+        return (
+            None
+            if ordered == list(range(len(units)))
+            else tuple(units[index] for index in ordered)
+        )
 
     def build(self, *, verify=True):
         if not isinstance(verify, bool):
@@ -2055,18 +2071,6 @@ class _Decoder:
             ),
             key=self._prefetch_order_key,
         )
-        in_place_reads = tuple(
-            operation for operation in operations(program)
-            if isinstance(operation, Movement)
-            and operation.op is DS_LOAD
-            and self._operation_needs_defer(operation)
-        )
-        if not self._needs_refill_schedule:
-            program = _defer_paths(
-                program,
-                regions=(STEADY, DRAIN),
-                operations=in_place_reads,
-            )
         program = _defer_loops(
             program,
             regions=STEADY,
@@ -2101,7 +2105,7 @@ class _Decoder:
         if self._needs_refill_schedule:
             program = _schedule_runs(
                 program,
-                regions=(STEADY, DRAIN, SHORT),
+                regions=(STEADY, DRAIN),
                 selector=lambda operation: (
                     isinstance(operation, Compute)
                     or (

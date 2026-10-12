@@ -18,20 +18,6 @@ from .traversal import (CLOBBER, axis_strides,
                         reloads_whole_set, requested_read_ahead, ring_slot,
                         transfer_extents)
 
-def _splits_refill(theta, operand, group, depths) -> bool:
-    """Whether an invariant finite loop can split this short ring's refill."""
-    buffers = geometry.group_ring_depth(theta, operand, group, depths)
-    if buffers >= group_reuse_floor(
-            theta, operand, group, charge_lead=False, lead=0):
-        return False
-    level = geometry.operand_level(theta, operand, geometry.DS_LOAD)
-    order = list(theta.inner_axes())
-    at = next((i for i, axis in enumerate(order) if axis.name == level), len(order))
-    varying = set(geometry.varying_axes(theta, operand))
-    return any(axis.name not in varying and int(axis.extent.constant_value) > 1
-               for axis in order[:at])
-
-
 def _placeable_read_ahead(theta, operand, depths) -> int:
     """The requested lead; physical occupancy controls placement, not realization."""
     return requested_read_ahead(theta, operand, depths)
