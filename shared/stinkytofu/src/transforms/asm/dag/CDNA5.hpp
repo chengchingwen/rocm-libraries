@@ -882,14 +882,18 @@ class CDNA5ReadyQueue : public ReadyQueue {
     // the DAG and the pass agree.
     std::unique_ptr<WaitAluTracker> waitAlu_;
     // GIR inserts synchronization after scheduling, so its DS candidates have no physical
-    // barrier window to hold against. Defer a wait-producing DS candidate to the ordinary
-    // fallback; no edge or fixed placement is introduced.
+    // barrier window to hold against. Defer only a strict wait-producing DS candidate to the
+    // ordinary fallback; weak waits must remain schedulable so in-place refills can overlap
+    // later WMMAs. No edge or fixed placement is introduced.
     bool girDsWouldWaitAlu(const DAGNode* node) const {
         if (node == nullptr || !waitAlu_ ||
             !getPassContext().getPassFeatureConfig().dagFeatures.girFramePipeline)
             return false;
         const WaitAluNeed need = waitAlu_->query(*node->inst);
-        const bool wouldWait = need.vaVdst >= 0 || need.vmVsrc >= 0;
+        const int strict =
+            getPassContext().getPassFeatureConfig().dagFeatures.waitAluHoldStrictCount;
+        const bool wouldWait = (need.vaVdst >= 0 && need.vaVdst <= strict) ||
+                               (need.vmVsrc >= 0 && need.vmVsrc <= strict);
         PASS_DEBUG(if (wouldWait) std::cerr << "[CDNA5 GIR DS wait-alu] hold dagId=" << node->id
                                             << " va_vdst=" << need.vaVdst
                                             << " vm_vsrc=" << need.vmVsrc << "\n");
@@ -2396,14 +2400,18 @@ DAGNode* CDNA5ReadyQueue::pickOne() {
     // Pre-compute the best DS read by dsReadPriority once for all phases.
     // A load the spread gate holds does not stand in for the ones it releases: its stage may
     // open later than another's.
-    // GIR may defer this candidate when issuing it would require wait_alu, but must not leapfrog
-    // to a later read: changing FIFO issue order changes the dscnt ranks derived after scheduling.
+    // GIR may defer a candidate when issuing it would require wait_alu, but that must not block
+    // every later, independent DS read: GIR waitcnt ranks are derived from the final issue order
+    // after scheduling, so a ready candidate may safely leapfrog a held one.
+    DAGNode* fallbackDS = nullptr;
     DAGNode* pickedDS = nullptr;
     const bool spreadOn = dsSpreadOn();
-    for (int pass = 0; pass < 2 && !pickedDS; ++pass) {
+    for (int pass = 0; pass < 2 && !fallbackDS; ++pass) {
         for (DAGNode* n : localReadQueue) {
             if (pass == 0 && spreadOn && !dsSpread_.released(n->id, wmmaIssuedCountThisRegion_))
                 continue;
+            if (!fallbackDS || n->dsReadPriority < fallbackDS->dsReadPriority) fallbackDS = n;
+            if (girDsWouldWaitAlu(n)) continue;
             if (!pickedDS || n->dsReadPriority < pickedDS->dsReadPriority) pickedDS = n;
         }
     }
@@ -2544,7 +2552,7 @@ DAGNode* CDNA5ReadyQueue::pickOne() {
         DAGNode* fallback = nullptr;
         int fallbackKind = -1;
         int fallbackWait = 0;
-        if (!findOldestFallbackNonWmma(pickedDS, &fallback, &fallbackKind, &fallbackWait))
+        if (!findOldestFallbackNonWmma(fallbackDS, &fallback, &fallbackKind, &fallbackWait))
             return nullptr;
         // RAW/hazard and global credit-drain waits are real elapsed time.
         int realWait = fallbackWait;
