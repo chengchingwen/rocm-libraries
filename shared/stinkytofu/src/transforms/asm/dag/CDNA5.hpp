@@ -1530,6 +1530,9 @@ DAGNode* CDNA5ReadyQueue::pickFreeBest(const ReadySetByDAGid& queue, int* outWai
 // Find the WMMA in wmmaQueue with the smallest max data-ready latency (most
 // ready). Returns the node and its latency. Ties broken by DAG id (program
 // order).
+//
+// Under ModuleOptions::LockWmmaOrder the chain onInitRegion requests leaves at most
+// one WMMA ready, so this returns that one whatever the latency ranking says.
 std::pair<DAGNode*, int> CDNA5ReadyQueue::findMostReadyWMMA() {
     DAGNode* best = nullptr;
     std::tuple<int, int> bestKey{INT_MAX, 0};
@@ -3373,6 +3376,25 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
                            << " pri=" << dsReadPriorityOf(loads[i]) << "\n");
             }
         }
+    }
+
+    // ModuleOptions::LockWmmaOrder. Chain this region's WMMAs in program order, so a
+    // caller that derived the issue order (LoopModel/GIR) gets it back verbatim.
+    // Ranking the READY WMMAs is not enough on its own: a WMMA whose ds_load has not
+    // been picked yet is not in the queue at all, so a later one whose sources already
+    // issued is the only candidate and overtakes it. The edge keeps it out of the queue
+    // instead. Loads and prefetches are untouched, and still fill the wait. Every edge
+    // points forward in the region, which a program-order DAG can never cycle with.
+    if (getPassContext().getPassFeatureConfig().dagFeatures.lockWmmaOrder) {
+        StinkyInstruction* previous = nullptr;
+        for (IRList::iterator it = regionStart; it != regionEnd; ++it) {
+            auto* instPtr = dyn_cast<StinkyInstruction>(it.getNodePtr());
+            if (instPtr == nullptr || !isMatrixInstruction(*instPtr)) continue;
+            if (previous != nullptr) deps.requestedConstraints.emplace_back(previous, instPtr);
+            previous = instPtr;
+        }
+        PASS_DEBUG(std::cerr << "[CDNA5 onInitRegion wmma lock] chained "
+                             << deps.requestedConstraints.size() << " total constraints\n");
     }
 
     // Prefetch lead: hold the prefetches ahead of a tensor_load until they are within

@@ -957,6 +957,43 @@ TEST_F(DAGSchedulerPassTest, LockDsReadOrderDoesNotCrossMemoryTokens) {
         << "ds_loads on different memory tokens must not be chained together";
 }
 
+// LockWmmaOrder chains the region's WMMAs, so they issue in program order. `stalled`
+// comes first but reads the dest of the ds_load just above it, so it carries a data
+// wait; `ready` reads a register this block never writes. Latency ranking picks
+// `ready` first; the chain keeps it out of the ready queue until `stalled` has gone.
+TEST_F(DAGSchedulerPassTest, LockWmmaOrderKeepsProgramOrderAcrossAStalledSource) {
+    auto schedule = [&](bool lockWmmaOrder) {
+        am.clear();
+        func = std::make_unique<Function>(lockWmmaOrder ? "lock_wmma_order" : "free_wmma_order");
+        setFunctionArch(*func, arch);
+        bb = func->createBasicBlock("loop_body");
+        bb->addSuccessor(bb);
+
+        createMovableDsLoad(/*destReg=*/220, /*addrReg=*/200, /*ldsToken=*/0);
+        StinkyInstruction* stalled =
+            createWmmaF32_16x16x16_bf16_in(bb, /*destStart=*/300, /*src0Start=*/220);
+        StinkyInstruction* ready =
+            createWmmaF32_16x16x16_bf16_in(bb, /*destStart=*/320, /*src0Start=*/8);
+
+        PassContext ctx;
+        ctx.setGemmTileConfig(config);
+        PassFeatureConfig pfc;
+        pfc.loopConfig.unrollGemm = true;
+        pfc.dagFeatures.lockWmmaOrder = lockWmmaOrder;
+        ctx.setPassFeatureConfig(pfc);
+        pass->run(*func, ctx, am);
+        return std::pair{positionOf(*bb, stalled), positionOf(*bb, ready)};
+    };
+
+    const auto [lockedStalled, lockedReady] = schedule(/*lockWmmaOrder=*/true);
+    EXPECT_LT(lockedStalled, lockedReady)
+        << "LockWmmaOrder must issue WMMAs in program order even when the first one waits";
+
+    const auto [freeStalled, freeReady] = schedule(/*lockWmmaOrder=*/false);
+    EXPECT_LT(freeReady, freeStalled)
+        << "without LockWmmaOrder a ready later WMMA overtakes one waiting on its ds_load";
+}
+
 // DS reads + WMMAs: scheduler must not issue WMMAs back-to-back when other
 // instructions exist. With real ds_load latency, WMMAs are not latency-free
 // until ds_reads are issued and latency elapses, so we get: 4 ds_load, then 2
