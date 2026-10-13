@@ -7311,6 +7311,9 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
                                "EnableWaitCntInsertion": enableWaitCntInsertion,
                                "DisableTensorcntInsertion": bool(kernel["UseLoopModel"]),
                                "LockDsReadOrder": not bool(kernel["UseLoopModel"]),
+                               # The WMMA order is LoopIR's derived schedule, so the DAG scheduler
+                               # issues it as given. Only tensor_load and ds_load move under ULM.
+                               "LockWmmaOrder": bool(kernel["UseLoopModel"]),
                                # Fences, memory tokens and numeric waits are all StinkyTofu's under
                                # ULM, derived after scheduling from the frame contract GIR exports.
                                "EnableGirFramePipeline": bool(kernel["UseLoopModel"]),
