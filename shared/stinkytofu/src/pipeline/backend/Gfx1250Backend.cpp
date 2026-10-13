@@ -210,6 +210,8 @@ bool buildGfx1250Pipeline(ModulePassManager& mpm, StinkyAsmModule& module, const
                     moduleOptions.EnableGirFramePipeline && moduleOptions.ClusterBarrier ? 200 : 0;
                 passFeatureConfig.dagFeatures.lockDsReadOrder = moduleOptions.LockDsReadOrder;
                 passFeatureConfig.dagFeatures.lockWmmaOrder = moduleOptions.LockWmmaOrder;
+                passFeatureConfig.dagFeatures.lockDsReadProgramOrder =
+                    moduleOptions.LockDsReadProgramOrder;
                 passFeatureConfig.dagFeatures.evenSpreadFillers = moduleOptions.EvenSpreadFillers;
                 passFeatureConfig.dagFeatures.dsSpread = moduleOptions.DsSpread;
                 passFeatureConfig.dagFeatures.wmmaBarrierCoverCycles =
