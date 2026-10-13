@@ -132,6 +132,7 @@
 #define MODULE_OPTIONS_WITH_DEFAULTS_LIST(X)                                                    \
     X(LockDsReadOrder, bool, true)                                                              \
     X(LockWmmaOrder, bool, false) /* true: WMMAs issue in program order, loads still move */    \
+    X(LockDsReadProgramOrder, bool, false) /* every ds_load in program order, token-blind */    \
     X(EvenSpreadFillers, bool, true)                                                            \
     X(DsSlotFirst, bool, true)            /* saturated ds stream: ds_load before fillers */     \
     X(WaitAluHoldStrictCount, int, 2)     /* hold s_wait_alu count <= N to next barrier wait */ \

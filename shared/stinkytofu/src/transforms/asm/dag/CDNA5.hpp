@@ -3612,24 +3612,40 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
         }
     }
 
-    // ModuleOptions::LockWmmaOrder. Chain this region's WMMAs in program order, so a
-    // caller that derived the issue order (LoopModel/GIR) gets it back verbatim.
-    // Ranking the READY WMMAs is not enough on its own: a WMMA whose ds_load has not
-    // been picked yet is not in the queue at all, so a later one whose sources already
-    // issued is the only candidate and overtakes it. The edge keeps it out of the queue
-    // instead. Loads and prefetches are untouched, and still fill the wait. Every edge
+    // ModuleOptions::LockWmmaOrder / LockDsReadProgramOrder. Chain one kind in program order,
+    // so a caller that derived the issue order (LoopModel/GIR) gets that kind back verbatim.
+    // Ranking the READY nodes is not enough on its own: a node whose producer has not been
+    // picked yet is not in the queue at all, so a later one whose sources already issued is the
+    // only candidate and overtakes it. The edge keeps it out of the queue instead. Every edge
     // points forward in the region, which a program-order DAG can never cycle with.
-    if (getPassContext().getPassFeatureConfig().dagFeatures.lockWmmaOrder) {
+    //
+    // This is NOT LockDsReadOrder. That one keys on the LDS memory token, chains only within one
+    // token, and sorts by dsReadPriority -- so it says nothing about A against B, and it goes
+    // silent entirely when the GIR frame pipeline leaves the token pseudo-registers unattached.
+    auto chainInProgramOrder = [&](bool (*selects)(const StinkyInstruction&), const char* what) {
         StinkyInstruction* previous = nullptr;
+        unsigned chained = 0;
         for (IRList::iterator it = regionStart; it != regionEnd; ++it) {
             auto* instPtr = dyn_cast<StinkyInstruction>(it.getNodePtr());
-            if (instPtr == nullptr || !isMatrixInstruction(*instPtr)) continue;
-            if (previous != nullptr) deps.requestedConstraints.emplace_back(previous, instPtr);
+            if (instPtr == nullptr || !selects(*instPtr)) continue;
+            if (previous != nullptr) {
+                deps.requestedConstraints.emplace_back(previous, instPtr);
+                ++chained;
+            }
             previous = instPtr;
         }
-        PASS_DEBUG(std::cerr << "[CDNA5 onInitRegion wmma lock] chained "
-                             << deps.requestedConstraints.size() << " total constraints\n");
-    }
+        PASS_DEBUG(std::cerr << "[CDNA5 onInitRegion " << what << " lock] chained " << chained
+                             << " edges\n");
+        (void)what;
+        (void)chained;
+    };
+    if (dagFeatures.lockWmmaOrder)
+        chainInProgramOrder([](const StinkyInstruction& inst) { return isMatrixInstruction(inst); },
+                            "wmma");
+    // Loads only: a tensor_load is left free, so the global prefetch still floats to its lead.
+    if (dagFeatures.lockDsReadProgramOrder)
+        chainInProgramOrder([](const StinkyInstruction& inst) { return isDSRead(inst); },
+                            "ds_read");
 
     // Run after every barrier placement and normalization step so the analysis
     // sees the same final thresholds that the scheduler will enforce.

@@ -7310,10 +7310,12 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
                                # implementation owns tagged tensorcnt.
                                "EnableWaitCntInsertion": enableWaitCntInsertion,
                                "DisableTensorcntInsertion": bool(kernel["UseLoopModel"]),
-                               "LockDsReadOrder": not bool(kernel["UseLoopModel"]),
-                               # The WMMA order is LoopIR's derived schedule, so the DAG scheduler
-                               # issues it as given. Only tensor_load and ds_load move under ULM.
+                               # The WMMA and ds_load order is LoopIR's derived schedule, so the DAG
+                               # scheduler issues both as given; only the tensor_load still moves.
+                               # LockDsReadOrder cannot do this: it keys on the LDS memory token,
+                               # which the GIR frame pipeline leaves unattached.
                                "LockWmmaOrder": bool(kernel["UseLoopModel"]),
+                               "LockDsReadProgramOrder": bool(kernel["UseLoopModel"]),
                                # Fences, memory tokens and numeric waits are all StinkyTofu's under
                                # ULM, derived after scheduling from the frame contract GIR exports.
                                "EnableGirFramePipeline": bool(kernel["UseLoopModel"]),
