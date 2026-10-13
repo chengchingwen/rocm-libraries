@@ -520,7 +520,18 @@ static void scheduleRegionWithMovableSideEffects(
                     continue;
                 }
                 auto it = wmmaIndex.find(u);
-                if (it != wmmaIndex.end()) affinity = std::min(affinity, it->second);
+                if (it != wmmaIndex.end()) {
+                    unsigned candidate = it->second;
+                    BasicBlock* producerBlock = dagNodes[i].inst->getParent();
+                    BasicBlock* consumerBlock = u->getParent();
+                    if (readyQueue.getPassContext()
+                            .getPassFeatureConfig()
+                            .dagFeatures.girFramePipeline &&
+                        producerBlock != nullptr && consumerBlock != nullptr &&
+                        girFrames.isBackEdge(producerBlock, consumerBlock))
+                        candidate += static_cast<unsigned>(wmmaIndex.size());
+                    affinity = std::min(affinity, candidate);
+                }
             }
 
             unsigned srcReg = 0;
