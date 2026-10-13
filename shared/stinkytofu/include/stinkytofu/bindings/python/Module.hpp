@@ -122,15 +122,16 @@
 // Keep transition disabled by default to preserve legacy full-throttle pacing:
 // entries=0 skips the transition range, and factor=1.0 is the full interval.
 //
-// Scheduling knobs below default to -1 (= unset), except LockDsReadOrder, EvenSpreadFillers,
-// DsSlotFirst, WaitAluHoldStrictCount, PrefetchLeadWmmas and PrefetchLeadMinStageWmmas, which
-// have fixed defaults and
+// Scheduling knobs below default to -1 (= unset), except LockDsReadOrder, LockWmmaOrder,
+// EvenSpreadFillers, DsSlotFirst, WaitAluHoldStrictCount, PrefetchLeadWmmas and
+// PrefetchLeadMinStageWmmas, which have fixed defaults and
 // are not resolved by the heuristics. Gfx1250Backend resolves unset
 // knobs via SchedulingKnobHeuristics before DAG scheduling / cluster-barrier insertion (user value
 // wins; degenerate main-loop IR falls back to today's static HW/CDNA5/Rule3 defaults). See
 // SchedulingKnobHeuristics.hpp.
 #define MODULE_OPTIONS_WITH_DEFAULTS_LIST(X)                                                    \
     X(LockDsReadOrder, bool, true)                                                              \
+    X(LockWmmaOrder, bool, false) /* true: WMMAs issue in program order, loads still move */    \
     X(EvenSpreadFillers, bool, true)                                                            \
     X(DsSlotFirst, bool, true)            /* saturated ds stream: ds_load before fillers */     \
     X(WaitAluHoldStrictCount, int, 2)     /* hold s_wait_alu count <= N to next barrier wait */ \
