@@ -672,17 +672,6 @@ def _raw_read_ahead(theta, operand) -> int:
     return max(0, int(theta.off_at(operand.name, DS_LOAD, axis) or 0))
 
 
-def _side(operand):
-    return "A" if operand.name in ("A", "MXSA") else \
-           "B" if operand.name in ("B", "MXSB") else None
-
-
-def _direct_input(theta, side):
-    """The primary A/B operand on ``side``."""
-    name = "A" if side == "A" else "B"
-    return next((op for op in theta.operands if op.name == name), None)
-
-
 def requested_read_ahead(theta, operand, depths=None) -> int:
     """Internal per-operand PLR, in this operand's grouped-prefetch units.
 
@@ -690,23 +679,9 @@ def requested_read_ahead(theta, operand, depths=None) -> int:
     prefetch unit.  In particular, a split region changes the flattened ring offset; it does not
     multiply the requested lead. ``depths`` applies the VA capacity cap.
     """
-    raw = _raw_read_ahead(theta, operand)
-    if not raw:
+    want = _raw_read_ahead(theta, operand)
+    if not want:
         return 0
-
-    extents = {
-        axis.name: int(axis.extent.constant_value)
-        for axis in theta.inner_axes()
-    }
-    has_split_region = any(max(1, int(extents.get(axis, 1))) > 1
-                           for axis in (getattr(operand, "region_axes", ()) or ()))
-    if reloads_whole_set(theta, operand) and not has_split_region:
-        side = _side(operand)
-        peer = _direct_input(theta, "B" if side == "A" else "A")
-        want = raw if peer is None else \
-            _raw_read_ahead(theta, peer) * prefetch_unit_tiles(theta, peer)
-    else:
-        want = raw
 
     if reloads_whole_set(theta, operand):
         outer = theta.summation_chunk_name()
