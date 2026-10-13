@@ -1535,6 +1535,60 @@ TEST_F(DAGSchedulerPassTest, GirWaitAwareSelectionSkipsHeldDsForIndependentDs) {
            "wait_alu hold";
 }
 
+TEST_F(DAGSchedulerPassTest, GirBackedgeAffinityBelongsToTheNextFrame) {
+    auto schedule = [&](bool girFramePipeline) {
+        am.clear();
+        func = std::make_unique<Function>(girFramePipeline ? "gir_backedge" : "flat_indices");
+        setFunctionArch(*func, arch);
+        BasicBlock* preheader = func->createBasicBlock("preheader");
+        BasicBlock* header = func->createBasicBlock("header");
+        BasicBlock* latch = func->createBasicBlock("latch");
+        func->addEdge(preheader, header);
+        func->addEdge(header, latch);
+        func->addEdge(latch, header);
+
+        auto contract = std::make_shared<GirFrameContract>();
+        contract->loaded = true;
+        contract->generations.emplace(0, GirGenerationSpec{0, 2, 0});
+        func->setStructMetaData<GirFrameContract>(kGirFrameContractKey, contract);
+
+        bb = preheader;
+        createVAddInBlock(bb, arch, /*destReg=*/200, /*src0Reg=*/500, /*src1Reg=*/501);
+        bb = header;
+        createWmmaScaleF8(/*destStart=*/12, /*src0Start=*/200);
+
+        bb = latch;
+        StinkyInstruction* backedgeRead =
+            createDsReadB128InBlock(bb, arch, /*destReg=*/200, /*addrReg=*/400);
+        backedgeRead->addModifier<GirActionData>(GirActionData{
+            10, 10, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 1, -1, false}}});
+        StinkyInstruction* sameFrameRead =
+            createDsReadB128InBlock(bb, arch, /*destReg=*/300, /*addrReg=*/401);
+        sameFrameRead->addModifier<GirActionData>(GirActionData{
+            20, 20, GirActionKind::Read, {GirAccessData{false, 1, 2, 0, 0, -1, false}}});
+        createWmmaScaleF8(/*destStart=*/40, /*src0Start=*/300);
+
+        PassContext ctx;
+        ctx.setGemmTileConfig(config);
+        PassFeatureConfig pfc;
+        pfc.loopConfig.unrollGemm = true;
+        pfc.dagFeatures.dsReadPerCap = kDsCapOff;
+        pfc.dagFeatures.girFramePipeline = girFramePipeline;
+        ctx.setPassFeatureConfig(pfc);
+        pass->run(*func, ctx, am);
+
+        return std::pair{positionOf(*latch, backedgeRead), positionOf(*latch, sameFrameRead)};
+    };
+
+    const auto [flatBackedge, flatSameFrame] = schedule(/*girFramePipeline=*/false);
+    EXPECT_LT(flatBackedge, flatSameFrame)
+        << "the control must expose function-index wrap at the latch";
+
+    const auto [girBackedge, girSameFrame] = schedule(/*girFramePipeline=*/true);
+    EXPECT_LT(girSameFrame, girBackedge)
+        << "a header consumer reached through the latch backedge belongs to the next frame";
+}
+
 // ---------------------------------------------------------------------------
 // Co-execution hazard, VALU variant (regression test for
 // destOverlapsActiveWmmaSrc on the VALU path): a VALU whose dest VGPR overlaps
