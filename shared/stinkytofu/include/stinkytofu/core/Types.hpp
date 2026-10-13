@@ -165,6 +165,11 @@ struct PassFeatureConfig {
         /// Loads on different tokens are not ordered against each other. Set
         /// false to leave a ready lower-priority ds_load free to issue first.
         bool lockDsReadOrder = true;
+        /// Mirrors ModuleOptions::LockWmmaOrder. Defaults off: the WMMA ready queue is
+        /// ranked by data-ready latency, so a WMMA still waiting on its ds_load is
+        /// overtaken. Set true to issue WMMAs in program order; the loads around them
+        /// still move, and a not-yet-ready WMMA is forced after its wait elapses.
+        bool lockWmmaOrder = false;
         /// Mirrors moduleOptions.EnableESM2 && EnableESM2TrackValuVsrc. The mode2 WAR
         /// gate only recovers waits va_vsrc tracking creates, so it is inert when false.
         bool enableESM2TrackValuVsrc = false;
