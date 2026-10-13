@@ -1428,9 +1428,9 @@ TEST_F(DAGSchedulerPassTest, WmmaSrcOverlap_HazardDsLoadDeferredPastWindow) {
 
 // GIR deliberately has no physical fence in the scheduler input. A ds_load whose address is still
 // behind a VALU producer is therefore free to move, but issuing it immediately would make the final
-// InsertWaitAluPass repair the choice with va_vdst. The GIR path should prefer independent WMMAs
-// until the existing WaitAluTracker says the load is free. Non-GIR scheduling keeps its established
-// order, and the DS load remains the fallback when no independent work exists.
+// InsertWaitAluPass repair the choice with a strict va_vdst. The GIR path should prefer independent
+// WMMAs until the wait either clears or becomes non-strict. Non-GIR scheduling keeps its
+// established order, and the DS load remains the fallback when no independent work exists.
 TEST_F(DAGSchedulerPassTest, GirFreeScheduleDefersDsThatWouldRequireWaitAlu) {
     auto schedule = [&](bool girFramePipeline) {
         am.clear();
@@ -1492,7 +1492,47 @@ TEST_F(DAGSchedulerPassTest, GirFreeScheduleDefersDsThatWouldRequireWaitAlu) {
     EXPECT_GT(girWmmasBefore, legacyWmmasBefore)
         << "GIR should use ready independent WMMAs to advance the scoreboard; predicted va_vdst="
         << girVa << " vm_vsrc=" << girVm;
+    EXPECT_TRUE((girVa < 0 || girVa > 2) && (girVm < 0 || girVm > 2))
+        << "GIR may retain a weak wait to preserve refill overlap, but must age a strict wait "
+           "before issuing; predicted va_vdst="
+        << girVa << " vm_vsrc=" << girVm;
     EXPECT_EQ(girCount, legacyCount) << "wait-aware scheduling must not drop instructions";
+}
+
+// A held GIR ds_load is a candidate-specific restriction, not a FIFO-wide one. GIR waitcnt
+// insertion runs after scheduling and derives dscnt ranks from the resulting issue order, so an
+// independent later ds_load remains free to fill the current WMMA window.
+TEST_F(DAGSchedulerPassTest, GirWaitAwareSelectionSkipsHeldDsForIndependentDs) {
+    createVAddInBlock(bb, arch, /*destReg=*/400, /*src0Reg=*/401, /*src1Reg=*/402);
+    createWmmaScaleF8(/*destStart=*/50, /*src0Start=*/400);
+
+    StinkyInstruction* held = createDsReadB128InBlock(bb, arch, /*destReg=*/600, /*addrReg=*/400);
+    held->addModifier<GirActionData>(
+        GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
+    StinkyInstruction* independent =
+        createDsReadB128InBlock(bb, arch, /*destReg=*/620, /*addrReg=*/500);
+    independent->addModifier<GirActionData>(
+        GirActionData{2, 2, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
+
+    for (int i = 0; i < 4; ++i)
+        createWmmaScaleF8(/*destStart=*/100 + i * 16, /*src0Start=*/300 + i * 16);
+
+    PassContext ctx;
+    ctx.setGemmTileConfig(config);
+    PassFeatureConfig pfc;
+    pfc.loopConfig.unrollGemm = true;
+    pfc.dagFeatures.dsReadPerCap = kDsCapOff;
+    pfc.dagFeatures.waitAluHoldStrictCount = 2;
+    pfc.dagFeatures.girFramePipeline = true;
+    ctx.setPassFeatureConfig(pfc);
+
+    const int beforeCount = countStinkyInstructions(*bb);
+    pass->run(*func, ctx, am);
+
+    EXPECT_EQ(countStinkyInstructions(*bb), beforeCount);
+    EXPECT_LT(positionOf(*bb, independent), positionOf(*bb, held))
+        << "a wait-free GIR ds_load must not be blocked behind a different candidate's "
+           "wait_alu hold";
 }
 
 // ---------------------------------------------------------------------------
