@@ -14,6 +14,10 @@ from ...Lowering.gir.analyses import Gl2PrefetchRegions
 from ...Lowering.gir.frame_contract import install_frame_contract
 from ...Lowering.gir.passes import pipeline as gir_pipeline
 from ...Lowering.gir.passes import run_pipeline
+from ...Lowering.gir.passes.manual_schedule import (
+    ManualSchedulePass,
+    schedule_cache_tag,
+)
 
 from .Theta import loopModelTheta, namingSolution
 
@@ -28,6 +32,11 @@ def _valuAllocation(writer):
 def loopModelGirProgram(writer, kernel):
     """Build and cache the finalized GIR program for one kernel."""
     key = getattr(writer.states, "kernelName", None) or id(kernel)
+    true_sia0 = int(kernel.get("ScheduleIterAlg", 0) or 0) == 0 \
+        and int(kernel.get("_StinkyTofuOptLevel", 0) or 0) == 0
+    dump_schedule = globalParameters.get("GIRScheduleDumpPath", "") if true_sia0 else ""
+    load_schedule = globalParameters.get("GIRScheduleLoadPath", "") if true_sia0 else ""
+    schedule_tag = schedule_cache_tag(str(key), dump_schedule, load_schedule)
     verify_ir = bool(globalParameters.get("LoopModelIRVerify", True))
     include_dependencies = verify_ir or bool(
         globalParameters.get("OutputLoopIR", False)
@@ -36,9 +45,11 @@ def loopModelGirProgram(writer, kernel):
     if cache is not None and cache[0] == key:
         cached_verified = cache[2] if len(cache) > 2 else True
         cached_dependencies = cache[3] if len(cache) > 3 else True
+        cached_schedule = cache[4] if len(cache) > 4 else ""
         if (
             (not verify_ir or cached_verified)
             and (not include_dependencies or cached_dependencies)
+            and cached_schedule == schedule_tag
         ):
             return cache[1]
 
@@ -77,9 +88,22 @@ def loopModelGirProgram(writer, kernel):
         }
         # PrefetchGL2 is a target-side GIR placement parameter, not LoopIR.
         prog.params[Gl2PrefetchRegions.PARAM] = kernel["PrefetchGL2"]
+        passes = gir_pipeline()
+        if dump_schedule or load_schedule:
+            manual = ManualSchedulePass(
+                key,
+                dump_path=dump_schedule,
+                load_path=load_schedule,
+            )
+            insertion = next(
+                (index for index, item in enumerate(passes)
+                 if item.__class__.__name__ == "CollectPendingMarksPass"),
+                len(passes),
+            )
+            passes.insert(insertion, manual)
         run_pipeline(
             prog,
-            passes=gir_pipeline(),
+            passes=passes,
             verify=verify_ir,
         )
         if verify_ir:
@@ -103,6 +127,7 @@ def loopModelGirProgram(writer, kernel):
         prog,
         verify_ir,
         include_dependencies,
+        schedule_tag,
     )
     return prog
 

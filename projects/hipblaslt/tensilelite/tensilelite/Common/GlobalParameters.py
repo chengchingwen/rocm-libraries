@@ -248,6 +248,8 @@ globalParameters["AsanBuild"] = False  # build with asan
 globalParameters["KeepBuildTmp"] = False  # If true, do not remove artifacts in build_tmp
 globalParameters["OutputLoopIR"] = False  # If true, also dump the LoopModel θ-IR to a sibling ir/ dir
 globalParameters["LoopModelIRVerify"] = True  # Set False only for output-parity codegen sweeps.
+globalParameters["GIRScheduleDumpPath"] = ""  # Directory for editable per-kernel GIR schedules.
+globalParameters["GIRScheduleLoadPath"] = ""  # Directory containing edited GIR schedules.
 
 # debug for assembly
 #globalParameters["SplitGSU"] = False  # Split GSU kernel into GSU1 and GSUM
@@ -978,6 +980,16 @@ def assignGlobalParameters(config, isaInfoMap: Dict[IsaVersion, IsaInfo]):
 
     if "LoopModelIRVerify" in config:
         globalParameters["LoopModelIRVerify"] = config["LoopModelIRVerify"]
+
+    dumpSchedule = config.get("GIRScheduleDumpPath", "")
+    loadSchedule = config.get("GIRScheduleLoadPath", "")
+    if dumpSchedule and loadSchedule:
+        raise RuntimeError(
+            "GIRScheduleDumpPath and GIRScheduleLoadPath are mutually exclusive")
+    globalParameters["GIRScheduleDumpPath"] = (
+        os.path.abspath(os.path.expanduser(str(dumpSchedule))) if dumpSchedule else "")
+    globalParameters["GIRScheduleLoadPath"] = (
+        os.path.abspath(os.path.expanduser(str(loadSchedule))) if loadSchedule else "")
 
     if "CodeObjectVersion" in config:
         globalParameters["CodeObjectVersion"] = config["CodeObjectVersion"]
