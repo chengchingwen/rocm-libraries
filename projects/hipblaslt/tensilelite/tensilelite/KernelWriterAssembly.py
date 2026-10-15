@@ -7599,6 +7599,26 @@ class KernelWriterAssembly(KernelWriter):
     state = {"A": self.states.a, "B": self.states.b}[tc]
     return (buffers - 1) * int(state.numVgprValuPerBlock or 0) + slab
 
+  def tailLoopValuPackRegs(self, kernel, tP, tc):
+    """Packing registers allocated beside one operand's tail-loop Valu slab."""
+    state = {"A": self.states.a, "B": self.states.b}[tc]
+    if tP["bpe"] >= 4 or kernel["UnrollMajorLDS" + tc] or kernel["enableLDSTr" + tc]:
+      return 0
+    lrvwTile = getattr(self.states, "lrvwTile" + tc)
+    if lrvwTile > 1:
+      count = ceil(kernel["VectorWidth" + tc] * tP["bpe"] / self.states.bpr) \
+          * kernel["MIWaveTile" + tc] // kernel["VectorWidth" + tc] \
+          * kernel["InnerUnroll"] * operandNumVgprBuffer(self, tc) \
+          * kernel["MIInputPerThread" + tc]
+      if getattr(self.states, "packDTV" + tc):
+        count *= 2
+      elif kernel["UsePLRPack"] and self.states.numItersPLR:
+        count //= 2
+      return count
+    return state.numVgprValuPerBlock * kernel["InnerUnroll"] \
+        * getattr(self.states, "numVgprBufferPack" + tc) \
+        * (int(4 / tP["bpeDS"]) - 1)
+
   def tailLoopAllocValuVgpr(self, kernel, tensorParametersA, tensorParametersB, tensorParametersM):
     imodMXSA            = Module("tailLoopAllocValuMXSAVgpr")
     vgprBaseMXSA        = -1
@@ -7662,16 +7682,8 @@ class KernelWriterAssembly(KernelWriter):
     valuVgprAlignment = 8 if self.states.asmCaps["HasVgprMSB"] else 2
     if self.states.a.numVgprValu > 0 and not kernel["DirectToVgprA"]:
       numValuA = self.tailLoopValuRegs(kernel, "A") or self.states.a.numVgprValu
-      if tensorParametersA["bpe"] < 4 and not kernel["UnrollMajorLDSA"] and not kernel["enableLDSTrA"]:
-        if self.states.lrvwTileA > 1:
-          numVgprValuPackA = ceil(kernel["VectorWidthA"] * tensorParametersA["bpe"] / self.states.bpr) * kernel["MIWaveTileA"] // kernel["VectorWidthA"] * kernel["InnerUnroll"] * operandNumVgprBuffer(self, "A") * kernel["MIInputPerThreadA"]
-          if self.states.packDTVA:
-            # pack DTV case, double the number
-            numVgprValuPackA *= 2
-          elif (kernel["UsePLRPack"] and self.states.numItersPLR):
-            numVgprValuPackA //= 2
-        else:
-          numVgprValuPackA = self.states.a.numVgprValuPerBlock * kernel["InnerUnroll"] * self.states.numVgprBufferPackA * (int(4/tensorParametersA["bpeDS"]) - 1)
+      numVgprValuPackA = self.tailLoopValuPackRegs(
+          kernel, tensorParametersA, "A")
       vgprBaseA = self.vgprPool.checkOutAligned(numValuA + numVgprValuPackA, 2, tag="tailLoopAllocValuVgpr_vgprBaseA")
       imodA.add(RegSet("v", "vgprValuA_X0_I0_BASE", vgprBaseA))
       imodA.add(self.moduleVgprMacroValuA)
@@ -7686,16 +7698,8 @@ class KernelWriterAssembly(KernelWriter):
     numVgprValuPackB = 0
     if self.states.b.numVgprValu > 0 and not kernel["DirectToVgprB"]:
       numValuB = self.tailLoopValuRegs(kernel, "B") or self.states.b.numVgprValu
-      if tensorParametersB["bpe"] < 4 and not kernel["UnrollMajorLDSB"] and not kernel["enableLDSTrB"]:
-        if self.states.lrvwTileB > 1:
-          numVgprValuPackB = ceil(kernel["VectorWidthB"] * tensorParametersB["bpe"] / self.states.bpr) * kernel["MIWaveTileB"] // kernel["VectorWidthB"] * kernel["InnerUnroll"] * operandNumVgprBuffer(self, "B") * kernel["MIInputPerThreadB"]
-          if self.states.packDTVB:
-            # pack DTV case, double the number
-            numVgprValuPackB *= 2
-          elif (kernel["UsePLRPack"] and self.states.numItersPLR):
-            numVgprValuPackB //= 2
-        else:
-          numVgprValuPackB = self.states.b.numVgprValuPerBlock * kernel["InnerUnroll"] * self.states.numVgprBufferPackB * (int(4/tensorParametersB["bpeDS"]) - 1)
+      numVgprValuPackB = self.tailLoopValuPackRegs(
+          kernel, tensorParametersB, "B")
       vgprBaseB = self.vgprPool.checkOutAligned(numValuB + numVgprValuPackB, 2, tag="tailLoopAllocValuVgpr_vgprBaseB")
       imodB.add(RegSet("v", "vgprValuB_X0_I0_BASE", vgprBaseB))
       imodB.add(self.moduleVgprMacroValuB)
