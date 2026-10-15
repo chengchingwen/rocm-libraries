@@ -368,7 +368,8 @@ static void applyClusterBarrierSccRule(
 static void applyClusterBarrierTensorLoadDelay(
     DAGNodeList& dagNodes, const std::unordered_map<StinkyInstruction*, unsigned>& instToId,
     std::vector<std::unordered_set<unsigned>>& dagGraph, const std::vector<int>& cumCycles,
-    const GirRawPlacementPlan& rawPlacements, int delayCycles) {
+    const GirRawPlacementPlan& rawPlacements, int delayCycles,
+    std::vector<HardSchedulingConstraint>& requestedConstraints) {
     if (delayCycles <= 0 || rawPlacements.tensorMarkers.size() < 2) return;
 
     std::vector<unsigned> markers;
@@ -423,8 +424,10 @@ static void applyClusterBarrierTensorLoadDelay(
         }
 
         for (unsigned loadId : loads) {
-            addEdgeById(&dagNodes[firstId], &dagNodes[loadId], dagGraph);
-            addEdgeById(&dagNodes[loadId], &dagNodes[secondId], dagGraph);
+            // A placement window, not a data dependency: request it so it is cycle-checked and
+            // tagged "(hard constraint)" instead of being indistinguishable from a real edge.
+            requestedConstraints.emplace_back(dagNodes[firstId].inst, dagNodes[loadId].inst);
+            requestedConstraints.emplace_back(dagNodes[loadId].inst, dagNodes[secondId].inst);
             dagNodes[loadId].tensorLoadDelayAnchorId = firstId;
             dagNodes[loadId].tensorLoadDelayCycles = delayCycles;
             PASS_DEBUG(std::cerr << "[DAG RAW tensor window] hold tensor_load dagId=" << loadId
@@ -549,12 +552,15 @@ static void scheduleRegionWithMovableSideEffects(
         cumCycles[k + 1] = regionCycles;
     }
 
+    // Scheduler-policy ordering requests, merged into dagGraph below.
+    std::vector<HardSchedulingConstraint> requestedConstraints;
     if (readyQueue.clusterBarrierEnabled())
         applyClusterBarrierSccRule(dagNodes, instToId, dagGraph, regionCycles);
     applyClusterBarrierTensorLoadDelay(dagNodes, instToId, dagGraph, cumCycles, rawPlacements,
                                        readyQueue.getPassContext()
                                            .getPassFeatureConfig()
-                                           .dagFeatures.clusterBarrierTensorLoadDelayCycles);
+                                           .dagFeatures.clusterBarrierTensorLoadDelayCycles,
+                                       requestedConstraints);
 
     // Pre-scan: mark VALU/transcendental nodes that directly feed a matrix op.
     // CDNA5ReadyQueue holds each behind the WMMA two before its first consumer.
@@ -857,7 +863,6 @@ static void scheduleRegionWithMovableSideEffects(
     // DAG, same as any other edge. A candidate edge is dropped when it would form a cycle
     // (these orderings are heuristic, not derived from real data dependencies, so
     // contradictory requests across barrier groups are possible).
-    std::vector<HardSchedulingConstraint> requestedConstraints;
     const dag::RegionDependencies regionDeps{.dag = regionDag,
                                              .requestedConstraints = requestedConstraints};
     readyQueue.onInitRegion(regionStart, regionEnd, blockBegin, regionDeps);
