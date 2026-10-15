@@ -92,12 +92,6 @@ def calculate(kernel):
     if explicit_vg or explicit_va:
       kernel["SuppressNoLoadLoop"] = True
     vg = max(1, value(vg_name, 1))
-    if split_unit > 1:
-      if vg > 1 and vg % split_unit:
-        raise RuntimeError(
-            "VgprGroup%s=%d is incompatible with TDMSplit's divisor %d"
-            % (side, vg, split_unit))
-      vg = max(1, vg // split_unit)
     if unit % vg:
       raise RuntimeError(
           "VgprGroup%s=%d does not divide %s's %d-tile prefetch unit"
@@ -224,9 +218,9 @@ def operandValuPuVaVg(writer, kernel, tc, bpe) -> ValuAlloc:
 
   PU is the innermost of the operand's loop axes: KMN gives A=M and B=N,
   MKN gives A=K and B=N.  Its register count is that many instruction tiles.
-  A TDMSplit that cuts this axis has already halved it, so VG is only the
-  remaining divisor (a HalfPLR shape on a split macro-tile axis is VG1, not
-  VG2). ``calculate`` stores PU, VG and VA before allocation.
+  TDMSplit changes that PU first; VG then divides the resulting per-region PU
+  exactly as stated by VgprGroupA/B. ``calculate`` stores PU, VG and VA before
+  allocation.
   """
   side = "A" if str(tc).endswith("A") else "B"
   from .Theta import loopModelTheta
