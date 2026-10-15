@@ -202,6 +202,21 @@ def parseArguments(input: Optional[List[str]] = None) -> Dict[str, Any]:
         default=False,
         help="Also dump the LoopModel theta-IR for each kernel to a sibling ir/ directory",
     )
+    scheduleGroup = argParser.add_mutually_exclusive_group()
+    scheduleGroup.add_argument(
+        "--dump-gir-schedule",
+        dest="GIRScheduleDumpPath",
+        metavar="DIR",
+        default="",
+        help="Write one compact, editable GIR schedule YAML per true-SIA0 kernel",
+    )
+    scheduleGroup.add_argument(
+        "--load-gir-schedule",
+        dest="GIRScheduleLoadPath",
+        metavar="DIR",
+        default="",
+        help="Apply edited GIR schedule YAML files from DIR to true-SIA0 kernels",
+    )
     argParser.add_argument(
         "--no-loopmodel-ir-verify",
         dest="LoopModelIRVerify",
@@ -256,6 +271,8 @@ def parseArguments(input: Optional[List[str]] = None) -> Dict[str, Any]:
     arguments["BuildGfx1250v0"] = args.BuildGfx1250v0
     arguments["OutputLoopIR"] = args.OutputLoopIR
     arguments["LoopModelIRVerify"] = args.LoopModelIRVerify
+    arguments["GIRScheduleDumpPath"] = args.GIRScheduleDumpPath
+    arguments["GIRScheduleLoadPath"] = args.GIRScheduleLoadPath
     arguments["AsanBuild"] = args.AsanBuild
     arguments["UseCompression"] = not args.NoCompress
     arguments["CxxCompiler"] = args.CxxCompiler
