@@ -7,6 +7,7 @@ from math import gcd
 from ..TDMSplit import (
     AXIS_DU,
     AXIS_MT,
+    TDM_SPLIT_AXIS,
     factor_axis,
     split_factors,
     split_of,
@@ -17,8 +18,8 @@ _INNER = ("KMN", "KNM", "MNK", "MKN", "NMK", "NKM")
 _OUTER = (None, "M", "N", "K")
 
 
-def loopOrder(inner, outer) -> str:
-  """Loop-order word named by WmmaInnerOrder/WmmaOuterOrder."""
+def loopOrder(inner, outer, tdms_a, tdms_b) -> str:
+  """Lower WIO/WOO plus the two TDMSplit selectors to one LoopOrder word."""
   try:
     inner_index = int(inner) - 1
   except (TypeError, ValueError):
@@ -35,8 +36,21 @@ def loopOrder(inner, outer) -> str:
 
   inner = _INNER[inner_index]
   outer = _OUTER[outer_index]
-  return inner if outer is None \
-      else outer + "".join(axis for axis in inner if axis != outer) + inner
+  if outer is None:
+    return inner
+  split_axes = set()
+  for side, value in (("A", tdms_a), ("B", tdms_b)):
+    mt, du = TDM_SPLIT_AXIS.get(int(value or 0), (1, 1))
+    if mt > 1:
+      split_axes.add("M" if side == "A" else "N")
+    if du > 1:
+      split_axes.add("K")
+  remaining = "".join(axis for axis in inner if axis != outer)
+  return (
+      outer + outer + remaining + remaining
+      if outer not in split_axes else
+      outer + remaining + inner
+  )
 
 
 def _splitAxis(kernel, side):
@@ -81,7 +95,12 @@ def calculate(kernel):
     raise ValueError("WmmaOuterOrder=%r must be 0..3" % outer)
 
   kernel["WmmaOuterOrder"] = outer
-  kernel["LoopOrder"] = loopOrder(kernel.get("WmmaInnerOrder", 1), outer)
+  kernel["LoopOrder"] = loopOrder(
+      kernel.get("WmmaInnerOrder", 1),
+      outer,
+      kernel.get("TDMSplitA", 0),
+      kernel.get("TDMSplitB", 0),
+  )
 
 
 def axes(kernel):
