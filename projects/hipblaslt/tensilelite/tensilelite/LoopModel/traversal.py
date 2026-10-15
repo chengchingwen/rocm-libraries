@@ -840,14 +840,13 @@ def vgpr_group(theta, operand) -> int:
 def vgpr_subdivided(theta, operand) -> bool:
     """Whether this operand's unit is smaller than its original unsplit prefetch unit.
 
-    Either TDMSplit or VG can provide the HalfPLR half.  In particular, a tile split that already
-    halves the prefetch unit uses VG=1 rather than dividing that half a second time.
+    TDMSplit first changes the structural PU; VG independently divides that resulting PU.
     """
     return split_unit_divisor(theta, operand) > 1 or vgpr_group(theta, operand) > 1
 
 
 def split_unit_divisor(theta, operand) -> int:
-    """The factor the SPLIT already divides the prefetch unit by -- VG's derived value."""
+    """The factor TDMSplit removes from the unsplit PU, independent of VG."""
     return max(1, original_prefetch_unit_tiles(theta, operand)
                // max(1, prefetch_unit_tiles(theta, operand)))
 

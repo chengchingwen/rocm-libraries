@@ -9470,6 +9470,25 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       # Registers allocated above this point can be used as temps during setup
       # Registers above here are reserved in initC, near the end of the setup
       # code
+      if kernel["UseLoopModel"] and not kernel["NoTailLoop"] \
+          and not kernel["ReuseAcrossPersistent"]:
+        # The tail frees this contiguous ValuA/B range, then checks out one
+        # full tail slab for each operand.  If VG shrinks the main-loop rings
+        # below that fixed tail footprint, reserve padding here before local
+        # read swap/Serial registers fragment the range.  Shrinking VG must
+        # never increase the kernel's high-water mark.
+        tailEnd = self.states.a.startVgprValu
+        for tc, tP, state in (
+            ("A", tensorParametersA, self.states.a),
+            ("B", tensorParametersB, self.states.b),
+        ):
+          if state.numVgprValu <= 0 or kernel["DirectToVgpr" + tc]:
+            continue
+          tailEnd = ((tailEnd + 1) // 2) * 2
+          tailEnd += (self.tailLoopValuRegs(kernel, tc)
+                      or state.numVgprValu)
+          tailEnd += self.tailLoopValuPackRegs(kernel, tP, tc)
+        vgprIdx = max(vgprIdx, tailEnd)
       self.states.lastValuAB = vgprIdx
 
       #-----------
