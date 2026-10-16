@@ -72,7 +72,7 @@ import abc
 from collections.abc import Mapping
 import inspect
 from dataclasses import dataclass
-from Tensile.Components import TDMSplit as _tdm_split
+from .Components import TDMSplit as _tdm_split
 
 @dataclass
 class LraTileProperties:
