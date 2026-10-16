@@ -41,7 +41,7 @@ Every layout is either tight (no extra LDS) or aligned (padded to a segment boun
 LDS and needs PrefetchGlobalRead=2).
 """
 
-from Tensile.Components import TDMSplit
+from ..Components import TDMSplit
 
 # gfx1250 LDS segment size (5 x 64 KiB segments).
 SEG = 65536
