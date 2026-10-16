@@ -32,9 +32,9 @@ using namespace stinkytofu;
 
 constexpr int kWorkgroupBarrierId = -1;
 
-/// Producer occurrences that have executed with no fence crossed since.  A fence publishes
-/// EVERYTHING, so the kill is total: tracking discharge per-storage instead is what invents
-/// redundant fences, because each one then looks like it covers only its own hazard.
+/// Producer occurrences that have executed with no owned publication crossed since.  A physical
+/// pre-existing fence publishes everything; a virtual marker publishes only the hazard kinds it
+/// owns until the complete marker plan is materialized.
 using Live = std::set<size_t>;
 
 /// `(block, frame)` is the finite quotient the frame model already repeats to, which is what
@@ -104,11 +104,10 @@ void publishOwned(const StinkyInstruction& inst, Live& live,
     if (owned == markerKinds.end()) return;
     for (auto it = live.begin(); it != live.end();) {
         const GirFrameHazard& hazard = hazards.hazards[*it];
-        // A same-trip edge can still share this physical publication point. A loop-carried
-        // WAR cannot: claiming it here moves its DS drain to the next trip's early RAW fence
-        // instead of the later tensor overwrite it actually protects.
-        if (owned->second.contains(hazard.kind) ||
-            (owned->second.contains(GirHazardKind::RAW) && hazard.gap == 0))
+        // `gap == 0` only says both endpoints execute in one frame; it does not make an early RAW
+        // deadline a legal placement deadline for a later WAR overwrite. Cross-kind sharing is
+        // established only when both hazards choose this exact marker.
+        if (owned->second.contains(hazard.kind))
             it = live.erase(it);
         else
             ++it;
@@ -594,9 +593,13 @@ class GirFencePlacementPass final : public StinkyInstPass {
                                              markers, markerKinds),
                                   violating, slot, markers);
                 const StinkyInstruction* marker = cfg.body[node][slot];
-                if (!markers.insert(marker).second)
-                    STINKY_UNREACHABLE("GirFencePlacementPass failed to converge");
-                for (size_t h : violating) markerKinds[marker].insert(hazards.hazards[h].kind);
+                bool extended = markers.insert(marker).second;
+                for (size_t h : violating)
+                    extended |= markerKinds[marker].insert(hazards.hazards[h].kind).second;
+                // A marker already at the consumer can acquire another hazard kind. If neither
+                // the marker set nor its ownership changed, the transfer should have discharged
+                // this violation and the fixpoint cannot make progress.
+                if (!extended) STINKY_UNREACHABLE("GirFencePlacementPass failed to converge");
             }
 
             // Phase 2: the cut fixpoint answers LIVENESS; the wait pass asks POSITION -- does a
