@@ -401,6 +401,58 @@ TEST(GirFrameAnalysisTest, UnwaitedRawOwnershipDropsFromWarFence) {
     EXPECT_EQ(tensorWaits, 1);
 }
 
+TEST(GirFrameAnalysisTest, EarlyRawFenceDoesNotStealSameTripWarDeadline) {
+    Function function("early_raw_same_trip_war");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* block = function.createBasicBlock("entry");
+
+    StinkyInstruction* copyA = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
+    copyA->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* readB = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 4, 24);
+    readB->addModifier<GirActionData>(
+        GirActionData{1, 0, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+    StinkyInstruction* readA = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
+    readA->addModifier<GirActionData>(
+        GirActionData{2, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+    createDsReadB128InBlock(block, GfxArchID::Gfx1250, 8, 28);
+    StinkyInstruction* copyB = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
+    copyB->addModifier<GirActionData>(
+        GirActionData{3, 0, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kFenceContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    createGirFencePlacementPass()->run(function, context, analyses);
+    createGirWaitCntInsertionPass()->run(function, context, analyses);
+
+    std::vector<StinkyInstruction*> instructions;
+    for (IRBase& node : *block)
+        if (auto* inst = dyn_cast<StinkyInstruction>(&node)) instructions.push_back(inst);
+
+    std::vector<std::string> stamps;
+    int warWait = -1;
+    for (size_t i = 0; i < instructions.size(); ++i) {
+        if (!isBarrierWait(*instructions[i])) continue;
+        const auto* stamp = instructions[i]->getModifier<CommentData>();
+        ASSERT_NE(stamp, nullptr);
+        stamps.push_back(stamp->comment);
+        if (stamp->comment != "GIR fence (WAR)") continue;
+        for (size_t j = i; j-- > 0;) {
+            if (const auto* wait = instructions[j]->getModifier<SWaitCntData>()) {
+                warWait = wait->dlcnt;
+                break;
+            }
+            if (!isBarrierSignal(*instructions[j])) break;
+        }
+    }
+    EXPECT_EQ(stamps, (std::vector<std::string>{"GIR fence (RAW)", "GIR fence (WAR)"}));
+    EXPECT_EQ(warWait, 2);
+}
+
 TEST(GirFrameAnalysisTest, EarlyRawFenceDoesNotOwnAnOlderWar) {
     Function function("early_raw_late_war");
     setFunctionArch(function, GfxArchID::Gfx1250);
@@ -564,7 +616,7 @@ TEST(GirFrameAnalysisTest, CoLocatedRawsShareOneFence) {
     EXPECT_EQ(stamp->comment, "GIR fence (RAW)");
 }
 
-TEST(GirFrameAnalysisTest, SharedFenceStampsEveryOwnedHazardKind) {
+TEST(GirFrameAnalysisTest, DistinctHazardDeadlinesKeepSeparateFenceKinds) {
     Function function("stamped_fence");
     setFunctionArch(function, GfxArchID::Gfx1250);
     setFunctionNumWaves(function, 2);
@@ -602,17 +654,17 @@ TEST(GirFrameAnalysisTest, SharedFenceStampsEveryOwnedHazardKind) {
 
     createGirFencePlacementPass()->run(function, context, analyses);
 
-    int signals = 0;
-    const CommentData* stamp = nullptr;
+    std::vector<std::string> stamps;
     for (IRBase& node : *block) {
         auto* inst = dyn_cast<StinkyInstruction>(&node);
         if (!inst) continue;
-        signals += isBarrierSignal(*inst);
-        if (isBarrierWait(*inst)) stamp = inst->getModifier<CommentData>();
+        if (!isBarrierWait(*inst)) continue;
+        const auto* stamp = inst->getModifier<CommentData>();
+        ASSERT_NE(stamp, nullptr);
+        stamps.push_back(stamp->comment);
     }
-    EXPECT_EQ(signals, 1);
-    ASSERT_NE(stamp, nullptr);
-    EXPECT_EQ(stamp->comment, "GIR fence (RAW,WAR,WAW)");
+    EXPECT_EQ(stamps,
+              (std::vector<std::string>{"GIR fence (RAW)", "GIR fence (WAR)", "GIR fence (WAW)"}));
 }
 
 TEST(GirFrameAnalysisTest, WarBarriersMergeAtLaterSlotWithoutTensorIssue) {
