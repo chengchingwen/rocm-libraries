@@ -187,7 +187,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import List, Mapping, NamedTuple, Optional, Tuple, Union
 
-from Tensile.Components import TDMSplit as _tdm_split
+from .Components import TDMSplit as _tdm_split
 from .Lowering.lds_geometry import region_row_elems
 from .Components.LoopModel.Program import loopModelGirProgram
 from .Components.LoopModel.Registers import operandNumVgprBuffer

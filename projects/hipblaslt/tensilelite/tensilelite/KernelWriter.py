@@ -61,6 +61,7 @@ from .Components.Subtile.SubtileLdsLayout import applyLdsLayout
 from .Components.DecouplePGR import decouplePGRBlocks, decoupledSingleBuffered, dcpLdsSide
 from .Components.DecouplePGR import tdmWaveIssueOrder, decoupledThickGateRelaxation, dcpThickGateFromTokenPasses, dcpThickGateUncoveredSites, dcpIsFillLabel, DCP_TENSORCNT_RE, DCP_THICK_GATE_TEXT, DCP_THICK_GATE_TOKENS
 from .Components.TDMFuse import tdmWavePartition
+from .Components import TDMSplit as _tdm_split
 from .Components.LoopModel.Emit import (loopModelDrainIter, loopModelPrologue,
                                         loopModelPrologueCopies, loopModelSteadyBlocks,
                                         loopModelSteadyIter)
@@ -95,8 +96,6 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from typing import Dict, List, NamedTuple, Optional,Tuple, Type
 from math import ceil, prod
-
-from Tensile.Components import TDMSplit as _tdm_split
 
 
 def _needsPreLoopLocalReadDrain(kernel, numItersPLR, preLoopLocalReadDrainEmitted):
