@@ -101,7 +101,7 @@ requires TDMSplit; without it, [2,2]/[4,1] need VWA == WaveTileA and [1,4] needs
 VWB == WaveTileB.
 """
 
-from Tensile.Components import TDMSplit
+from ..Components import TDMSplit
 
 # gfx1250 LDS segment size (5 x 64 KiB segments).
 SEG = 65536
