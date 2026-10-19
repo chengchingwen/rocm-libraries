@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from .analyses.cfg import successors
 from .emit_plan import plan_block
+from .nodes import Mark, Mma, Move
+from .render import _mma_line, _move_line
 
 
 def _wmma_inputs(prog):
@@ -42,14 +44,29 @@ def _expected(prog, at, which):
     return (op, at["idx0"] if which == 0 else at["idx1"], at["u"])
 
 
+def _event(phase, position, action):
+    """One plan event using the existing GIR render format."""
+    source = getattr(action, "source", None)
+    if isinstance(source, Move):
+        text = _move_line(source)
+    elif isinstance(source, Mma):
+        text = _mma_line(source)
+    elif isinstance(source, Mark):
+        text = "Mark  %s %s" % (source.kind, source.at)
+    else:
+        text = "%s %s" % (action.kind, action.at)
+    return "%s:%d  %s" % (phase, position, text)
+
+
 class _RegFile:
-    """`name -> (source coordinates, used)` -- one abstract vgpr file."""
+    """`name -> (source coordinates, used, defining event)` -- one abstract vgpr file."""
 
     def __init__(self, initial=None):
         self.slots = dict(initial or {})
 
     def snapshot(self):
-        return {name: (sources, True) for name, (sources, _used) in self.slots.items()}
+        return {name: (sources, True, event)
+                for name, (sources, _used, event) in self.slots.items()}
 
     def clone(self):
         return _RegFile(self.slots)
@@ -76,10 +93,14 @@ def _walk(prog, phase, regs, viol, acts=None):
                 prev = regs.slots.get(name)
                 if prev is not None and not prev[1] and prev[0] != sources:
                     viol.append(
-                        "%s:%d OVERWRITE-BEFORE-USE  register %s held source(s) %s (never read by a "
-                        "wmma) and is refilled with %s.  The rotation width cannot hold both "
-                        "generations." % (phase, i, name, sorted(prev[0]), sorted(sources)))
-                regs.slots[name] = (sources, False)
+                        "OVERWRITE-BEFORE-USE\n"
+                        "    refill: %s\n"
+                        "    prior fill: %s\n"
+                        "    register %s held source(s) %s (never read by a wmma) and is refilled "
+                        "with %s. The rotation width cannot hold both generations."
+                        % (_event(phase, i, act), prev[2], name, sorted(prev[0]),
+                           sorted(sources)))
+                regs.slots[name] = (sources, False, _event(phase, i, act))
         elif act.kind == "wmma":
             # EVERY REGISTER SOURCE, READ OFF THE ACT (`srcs`) -- not reconstructed here.
             # `emit_plan._plan_mma` already DERIVES which operand each source is and which grid
@@ -91,20 +112,25 @@ def _walk(prog, phase, regs, viol, acts=None):
                         if n[0] == op and n[1] == grp and n[2] == buf and n[3] == unit_index]
                 if not cand:
                     viol.append(
-                        "%s:%d USE-BEFORE-DEF  wmma(idx0=%s,idx1=%s,u=%s) reads %s buffer "
-                        "X%s unit-index %s, which no read in scope has filled."
-                        % (phase, i, at["idx0"], at["idx1"], at["u"], op, buf, unit_index))
+                        "USE-BEFORE-DEF\n"
+                        "    consumer: %s\n"
+                        "    wmma(idx0=%s,idx1=%s,u=%s) reads %s buffer X%s unit-index %s, which "
+                        "no read in scope has filled."
+                        % (_event(phase, i, act), at["idx0"], at["idx1"], at["u"], op, buf,
+                           unit_index))
                     continue
                 for n in cand:
-                    held, _used = regs.slots[n]
+                    held, _used, defining_event = regs.slots[n]
                     if need not in held:
                         viol.append(
-                            "%s:%d WRONG SOURCE  wmma(idx0=%s,idx1=%s,u=%s) reads %s register %s, "
-                            "which holds source(s) %s but the instruction needs "
-                            "(tile=%s,k=%s)."
-                            % (phase, i, at["idx0"], at["idx1"], at["u"], op, n,
-                               sorted(held), logical_index, u))
-                    regs.slots[n] = (held, True)
+                            "WRONG SOURCE\n"
+                            "    consumer: %s\n"
+                            "    last fill: %s\n"
+                            "    wmma(idx0=%s,idx1=%s,u=%s) reads %s register %s, which holds "
+                            "source(s) %s but needs (tile=%s,k=%s)."
+                            % (_event(phase, i, act), defining_event, at["idx0"], at["idx1"],
+                               at["u"], op, n, sorted(held), logical_index, u))
+                    regs.slots[n] = (held, True, defining_event)
 
 
 def prologue_blocks(prog, entry="prologue", loop="steady"):
@@ -306,26 +332,35 @@ def check_refill_splits_consumers(prog, phase="steady", acts=None) -> list:
             for unit in units:
                 slot = (at["tc"], at.get("group"), at["reg_buf"], unit)
                 order.setdefault(slot, []).append(
-                    (i, "refill" if at.get("advance") else "fill", None))
+                    (i, "refill" if at.get("advance") else "fill", None, act))
         elif act.kind == "wmma":
             for op, grp, buf, unit_index, _logical_index in at.get("srcs", ()) or ():
                 issue = tuple(at.get("source_issues", {}).get(op, ()))
                 value = (_logical_index, at.get("u"), issue)
-                order.setdefault((op, grp, buf, unit_index), []).append((i, "use", value))
+                order.setdefault((op, grp, buf, unit_index), []).append(
+                    (i, "use", value, act))
     viol = []
     for slot, seq in sorted(order.items(), key=lambda kv: str(kv[0])):
-        seq.sort()
-        for index, (n, kind, _value) in enumerate(seq):
+        seq.sort(key=lambda item: item[0])
+        for index, (n, kind, _value, action) in enumerate(seq):
             if kind == "refill":
-                before = {value for _m, k, value in seq[:index] if k == "use"}
-                after = {value for _m, k, value in seq[index + 1:] if k == "use"}
+                before = {value for _m, k, value, _action in seq[:index] if k == "use"}
+                after = {value for _m, k, value, _action in seq[index + 1:] if k == "use"}
                 split = before & after
                 if split:
+                    events = "\n".join(
+                        "      - %s  [%s%s]"
+                        % (_event(phase, position, event), event_kind,
+                           " %s" % (value,) if value is not None else "")
+                        for position, event_kind, value, event in seq)
                     viol.append(
-                        "%s:%d REFILL-SPLITS-CONSUMERS  register %s is consumed, refilled by a "
-                        "hoisted read (advance != 0), then consumes the same logical value(s) %s "
-                        "AGAIN -- the second consumer reads the next generation.  Event order: %s"
-                        % (phase, n, slot, sorted(split), [(m, k, value) for m, k, value in seq]))
+                        "REFILL-SPLITS-CONSUMERS\n"
+                        "    refill: %s\n"
+                        "    register %s is consumed, refilled by a hoisted read (advance != 0), "
+                        "then consumes the same logical value(s) %s AGAIN -- the second consumer "
+                        "reads the next generation.\n"
+                        "    event order:\n%s"
+                        % (_event(phase, n, action), slot, sorted(split), events))
                     break
     return viol
 
@@ -432,24 +467,28 @@ def check_unit_index_fits_its_buffer(prog) -> list:
 def _walk_values(prog, phases, held, viol=None):
     """Thread register contents through `phases` in order, collecting stale reads into `viol`."""
     for phase in phases:
-        for act in plan_block(prog, phase):
+        for position, act in enumerate(plan_block(prog, phase)):
             at = act.at
             if act.kind == "read":
                 values = _read_values(at)
                 for unit in (at.get("unit_indexes") or (at.get("unit_index", 0),)):
-                    held[(at["tc"], at.get("group"), at["reg_buf"], unit)] = values
+                    held[(at["tc"], at.get("group"), at["reg_buf"], unit)] = (
+                        values, _event(phase, position, act))
             elif act.kind == "wmma" and viol is not None:
                 for op, group, buf, unit, index in at.get("srcs", ()) or ():
-                    have = held.get((op, group, buf, unit))
+                    record = held.get((op, group, buf, unit))
                     want = (index, at.get("u"))
-                    if have is None or want in have:
+                    if record is None or want in record[0]:
                         continue
+                    have, defining_event = record
                     viol.append(
-                        "%s WMMA-READS-STALE-VALUE  %s slot %s unit %s holds %s, but the wmma at "
-                        "C[%s,%s] reads it as tile %s k %s -- a read overwrote the value before "
-                        "its last consumer."
-                        % (phase, op, buf, unit, sorted(have), at.get("idx0"), at.get("idx1"),
-                           index, at.get("u")))
+                        "WMMA-READS-STALE-VALUE\n"
+                        "    consumer: %s\n"
+                        "    last fill: %s\n"
+                        "    %s slot %s unit %s holds %s, but the wmma at C[%s,%s] reads it as "
+                        "tile %s k %s -- a read overwrote the value before its last consumer."
+                        % (_event(phase, position, act), defining_event, op, buf, unit, sorted(have),
+                           at.get("idx0"), at.get("idx1"), index, at.get("u")))
     return held
 
 
