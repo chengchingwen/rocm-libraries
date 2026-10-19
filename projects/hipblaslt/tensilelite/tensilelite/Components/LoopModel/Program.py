@@ -106,6 +106,26 @@ def loopModelGirProgram(writer, kernel):
             passes=passes,
             verify=verify_ir,
         )
+        kinds = {}
+        output_ir = bool(globalParameters.get("OutputLoopIR", False))
+        if output_ir:
+            for block in prog.blocks.values():
+                for operation in block.body:
+                    for _endpoint, _counter, kind, _scope in (
+                        getattr(operation, "deps", ()) or ()
+                    ):
+                        kinds[kind] = kinds.get(kind, 0) + 1
+            # Cache before the semantic check so a failing kernel remains renderable when
+            # OutputLoopIR is diagnosing that exact failure. The failed entry is explicitly
+            # unverified, so no later verified request can reuse it as successful codegen.
+            writer._loopModelMainloopCache = (key, decoded.program, kinds)
+            writer._loopModelGirCache = (
+                key,
+                prog,
+                False,
+                include_dependencies,
+                schedule_tag,
+            )
         if verify_ir:
             violations = check_plan(prog)
             if violations:
@@ -113,14 +133,7 @@ def loopModelGirProgram(writer, kernel):
                     "UseLoopModel: the GIR plan fails its own semantic check (%d violation(s)) — "
                     "a decoder/lowering defect to repair, do NOT gate it off.\n  %s"
                     % (len(violations), "\n  ".join(violations[:8])))
-    kinds = {}
-    if globalParameters.get("OutputLoopIR", False):
-        for block in prog.blocks.values():
-            for operation in block.body:
-                for _endpoint, _counter, kind, _scope in (
-                    getattr(operation, "deps", ()) or ()
-                ):
-                    kinds[kind] = kinds.get(kind, 0) + 1
+    # Verification completed (or was not requested); publish the normal reusable cache state.
     writer._loopModelMainloopCache = (key, decoded.program, kinds)
     writer._loopModelGirCache = (
         key,
