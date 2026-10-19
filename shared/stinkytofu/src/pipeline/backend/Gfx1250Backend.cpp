@@ -180,6 +180,10 @@ bool buildGfx1250Pipeline(ModulePassManager& mpm, StinkyAsmModule& module, const
 
         if (runScheduler || moduleOptions.EnableWaitCntInsertion) {
             PassFeatureConfig passFeatureConfig;
+            // GIR RAW fence placement also consumes the WMMA queue shape in true-SIA0 mode,
+            // where the DAG scheduler is disabled but wait/fence insertion still runs.
+            passFeatureConfig.dagFeatures.wmmaQueueDepth = moduleOptions.WmmaQueueDepth;
+            passFeatureConfig.dagFeatures.wmmaQueueCoverCycles = moduleOptions.WmmaQueueCoverCycles;
             if (runScheduler) {
                 passFeatureConfig.loopConfig.unrollGemm = true;
                 passFeatureConfig.dagFeatures.distributeGlobalRead = true;
@@ -189,9 +193,6 @@ bool buildGfx1250Pipeline(ModulePassManager& mpm, StinkyAsmModule& module, const
                     moduleOptions.TensorLoadWmmaSpace;
                 passFeatureConfig.dagFeatures.tensorLoadDsLoadGapCycles =
                     moduleOptions.TensorLoadDsLoadGapCycles;
-                passFeatureConfig.dagFeatures.wmmaQueueDepth = moduleOptions.WmmaQueueDepth;
-                passFeatureConfig.dagFeatures.wmmaQueueCoverCycles =
-                    moduleOptions.WmmaQueueCoverCycles;
                 passFeatureConfig.dagFeatures.wmmaRefillMode =
                     static_cast<PassFeatureConfig::WmmaRefillMode>(moduleOptions.WmmaRefillMode);
                 passFeatureConfig.dagFeatures.wmmaBatchSize =
