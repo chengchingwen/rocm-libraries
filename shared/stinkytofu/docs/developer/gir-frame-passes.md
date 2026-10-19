@@ -35,8 +35,7 @@ flowchart TD
   region --> fence["GirFencePlacementPass"]
   fence --> swait["StinkyWaitCntInsertionPass (register/token dataflow)"]
   swait --> gwait["GirWaitCntInsertionPass (storage/frame dataflow)"]
-  gwait --> repair["WaitAwareScheduleRepairPass"]
-  repair --> later["cluster barriers and later passes"]
+  gwait --> later["cluster barriers and later passes"]
 ```
 
 `GirFrameContractImportPass` runs before ST region scheduling and only moves
