@@ -3616,6 +3616,9 @@ class Solution(collections.abc.Mapping):
 
     # TDMFuse pins which tensors share a TDM descriptor set; see ValidParameters.py.
     tdmFuse: int = state.get("TDMFuse", 0)
+    # A single wave shares no descriptor, so an unfused row is already TDMFuse=0.
+    if tdmFuse == 1 and state["NumWaves"] <= 1 and tdmGroupingName(state) == "unfused":
+      state["TDMFuse"] = tdmFuse = 0
     if tdmFuse:
       if not tdmBothTensors(state):
         reject(state, printRejectionReason,
@@ -3649,10 +3652,6 @@ class Solution(collections.abc.Mapping):
         if state.get("UseSubtileImpl"):
           reject(state, printRejectionReason,
                  "TDMFuse=1 requires UseSubtileImpl=0")
-          return
-        if not (state["ProblemType"]["MXBlockA"] and state["ProblemType"]["MXBlockB"]):
-          reject(state, printRejectionReason,
-                 "TDMFuse=1 requires MX scales on both tensors")
           return
         if state["enableTDMMetadata"]:
           reject(state, printRejectionReason,
@@ -3773,10 +3772,6 @@ class Solution(collections.abc.Mapping):
         if state.get("UseSubtileImpl"):
           reject(state, printRejectionReason,
                  "TDMFuse=1 requires UseSubtileImpl=0")
-          return
-        if not (state["ProblemType"]["MXBlockA"] and state["ProblemType"]["MXBlockB"]):
-          reject(state, printRejectionReason,
-                 "TDMFuse=1 requires MX scales on both tensors")
           return
         if state["enableTDMMetadata"]:
           reject(state, printRejectionReason,
