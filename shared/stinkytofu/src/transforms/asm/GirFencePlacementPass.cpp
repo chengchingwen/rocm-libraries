@@ -701,6 +701,81 @@ class GirFencePlacementPass final : public StinkyInstPass {
         };
         closeFenceCut();
 
+        // Reuse an earlier mandatory RAW marker for a pure WAR only when doing so is free on the
+        // DS counter. The exact frame paths choose the receiving RAW markers; a virtual before/
+        // after wait plan proves that none gains a dscnt and no existing dscnt becomes smaller.
+        const auto dsCountAt = [](const waitcnt::WaitInsertionPlan& plan,
+                                  const StinkyInstruction* marker) {
+            auto wait = plan.anchorWaits.find(const_cast<StinkyInstruction*>(marker));
+            return wait == plan.anchorWaits.end() ? waitcnt::WaitCountSpec::kUnused
+                                                  : wait->second.dsCount;
+        };
+        for (bool merged = true; merged;) {
+            merged = false;
+            const waitcnt::WaitInsertionPlan baseline =
+                waitcnt::buildGirFrameWaitPlan(function, frames, hazards, covers, marked);
+            for (const StinkyInstruction* candidate : inProgramOrder(markers)) {
+                if (mandatoryRawMarkers.count(candidate)) continue;
+                auto candidateCoverage = markerCoverage.find(candidate);
+                if (candidateCoverage == markerCoverage.end() ||
+                    hazardKinds(candidateCoverage->second) != HazardKinds{GirHazardKind::WAR})
+                    continue;
+
+                std::vector<size_t> ownedHazards;
+                for (size_t h = 0; h < hazards.hazards.size(); ++h) {
+                    const GirFrameHazard& hazard = hazards.hazards[h];
+                    if (!candidateCoverage->second.contains(hazardClass(hazard))) continue;
+                    const GirHazardFenceCover cover = enclosingFences(frames, hazard, marked);
+                    if (std::any_of(cover.owners.begin(), cover.owners.end(),
+                                    [&](const GirHazardFenceOwner& owner) {
+                                        return owner.anchor == candidate;
+                                    }))
+                        ownedHazards.push_back(h);
+                }
+                if (ownedHazards.empty()) continue;
+
+                markers.erase(candidate);
+                std::map<const StinkyInstruction*, HazardClasses> adopted;
+                bool legal = true;
+                for (size_t h : ownedHazards) {
+                    const GirFrameHazard& hazard = hazards.hazards[h];
+                    const GirHazardFenceCover cover = enclosingFences(frames, hazard, marked);
+                    if (!cover.hasHazardPath || cover.hasUnfencedPath || cover.owners.empty()) {
+                        legal = false;
+                        break;
+                    }
+                    for (const GirHazardFenceOwner& owner : cover.owners) {
+                        if (!owner.anchor || !mandatoryRawMarkers.count(owner.anchor)) {
+                            legal = false;
+                            break;
+                        }
+                        adopted[owner.anchor].insert(hazardClass(hazard));
+                    }
+                    if (!legal) break;
+                }
+
+                if (legal) {
+                    const waitcnt::WaitInsertionPlan trial =
+                        waitcnt::buildGirFrameWaitPlan(function, frames, hazards, covers, marked);
+                    for (const auto& [rawMarker, _classes] : adopted)
+                        if (dsCountAt(trial, rawMarker) != dsCountAt(baseline, rawMarker)) {
+                            legal = false;
+                            break;
+                        }
+                }
+
+                if (!legal) {
+                    markers.insert(candidate);
+                    continue;
+                }
+                markerCoverage.erase(candidate);
+                for (const auto& [rawMarker, classes] : adopted)
+                    markerCoverage[rawMarker].insert(classes.begin(), classes.end());
+                merged = true;
+                break;
+            }
+        }
+
         // Phase 3b: plan waits against the still-virtual fence set. Tensor RAW ownership without a
         // tensor wait publishes no new completion, so drop that ownership. If the marker then owns
         // nothing else, retire it and close the fence cut again: another hazard that happened to

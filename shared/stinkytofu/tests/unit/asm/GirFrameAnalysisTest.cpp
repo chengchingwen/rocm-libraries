@@ -516,6 +516,51 @@ TEST(GirFrameAnalysisTest, EarlyRawFenceDoesNotStealSameTripWarDeadline) {
     EXPECT_EQ(warWait, 2);
 }
 
+TEST(GirFrameAnalysisTest, RawFenceReusesWarWhenDscntIsUnchanged) {
+    Function function("raw_reuses_free_war");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* block = function.createBasicBlock("entry");
+
+    StinkyInstruction* copyA = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
+    copyA->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* readB = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 4, 24);
+    readB->addModifier<GirActionData>(
+        GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+    AsmIRBuilder builder(*block, GfxArchID::Gfx1250);
+    StinkyInstruction* existingWait =
+        builder.create(getMCIDByUOp(GFX::s_wait_dscnt, GfxArchID::Gfx1250));
+    existingWait->addSrcReg(StinkyRegister(0));
+    SWaitCntData waitData;
+    waitData.dlcnt = 0;
+    existingWait->addModifier<SWaitCntData>(waitData);
+    StinkyInstruction* readA = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
+    readA->addModifier<GirActionData>(
+        GirActionData{2, 2, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* copyB = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
+    copyB->addModifier<GirActionData>(
+        GirActionData{3, 3, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kFenceContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    createGirFencePlacementPass()->run(function, context, analyses);
+    createGirWaitCntInsertionPass()->run(function, context, analyses);
+
+    std::vector<std::string> stamps;
+    for (IRBase& node : *block) {
+        auto* inst = dyn_cast<StinkyInstruction>(&node);
+        if (!inst || !isBarrierWait(*inst)) continue;
+        const auto* stamp = inst->getModifier<CommentData>();
+        ASSERT_NE(stamp, nullptr);
+        stamps.push_back(stamp->comment);
+    }
+    EXPECT_EQ(stamps, (std::vector<std::string>{"GIR fence (RAW,WAR)"}));
+}
+
 TEST(GirFrameAnalysisTest, EarlyRawFenceDoesNotOwnAnOlderWar) {
     Function function("early_raw_late_war");
     setFunctionArch(function, GfxArchID::Gfx1250);
