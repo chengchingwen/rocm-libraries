@@ -120,6 +120,69 @@ TEST(GirFrameAnalysisTest, FrameDerivedRawPlacementUsesCrossAgentHazard) {
         << "the shared scheduler/fence query must derive tensor RAW identity from FrameMap";
 }
 
+TEST(GirFrameAnalysisTest, TensorRawMarkerMovesBeforeOneWmmaQueue) {
+    Function function("raw_before_wmma");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* block = function.createBasicBlock("entry");
+
+    StinkyInstruction* copy = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
+    copy->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+    AsmIRBuilder builder(*block, GfxArchID::Gfx1250);
+    std::vector<StinkyInstruction*> wmmas;
+    for (int i = 0; i < 3; ++i) {
+        StinkyInstruction* wmma =
+            builder.create(getMCIDByUOp(GFX::v_wmma_f32_16x16x16_bf16, GfxArchID::Gfx1250));
+        wmma->addDestReg(StinkyRegister("v", 40 + i * 24, 8));
+        wmma->addSrcReg(StinkyRegister("v", 48 + i * 24, 8));
+        wmma->addSrcReg(StinkyRegister("v", 56 + i * 24, 8));
+        wmma->addSrcReg(StinkyRegister("v", 40 + i * 24, 8));
+        wmmas.push_back(wmma);
+    }
+    StinkyInstruction* read = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
+    read->addModifier<GirActionData>(
+        GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kFenceContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    PassFeatureConfig config;
+    config.dagFeatures.wmmaQueueDepth = 2;
+    context.setPassFeatureConfig(config);
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    const auto& frames = analyses.getResult<GirFrameAnalysis>(function);
+    const auto& hazards = analyses.getResult<GirFrameHazardAnalysis>(function);
+    const GirRawPlacementPlan placements = computeGirRawPlacementPlan(function, frames, hazards, 2);
+    EXPECT_TRUE(placements.markers.contains(wmmas[1]));
+    EXPECT_FALSE(placements.markers.contains(read));
+
+    createGirFencePlacementPass()->run(function, context, analyses);
+    createGirWaitCntInsertionPass()->run(function, context, analyses);
+    std::vector<StinkyInstruction*> instructions;
+    for (IRBase& node : *block)
+        if (auto* inst = dyn_cast<StinkyInstruction>(&node)) instructions.push_back(inst);
+    const auto position = [&](StinkyInstruction* inst) -> size_t {
+        return static_cast<size_t>(std::find(instructions.begin(), instructions.end(), inst) -
+                                   instructions.begin());
+    };
+    auto tensorWait =
+        std::find_if(instructions.begin(), instructions.end(), [](const StinkyInstruction* inst) {
+            return inst->getModifier<SWaitTensorCntData>() != nullptr;
+        });
+    auto barrierWait = std::find_if(instructions.begin(), instructions.end(),
+                                    [](const auto* inst) { return isBarrierWait(*inst); });
+    ASSERT_NE(tensorWait, instructions.end());
+    ASSERT_NE(barrierWait, instructions.end());
+    const size_t tensorWaitPos = static_cast<size_t>(tensorWait - instructions.begin());
+    EXPECT_LT(position(wmmas[0]), tensorWaitPos);
+    EXPECT_LT(tensorWaitPos, position(*barrierWait));
+    EXPECT_LT(position(*barrierWait), position(wmmas[1]));
+    EXPECT_LT(position(wmmas[1]), position(wmmas[2]));
+    EXPECT_LT(position(wmmas[2]), position(read));
+}
+
 TEST(GirFrameAnalysisTest, ForwardingPhiDistinguishesLatchBackEdgeFromDrainExit) {
     Function function("forwarding_exit");
     setFunctionArch(function, GfxArchID::Gfx1250);
