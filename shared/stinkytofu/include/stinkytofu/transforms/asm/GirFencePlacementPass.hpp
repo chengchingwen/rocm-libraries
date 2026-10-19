@@ -28,7 +28,7 @@ struct GirRawPlacementPlan {
 
 STINKYTOFU_EXPORT GirRawPlacementPlan
 computeGirRawPlacementPlan(Function& function, const GirFrameAnalysis::Result& frames,
-                           const GirFrameHazardAnalysis::Result& hazards);
+                           const GirFrameHazardAnalysis::Result& hazards, int wmmaLead = 0);
 
 /// Moves each GIR fence inside its admissible window to the slot with the deepest counter
 /// residual, so the wait the next pass anchors on it drains as little as possible.
