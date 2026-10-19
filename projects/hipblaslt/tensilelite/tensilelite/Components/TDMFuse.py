@@ -4,6 +4,7 @@
 
   TDMFuse=0  {A,B} + {MXSA,MXSB}   default two-way parity
   TDMFuse=1  {A,MXSA} + {MXSB,B}   paired: each scale on a data tensor
+             {A} + {B}             unfused: the same row with no scale to pair, nothing shares
   TDMFuse=2  {A,MXSA,MXSB} + {B}   block split; with both scales 2/1/1 on 4 waves,
                                    and on 2 waves MXSA and MXSB share wave 1
   TDMFuse=3  {B,MXSA,MXSB} + {A}   the mirror of 2, same split and wave counts
@@ -52,6 +53,7 @@ TDM_GROUPS = {
     "A_MX": TdmGrouping("A_MX", (("A", "MXSA", "MXSB"), ("B",)), layout="block"),
     "B_MX": TdmGrouping("B_MX", (("B", "MXSA", "MXSB"), ("A",)), layout="block"),
     "AB_first": TdmGrouping("AB_first", (("A", "B"), ("A",), ("B",), ("MXSA", "MXSB"))),
+    "unfused": TdmGrouping("unfused", (("A",), ("B",))),
 }
 
 # Baked into shipped solution names, so these integers cannot move.
@@ -62,6 +64,12 @@ def tdmBothTensors(ks):
     """True when TDMInst moves both A and B (bits 0 and 1)."""
     tdmInst = ks.get("TDMInst", 0)
     return bool(tdmInst & 0x01) and bool(tdmInst & 0x02)
+
+
+def _mxScalesLive(ks):
+    """True when both data tensors carry an MX scale."""
+    pt = ks.get("ProblemType") or {}
+    return bool(pt.get("MXBlockA") and pt.get("MXBlockB"))
 
 
 def _tdmFuseCanShareDescriptors(ks):
@@ -114,6 +122,7 @@ _GROUPING_ACCEPTED = {
     "A_MX": _acceptSharedScaleSet,
     "B_MX": _acceptSharedScaleSet,
     "AB_first": _acceptStaggeredRegions,
+    "unfused": _acceptAlways,
 }
 
 # The row a declined grouping falls back to, which is also TDMFuse=0's row.
@@ -127,6 +136,9 @@ def tdmGroupingName(ks):
     if name is None:
         raise ValueError("TDMFuse=%r names no grouping; mapped values are %s"
                          % (fuse, sorted(TDM_FUSE_GROUPING)))
+    if name == "paired" and not _mxScalesLive(ks):
+        # No scale to pair, so each set holds one data tensor and nothing is shared.
+        name = "unfused"
     if name not in TDM_GROUPS:
         raise ValueError("TDMFuse=%r maps to %r, which is not a row of TDM_GROUPS (%s)"
                          % (fuse, name, sorted(TDM_GROUPS)))

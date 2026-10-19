@@ -26045,7 +26045,7 @@ class KernelWriterAssembly(KernelWriter):
     elif kernel["NumWaves"] > 1 and self.tdmPairOnEveryWave(kernel, tPA, tPB):
       mod.add(SCMovB32(dst=sgpr("GlobalReadIncsA"), src=0, comment=""))
       mod.add(SCMovB32(dst=sgpr("GlobalReadIncsB"), src=0, comment=""))
-    elif kernel["NumWaves"] > 1:
+    elif kernel["NumWaves"] > 1 and tdmFusedGroups(kernel):
       mod.add(SCMovB32(dst=sgpr("tdmABIncs"), src=0, comment=""))
       if kernel["ProblemType"]["MXBlockA"] and kernel["ProblemType"]["MXBlockB"]:
         mod.add(SCMovB32(dst=sgpr("tdmMXSAMXSBIncs"), src=0, comment=""))
