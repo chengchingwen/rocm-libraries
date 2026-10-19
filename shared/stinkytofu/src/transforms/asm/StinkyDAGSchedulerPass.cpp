@@ -1025,7 +1025,9 @@ class StinkyDAGSchedulerPass : public StinkyInstPass {
             AM.getResult<GirFrameHazardAnalysis>(func);
         const GirRawPlacementPlan rawPlacements =
             passCtx.getPassFeatureConfig().dagFeatures.clusterBarrierTensorLoadDelayCycles > 0
-                ? computeGirRawPlacementPlan(func, girFrames, girHazards)
+                ? computeGirRawPlacementPlan(
+                      func, girFrames, girHazards,
+                      passCtx.getPassFeatureConfig().dagFeatures.wmmaQueueDepth)
                 : GirRawPlacementPlan{};
         validateGirFrameHazardOrder(girHazards, "incoming");
 
