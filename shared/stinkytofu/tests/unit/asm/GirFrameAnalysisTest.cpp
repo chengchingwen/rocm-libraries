@@ -667,7 +667,7 @@ TEST(GirFrameAnalysisTest, DistinctHazardDeadlinesKeepSeparateFenceKinds) {
               (std::vector<std::string>{"GIR fence (RAW)", "GIR fence (WAR)", "GIR fence (WAW)"}));
 }
 
-TEST(GirFrameAnalysisTest, WarBarriersMergeAtLaterSlotWithoutTensorIssue) {
+TEST(GirFrameAnalysisTest, DistinctWarStorageKeepsSeparateBarriers) {
     Function function("merge_war_fences");
     setFunctionArch(function, GfxArchID::Gfx1250);
     setFunctionNumWaves(function, 2);
@@ -693,25 +693,76 @@ TEST(GirFrameAnalysisTest, WarBarriersMergeAtLaterSlotWithoutTensorIssue) {
     registerAllAnalyses(analyses);
     createGirFencePlacementPass()->run(function, context, analyses);
 
-    int signals = 0;
-    const CommentData* stamp = nullptr;
-    StinkyInstruction* instructionAfterWait = nullptr;
+    std::vector<std::string> stamps;
+    std::vector<StinkyInstruction*> instructionsAfterWait;
     bool sawWait = false;
     for (IRBase& node : *block) {
         auto* inst = dyn_cast<StinkyInstruction>(&node);
         if (!inst) continue;
-        signals += isBarrierSignal(*inst);
         if (isBarrierWait(*inst)) {
-            stamp = inst->getModifier<CommentData>();
+            const auto* stamp = inst->getModifier<CommentData>();
+            ASSERT_NE(stamp, nullptr);
+            stamps.push_back(stamp->comment);
             sawWait = true;
-        } else if (sawWait && !instructionAfterWait) {
-            instructionAfterWait = inst;
+        } else if (sawWait) {
+            instructionsAfterWait.push_back(inst);
+            sawWait = false;
         }
     }
-    EXPECT_EQ(signals, 1);
-    EXPECT_EQ(instructionAfterWait, copyA);
-    ASSERT_NE(stamp, nullptr);
-    EXPECT_EQ(stamp->comment, "GIR fence (WAR)");
+    EXPECT_EQ(stamps, (std::vector<std::string>{"GIR fence (WAR)", "GIR fence (WAR)"}));
+    EXPECT_EQ(instructionsAfterWait, (std::vector<StinkyInstruction*>{copyA, copyB}));
+}
+
+TEST(GirFrameAnalysisTest, WarWaitRetainsYoungerReadsOfDifferentStorage) {
+    Function function("war_storage_rank");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* block = function.createBasicBlock("entry");
+
+    StinkyInstruction* readA = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
+    readA->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+    for (int i = 0; i < 16; ++i) {
+        StinkyInstruction* readB =
+            createDsReadB128InBlock(block, GfxArchID::Gfx1250, 4 + i * 4, 24);
+        readB->addModifier<GirActionData>(
+            GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+    }
+    StinkyInstruction* copyA = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
+    copyA->addModifier<GirActionData>(
+        GirActionData{2, 2, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* copyB = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
+    copyB->addModifier<GirActionData>(
+        GirActionData{3, 3, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kFenceContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    createGirFencePlacementPass()->run(function, context, analyses);
+    createGirWaitCntInsertionPass()->run(function, context, analyses);
+
+    std::vector<StinkyInstruction*> instructions;
+    for (IRBase& node : *block)
+        if (auto* inst = dyn_cast<StinkyInstruction>(&node)) instructions.push_back(inst);
+
+    std::vector<int> warWaits;
+    for (size_t i = 0; i < instructions.size(); ++i) {
+        if (!isBarrierWait(*instructions[i])) continue;
+        const auto* stamp = instructions[i]->getModifier<CommentData>();
+        if (!stamp || stamp->comment != "GIR fence (WAR)") continue;
+        int waitValue = -1;
+        for (size_t j = i; j-- > 0;) {
+            if (const auto* wait = instructions[j]->getModifier<SWaitCntData>()) {
+                waitValue = wait->dlcnt;
+                break;
+            }
+            if (!isBarrierSignal(*instructions[j])) break;
+        }
+        warWaits.push_back(waitValue);
+    }
+    EXPECT_EQ(warWaits, (std::vector<int>{16, 0}));
 }
 
 TEST(GirFrameAnalysisTest, TensorIssueKeepsWarBarriersSeparate) {
