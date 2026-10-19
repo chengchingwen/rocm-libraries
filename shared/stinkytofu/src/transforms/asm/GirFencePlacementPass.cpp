@@ -288,7 +288,8 @@ bool countsFor(const StinkyInstruction& inst, Counter counter) {
 /// producer action may share the earliest of their deadlines only when that slot is legal for
 /// every edge and no issue on the producer's counter lies between them; each edge's FIFO rank is
 /// then unchanged. Different groups that land on the same instruction naturally share one marker.
-GirRawPlacementPlan rawMarkers(const FrameCFG& cfg, const GirFrameHazardAnalysis::Result& hazards) {
+GirRawPlacementPlan rawMarkers(const FrameCFG& cfg, const GirFrameHazardAnalysis::Result& hazards,
+                               int wmmaLead) {
     using Group = std::tuple<BasicBlock*, uint64_t, Counter>;
     using ByDeadline = std::map<size_t, std::vector<const GirFrameHazard*>>;
     std::map<Group, ByDeadline> deadlines;
@@ -330,7 +331,20 @@ GirRawPlacementPlan rawMarkers(const FrameCFG& cfg, const GirFrameHazardAnalysis
         const auto flush = [&] {
             if (clusterLow >= instructions.size())
                 STINKY_UNREACHABLE("GirFencePlacementPass: RAW deadline is outside its block");
-            const StinkyInstruction* marker = instructions[clusterLow];
+            size_t markerSlot = clusterLow;
+            // Let one configured WMMA queue hide the tensor wait + barrier. The marker still
+            // precedes the ds_load consumer, and no tensor issue is crossed, so its counter rank
+            // is unchanged. Stop at the first non-WMMA or edge that cannot legally move earlier.
+            int wmmaMoved = 0;
+            for (; counter == Counter::Tensor && wmmaMoved < wmmaLead && markerSlot > 0 &&
+                   isMatrixInstruction(*instructions[markerSlot - 1]) &&
+                   std::all_of(cluster.begin(), cluster.end(),
+                               [&](const GirFrameHazard* hazard) {
+                                   return legalAt(*hazard, markerSlot - 1);
+                               });
+                 ++wmmaMoved)
+                --markerSlot;
+            const StinkyInstruction* marker = instructions[markerSlot];
             plan.markers.insert(marker);
             if (counter == Counter::Tensor) plan.tensorMarkers.insert(marker);
         };
@@ -578,7 +592,8 @@ class GirFencePlacementPass final : public StinkyInstPass {
         // stale under an insertion and an undo costs a set erase instead of a block rebuild.
         const FrameCFG cfg = buildFrameCFG(function, frames);
         if (cfg.nodes.empty()) return PreservedAnalyses::all();
-        const GirRawPlacementPlan rawPlan = rawMarkers(cfg, hazards);
+        const int wmmaLead = std::max(0, passCtx.getPassFeatureConfig().dagFeatures.wmmaQueueDepth);
+        const GirRawPlacementPlan rawPlan = rawMarkers(cfg, hazards, wmmaLead);
         const Markers& mandatoryRawMarkers = rawPlan.markers;
         Markers markers = mandatoryRawMarkers;
         MarkerCoverage markerCoverage;
@@ -813,10 +828,11 @@ char GirFencePlacementPass::ID = 0;
 namespace stinkytofu {
 GirRawPlacementPlan computeGirRawPlacementPlan(Function& function,
                                                const GirFrameAnalysis::Result& frames,
-                                               const GirFrameHazardAnalysis::Result& hazards) {
+                                               const GirFrameHazardAnalysis::Result& hazards,
+                                               int wmmaLead) {
     const FrameCFG cfg = buildFrameCFG(function, frames);
     if (cfg.nodes.empty()) return {};
-    return rawMarkers(cfg, hazards);
+    return rawMarkers(cfg, hazards, std::max(0, wmmaLead));
 }
 
 std::unique_ptr<Pass> createGirFencePlacementPass() {
