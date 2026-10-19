@@ -22807,7 +22807,7 @@ class KernelWriterAssembly(KernelWriter):
       sep = "B" if tdmSharedScaleSetOwner(kernel) == "A" else "A"
       mod.add(SCMovB32(dst=sgpr("tdmABIncs"), src=0, comment=""))
       mod.add(SCMovB32(dst=sgpr(f"GlobalReadIncs{sep}"), src=0, comment=""))
-    elif kernel["NumWaves"] > 1:
+    elif kernel["NumWaves"] > 1 and tdmFusedGroups(kernel):
       mod.add(SCMovB32(dst=sgpr("tdmABIncs"), src=0, comment=""))
       if kernel["ProblemType"]["MXBlockA"]:
         mod.add(SCMovB32(dst=sgpr("tdmMXSAMXSBIncs"), src=0, comment=""))
