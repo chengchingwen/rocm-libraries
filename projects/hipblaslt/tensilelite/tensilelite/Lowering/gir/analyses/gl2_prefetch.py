@@ -6,7 +6,7 @@ Gl2PrefetchRegions -- WHERE the GL2 cache prefetch goes, once per summation chun
 
 from __future__ import annotations
 
-from ..nodes import Mark
+from ..nodes import Mark, Move
 from ..nodes import Region, PendingMark, BLOCK_ENTRY, BLOCK_EXIT, MIDPOINT
 from ..analysis import Analysis
 
@@ -31,13 +31,29 @@ class Gl2PrefetchRegions(Analysis):
         if depth <= 0:
             return []
         out = []
-        for name in prog.blocks:
+        for name, block in prog.blocks.items():
             if not self._is_steady(name):
                 continue
             out.append(PendingMark(
                 mark=Mark("gl2_prefetch", {"depth": depth, "block": name}),
-                region=Region(name, after=BLOCK_ENTRY, before=BLOCK_EXIT, policy=MIDPOINT)))
+                region=Region(name, after=BLOCK_ENTRY, before=self._first_fetch(block),
+                              policy=MIDPOINT)))
         return out
+
+    @staticmethod
+    def _first_fetch(block):
+        """The block's first Move that READS GLOBAL, or BLOCK_EXIT when it has none.
+
+        The prefetch warms a line some chunks ahead, so nothing in this block consumes it and the
+        window is a spacing choice: it ends at the first fetch because that fetch and the prefetch
+        issue down the same memory path, and bisecting the whole block would leave them adjacent.
+        Keyed on the SOURCE, as `gr_increment` is: a register->shared write also fills shared but
+        issues nowhere near global, so ending the window on it would spread against the wrong run.
+        """
+        for inst in block.body:
+            if isinstance(inst, Move) and any(r.tile.space == "global" for r in inst.srcs):
+                return inst
+        return BLOCK_EXIT
 
     @staticmethod
     def _is_steady(name):
