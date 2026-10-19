@@ -4095,6 +4095,9 @@ class Solution(collections.abc.Mapping):
              "TDMFuse=%r names no descriptor grouping; supported values are %s and %d"
              % (tdmFuse, ", ".join(str(v) for v in fuseValues[:-1]), fuseValues[-1]))
       return
+    # A single wave shares no descriptor, so an unfused row is already TDMFuse=0.
+    if tdmFuse == 1 and state["NumWaves"] <= 1 and tdmGroupingName(state) == "unfused":
+      state["TDMFuse"] = tdmFuse = 0
     if tdmFuse:
       if not tdmBothTensors(state):
         reject(state, printRejectionReason,
