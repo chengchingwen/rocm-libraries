@@ -381,7 +381,32 @@ def memCompress(obj):
 def memDecompress(byt):
     return pickle.loads(zlib.decompress(byt))
 
-def processKernelSource(kernelWriterAssembly, data, outOptions, splitGSU, kernel, compress = False) -> KernelCodeGenResult:
+def _loopModelDumpTexts(kernelWriter):
+    try:
+        irText = loopModelIrTextCached(kernelWriter)
+    except Exception as e:
+        irText = f"# LoopModel IR unavailable (bridge error): {e}\n"
+    try:
+        girText = loopModelGirTextCached(kernelWriter)
+    except Exception as e:
+        girText = f"# GIR unavailable (dump error): {e}\n"
+    return irText, girText
+
+
+def _writeFailedLoopModelDumps(kernelWriter, kernelName, irPath):
+    """Best-effort observability for an exception raised before KernelCodeGenResult exists."""
+    if irPath is None or not globalParameters.get("OutputLoopIR", False):
+        return
+    irText, girText = _loopModelDumpTexts(kernelWriter)
+    try:
+        Path(irPath, f"{kernelName}.txt").write_text(irText, encoding="utf-8")
+        Path(irPath, f"{kernelName}.gir").write_text(girText, encoding="utf-8")
+    except Exception as e:
+        printWarning(f"Failed to write IR for failed kernel {kernelName}: {e}")
+
+
+def processKernelSource(kernelWriterAssembly, data, outOptions, splitGSU, kernel, compress = False,
+                        irPath=None) -> KernelCodeGenResult:
     """
     Generate source for a single kernel.
     Returns (error, source, header, kernelName).
@@ -389,7 +414,11 @@ def processKernelSource(kernelWriterAssembly, data, outOptions, splitGSU, kernel
     kernelWriter = kernelWriterAssembly
     kernelWriter.setRocIsa(data, outOptions)
     asmFilename = getKernelFileBase(splitGSU, kernel)
-    err, src = kernelWriter.getSourceFileString(kernel)
+    try:
+        err, src = kernelWriter.getSourceFileString(kernel)
+    except Exception:
+        _writeFailedLoopModelDumps(kernelWriter, asmFilename, irPath)
+        raise
     if compress:
         src = memCompress(src)
     header = kernelWriter.getHeaderFileString(kernel)
@@ -406,14 +435,7 @@ def processKernelSource(kernelWriterAssembly, data, outOptions, splitGSU, kernel
     if globalParameters.get("OutputLoopIR", False):
         # Observability only, and never allowed to break codegen: both render what the writer
         # already cached, so neither can disagree with the `.s` beside it.
-        try:
-            irText = loopModelIrTextCached(kernelWriter)
-        except Exception as e:
-            irText = f"# LoopModel IR unavailable (bridge error): {e}\n"
-        try:
-            girText = loopModelGirTextCached(kernelWriter)
-        except Exception as e:
-            girText = f"# GIR unavailable (dump error): {e}\n"
+        irText, girText = _loopModelDumpTexts(kernelWriter)
     return KernelCodeGenResult(
         err, src, header, asmFilename, objFilename, tuple(kernel["ISA"]), \
         kernel["WavefrontSize"], cuocc, \
@@ -705,7 +727,13 @@ def writeSolutionsAndKernels(
         )
         memcompress = numAsmKernels > 10000
     with timing_context("python_kernel_codegen"):
-        asmResults = ParallelMap2(functools.partial(processKernelSource, compress=memcompress), asmIter, "Generating assembly kernels", return_as="list")
+        asmResults = ParallelMap2(
+            functools.partial(
+                processKernelSource, compress=memcompress, irPath=irOutputPath),
+            asmIter,
+            "Generating assembly kernels",
+            return_as="list",
+        )
     with timing_context("python_kernel_validate"):
         removeInvalidSolutionsAndKernels(
             asmResults, asmKernels, solutions, errorTolerant, getVerbosity(), splitGSU
@@ -870,7 +898,8 @@ def writeSolutionsAndKernelsTCL(
         rocisa.rocIsa.getInstance().getData(),
         outOptions,
         splitGSU,
-        compress = memcompress,
+        compress=memcompress,
+        irPath=irOutputPath,
     )
 
     unaryWriteAssembly = functools.partial(writeAssembly, assemblyTmpPath, irPath=irOutputPath)
