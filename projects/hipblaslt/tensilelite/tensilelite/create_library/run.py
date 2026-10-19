@@ -395,6 +395,30 @@ def memCompress(obj):
 def memDecompress(byt):
     return pickle.loads(zlib.decompress(byt))
 
+def _loopModelDumpTexts(kernelWriter):
+    try:
+        irText = loopModelIrTextCached(kernelWriter)
+    except Exception as e:
+        irText = f"# LoopModel IR unavailable (bridge error): {e}\n"
+    try:
+        girText = loopModelGirTextCached(kernelWriter)
+    except Exception as e:
+        girText = f"# GIR unavailable (dump error): {e}\n"
+    return irText, girText
+
+
+def _writeFailedLoopModelDumps(kernelWriter, kernelName, irPath):
+    """Best-effort observability for an exception raised before KernelCodeGenResult exists."""
+    if irPath is None or not globalParameters.get("OutputLoopIR", False):
+        return
+    irText, girText = _loopModelDumpTexts(kernelWriter)
+    try:
+        Path(irPath, f"{kernelName}.txt").write_text(irText, encoding="utf-8")
+        Path(irPath, f"{kernelName}.gir").write_text(girText, encoding="utf-8")
+    except Exception as e:
+        printWarning(f"Failed to write IR for failed kernel {kernelName}: {e}")
+
+
 _GFX1250 = (12, 5)
 
 
@@ -415,11 +439,16 @@ def _assertCorrectBackendForKernel(kernel) -> None:
         )
 
 
-def _emitKernel(kernelWriterAssembly, splitGSU, kernel, compress=False) -> KernelCodeGenResult:
+def _emitKernel(kernelWriterAssembly, splitGSU, kernel, compress=False,
+                irPath=None) -> KernelCodeGenResult:
     """Run codegen on a single kernel after rocisa state has been set up."""
     _assertCorrectBackendForKernel(kernel)
     asmFilename = getKernelFileBase(splitGSU, kernel)
-    err, src = kernelWriterAssembly.getSourceFileString(kernel)
+    try:
+        err, src = kernelWriterAssembly.getSourceFileString(kernel)
+    except Exception:
+        _writeFailedLoopModelDumps(kernelWriterAssembly, asmFilename, irPath)
+        raise
     if compress:
         src = memCompress(src)
     header = kernelWriterAssembly.getHeaderFileString(kernel)
@@ -436,14 +465,7 @@ def _emitKernel(kernelWriterAssembly, splitGSU, kernel, compress=False) -> Kerne
     if globalParameters.get("OutputLoopIR", False):
         # Observability only, and never allowed to break codegen: both render what the writer
         # already cached, so neither can disagree with the `.s` beside it.
-        try:
-            irText = loopModelIrTextCached(kernelWriter)
-        except Exception as e:
-            irText = f"# LoopModel IR unavailable (bridge error): {e}\n"
-        try:
-            girText = loopModelGirTextCached(kernelWriter)
-        except Exception as e:
-            girText = f"# GIR unavailable (dump error): {e}\n"
+        irText, girText = _loopModelDumpTexts(kernelWriter)
     return KernelCodeGenResult(
         err, src, header, asmFilename, objFilename, tuple(kernel["ISA"]),
         kernel["WavefrontSize"], cuocc,
@@ -452,10 +474,11 @@ def _emitKernel(kernelWriterAssembly, splitGSU, kernel, compress=False) -> Kerne
     )
 
 
-def processKernelSource(kernelWriterAssembly, data, outOptions, splitGSU, kernel, compress = False) -> KernelCodeGenResult:
+def processKernelSource(kernelWriterAssembly, data, outOptions, splitGSU, kernel, compress = False,
+                        irPath=None) -> KernelCodeGenResult:
     """Generate source for a single kernel."""
     kernelWriterAssembly.setRocIsa(data, outOptions)
-    return _emitKernel(kernelWriterAssembly, splitGSU, kernel, compress)
+    return _emitKernel(kernelWriterAssembly, splitGSU, kernel, compress, irPath)
 
 
 def _mapKernels(fn, kernels):
@@ -746,6 +769,7 @@ def writeSolutionsAndKernels(
             outOptions,
             splitGSU,
             compress=memcompress,
+            irPath=irOutputPath,
         )
     with timing_context("python_kernel_codegen"):
         asmResults = _mapKernels(unaryProcessKernelSource, asmKernels)
@@ -914,6 +938,7 @@ def writeSolutionsAndKernelsTCL(
         rocisa.rocIsa.getInstance().getData(),
         outOptions,
         splitGSU,
+        irPath=irOutputPath,
     )
 
     unaryWriteAssembly = functools.partial(writeAssembly, assemblyTmpPath, irPath=irOutputPath)
