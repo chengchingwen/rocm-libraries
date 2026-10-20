@@ -146,7 +146,6 @@
 #define MODULE_OPTIONS_WITH_DEFAULTS_LIST(X)                                                       \
     X(LockDsReadOrder, bool, true)                                                                 \
     X(LockWmmaOrder, bool, false) /* true: WMMAs issue in program order, loads still move */       \
-    X(LockDsReadProgramOrder, bool, false) /* every ds_load in program order, token-blind */       \
     X(EvenSpreadFillers, bool, true)                                                               \
     X(WaitAluHoldStrictCount, int, 2)     /* hold s_wait_alu count <= N to next barrier wait */    \
     X(WarGateWmmas, int, -1)              /* WMMA src -> ds_load overwrite gap; -1 = derived */    \
