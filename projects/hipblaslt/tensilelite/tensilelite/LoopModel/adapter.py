@@ -56,6 +56,7 @@ DEFAULTS = {
     "LoopOrder": "KMN",
     "PrefetchGlobalRead": 2, "PrefetchLocalRead": 1, "HalfPLR": 0,
     "TDMInst": 3, "TDMSplit": [1, 1], "TDMSplitA": 0, "TDMSplitB": 0, "TDMIterateMode": 0,
+    "WmmaFactorM": -1, "WmmaFactorN": -1, "WmmaFactorK": -1,
     "GlobalReadVectorWidthA": 8, "GlobalReadVectorWidthB": 8,
     "VectorWidthA": 2, "VectorWidthB": 2, "LocalReadVectorWidth": 4,
     "DirectToVgprA": False, "DirectToVgprB": False,
@@ -96,6 +97,8 @@ class Ord:
     #: {operand: {region axis: axis values ONE of its regions spans}} -- 1 when the axis value
     #: is the region index, >1 when the shared K walk steps finer than that operand splits.
     regionSpan: dict = None
+    #: {operand: the extra axes its walk steps} -- its regions plus the factors with no storage.
+    factorAxes: dict = None
 
 
 @dataclass(frozen=True)
@@ -186,7 +189,8 @@ def _build_ord(fanM, fanN, kernel, substeps, splits):
     bRegions = shape["regions"]["B"]
     span = shape["span"]
 
-    return Ord(ord_, M_BCAST, N_BCAST, aRegions, bRegions, m_inner, n_inner, span)
+    return Ord(ord_, M_BCAST, N_BCAST, aRegions, bRegions, m_inner, n_inner, span,
+               shape.get("factor_axes") or {})
 
 
 def _read_movements(kernel):
@@ -295,7 +299,8 @@ def _build_operands(configure_read, elem_bytes, frags, movements, kernel, matrix
             axes=nest.aRegions if is_a else nest.bRegions,
             span=(nest.regionSpan or {}).get(parent, {}),
             free_split=max(1, splits.aMT if is_a else splits.bMT),
-            wave_span=splits.waveRegionsA if is_a else splits.waveRegionsB)
+            wave_span=splits.waveRegionsA if is_a else splits.waveRegionsB,
+            factor_axes=(nest.factorAxes or {}).get(parent, ()))
 
     def input_operand(name, free_mode, direct, copy_width, parent):
         spec = frags[name]
@@ -762,6 +767,10 @@ def _movement_params(kernel, target):
         "TDMSplitB": int(kernel.get("TDMSplitB", 0) or 0),
         "TDMSplitWaveRegions": [_tdm_split.wave_region_span(kernel, "A"),
                                 _tdm_split.wave_region_span(kernel, "B")],
+        # The extra WMMA axes, which TDMSplit pins where it splits and leaves free where it does not.
+        "WmmaFactorM": int(kernel.get("WmmaFactorM", -1) or -1),
+        "WmmaFactorN": int(kernel.get("WmmaFactorN", -1) or -1),
+        "WmmaFactorK": int(kernel.get("WmmaFactorK", -1) or -1),
         "MXBlockA": int(kernel["ProblemType"].get("MXBlockA", 0) or 0),
         "MXBlockB": int(kernel["ProblemType"].get("MXBlockB", 0) or 0),
         "LoopOrder": kernel["LoopOrder"],
