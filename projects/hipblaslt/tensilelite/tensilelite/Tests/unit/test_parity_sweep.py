@@ -20,6 +20,13 @@ from Tensile.Lowering.gir.verify_dataflow import check_plan
 from Tensile.Lowering.gir.analyses.region_increment import walk_violations
 
 
+def loopOrder(inner, outer, tdmSplitA, tdmSplitB):
+    """The LoopOrder word a TDMSplit pair gives: the WmmaFactors it pins, in WIO/WOO."""
+    from Tensile.Components.LoopModel.Order import forcedFactors, loopOrder as word
+    return word(inner, outer,
+                forcedFactors({"TDMSplitA": tdmSplitA, "TDMSplitB": tdmSplitB}))
+
+
 def kernel_to_params(kernel):
     """Run the same register calculation as Solution before adapting the kernel."""
 
@@ -90,7 +97,6 @@ def test_local_read_pair_auto_side_inherits_scalar():
 
 def test_k_axis_read_ahead_cap_counts_vg_buffers():
     from Tensile.Components.LoopModel import Registers
-    from Tensile.Components.LoopModel.Order import loopOrder
 
     def cap(kernel, side):
         kernel = dict(kernel)
@@ -369,7 +375,6 @@ def test_deep_b_ring_keeps_full_plr_and_a_complete_three_copy_frame(vg, va, plr)
     steady copies, no drain join, and a frame contract covering every copy edge.
     """
     from Tensile.LoopModel import traversal as geometry
-    from Tensile.Components.LoopModel.Order import loopOrder
     from Tensile.LoopModel.schedule import BufferDepths, Schedule
     from Tensile.Lowering import steady_chain
     from Tensile.Lowering.gir.emit_plan import plan_program
@@ -530,7 +535,6 @@ def test_all_inner_forced_clr1_retains_a_large_enough_explicit_va():
 
 def test_forced_all_inner_rejects_explicit_va_below_required_rotation():
     """Registers owns the floor; adapter rejects an explicit smaller allocation."""
-    from Tensile.Components.LoopModel.Order import loopOrder
 
     k = _kernel(_mxf8(), _mi("fp8", (2, 2), (1, 1)),
                 2, 2, loopOrder(5, 0, 1, 0), 1, 0, 2)
@@ -545,7 +549,6 @@ def test_forced_all_inner_rejects_explicit_va_below_required_rotation():
 
 def test_f8maf2_clra_allocates_the_complete_resident_set():
     """CLR1 A needs four prefetch-unit buffers, not two region slots."""
-    from Tensile.Components.LoopModel.Order import loopOrder
     from Tensile.LoopModel import traversal as geometry
     from Tensile.LoopModel.schedule import BufferDepths
 
@@ -570,7 +573,6 @@ def test_f8maf2_clra_allocates_the_complete_resident_set():
 def test_f8maf2_vab3_forced_clrb_keeps_three_copy_ring():
     """Regression for the WIO2/WOO1 F8 kernel that was numerically wrong in FFM."""
     from Tensile.LoopModel import traversal as geometry
-    from Tensile.Components.LoopModel.Order import loopOrder
     from Tensile.LoopModel.schedule import BufferDepths
     from Tensile.Lowering import steady_chain
 
@@ -615,7 +617,6 @@ def test_f8maf2_vab3_forced_clrb_keeps_three_copy_ring():
 ])
 def test_split_provided_vg_edge_orders_keep_prefetch_and_sources(wio, sa, sb, arm):
     from Tensile.LoopModel import traversal as geometry
-    from Tensile.Components.LoopModel.Order import loopOrder
     from Tensile.LoopModel.schedule import BufferDepths, Schedule
 
     k = _kernel(_mxf8(), _mi("fp8", (2, 2), (1, 1)),
@@ -734,7 +735,6 @@ def test_the_shallow_half_keeps_a_ring_digit_when_the_region_leads():
     """A TDMSplit-provided half is VG1/VA3 and still retains a physical ring digit."""
     from Tensile.LoopModel import traversal as g
     from Tensile.LoopModel.schedule import BufferDepths
-    from Tensile.Components.LoopModel.Order import loopOrder
 
     th = _split_half_plr_theta(loopOrder(1, 1, 1, 0), 1, sa=1, sb=0)
     op, depths = th.op("A"), BufferDepths(th, include_shared=False)
@@ -750,7 +750,6 @@ def test_the_shallow_half_keeps_a_ring_digit_when_the_region_leads():
 @pytest.mark.parametrize("half_plr", [2, 3])
 def test_shallow_half_buffer_splits_broadcast_pass_for_refills(wio, sb, half_plr):
     """VA3 splits the M pass so each target slot is refilled only after its final consumer."""
-    from Tensile.Components.LoopModel.Order import loopOrder
     from Tensile.LoopModel.schedule import BufferDepths
     from Tensile.LoopModel import traversal as geometry
     from Tensile.Lowering.gir.emit_plan import plan_program
@@ -782,7 +781,6 @@ def test_tdmsplit_consuming_vg_still_builds_the_three_copy_ring(wio, half_plr):
     These are the twelve PGR1/PGR2 YAML kernels that previously built one steady
     block, then returned to the wrong half-buffer on hardware.
     """
-    from Tensile.Components.LoopModel.Order import loopOrder
     from Tensile.LoopModel.schedule import BufferDepths
     from Tensile.LoopModel import traversal as geometry
     from Tensile.Lowering import steady_chain
@@ -824,7 +822,6 @@ def test_ungrouped_peer_defers_a_reload_that_would_clobber_its_broadcast_reuse()
     Loading the next generation between those passes overwrites values the second pass still
     needs.  PLR remains requested and LoopIR splits the pass at the refill boundary.
     """
-    from Tensile.Components.LoopModel.Order import loopOrder
     from Tensile.LoopModel.schedule import BufferDepths, Schedule
     from Tensile.LoopModel import traversal as geometry
 

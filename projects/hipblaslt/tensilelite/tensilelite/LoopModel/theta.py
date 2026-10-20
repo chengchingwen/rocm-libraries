@@ -66,6 +66,15 @@ class RegionLayout:
     span: dict = field(default_factory=dict)
     free_split: int = 1
     wave_span: int = 1
+    #: The extra axes a WmmaFactor makes, a superset of `axes` -- every storage region is one
+    #: value of such an axis, but a factor need not have storage behind it.  Empty means the
+    #: two coincide, which is every kernel whose factors come from TDMSplit.
+    factor_axes: tuple = ()
+
+    @property
+    def order_axes(self) -> tuple:
+        """The axes TRAVERSAL treats as the extra level; `axes` is what STORAGE is cut on."""
+        return self.factor_axes or self.axes
 
     @property
     def wave_relative(self) -> bool:
@@ -270,6 +279,12 @@ class Operand:
     def region_axes(self) -> tuple:
         shared = self.trajectory.shared
         return shared.regions.axes if shared is not None else ()
+
+    @property
+    def factor_axes(self) -> tuple:
+        """The extra axes this operand's walk steps, storage behind them or not."""
+        shared = self.trajectory.shared
+        return shared.regions.order_axes if shared is not None else ()
 
     @property
     def region_span(self) -> dict:
@@ -545,12 +560,12 @@ class Theta:
         return self._geometry[operand.name]
 
     def region_axis_names(self) -> frozenset:
-        """Every axis some operand splits storage on."""
+        """Every extra axis some operand's walk steps -- a WmmaFactor's, storage or not."""
         return frozenset(axis for operand in self.operands
-                         for axis in (operand.region_axes or ()))
+                         for axis in (operand.factor_axes or ()))
 
     def global_outer_role(self) -> str:
-        """Outermost logical role in `ord`: a TDMSplit region factor selects storage, not order."""
+        """Outermost logical role in `ord`: an extra-axis factor selects a slot, not an order."""
         regions = self.region_axis_names()
         names = [axis.name for axis in self._inner_axes if axis.name not in regions] \
             or [axis.name for axis in self._inner_axes]
@@ -587,7 +602,9 @@ class Theta:
     def _derive_geometry(self, operand, base) -> OperandGeometry:
         """Build one `OperandGeometry`.  See its docstring for why this is settled here."""
         broadcast, presence, varying = base
-        regions = set(operand.region_axes or ())
+        # The FACTOR axes, not the storage ones: the prefetch unit, the rotation and the
+        # grouping are all "per one value of the extra axis", storage behind it or not.
+        regions = set(operand.factor_axes or ())
         role_modes = tuple((name, extent) for name, extent in varying
                            if name not in regions) or varying
         roles = [mode_role(name) for name, _extent in role_modes if mode_role(name) is not None]

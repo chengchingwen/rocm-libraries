@@ -2,24 +2,54 @@
 # SPDX-License-Identifier: MIT
 """Calculate the LoopModel loop order and axes."""
 
-from math import gcd
-
 from ..TDMSplit import (
-    AXIS_DU,
-    AXIS_MT,
-    TDM_SPLIT_AXIS,
     factor_axis,
     split_factors,
-    split_of,
 )
 
 
 _INNER = ("KMN", "KNM", "MNK", "MKN", "NMK", "NKM")
 _OUTER = (None, "M", "N", "K")
 
+#: The parameter that states each axis role's extra outer factor.
+FACTOR_PARAM = {"M": "WmmaFactorM", "N": "WmmaFactorN", "K": "WmmaFactorK"}
 
-def loopOrder(inner, outer, tdms_a, tdms_b) -> str:
-  """Lower WIO/WOO plus the two TDMSplit selectors to one LoopOrder word."""
+
+def forcedFactors(kernel) -> dict:
+  """`{role: extent}` that TDMSplit PINS, 1 where it leaves the factor free.
+
+  A storage region IS one value of the extra axis -- the region index is the axis value --
+  so a split operand cannot carry a factor the split does not also make.  Everything else is
+  a loop axis with no storage behind it, which is what WmmaFactor adds on its own."""
+  a_mt, b_mt, a_du, b_du = split_factors(kernel) or (1, 1, 1, 1)
+  return {"M": max(1, int(a_mt)), "N": max(1, int(b_mt)),
+          "K": max(1, int(a_du), int(b_du))}
+
+
+def factors(kernel) -> dict:
+  """`{role: extent}` for the three WmmaFactor axes -- the ONE reading of the parameters.
+
+  `-1` derives: the TDMSplit-pinned extent where that operand splits, else 1."""
+  forced = forcedFactors(kernel)
+  resolved = {}
+  for role, name in FACTOR_PARAM.items():
+    value = kernel.get(name)
+    value = -1 if value is None else int(value)
+    if value == -1:
+      value = forced[role]
+    elif value < 1:
+      raise ValueError("%s=%d must be -1 (derive) or a positive extent" % (name, value))
+    elif forced[role] > 1 and value != forced[role]:
+      raise ValueError(
+          "%s=%d contradicts the TDMSplit cutting the same axis into %d: a storage region is "
+          "one value of that axis, so the two extents cannot differ"
+          % (name, value, forced[role]))
+    resolved[role] = value
+  return resolved
+
+
+def loopOrder(inner, outer, extra) -> str:
+  """Lower WIO/WOO plus the three WmmaFactor extents to one LoopOrder word."""
   try:
     inner_index = int(inner) - 1
   except (TypeError, ValueError):
@@ -38,13 +68,7 @@ def loopOrder(inner, outer, tdms_a, tdms_b) -> str:
   outer = _OUTER[outer_index]
   if outer is None:
     return inner
-  split_axes = set()
-  for side, value in (("A", tdms_a), ("B", tdms_b)):
-    mt, du = TDM_SPLIT_AXIS.get(int(value or 0), (1, 1))
-    if mt > 1:
-      split_axes.add("M" if side == "A" else "N")
-    if du > 1:
-      split_axes.add("K")
+  split_axes = {role for role, extent in dict(extra).items() if int(extent) > 1}
   remaining = "".join(axis for axis in inner if axis != outer)
   return (
       outer + outer + remaining + remaining
@@ -53,40 +77,43 @@ def loopOrder(inner, outer, tdms_a, tdms_b) -> str:
   )
 
 
-def _splitAxis(kernel, side):
-  _factor, axis = split_of(kernel, side)
-  if axis == AXIS_MT:
-    return "M" if side == "A" else "N"
-  return "K" if axis == AXIS_DU else None
-
-
 def _autoOuter(kernel):
   tiles = kernel["MIWaveTile"]
   k_tiles = max(
       1,
       int(kernel["DepthU"]) // int(kernel["MatrixInstruction"][2]),
   )
+  extra = factors(kernel)
   weights = {}
   for side, tile in (("A", tiles[0]), ("B", tiles[1])):
-    axis = _splitAxis(kernel, side)
-    if axis is None:
+    # ONE AXIS PER SIDE: its own free axis when that is factored, else the shared K.  An
+    # operand already paying for its free factor does not also price the reduction.
+    free = "M" if side == "A" else "N"
+    axis, extent = (free, max(1, int(tile))) if extra[free] > 1 else ("K", k_tiles)
+    if extra[axis] <= 1:
       continue
     data_type = kernel["ProblemType"].get("DataType" + side) \
         or kernel["ProblemType"]["DataType"]
-    extent = k_tiles if axis == "K" else max(1, int(tile))
     weights[axis] = max(weights.get(axis, 0), extent * data_type.numBytes())
   if not weights:
     return 0
+  # THE FACTOR LEADS, the footprint breaks its ties: promoting an axis saves `1 - 1/factor` of
+  # what it holds, so the two terms price one saving.  TDMSplit only ever makes a factor of 2,
+  # so on a split kernel the lead term always ties and the footprint still decides.
   axes = ("M", "N", "K")
-  outer = max(weights, key=lambda axis: (weights[axis], -axes.index(axis)))
+  outer = max(weights, key=lambda axis: (extra[axis], weights[axis], -axes.index(axis)))
   return _OUTER.index(outer)
 
 
 def calculate(kernel):
-  """Resolve WmmaOuterOrder and store the LoopOrder word once."""
+  """Resolve WmmaFactorM/N/K and WmmaOuterOrder, and store the LoopOrder word once."""
   if "WmmaInnerOrder" not in kernel and "WmmaOuterOrder" not in kernel \
       and kernel.get("LoopOrder"):
     return
+
+  extra = factors(kernel)
+  for role, name in FACTOR_PARAM.items():
+    kernel[name] = extra[role]
 
   outer = int(kernel.get("WmmaOuterOrder", -1))
   if outer == -1:
@@ -95,12 +122,7 @@ def calculate(kernel):
     raise ValueError("WmmaOuterOrder=%r must be 0..3" % outer)
 
   kernel["WmmaOuterOrder"] = outer
-  kernel["LoopOrder"] = loopOrder(
-      kernel.get("WmmaInnerOrder", 1),
-      outer,
-      kernel.get("TDMSplitA", 0),
-      kernel.get("TDMSplitB", 0),
-  )
+  kernel["LoopOrder"] = loopOrder(kernel.get("WmmaInnerOrder", 1), outer, extra)
 
 
 def axes(kernel):
@@ -118,20 +140,18 @@ def axes(kernel):
       kernel.get("MIWaveTileA", wave_tile_pair[0]),
       kernel.get("MIWaveTileB", wave_tile_pair[1]),
   )
-  m_inner = factor_axis(wave_tiles[0], a_mt, "MIWaveTileA")
-  n_inner = factor_axis(wave_tiles[1], b_mt, "MIWaveTileB")
+  # THE AXIS EXTENTS COME FROM WmmaFactor, the storage regions from TDMSplit.  They are the
+  # same number wherever an operand splits, because a region is one value of the axis; where
+  # it does not, the factor still buys the extra loop level and the copy stays whole.
+  extra = factors(kernel)
   k_tiles = max(1, int(kernel["LoopIters"]))
-  k_inner = gcd(
-      max(1, k_tiles // a_du),
-      max(1, k_tiles // b_du),
-  )
   extents = {
-      "M_split": a_mt,
-      "M_inner": m_inner,
-      "N_split": b_mt,
-      "N_inner": n_inner,
-      "K_split": k_tiles // max(1, k_inner),
-      "K_inner": k_inner,
+      "M_split": extra["M"],
+      "M_inner": factor_axis(wave_tiles[0], extra["M"], "MIWaveTileA", "WmmaFactorM"),
+      "N_split": extra["N"],
+      "N_inner": factor_axis(wave_tiles[1], extra["N"], "MIWaveTileB", "WmmaFactorN"),
+      "K_split": extra["K"],
+      "K_inner": factor_axis(k_tiles, extra["K"], "LoopIters", "WmmaFactorK"),
   }
 
   seen = set()
@@ -142,22 +162,27 @@ def axes(kernel):
     if name.endswith("_inner") or extents[name] > 1:
       names.append(name)
 
-  regions_a = tuple(
-      name for name in ("M_split", "K_split")
-      if extents[name] > 1 and (name != "K_split" or a_du > 1)
-  )
-  regions_b = tuple(
-      name for name in ("N_split", "K_split")
-      if extents[name] > 1 and (name != "K_split" or b_du > 1)
-  )
-  k_split = max(1, extents["K_split"])
-  span_a = {"K_split": max(1, k_split // a_du)} \
-      if "K_split" in regions_a else {}
-  span_b = {"K_split": max(1, k_split // b_du)} \
-      if "K_split" in regions_b else {}
+  # A REGION AXIS IS ONE THIS OPERAND SPLITS STORAGE ON.  An axis the factor alone makes is
+  # walked like any other; its copy writes one region and owes no region term.
+  a_cuts = (("M_split", a_mt), ("K_split", a_du))
+  b_cuts = (("N_split", b_mt), ("K_split", b_du))
+  regions_a = tuple(name for name, split in a_cuts if split > 1 and extents[name] > 1)
+  regions_b = tuple(name for name, split in b_cuts if split > 1 and extents[name] > 1)
+  # The span is how many axis values ONE region covers: 1 when the factor is the split.
+  span_a = {name: max(1, extents[name] // split)
+            for name, split in a_cuts if name in regions_a}
+  span_b = {name: max(1, extents[name] // split)
+            for name, split in b_cuts if name in regions_b}
+  # THE FACTOR AXES ARE WHAT ORDER SEES: the prefetch unit, the rotation and the grouping are
+  # all "per one value of the extra axis", and that is true of a factor with no storage behind
+  # it too.  A split operand's two sets coincide, which is why registers never had to tell them
+  # apart before.
+  factors_a = tuple(name for name, _split in a_cuts if extents[name] > 1)
+  factors_b = tuple(name for name, _split in b_cuts if extents[name] > 1)
   return {
       "axes": tuple((name, extents[name]) for name in names),
       "regions": {"A": regions_a, "B": regions_b},
+      "factor_axes": {"A": factors_a, "B": factors_b},
       "span": {"A": span_a, "B": span_b},
       "splits": (a_mt, b_mt, a_du, b_du),
   }
