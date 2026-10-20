@@ -658,7 +658,7 @@ NB_MODULE(_stinkytofu, m) {
             [](LogicalInstruction& inst, const nb::dict& data) {
                 const int kind = nb::cast<int>(data["kind"]);
                 if (kind < static_cast<int>(GirActionKind::Other) ||
-                    kind > static_cast<int>(GirActionKind::WaitCnt))
+                    kind > static_cast<int>(GirActionKind::Wmma))
                     throw nb::value_error("invalid GIR action kind");
                 std::vector<GirAccessData> accesses;
                 for (nb::handle item : nb::cast<nb::sequence>(data["accesses"])) {

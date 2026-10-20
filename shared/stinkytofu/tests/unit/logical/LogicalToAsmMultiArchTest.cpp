@@ -1383,7 +1383,7 @@ TEST(LogicalToAsmMetadata, CompleteGirActionSurvivesBarrierSplit) {
     BasicBlock* block = function.createBasicBlock("entry");
     LogicalInstruction* barrier = SBarrier();
     const GirActionData action{
-        17, 9, GirActionKind::Fence, {GirAccessData{false, 3, 2, 1, -1, -1, true}}};
+        17, 9, GirActionKind::Other, {GirAccessData{false, 3, 2, 1, -1, -1, true}}};
     barrier->giraction = action;
     block->appendIR(barrier);
 

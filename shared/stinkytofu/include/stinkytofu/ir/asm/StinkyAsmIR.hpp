@@ -858,19 +858,12 @@ inline bool girNamesStorage(const StinkyInstruction& inst) {
     return action != nullptr && !action->accesses.empty();
 }
 
-inline bool isGirOwnedFence(const StinkyInstruction& inst) {
-    if (!isBarrier(inst) && !isFence(inst)) return false;
-    const GirActionData* action = inst.getModifier<GirActionData>();
-    return action != nullptr && action->kind == GirActionKind::Fence;
-}
-
 /// Returns true if the instruction forces the DAG scheduler to cut a new
 /// region.  This covers true side effects (stores, branches, waits) and
 /// memory ops that lack MemTokenData (LDS pseudo-registers), where the
 /// scheduler has no dependency edges to prove reordering is safe.
 inline bool hasSideEffect(const StinkyInstruction& inst) {
     if (!inst.getHwInstDesc()) return false;
-    if (isGirOwnedFence(inst)) return false;
     if ((isGlobalMemStore(inst) && !isGlobalStoreAsyncFromLds(inst)) || isBranch(inst) ||
         isCall(inst) || isWaitCnt(inst) || isHasSideEffect(inst))
         return true;
