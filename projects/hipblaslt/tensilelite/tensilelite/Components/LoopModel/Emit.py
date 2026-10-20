@@ -43,7 +43,7 @@ def loopModelSteadyPhase(writer, kernel, loopCopy) -> str:
 #: The prologue's GLOBAL->SHARED movement, which legacy issues from `setupNewTile`, and the
 #: REGISTER fill, which legacy issues at the prefetch-local point.  One GIR block, two sites.
 PROLOGUE_MOVEMENT = ("copy", "gr_inc", "desc_enable", "region_inc", "gl2_prefetch")
-PROLOGUE_FILL = ("read", "wmma", "swap", "fence", "gsu_guard")
+PROLOGUE_FILL = ("read", "wmma", "swap")
 
 
 def _prologueGuardLadder(writer, kernel, tensorParametersA, tensorParametersB, module):
