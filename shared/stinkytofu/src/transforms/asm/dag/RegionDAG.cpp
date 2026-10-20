@@ -118,22 +118,26 @@ static void orderInRegion(RegionDAG& dag, StinkyInstruction* before, StinkyInstr
     addEdgeById(&dag.nodes[from->second], &dag.nodes[to->second], dag.graph);
 }
 
-/// Keep the pieces of one fence in their emitted order.  The order-only FENCE and the two halves
-/// of the barrier share no register, so nothing else stops the wait from being issued first.
-static void chainGirFencePieces(RegionDAG& dag, const GirFrameAnalysis::Result& frames) {
-    for (const auto& [actionId, action] : frames.contract.actions) {
-        if (action.kind != GirActionKind::Fence) continue;
-        auto owned = frames.actionInstructions.find(actionId);
-        if (owned == frames.actionInstructions.end()) continue;
-        std::vector<unsigned> ids;
-        for (StinkyInstruction* piece : owned->second) {
-            auto found = dag.instToId.find(piece);
-            if (found != dag.instToId.end()) ids.push_back(found->second);
+/// Keep the pieces of one fence in their emitted order.  The two halves of the barrier share no
+/// register, so nothing else stops the wait from being issued first.
+static void chainGirFencePieces(RegionDAG& dag) {
+    // Pre-schedule GIR placement materializes a physical split barrier without a GirActionData
+    // action. Keep its signal before its wait explicitly, including the case where block-local
+    // scheduling needs no memory token on either half.
+    DAGNode* pendingSignal = nullptr;
+    for (DAGNode& node : dag.nodes) {
+        StinkyInstruction& inst = *node.inst;
+        if (isBarrierSignal(inst) && isSplitBarrierAllWave(inst)) {
+            pendingSignal = &node;
+            continue;
         }
-        std::sort(ids.begin(), ids.end());
-        for (size_t i = 1; i < ids.size(); ++i)
-            orderInRegion(dag, dag.nodes[ids[i - 1]].inst, dag.nodes[ids[i]].inst,
-                          "GIR fence pieces cannot be ordered");
+        if (isBarrierWait(inst) && isSplitBarrierAllWave(inst) && pendingSignal) {
+            orderInRegion(dag, pendingSignal->inst, node.inst,
+                          "physical GIR split barrier cannot be ordered");
+            pendingSignal = nullptr;
+            continue;
+        }
+        if (isBarrier(inst)) pendingSignal = nullptr;
     }
 }
 
@@ -144,7 +148,7 @@ void addGirFrameHazardEdges(RegionDAG& dag, const GirFrameHazardAnalysis::Result
         orderInRegion(dag, hazard.producer, hazard.consumer,
                       "GIR frame hazard introduces a scheduling DAG cycle");
     }
-    chainGirFencePieces(dag, frames);
+    chainGirFencePieces(dag);
 }
 
 void dumpDAGGraph(const RegionDAG& dag, std::ostream& os,

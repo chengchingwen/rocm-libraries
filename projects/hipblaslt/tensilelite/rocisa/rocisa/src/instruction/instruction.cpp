@@ -89,9 +89,7 @@ void init_inst(nb::module_ m)
         .value("Other", rocisa::GirActionKind::Other)
         .value("Read", rocisa::GirActionKind::Read)
         .value("Copy", rocisa::GirActionKind::Copy)
-        .value("Fence", rocisa::GirActionKind::Fence)
-        .value("Wmma", rocisa::GirActionKind::Wmma)
-        .value("WaitCnt", rocisa::GirActionKind::WaitCnt);
+        .value("Wmma", rocisa::GirActionKind::Wmma);
 
     nb::class_<rocisa::Instruction, rocisa::Item, rocisa::PyInstruction>(m_inst, "Instruction")
         .def(nb::init<rocisa::InstType, const std::string&>())

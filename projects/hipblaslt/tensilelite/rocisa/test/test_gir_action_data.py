@@ -17,7 +17,7 @@ def test_gir_action_getter_returns_complete_record():
         "absolute": -1,
         "cross_agent": True,
     }]
-    inst.setGirActionData(17, 9, GirActionKind.Fence, accesses)
+    inst.setGirActionData(17, 9, GirActionKind.Wmma, accesses)
 
     assert inst.getGirActionData() == {
         "action_id": 17,

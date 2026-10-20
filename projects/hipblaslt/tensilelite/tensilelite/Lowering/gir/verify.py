@@ -10,7 +10,6 @@ from .nodes import Move, Mma, Mark, MARK_KINDS, terminator_targets
 from .analysis import AnalysisManager
 from .analyses import BackEdges
 from .analyses.loop_shape import LoopShape, reduction_coverage_violations
-from .analyses.barrier_uniformity import BarrierUniformity
 from .analyses.frame_hazards import FrameHazards, _disjoint_storage
 from .analyses.reg_band import RegBandAnalysis
 from .analyses.lds_buffers import LdsBufferIds, shared_refs
@@ -20,7 +19,6 @@ from .analyses.region_increment import walk_violations
 # Per-kind Mark `at` payload schema.
 _MARK_SCHEMA = {
     "phase_boundary": ("phase",),
-    "fence":          ("buffers", "scope", "kinds", "edges"),
     # A swap additionally names the pointer, but WHICH name depends on the hop: a read swap moves
     # an operand's LocalReadAddr (`operand`), a copy swap moves a Phi movement's descriptor
     "swap":           ("hop", "gen_from", "gen_to"),
@@ -31,7 +29,6 @@ _MARK_SCHEMA = {
     # A member that does not move on this step: its descriptor is nulled (count=0) and restored.
     "descriptor_enable": ("unit", "member", "enabled"),
     "gl2_prefetch":   ("depth", "block"),
-    "gsu_guard":      ("variant",),
     # The chunk a movement's address must hold HERE, so an advance serving a conditionally
     # executed successor is established on the path both arms take.
     "chunk_pin":      ("unit", "chunk"),
@@ -224,16 +221,6 @@ def _check_emit(prog):
             f"place them where they are emitted, or update the record so the drop stays visible")
 
 
-def _check_barrier_uniformity(prog, am):
-    """G-UNIFORM. Every cross-wave fence is reached by every wave of its scope."""
-    viol = am.get(BarrierUniformity(), prog)
-    if viol:
-        raise RuntimeError(
-            "G-UNIFORM: %d cross-wave fence(s) some wave of the scope can skip -- a rendezvous "
-            "off one wave's path hangs the waves that do reach it, and the empty-ledger gate "
-            "cannot see it: %s" % (len(viol), "; ".join(repr(v) for v in viol[:6])))
-
-
 def _check_trip(prog, am):
     viol = reduction_coverage_violations(prog, am.get(LoopShape(), prog))
     if viol:
@@ -325,7 +312,6 @@ def verify_gir(prog, expect_steady_loops="one"):
     _check_walk(prog)
     _check_tokens(prog, am)
     _check_emit(prog)
-    _check_barrier_uniformity(prog, am)
     _check_trip(prog, am)
     _check_gen_ssa(prog)
     _check_noiter(prog)

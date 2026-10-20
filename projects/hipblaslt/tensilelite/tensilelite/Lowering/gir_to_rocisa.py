@@ -185,10 +185,6 @@ class GirToRocisa:
                                        bool(at["enabled"]), tpByOperand)
             elif kind == "region_inc":
                 self._emit_region_inc_act(out, phase, at, tpByOperand)
-            elif kind == "fence":
-                self._emit_fence(out, phase, at)
-            elif kind == "gsu_guard":
-                pass          # R4: realized via the scaffold-anchor path
             self._stamp_action(out.flatitems()[before:], act)
         self._drop_mem_tokens(out)
         return out
@@ -214,7 +210,7 @@ class GirToRocisa:
                 out.add(mask)
 
     _ACTION_KINDS = {"read": GirActionKind.Read, "copy": GirActionKind.Copy,
-                     "fence": GirActionKind.Fence, "wmma": GirActionKind.Wmma}
+                     "wmma": GirActionKind.Wmma}
 
     @staticmethod
     def _drop_mem_tokens(code):
@@ -270,22 +266,6 @@ class GirToRocisa:
     def _tag(self, out, phase, kind, detail):
         """Stamp a GIR act so a finding in the `.s` names the node that emitted it."""
         out.addComment0(gir_tag("%s %s %s" % (phase, kind, detail)))
-
-    def _emit_fence(self, out, phase, at):
-        """Record WHERE GIR wanted a fence; StinkyTofu decides how many and emits them.
-
-        A hazard is not a barrier: one barrier discharges every hazard whose window contains it,
-        and only the post-schedule order says which slots those are.  Emitting one barrier per
-        fence Mark here both multiplies the count and pins each one behind its own producer,
-        where its residual is zero."""
-        buffers = at.get("buffers", ())
-        war = sorted(int(t) for t in (at.get("order_tokens") or ())) or None
-        sync = "sync ST-OWNED"
-        if war:
-            sync += " order %s" % (war,)
-        self._tag(out, phase, "fence", "%s scope=%s covers %s edge(s) %s %s"
-                  % ("+".join(buffers) or "?", at.get("scope"), at.get("edges"),
-                     ",".join(at.get("kinds", ())), sync))
 
     def _fused_tp(self, unit, tpByOperand, what):
         """`(tP_even, tP_odd)` for a Phi-fused movement, after checking the scaffold can realize it.
