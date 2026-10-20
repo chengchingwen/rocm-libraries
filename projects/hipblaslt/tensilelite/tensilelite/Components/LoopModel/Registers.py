@@ -52,7 +52,10 @@ def calculate(kernel):
       if extent > 1
       or extents.get(name.replace("_inner", "_split"), 1) > 1
   )
-  all_regions = set(shape["regions"]["A"]) | set(shape["regions"]["B"])
+  # THE FACTOR AXES, not the storage ones: an extra axis structures the walk whether or not
+  # TDMSplit put a region behind it, so the unit, the rotation and the caps follow it.
+  factor_axes = shape.get("factor_axes") or shape["regions"]
+  all_regions = set(factor_axes["A"]) | set(factor_axes["B"])
   global_outer = next(
       (name.split("_", 1)[0] for name, _extent in walked
        if name not in all_regions),
@@ -64,7 +67,7 @@ def calculate(kernel):
 
   for side in ("A", "B"):
     roles = _READ_AXES[side]
-    regions = set(shape["regions"][side])
+    regions = set(factor_axes[side])
     varying = tuple(
         (name, extent)
         for name, extent in walked

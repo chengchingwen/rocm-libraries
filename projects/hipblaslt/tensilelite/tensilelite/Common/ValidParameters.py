@@ -1234,6 +1234,17 @@ validParameters = { # we need to make sure this matches develop
     #          If unsplit, its inner mode leads, followed by the other split modes,
     #          then the remaining inner modes, all in WmmaInnerOrder.
     "WmmaOuterOrder": [-1, 0, 1, 2, 3],
+    # Factor one logical axis into an extra outer axis of this extent, splitting the wmma
+    # traversal exactly as TDMSplit does -- but without splitting the load.  M factors
+    # MIWaveTileA, N factors MIWaveTileB, K factors LoopIters, and the factor must divide it.
+    # WmmaInnerOrder/WmmaOuterOrder key on these, not on TDMSplit.
+    # -1 : derive it -- 2 on an axis TDMSplit cuts, else 1
+    #  1 : no extra axis
+    #  n : the extent of the extra outer axis.  An axis TDMSplit cuts is PINNED to the split
+    #      factor, because a storage region is one value of that axis.
+    "WmmaFactorM": [-1] + list(range(1, 17)),
+    "WmmaFactorN": [-1] + list(range(1, 17)),
+    "WmmaFactorK": [-1] + list(range(1, 17)),
     # 0  : Generate original Store blocks: NonEdgeN, ThenN, and Then1 for StoreVectorWidth N
     # 1  : Generate adaptive Store blocks: NonEdgeN, ThenN, ThenN/2, ..., Then1 and select by runtime problem size
     "AdaptiveGemm": [0, 1],
