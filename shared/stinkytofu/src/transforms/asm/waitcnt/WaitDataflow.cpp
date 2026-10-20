@@ -206,7 +206,7 @@ bool girOwnsOrdering(const StinkyInstruction& inst) {
 }
 
 bool takesNoWait(const StinkyInstruction& inst) {
-    return isGirOwnedFence(inst) || girOwnsOrdering(inst);
+    return girOwnsOrdering(inst);
 }
 
 bool hasUntaggedTensorAnchor(BasicBlock& bb) {

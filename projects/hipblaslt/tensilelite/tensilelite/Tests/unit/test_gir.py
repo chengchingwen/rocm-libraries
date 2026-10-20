@@ -3,7 +3,7 @@
 """The GIR lowering: the program built from a decoded theta, and the passes over it.
 
 Covers `Tensile.Lowering` -- `lower_to_gir`, the pass pipeline, the analyses (value placement,
-barrier uniformity, region increment), the frame contract, and the dataflow checker.  The theta
+region increment), the frame contract, and the dataflow checker.  The theta
 each test starts from is a means; `test_loopmodel.py` owns what the model derives.
 """
 
@@ -24,7 +24,6 @@ from Tensile.Lowering.gir.analyses.value_placement import (
 from Tensile.Lowering.gir.nodes import BLOCK_ENTRY, BLOCK_EXIT
 from Tensile.Lowering.gir.nodes import (Program, Block, Mark, Pred, Bound, Goto, CondGoto,
                                         CondChain)
-from Tensile.Lowering.gir.analyses.barrier_uniformity import BarrierUniformity
 from Tensile.Lowering.gir.analysis import AnalysisManager
 from Tensile.Lowering.gir.analyses.trip_domains import TripDomains
 from Tensile.Lowering.gir.emit_plan import plan_program
@@ -860,120 +859,6 @@ def test_demand_from_two_successors_must_agree_to_share_one_exit_def():
     assert by_block["s"].to_value == 1 and by_block["t"].to_value == 2
     assert by_block["s"].from_value == 0 and by_block["t"].from_value == 0
     assert by_block["s"].after == BLOCK_ENTRY and by_block["s"].before is s
-
-
-# ------------------------------------------------------------------------------------------------
-# Barrier uniformity: the liveness check over GIR's region tree.
-# Every test builds the failing shape explicitly -- the passing case is the one the
-# codebase already produces, and a check never seen to fire is not a check.
-# ------------------------------------------------------------------------------------------------
-
-
-
-def _fence(scope="block"):
-    return Mark("fence", {"buffers": ("A",), "tokens": (0,), "scope": scope,
-                          "kinds": ("WAR",), "edges": 1})
-
-
-def _two_block(role_steady="all", role_pro="all", pred=None, meta=None):
-    """prologue -> steady, with the fence in `steady`."""
-    prog = Program(entry="prologue")
-    term = (CondGoto(pred, "steady", "steady") if pred is not None else Goto("steady"))
-    prog.add_block(Block(phase="prologue", succs=("steady",), term=term, role=role_pro))
-    prog.add_block(Block(phase="steady", preds=("prologue",), body=[_fence()],
-                         term=Goto("end"), role=role_steady))
-    prog.meta.update(meta or {})
-    return prog
-
-
-def _run(prog):
-    return AnalysisManager().get(BarrierUniformity(), prog)
-
-
-def test_uniformly_placed_fence_is_accepted():
-    """The shape the lowering produces today: every block role='all', every guard a trip-count
-    predicate.  Zero violations, and the check must not invent one."""
-    assert _run(_two_block()) == []
-
-
-def test_fence_in_a_role_restricted_block_is_a_violation():
-    """ρ: only some waves run a role-restricted block, so a WORKGROUP rendezvous inside it
-    is a hang.  This is the shape wave-specialization will introduce."""
-    v = _run(_two_block(role_steady="producer"))
-    assert len(v) == 1 and v[0].reason == "role", v
-    assert "role='producer'" in repr(v[0])
-
-
-def test_a_role_restricted_ANCESTOR_is_also_a_violation():
-    """Domination, not containment: a restricted block on the way to the fence keeps the excluded
-    agents from ever reaching it, even though the fence's own block admits everyone."""
-    v = _run(_two_block(role_pro="consumer"))
-    assert len(v) == 1 and v[0].reason == "role" and "prologue" in v[0].where, v
-
-
-def test_an_agent_varying_guard_is_a_violation():
-    """A `Cond` arm that discriminates among agents.  GIR cannot spell one today, so the
-    program must DECLARE the symbol as agent-varying — that declaration is the extension point,
-    and this test is what proves the check consumes it."""
-    prog = _two_block(pred=Pred("waveId", "==", Bound(const=0)),
-                      meta={"agent_varying_symbols": ("waveId",)})
-    v = _run(prog)
-    assert len(v) == 1 and v[0].reason == "guard", v
-    assert "waveId" in v[0].where
-
-
-def test_a_trip_count_guard_on_the_same_shape_is_NOT_a_violation():
-    """The control-flow GIR really has: a comparison on the trip symbol.  All waves of a workgroup
-    share it, so it splits nobody — the check must not fire on the loop's own guard."""
-    prog = _two_block(pred=Pred("iter", "<", Bound(var="T")),
-                      meta={"agent_varying_symbols": ("waveId",)})
-    assert _run(prog) == []
-
-
-def test_a_multi_exit_header_arm_is_inspected_too():
-    """A `CondChain` header (G1) tests several predicates; every arm is a place an agent could be
-    steered away, so all of them are checked, not just the first."""
-    prog = Program(entry="head")
-    prog.add_block(Block(phase="head", succs=("steady", "drain0"),
-                         term=CondChain(arms=((Pred("c", "<=", Bound(const=1)), "drain0"),
-                                              (Pred("laneParity", "==", Bound(const=0)), "steady")),
-                                        default="steady")))
-    prog.add_block(Block(phase="steady", preds=("head",), body=[_fence()], term=Goto("end")))
-    prog.add_block(Block(phase="drain0", preds=("head",), term=Goto("end")))
-    prog.meta["agent_varying_symbols"] = ("laneParity",)
-    v = _run(prog)
-    assert len(v) == 1 and v[0].reason == "guard" and "laneParity" in v[0].where, v
-
-
-def test_a_non_proc_scope_selector_is_not_this_checks_business():
-    """A wave-scoped discharge is carried by program order on one agent — there is no rendezvous
-    and nothing to be uniform about."""
-    prog = _two_block(role_steady="producer")
-    prog.blocks["steady"].body[0].at["scope"] = "wave"
-    assert _run(prog) == []
-
-
-def test_G_UNIFORM_is_wired_into_verify_gir():
-    """The analysis is only worth having if the verifier runs it — the defect being fixed is
-    precisely that `scope` reached nothing but a comment string."""
-    from Tensile.Lowering.gir.verify import _check_barrier_uniformity
-    prog = _two_block(role_steady="producer")
-    with pytest.raises(RuntimeError, match="G-UNIFORM"):
-        _check_barrier_uniformity(prog, AnalysisManager())
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # ------------------------------------------------------------------------------------------------

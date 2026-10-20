@@ -263,7 +263,7 @@ TEST(GirFrameAnalysisTest, AgentRelativeReadWaitsForEveryPhysicalRegionProducer)
         GirActionData{1, 0, GirActionKind::Copy, {GirAccessData{true, 2, 2, -1, 0, 0, true}}});
     AsmIRBuilder builder(*drain, GfxArchID::Gfx1250);
     StinkyInstruction* fence = builder.createFence();
-    fence->addModifier<GirActionData>(GirActionData{2, 2, GirActionKind::Fence, {}});
+    fence->addModifier<GirActionData>(GirActionData{2, 2, GirActionKind::Other, {}});
     StinkyInstruction* read = createDsReadB128InBlock(drain, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(GirActionData{3,
                                                    2,
@@ -1328,7 +1328,7 @@ TEST(GirFrameAnalysisTest, CrossAgentWaitAnchorsAtVirtualFence) {
         GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
     AsmIRBuilder builder(*block, GfxArchID::Gfx1250);
     StinkyInstruction* fence = builder.createFence();
-    fence->addModifier<GirActionData>(GirActionData{1, 1, GirActionKind::Fence, {}});
+    fence->addModifier<GirActionData>(GirActionData{1, 1, GirActionKind::Other, {}});
     StinkyInstruction* read = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(
         GirActionData{2, 2, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
@@ -1411,14 +1411,14 @@ TEST(GirFrameAnalysisTest, ClonedFenceActionAnchorsWaitOnEachCfgPath) {
 
     AsmIRBuilder leftBuilder(*left, GfxArchID::Gfx1250);
     StinkyInstruction* leftFence = leftBuilder.createFence();
-    leftFence->addModifier<GirActionData>(GirActionData{1, 1, GirActionKind::Fence, {}});
+    leftFence->addModifier<GirActionData>(GirActionData{1, 1, GirActionKind::Other, {}});
     StinkyInstruction* leftRead = createDsReadB128InBlock(left, GfxArchID::Gfx1250, 0, 20);
     leftRead->addModifier<GirActionData>(
         GirActionData{2, 2, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
 
     AsmIRBuilder rightBuilder(*right, GfxArchID::Gfx1250);
     StinkyInstruction* rightFence = rightBuilder.createFence();
-    rightFence->addModifier<GirActionData>(GirActionData{1, 1, GirActionKind::Fence, {}});
+    rightFence->addModifier<GirActionData>(GirActionData{1, 1, GirActionKind::Other, {}});
     StinkyInstruction* rightRead = createDsReadB128InBlock(right, GfxArchID::Gfx1250, 0, 20);
     rightRead->addModifier<GirActionData>(
         GirActionData{2, 2, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});

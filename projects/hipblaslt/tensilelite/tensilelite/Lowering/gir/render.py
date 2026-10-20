@@ -390,13 +390,6 @@ def render_gir(prog) -> str:
                     at["frame_ranks"] = tuple(sorted({
                         relation["rank"] for relation in relations
                         if relation.get("rank") is not None}))
-                    if inst.kind == "fence":
-                        tokens = at.pop("tokens", ())
-                        order_tokens = at.pop("order_tokens", ())
-                        if tokens:
-                            at["legacy_tokens"] = tokens
-                        if order_tokens:
-                            at["legacy_order_tokens"] = order_tokens
                 L.append(f"  Mark  {inst.kind} {at}")
                 if show_frames:
                     L.extend("    frame: " + line
