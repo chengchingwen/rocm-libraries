@@ -170,11 +170,6 @@ struct PassFeatureConfig {
         /// overtaken. Set true to issue WMMAs in program order; the loads around them
         /// still move, and a not-yet-ready WMMA is forced after its wait elapses.
         bool lockWmmaOrder = false;
-        /// Mirrors ModuleOptions::LockDsReadProgramOrder. Defaults off. Chains every ds_load in
-        /// the region into program order, whatever its memory token -- unlike lockDsReadOrder,
-        /// which keys on the token, never crosses one, and is inert when the GIR frame pipeline
-        /// leaves the token pseudo-registers unattached. tensor_loads stay free.
-        bool lockDsReadProgramOrder = false;
         /// Mirrors moduleOptions.EnableESM2 && EnableESM2TrackValuVsrc. The mode2 WAR
         /// gate only recovers waits va_vsrc tracking creates, so it is inert when false.
         bool enableESM2TrackValuVsrc = false;

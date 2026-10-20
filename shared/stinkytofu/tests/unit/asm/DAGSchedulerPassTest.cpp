@@ -994,46 +994,6 @@ TEST_F(DAGSchedulerPassTest, LockWmmaOrderKeepsProgramOrderAcrossAStalledSource)
         << "without LockWmmaOrder a ready later WMMA overtakes one waiting on its ds_load";
 }
 
-// LockDsReadProgramOrder chains every ds_load, whatever its token. `first` and `second` sit on
-// DIFFERENT LDS tokens -- the pair LockDsReadOrder refuses to order -- and dsReadPriority wants
-// `second` first, because three WMMAs already read `first`'s dest and keep it unready.
-TEST_F(DAGSchedulerPassTest, LockDsReadProgramOrderChainsLoadsAcrossMemoryTokens) {
-    auto schedule = [&](bool lockDsReadProgramOrder) {
-        am.clear();
-        func = std::make_unique<Function>(lockDsReadProgramOrder ? "lock_ds_prog" : "free_ds_prog");
-        setFunctionArch(*func, arch);
-        bb = func->createBasicBlock("loop_body");
-        bb->addSuccessor(bb);
-
-        StinkyInstruction* first =
-            createMovableDsLoad(/*destReg=*/220, /*addrReg=*/200, /*ldsToken=*/0);
-        for (int i = 0; i < 3; ++i)
-            createWmmaF32_16x16x16_bf16_in(bb, /*destStart=*/100 + i * 16, /*src0Start=*/220);
-        StinkyInstruction* second =
-            createMovableDsLoad(/*destReg=*/8, /*addrReg=*/204, /*ldsToken=*/1);
-        createWmmaF32_16x16x16_bf16_in(bb, /*destStart=*/300, /*src0Start=*/220);
-        createWmmaF32_16x16x16_bf16_in(bb, /*destStart=*/320, /*src0Start=*/8);
-
-        PassContext ctx;
-        ctx.setGemmTileConfig(config);
-        PassFeatureConfig pfc;
-        pfc.loopConfig.unrollGemm = true;
-        pfc.dagFeatures.lockDsReadOrder = true;  // on, and powerless across tokens
-        pfc.dagFeatures.lockDsReadProgramOrder = lockDsReadProgramOrder;
-        ctx.setPassFeatureConfig(pfc);
-        pass->run(*func, ctx, am);
-        return std::pair{positionOf(*bb, first), positionOf(*bb, second)};
-    };
-
-    const auto [lockedFirst, lockedSecond] = schedule(/*lockDsReadProgramOrder=*/true);
-    EXPECT_LT(lockedFirst, lockedSecond)
-        << "LockDsReadProgramOrder must issue ds_loads in program order across memory tokens";
-
-    const auto [freeFirst, freeSecond] = schedule(/*lockDsReadProgramOrder=*/false);
-    EXPECT_LT(freeSecond, freeFirst)
-        << "LockDsReadOrder alone leaves loads on different tokens free to overtake";
-}
-
 // DS reads + WMMAs: scheduler must not issue WMMAs back-to-back when other
 // instructions exist. With real ds_load latency, WMMAs are not latency-free
 // until ds_reads are issued and latency elapses, so we get: 4 ds_load, then 2
