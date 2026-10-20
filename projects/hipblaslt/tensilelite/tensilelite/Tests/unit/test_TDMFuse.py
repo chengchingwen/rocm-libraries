@@ -333,7 +333,9 @@ def test_valid_parameters_and_the_mapping_name_the_same_integers():
 
 
 def test_every_shipped_row_is_reachable():
-    assert set(TF.TDM_GROUPS) == set(TF.TDM_FUSE_GROUPING.values())
+    """A row is reached by a TDMFuse integer, or by `paired` degrading with no scale to pair."""
+    degraded = TF.tdmGroupingName(ks(fuse=1, ProblemType={"MXBlockA": 0, "MXBlockB": 0}))
+    assert set(TF.TDM_GROUPS) == set(TF.TDM_FUSE_GROUPING.values()) | {degraded}
     assert set(TF.TDM_GROUPS) == set(TF._GROUPING_ACCEPTED)
 
 
