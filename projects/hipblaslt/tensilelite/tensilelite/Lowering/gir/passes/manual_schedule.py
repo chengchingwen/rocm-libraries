@@ -13,6 +13,7 @@ import threading
 
 import yaml
 
+from ....Common.Utilities import print1
 from ..nodes import Mark, Mma, Move
 from ..render import _mma_line, _move_line
 from .base import Pass
@@ -132,7 +133,8 @@ class ManualSchedulePass(Pass):
                 % (path, document.get("format"), FORMAT))
         if document.get("kernel") != self.kernel_name:
             raise RuntimeError(
-                "GIR schedule %s names a different kernel" % path)
+                "GIR schedule %s names a different kernel\n  file:     %s\n  expected: %s"
+                % (path, document.get("kernel"), self.kernel_name))
         actual_fingerprint = _fingerprint(prog)
         if document.get("fingerprint") != actual_fingerprint:
             raise RuntimeError(
@@ -168,3 +170,4 @@ class ManualSchedulePass(Pass):
                 changed = True
         if changed:
             prog.bump()
+        print1("%s loaded" % path)
