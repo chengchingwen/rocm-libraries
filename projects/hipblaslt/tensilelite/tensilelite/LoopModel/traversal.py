@@ -306,7 +306,7 @@ def _rotation_block_digits(theta, operand):
     groups = max(1, len(operand.fragment.groups()))
     grouping = grouping_mode_name(theta, operand)
     group_extent = max(1, grouping_extent(theta, operand) // groups)
-    region_axes = getattr(operand, "region_axes", ()) or ()
+    region_axes = getattr(operand, "factor_axes", ()) or ()
     movement = operand.trajectory.shared_read
     coverage = getattr(movement, "coverage", None) if movement is not None else None
     modes = prefetch_unit_modes(theta, operand)
@@ -424,8 +424,8 @@ def rotation_unit_positions(theta, operand) -> int:
 
 
 def group_rotation_unit_tiles(theta, operand) -> int:
-    """Tiles in one region of one register group's rotation unit."""
-    regions = set(getattr(operand, "region_axes", ()) or ())
+    """Tiles in one extra-axis value of one register group's rotation unit."""
+    regions = set(getattr(operand, "factor_axes", ()) or ())
     modes = [(name, extent) for name, extent in rotation_unit_modes(theta, operand)
              if name not in regions]
     unit = product(extent for _name, extent in modes)
