@@ -1252,6 +1252,7 @@ TEST_F(DAGSchedulerPassTest, GirFreeScheduleDefersDsThatWouldRequireWaitAlu) {
         ds->addModifier<GirActionData>(GirActionData{
             1, 1, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
         std::vector<StinkyInstruction*> independent;
+        independent.reserve(4);
         for (int i = 0; i < 4; ++i)
             independent.push_back(
                 createWmmaScaleF8(/*destStart=*/100 + i * 16, /*src0Start=*/300 + i * 16));
@@ -1260,7 +1261,6 @@ TEST_F(DAGSchedulerPassTest, GirFreeScheduleDefersDsThatWouldRequireWaitAlu) {
         ctx.setGemmTileConfig(config);
         PassFeatureConfig pfc;
         pfc.loopConfig.unrollGemm = true;
-        pfc.dagFeatures.dsReadPerCap = kDsCapOff;
         pfc.dagFeatures.waitAluHoldStrictCount = 2;
         pfc.dagFeatures.girFramePipeline = girFramePipeline;
         ctx.setPassFeatureConfig(pfc);
@@ -1326,7 +1326,6 @@ TEST_F(DAGSchedulerPassTest, GirWaitAwareSelectionSkipsHeldDsForIndependentDs) {
     ctx.setGemmTileConfig(config);
     PassFeatureConfig pfc;
     pfc.loopConfig.unrollGemm = true;
-    pfc.dagFeatures.dsReadPerCap = kDsCapOff;
     pfc.dagFeatures.waitAluHoldStrictCount = 2;
     pfc.dagFeatures.girFramePipeline = true;
     ctx.setPassFeatureConfig(pfc);
@@ -1377,7 +1376,6 @@ TEST_F(DAGSchedulerPassTest, GirBackedgeAffinityBelongsToTheNextFrame) {
         ctx.setGemmTileConfig(config);
         PassFeatureConfig pfc;
         pfc.loopConfig.unrollGemm = true;
-        pfc.dagFeatures.dsReadPerCap = kDsCapOff;
         pfc.dagFeatures.girFramePipeline = girFramePipeline;
         ctx.setPassFeatureConfig(pfc);
         pass->run(*func, ctx, am);
