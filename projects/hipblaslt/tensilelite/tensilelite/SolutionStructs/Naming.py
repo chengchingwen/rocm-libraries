@@ -26,6 +26,7 @@ from functools import lru_cache
 
 from ..Common.Constants import MAX_FILENAME_LENGTH
 from ..Common.RequiredParameters import getRequiredParametersMin, getRequiredParametersFull
+from ..Components.LoopModel.Order import FACTOR_PARAM, forcedFactors
 
 from .Problem import ProblemType
 
@@ -276,6 +277,16 @@ def _getName(state, requiredParameters: frozenset, splitGSU: bool, ignoreInterna
     else:
       requiredParametersTemp.difference_update(
           ("UseLoopModel", "WmmaInnerOrder", "WmmaOuterOrder"))
+
+    # A WmmaFactor of 1 adds no axis, and one TDMSplit pins is already said by TDMSplitA/B --
+    # naming either would rename kernels whose schedule has not changed.
+    _pinnedFactors = forcedFactors(state)
+    for _role, _factorParam in FACTOR_PARAM.items():
+      if state.get("UseLoopModel", False) and _pinnedFactors[_role] <= 1 \
+          and int(state.get(_factorParam, 1) or 1) > 1:
+        requiredParametersTemp.add(_factorParam)
+      else:
+        requiredParametersTemp.discard(_factorParam)
 
     for key in sorted(requiredParametersTemp):
       if key not in state or key == "CustomKernel":

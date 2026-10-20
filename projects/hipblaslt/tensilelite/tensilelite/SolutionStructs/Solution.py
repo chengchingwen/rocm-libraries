@@ -945,6 +945,15 @@ class Solution(collections.abc.Mapping):
              "LoopModel-only knob)")
       return
 
+    # Same for the extra axis: only the LoopModel nest has one to add.
+    _statedFactors = [_name for _name in Order.FACTOR_PARAM.values()
+                      if int(state.get(_name, 1) or 1) > 1]
+    if _statedFactors and not state.get("UseLoopModel", False):
+      reject(state, printRejectionReason,
+             "%s require UseLoopModel (the extra wmma axis is a LoopModel-only knob)"
+             % "/".join(_statedFactors))
+      return
+
     # UseLoopModel routes the inner-loop body through the LoopModel
     if state.get("UseLoopModel", False):
       if state["ISA"] != (12, 5, 0):
@@ -7187,8 +7196,10 @@ class Solution(collections.abc.Mapping):
       state["PrefetchLocalRead"] = 0
     if state.get("UseLoopModel", False):
       try:
+        # LoopIters is known only here, so this is also where WmmaFactorK is checked to
+        # divide it -- Order.axes factors every axis and raises ValueError when one does not.
         Registers.calculate(state)
-      except RuntimeError as error:
+      except (RuntimeError, ValueError) as error:
         reject(state, printRejectionReason, str(error))
         return
     if not state["EnableMatrixInstruction"]:

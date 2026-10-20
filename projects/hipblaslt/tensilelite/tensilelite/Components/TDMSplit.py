@@ -82,12 +82,15 @@ def set_regions(kernel, tc) -> int:
     return max(split_of(kernel, m)[0] for m in members)
 
 
-def factor_axis(extent: int, factor: int, name: str) -> int:
-    """Return the inner extent for ``extent = factor * inner`` or reject the split."""
+def factor_axis(extent: int, factor: int, name: str, by: str = "TDMSplit") -> int:
+    """Return the inner extent for ``extent = factor * inner`` or reject the split.
+
+    `by` names the parameter asking for the cut, because a storage split and a WmmaFactor
+    loop axis factor the same extents and the message must say which one was refused."""
     extent, factor = int(extent), max(1, int(factor))
     if extent < 1 or extent % factor:
         raise ValueError(
-            f"TDMSplit must factorize {name} exactly: extent {extent} is not divisible "
+            f"{by} must factorize {name} exactly: extent {extent} is not divisible "
             f"by split {factor}")
     return extent // factor
 
