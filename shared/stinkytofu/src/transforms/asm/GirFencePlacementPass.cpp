@@ -13,9 +13,11 @@
 #include <string>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "stinkytofu/analysis/AnalysisRegistration.hpp"
+#include "stinkytofu/analysis/LoopAnalysis.hpp"
 #include "stinkytofu/analysis/asm/GirFrameAnalysis.hpp"
 #include "stinkytofu/core/BasicBlock.hpp"
 #include "stinkytofu/core/PassManager.hpp"
@@ -701,78 +703,134 @@ class GirFencePlacementPass final : public StinkyInstPass {
         };
         closeFenceCut();
 
-        // Reuse an earlier mandatory RAW marker for a pure WAR only when doing so is free on the
-        // DS counter. The exact frame paths choose the receiving RAW markers; a virtual before/
-        // after wait plan proves that none gains a dscnt and no existing dscnt becomes smaller.
+        std::unordered_set<const BasicBlock*> loopBlocks;
+        for (const Loop& loop : AM.getResult<LoopAnalysis>(function))
+            for (const BasicBlock* block : loop.bodyBBs) loopBlocks.insert(block);
+
+        // Number of WMMA instructions that execute after `first`'s barrier and before `later`'s.
+        // Barrier markers name the instruction they precede, so a WMMA at `first` is included and
+        // one at `later` is not. All non-WMMA instructions are deliberately ignored.
+        const auto wmmaDistance = [](const StinkyInstruction* first,
+                                     const StinkyInstruction* later) {
+            if (!first || !later || first->getParent() != later->getParent()) return INT_MAX;
+            int count = 0;
+            bool active = false;
+            for (const IRBase& node : *first->getParent()) {
+                auto* inst = dyn_cast<const StinkyInstruction>(&node);
+                if (!inst) continue;
+                if (inst == later) return active ? count : INT_MAX;
+                if (inst == first) active = true;
+                if (active && isMatrixInstruction(*inst)) ++count;
+            }
+            return INT_MAX;
+        };
+        const int mergeWmmaLimit = wmmaLead > INT_MAX / 2 ? INT_MAX : 2 * wmmaLead;
+
         const auto dsCountAt = [](const waitcnt::WaitInsertionPlan& plan,
                                   const StinkyInstruction* marker) {
             auto wait = plan.anchorWaits.find(const_cast<StinkyInstruction*>(marker));
             return wait == plan.anchorWaits.end() ? waitcnt::WaitCountSpec::kUnused
                                                   : wait->second.dsCount;
         };
-        for (bool merged = true; merged;) {
-            merged = false;
-            const waitcnt::WaitInsertionPlan baseline =
-                waitcnt::buildGirFrameWaitPlan(function, frames, hazards, covers, marked);
-            for (const StinkyInstruction* candidate : inProgramOrder(markers)) {
-                if (mandatoryRawMarkers.count(candidate)) continue;
-                auto candidateCoverage = markerCoverage.find(candidate);
-                if (candidateCoverage == markerCoverage.end() ||
-                    hazardKinds(candidateCoverage->second) != HazardKinds{GirHazardKind::WAR})
-                    continue;
 
-                std::vector<size_t> ownedHazards;
-                for (size_t h = 0; h < hazards.hazards.size(); ++h) {
-                    const GirFrameHazard& hazard = hazards.hazards[h];
-                    if (!candidateCoverage->second.contains(hazardClass(hazard))) continue;
-                    const GirHazardFenceCover cover = enclosingFences(frames, hazard, marked);
-                    if (std::any_of(cover.owners.begin(), cover.owners.end(),
-                                    [&](const GirHazardFenceOwner& owner) {
-                                        return owner.anchor == candidate;
-                                    }))
-                        ownedHazards.push_back(h);
+        const auto tryMergeInto = [&](const StinkyInstruction* first,
+                                      const StinkyInstruction* candidate, bool requireUnchangedDs) {
+            auto candidateCoverage = markerCoverage.find(candidate);
+            if (candidateCoverage == markerCoverage.end()) return false;
+
+            std::vector<size_t> ownedHazards;
+            for (size_t h = 0; h < hazards.hazards.size(); ++h) {
+                const GirFrameHazard& hazard = hazards.hazards[h];
+                if (!candidateCoverage->second.contains(hazardClass(hazard))) continue;
+                const GirHazardFenceCover cover = enclosingFences(frames, hazard, marked);
+                if (std::any_of(cover.owners.begin(), cover.owners.end(),
+                                [&](const GirHazardFenceOwner& owner) {
+                                    return owner.anchor == candidate;
+                                }))
+                    ownedHazards.push_back(h);
+            }
+            if (ownedHazards.empty()) return false;
+
+            const int baselineDs = requireUnchangedDs
+                                       ? dsCountAt(waitcnt::buildGirFrameWaitPlan(
+                                                       function, frames, hazards, covers, marked),
+                                                   first)
+                                       : waitcnt::WaitCountSpec::kUnused;
+            markers.erase(candidate);
+            HazardClasses adopted;
+            bool legal = true;
+            for (size_t h : ownedHazards) {
+                const GirFrameHazard& hazard = hazards.hazards[h];
+                const GirHazardFenceCover cover = enclosingFences(frames, hazard, marked);
+                if (!cover.hasHazardPath || cover.hasUnfencedPath || cover.owners.empty()) {
+                    legal = false;
+                    break;
                 }
-                if (ownedHazards.empty()) continue;
-
-                markers.erase(candidate);
-                std::map<const StinkyInstruction*, HazardClasses> adopted;
-                bool legal = true;
-                for (size_t h : ownedHazards) {
-                    const GirFrameHazard& hazard = hazards.hazards[h];
-                    const GirHazardFenceCover cover = enclosingFences(frames, hazard, marked);
-                    if (!cover.hasHazardPath || cover.hasUnfencedPath || cover.owners.empty()) {
+                for (const GirHazardFenceOwner& owner : cover.owners)
+                    if (owner.anchor != first) {
                         legal = false;
                         break;
                     }
-                    for (const GirHazardFenceOwner& owner : cover.owners) {
-                        if (!owner.anchor || !mandatoryRawMarkers.count(owner.anchor)) {
-                            legal = false;
-                            break;
-                        }
-                        adopted[owner.anchor].insert(hazardClass(hazard));
+                if (!legal) break;
+                adopted.insert(hazardClass(hazard));
+            }
+            if (legal && requireUnchangedDs) {
+                const waitcnt::WaitInsertionPlan trial =
+                    waitcnt::buildGirFrameWaitPlan(function, frames, hazards, covers, marked);
+                legal = dsCountAt(trial, first) == baselineDs;
+            }
+            if (!legal) {
+                markers.insert(candidate);
+                return false;
+            }
+
+            markerCoverage.erase(candidate);
+            markerCoverage[first].insert(adopted.begin(), adopted.end());
+            return true;
+        };
+
+        // Merge a nearby later fence into the first fence when at most two configured WMMA queues
+        // lie between them. Exact frame-path ownership is rechecked after removing the candidate;
+        // the final counter-flow pass then re-derives tensorcnt/dscnt at the earlier marker.
+        for (bool merged = true; merged;) {
+            merged = false;
+            const std::vector<const StinkyInstruction*> ordered = inProgramOrder(markers);
+            for (size_t firstIndex = 0; firstIndex < ordered.size() && !merged; ++firstIndex) {
+                const StinkyInstruction* first = ordered[firstIndex];
+                if (!loopBlocks.contains(first->getParent())) continue;
+                for (size_t candidateIndex = firstIndex + 1; candidateIndex < ordered.size();
+                     ++candidateIndex) {
+                    const StinkyInstruction* candidate = ordered[candidateIndex];
+                    const int distance = wmmaDistance(first, candidate);
+                    if (distance == INT_MAX) break;
+                    if (distance > mergeWmmaLimit) break;
+                    if (tryMergeInto(first, candidate, false)) {
+                        merged = true;
+                        break;
                     }
-                    if (!legal) break;
                 }
+            }
+        }
 
-                if (legal) {
-                    const waitcnt::WaitInsertionPlan trial =
-                        waitcnt::buildGirFrameWaitPlan(function, frames, hazards, covers, marked);
-                    for (const auto& [rawMarker, _classes] : adopted)
-                        if (dsCountAt(trial, rawMarker) != dsCountAt(baseline, rawMarker)) {
-                            legal = false;
-                            break;
-                        }
-                }
-
-                if (!legal) {
-                    markers.insert(candidate);
+        // Outside the unconditional WMMA-distance window, a pure WAR may still reuse the
+        // preceding mandatory RAW marker when that marker's dscnt is exactly unchanged.
+        for (bool merged = true; merged;) {
+            merged = false;
+            const std::vector<const StinkyInstruction*> ordered = inProgramOrder(markers);
+            for (size_t candidateIndex = 0; candidateIndex < ordered.size() && !merged;
+                 ++candidateIndex) {
+                const StinkyInstruction* candidate = ordered[candidateIndex];
+                auto coverage = markerCoverage.find(candidate);
+                if (coverage == markerCoverage.end() ||
+                    hazardKinds(coverage->second) != HazardKinds{GirHazardKind::WAR})
                     continue;
+                for (size_t firstIndex = candidateIndex; firstIndex-- > 0;) {
+                    const StinkyInstruction* first = ordered[firstIndex];
+                    if (first->getParent() != candidate->getParent()) break;
+                    if (!mandatoryRawMarkers.count(first)) continue;
+                    merged = tryMergeInto(first, candidate, true);
+                    break;
                 }
-                markerCoverage.erase(candidate);
-                for (const auto& [rawMarker, classes] : adopted)
-                    markerCoverage[rawMarker].insert(classes.begin(), classes.end());
-                merged = true;
-                break;
             }
         }
 
