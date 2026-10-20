@@ -242,18 +242,11 @@ def _plan_mark(inst, actions):
         actions.append(EmitAction("region_inc", dict(inst.at)))
     elif inst.kind == "descriptor_enable":
         actions.append(EmitAction("desc_enable", dict(inst.at)))
-    elif inst.kind == "fence":
-        # the PROC-SCOPED SELECTOR covering a set of cross-wave LDS hazards. L3 realizes
-        # it; GIR only says where it stands and what it orders.
-        actions.append(EmitAction("fence", dict(inst.at)))
     elif inst.kind == "gl2_prefetch":
         # the L2 warm-up pair, at the point `Gl2PrefetchRegions` chose.  Unlike every other
         # act here it names no operand and no movement -- the position IS the entire content.
         actions.append(EmitAction("gl2_prefetch", dict(inst.at)))
-    # phase_boundary / gsu_guard: phase_boundary is a no-op for emit (label handled by fork);
-    # gsu_guard is realized by the R4 scaffold-anchor path.
-    elif inst.kind == "gsu_guard":
-        actions.append(EmitAction("gsu_guard", dict(inst.at)))
+    # phase_boundary is a no-op for emit; the fork handles its label.
 
 
 def _plan_block_raw(prog, phase):

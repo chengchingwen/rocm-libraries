@@ -175,9 +175,7 @@ namespace rocisa
         Other,
         Read,
         Copy,
-        Fence,
-        Wmma,
-        WaitCnt
+        Wmma
     };
 
     // One shared-memory touch this instruction makes.  It is a fact ABOUT THE INSTRUCTION, so it

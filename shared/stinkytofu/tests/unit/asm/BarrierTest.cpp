@@ -142,7 +142,7 @@ TEST_F(BarrierTest, LegalizeBarrier_Gfx1250_ExpandsToSignalAndWait) {
     StinkyInstruction* barrier = createSBarrier();
     ASSERT_NE(barrier, nullptr);
     const GirActionData action{
-        17, 9, GirActionKind::Fence, {GirAccessData{false, 3, 2, 1, -1, -1, true}}};
+        17, 9, GirActionKind::Other, {GirAccessData{false, 3, 2, 1, -1, -1, true}}};
     barrier->addModifier<GirActionData>(action);
 
     // Before legalization: exactly one s_barrier in the block.
