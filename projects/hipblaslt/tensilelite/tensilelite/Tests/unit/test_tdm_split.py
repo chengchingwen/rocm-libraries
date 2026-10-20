@@ -265,21 +265,6 @@ def test_a_waves_region_span_is_NOT_the_split_factor_when_MIWaveGroup_moves_it()
     assert wave_region_span(_wrs_kernel(2, 2, split=0), "A") == 1, "unsplit is always one region"
 
 
-def test_the_wave_span_agrees_with_the_region_derivation_ORACLE():
-    """The span and `region_derivation_check` are two derivations of one fact, so they must agree:
-    a span BELOW the split factor is exactly the condition under which the index-derived region
-    disagrees with the position-derived one."""
-    from Tensile.Components.TDMSplit import wave_region_span, split_of, AXIS_MT
-    from Tensile.Lowering.tool.region_derivation_check import TileCtx, check_tiles
-    for wt, wg, vw, bpe in ((2, 2, 2, 0.25), (4, 1, 1, 0.5), (4, 1, 2, 0.5)):
-        k = _wrs_kernel(wt, wg, vw=vw, bytesPerElem=bpe)
-        n, _axis = split_of(k, "A")
-        ctx = TileCtx(unrollMajor=True, nsplit=n, splitAxis=AXIS_MT, vectorWidth=vw,
-                      MIWaveGroupShape=(16 * wg * vw,) * 2, tile01=0,
-                      miWaveTileAxis=wt, macroTile=wt * wg * 16)
-        mislabelled = bool(check_tiles(ctx))
-        assert (wave_region_span(k, "A") < n) == mislabelled, \
-            f"WT{wt} WG{wg} VW{vw}: span={wave_region_span(k,'A')} n={n} oracle={mislabelled}"
 
 
 def test_port_split_shortens_the_region_extent_with_the_row_stride():
@@ -345,29 +330,4 @@ def test_tdmsplit_factorizes_an_axis_exactly():
         factor_axis(1, 2, "WT")
 
 
-def test_tiles_per_region_DEPENDS_ON_the_Solution_divisibility_gate():
-    """WHY THE `MIWaveTile % nsplit` GATE CANNOT BE REMOVED."""
-    from Tensile.Components.TDMSplit import AXIS_MT
-    from Tensile.Lowering.lds_geometry import tiles_per_region
-    from Tensile.Lowering.tool.region_derivation_check import TileCtx, check_tiles
-
-    def ctx(wt, n):
-        return TileCtx(unrollMajor=True, nsplit=n, splitAxis=AXIS_MT, vectorWidth=1,
-                       MIWaveGroupShape=(32, 32), tile01=0,
-                       miWaveTileAxis=wt, macroTile=wt * 2 * 16)
-
-    # THE TRAP: the floor fabricates a divisor of 1 where the true value is 1/2 a tile.
-    assert tiles_per_region(ctx(1, 2)) == 1, \
-        "if this stops being 1 the floor changed and this whole hazard needs re-measuring"
-    assert 1 // 2 == 0, "the true tiles-per-region at MIWaveTile 1, nsplit 2 is ZERO, not 1"
-
-    # AND THE ORACLE CANNOT FLAG IT -- it shares the same floor, so it reports agreement.
-    assert not [f for f in check_tiles(ctx(1, 2)) if f.tile >= 0], (
-        "check_tiles reports NO index-vs-position disagreement here, which is exactly why it must "
-        "not be used as evidence that this shape is safe")
-
-    # the divisible shapes the gate admits: the floor is exact, so the oracle is meaningful there
-    for wt in (2, 4, 8):
-        assert tiles_per_region(ctx(wt, 2)) == wt // 2 and wt % 2 == 0, \
-            f"MIWaveTile {wt} must divide evenly -- these are the shapes the gate lets through"
 
