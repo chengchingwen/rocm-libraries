@@ -26,7 +26,7 @@ from functools import lru_cache
 
 from ..Common.Constants import MAX_FILENAME_LENGTH
 from ..Common.RequiredParameters import getRequiredParametersMin, getRequiredParametersFull
-from ..Components.LoopModel.Order import FACTOR_PARAM, forcedFactors
+from ..Components.LoopModel.Order import FACTOR_PARAM
 
 from .Problem import ProblemType
 
@@ -278,12 +278,11 @@ def _getName(state, requiredParameters: frozenset, splitGSU: bool, ignoreInterna
       requiredParametersTemp.difference_update(
           ("UseLoopModel", "WmmaInnerOrder", "WmmaOuterOrder"))
 
-    # A WmmaFactor of 1 adds no axis, and one TDMSplit pins is already said by TDMSplitA/B --
-    # naming either would rename kernels whose schedule has not changed.
-    _pinnedFactors = forcedFactors(state)
-    for _role, _factorParam in FACTOR_PARAM.items():
-      if state.get("UseLoopModel", False) and _pinnedFactors[_role] <= 1 \
-          and int(state.get(_factorParam, 1) or 1) > 1:
+    # The factor IS the nest, so it is named whenever it makes an axis -- including where
+    # TDMSplit pins it, which the name would otherwise only imply.  A factor of 1 adds no
+    # axis and naming it would rename every kernel that has none.
+    for _factorParam in FACTOR_PARAM.values():
+      if state.get("UseLoopModel", False) and int(state.get(_factorParam, 1) or 1) > 1:
         requiredParametersTemp.add(_factorParam)
       else:
         requiredParametersTemp.discard(_factorParam)
