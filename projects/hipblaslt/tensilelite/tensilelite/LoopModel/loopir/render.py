@@ -219,7 +219,8 @@ def render(program: Program) -> str:
         ),
         "  schedule:",
     ]
-    _render_body(program.body, 2, out)
+    # The body spends its indent on nesting rather than on clearing the header.
+    _render_body(program.body, 0, out)
     return "\n".join(out)
 
 

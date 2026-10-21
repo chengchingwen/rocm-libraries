@@ -14,8 +14,8 @@ import threading
 import yaml
 
 from ....Common.Utilities import print1
-from ..nodes import Mark, Mma, Move
-from ..render import _mma_line, _move_line
+from ..nodes import Mark, Mma, Move  # noqa: F401 -- kept for the Mark guard below
+from ..render import inst_line
 from .base import Pass
 
 
@@ -55,16 +55,7 @@ def _fingerprint(prog):
     return hashlib.sha256(payload).hexdigest()
 
 
-def _comment(inst):
-    if isinstance(inst, Move):
-        text = _move_line(inst)
-    elif isinstance(inst, Mma):
-        text = _mma_line(inst)
-    elif isinstance(inst, Mark):
-        text = "mark %s %s" % (inst.kind, inst.at)
-    else:
-        text = repr(inst)
-    return " ".join(str(text).replace("\r", " ").replace("\n", " ").split())
+
 
 
 def _dump_text(prog, kernel_name):
@@ -83,7 +74,7 @@ def _dump_text(prog, kernel_name):
             continue
         lines.append("  %s:" % quoted)
         for index, inst in enumerate(block.body):
-            lines.append("    - %d # %s" % (index, _comment(inst)))
+            lines.append("    - %d # %s" % (index, inst_line(inst)))
     return "\n".join(lines) + "\n"
 
 
