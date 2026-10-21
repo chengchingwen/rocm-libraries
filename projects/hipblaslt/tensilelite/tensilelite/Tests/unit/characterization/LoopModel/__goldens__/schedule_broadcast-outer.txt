@@ -1,0 +1,5 @@
+bf16 NKM w4 0/0 plr1 pgr2 du128
+operand  grp  bufs  axis          ahead  dist  reload_after      lds  refused
+-------  ---  ----  ------------  -----  ----  ---------------   ---  -------
+A        g0      2  N_inner           4     8  -                   2  -
+B        g0      2  N_inner           1     4  -                   2  -

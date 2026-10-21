@@ -1,0 +1,33 @@
+\begin{frame}{The region is an AGENT fact on the read hop, a COORDINATE fact on the copy hop}
+\centering
+\begin{tikzpicture}[every node/.style={font=\scriptsize}]
+  \node[box] (g) at (0,0) {\texttt{global}};
+  \node[box] (s) at (5.2,0) {\texttt{shared}};
+  \node[box] (r) at (10.0,0) {\texttt{register}};
+  \draw[ar] (g) -- node[above,font=\tiny]{copy: the \emph{descriptor} picks the region} (s);
+  \draw[ar,draw=warn] (s) -- node[above,font=\tiny,text=warn]{read: the \emph{wave} picks the region} (r);
+\end{tikzpicture}
+
+\vspace{4pt}
+{\scriptsize A dump asserted, for a while: \bad{"wave $w$ reads region $w$, so one agent's reads name
+one region."} Both halves false --- the block listing printed directly beneath it showed \texttt{A}
+reading \emph{both} halves, and 8 of 8 agent-relative operands had disagreeing hops.}
+
+\vspace{4pt}
+\scriptsize
+\begin{tabular}{@{}lp{7.3cm}@{}}
+\toprule
+consumer & what it does with the same one fact \\
+\midrule
+\texttt{mem\_tokens} (ordering) & \good{widen}: the read names \emph{every} region's token, or the producers it did not name go unordered \\
+\texttt{check\_region\_coverage} & \good{narrow the demand}: under-coverage exempt (one agent never covers the set); over-coverage still faults --- a partition member cannot be a non-member \\
+\texttt{render.py} (the dump) & print the per-hop split, and retract the sentence above \\
+\bottomrule
+\end{tabular}
+
+\vspace{4pt}
+{\scriptsize \bad{Three checkers each had to be taught this independently} --- one concept that
+should have lived in one place. It also cost a day: a coverage message was read as proof the
+\emph{model} needed a new narrowing construct, when the checker was asking a coordinate question
+about an agent fact. \key{A violation message is evidence about the checker's premises too.}}
+\end{frame}

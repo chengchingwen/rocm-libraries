@@ -1,0 +1,54 @@
+\begin{frame}{Two rings, one rule: \texttt{slot = coordinate mod S} --- what differs is which coordinate turns}
+\begin{columns}[T]
+\begin{column}{0.44\textwidth}
+\begin{center}
+\begin{tikzpicture}[font=\tiny]
+% shared ring
+\draw[thick,draw=acc] (0,0) circle (0.78);
+\node[box,fill=white,inner sep=2pt] at (0,0.78) {buf 0};
+\node[box,fill=white,inner sep=2pt] at (0,-0.78) {buf 1};
+\draw[ar,draw=acc] (0.95,0.32) arc (20:-20:1.05);
+\node[font=\scriptsize,text=acc] at (0,0) {$S_{\text{shared}}$};
+\node[font=\scriptsize\bfseries,text=acc] at (0,-1.35) {shared / LDS ring};
+\node at (0,-1.65) {turns once per \emph{trip}: \texttt{chunk mod S}};
+% register ring
+\begin{scope}[xshift=3.1cm]
+\draw[thick,draw=ok] (0,0) circle (0.78);
+\node[gbox,fill=white,inner sep=1.5pt] at (90:0.78) {$r_0$};
+\node[gbox,fill=white,inner sep=1.5pt] at (210:0.78) {$r_1$};
+\node[gbox,fill=white,inner sep=1.5pt] at (330:0.78) {$r_2$};
+\draw[ar,draw=ok] (0.95,0.32) arc (20:-20:1.05);
+\node[font=\scriptsize,text=ok] at (0,0) {$W$};
+\node[font=\scriptsize\bfseries,text=ok] at (0,-1.35) {register ring \tsub{(per group)}};
+\node at (0,-1.65) {turns inside the \emph{unrolled body}};
+\end{scope}
+\end{tikzpicture}
+\end{center}
+\end{column}
+\begin{column}{0.55\textwidth}
+\vspace{-4pt}
+\begin{center}\scriptsize
+\begin{tabular}{@{}p{1.5cm}p{2.0cm}p{2.2cm}@{}}
+\toprule
+& shared ring & register ring \\
+\midrule
+coordinate & reduction chunk index & mixed-radix index over the group's \emph{rate modes} \\
+modulus & $S_{\text{shared}}$: a \key{target fact} (the LDS allocation) & $W$: \key{searched} in a derived band $[L, R]$ \\
+generation & one chunk of an operand in one buffer & one filling of one register name \\
+\bottomrule
+\end{tabular}
+\end{center}
+\vspace{1pt}
+\begin{itemize}\itemsep1pt
+\item $W<L$ is a race, $W>R$ is waste. $W=1$ is in-place: safety comes from \emph{ordering}, not capacity.
+\item Both slots stay symbolic \texttt{Expr}s, so the tree stays rolled.
+\end{itemize}
+\vspace{2pt}
+\begin{tikzpicture}
+\node[wbox,text width=0.95\textwidth]{\bad{$M$ (peel depth) is not $S_{\text{shared}}$ (buffers).}
+They coincide at prefetch 2 + double-buffered LDS, and diverge at both off-diagonals
+--- \emph{both of which ship}. Deriving $S_{\text{shared}}=\delta$ once emitted \emph{no buffer swap at all}.};
+\end{tikzpicture}
+\end{column}
+\end{columns}
+\end{frame}
