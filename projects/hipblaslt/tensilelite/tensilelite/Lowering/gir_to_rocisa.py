@@ -13,7 +13,7 @@ from .gir.analyses.reg_band import RegBandAnalysis
 from .gir.coverage import plan_coverage
 from .gir.emit_plan import plan_block
 from .gir.frame_contract import build_contract
-from .gir.nodes import Move
+from .gir.nodes import FILL_OPS, Move
 from .gir_tag import gir_tag
 from .leaves import LeafEmitters
 from .loopir_to_gir import steady_chain
@@ -136,11 +136,11 @@ class GirToRocisa:
                                                               at.get("bufMXA")),
                                        baseMXB=self._reg_base("MXSB", at.get("groupMXB"),
                                                               at.get("bufMXB"))))
-            elif kind == "read":
+            elif kind in FILL_OPS:
                 tc = at["tc"]
                 # `tile` is the WITHIN-REGION index and `tile_flat` the register index; they differ
                 # only for a region-split operand, and passing one for both is the defect.
-                self._tag(out, phase, "read", "%s[tile=%s,k=%s%s] shared gen=%s->reg X%s"
+                self._tag(out, phase, kind, "%s[tile=%s,k=%s%s] shared gen=%s->reg X%s"
                           % (tc, at.get("tile_flat", at["tile"]), at["k"],
                              "" if at.get("regions", 1) <= 1 else ",r%s" % at.get("region", 0),
                              at.get("gen"), at["reg_buf"]))
@@ -158,7 +158,7 @@ class GirToRocisa:
             elif kind == "swap":
                 # A read swap names an operand, a copy swap names the Phi movement -- see
                 # `gir/refs.copy_unit` and the act table in `gir/emit_plan`.
-                who = at["operand"] if at["hop"] == "read" else at["unit"]
+                who = at["operand"] if at["hop"] == "ds_load" else at["unit"]
                 self._tag(out, phase, "swap", "%s %s-hop buffer %s->%s"
                           % (self._who(who), at["hop"], at.get("gen_from"), at.get("gen_to")))
                 self._emit_swap(out, at["hop"], who, tpByOperand, internalPointerSwap)
@@ -175,8 +175,8 @@ class GirToRocisa:
                           % (self._who(at["unit"]), at.get("chunks", 1), at.get("to_chunk")))
                 self._emit_gr_inc(out, at["unit"], tpByOperand, at.get("chunks", 1),
                                   at.get("to_chunk"), phase=phase)
-            elif kind == "copy":
-                self._tag(out, phase, "copy", "%s global->shared chunk gen=%s%s"
+            elif kind == "tensor_load":
+                self._tag(out, phase, kind, "%s global->shared chunk gen=%s%s"
                           % (self._who(at["unit"]), at.get("gen", 0),
                              "" if at.get("region") is None else " region=%s" % at["region"]))
                 self._emit_copy_masked(out, at, tpByOperand)
@@ -197,7 +197,7 @@ class GirToRocisa:
         once, so like the scaffold's `tP["isA"]` arm it belongs to the FIRST copy, not each one.
         Emitted outside the action-stamping window -- the masks are scaffold state, not GIR acts.
         """
-        if kind == "copy" and not self._maskedCopy:
+        if kind == "tensor_load" and not self._maskedCopy:
             self._maskedCopy = True
             mask = Module("GIR prefetch silence")
             self.writer.graPrefetchSilenceMask(self.kernel, mask)
@@ -209,7 +209,8 @@ class GirToRocisa:
             if mask is not None and mask.count():
                 out.add(mask)
 
-    _ACTION_KINDS = {"read": GirActionKind.Read, "copy": GirActionKind.Copy,
+    #: A `global_load` names no LDS instruction, so it falls through to `Other`.
+    _ACTION_KINDS = {"ds_load": GirActionKind.Ds, "tensor_load": GirActionKind.Tensor,
                      "wmma": GirActionKind.Wmma}
 
     @staticmethod
@@ -311,7 +312,7 @@ class GirToRocisa:
         their own LDS regions through their own address registers, so `who` is an operand name and
         multi-wave changes nothing here.
         """
-        if hop == "read":
+        if hop == "ds_load":
             tP = tpByOperand.get(who)
             if tP is None:
                 return
@@ -450,7 +451,7 @@ class GirToRocisa:
         DTL/DTV variants) stays in the scaffold's `globalReadDo`, reached through the leaf.
         """
         if len(unit) > 1:
-            tP, _peer = self._fused_tp(unit, tpByOperand, "copy")
+            tP, _peer = self._fused_tp(unit, tpByOperand, "tensor_load")
             tP = self._walkTp(unit, tpByOperand, self._ownerTp(unit, tpByOperand, tP))
         else:
             tP = tpByOperand.get(unit[0])

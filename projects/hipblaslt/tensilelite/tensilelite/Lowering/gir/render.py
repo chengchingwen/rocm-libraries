@@ -149,7 +149,8 @@ def _uniform_access_lines(prog):
 
 
 def _move_line(mv):
-    kind = "copy" if any(d.tile.space == "shared" for d in mv.dsts) else "read"
+    kind = mv.op or ("tensor_load" if any(d.tile.space == "shared" for d in mv.dsts)
+                    else "ds_load")
     srcs = "+".join(_ref_str(r) for r in mv.srcs)
     dsts = "+".join(_ref_str(r) for r in mv.dsts)
     return f"{kind:5s} {srcs} -> {dsts}{_dep_str(mv)}"
@@ -405,18 +406,18 @@ def render_gir(prog) -> str:
 
 
 def gir_counts(prog) -> dict:
-    """Per-block op counts {block: {'read':n,'copy':n,'mma':n}} for the op-parity assertion."""
+    """Per-block op counts {block: {op: n}} for the op-parity assertion."""
     out = {}
     for blk in prog.blocks.values():
-        c = {"read": 0, "copy": 0, "mma": 0,
+        c = {"ds_load": 0, "tensor_load": 0, "wmma": 0,
              "model_only": bool(getattr(blk, "model_only", False))}
         for inst in blk.body:
             if isinstance(inst, Move):
                 if any(d.tile.space == "shared" for d in inst.dsts):
-                    c["copy"] += 1
+                    c["tensor_load"] += 1
                 else:
-                    c["read"] += 1
+                    c["ds_load"] += 1
             elif isinstance(inst, Mma):
-                c["mma"] += 1
+                c["wmma"] += 1
         out[blk.phase] = c
     return out

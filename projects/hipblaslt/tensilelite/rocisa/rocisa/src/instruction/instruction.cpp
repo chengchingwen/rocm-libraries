@@ -87,8 +87,8 @@ void init_inst(nb::module_ m)
     // Base class
     nb::enum_<rocisa::GirActionKind>(m_inst, "GirActionKind")
         .value("Other", rocisa::GirActionKind::Other)
-        .value("Read", rocisa::GirActionKind::Read)
-        .value("Copy", rocisa::GirActionKind::Copy)
+        .value("Ds", rocisa::GirActionKind::Ds)
+        .value("Tensor", rocisa::GirActionKind::Tensor)
         .value("Wmma", rocisa::GirActionKind::Wmma);
 
     nb::class_<rocisa::Instruction, rocisa::Item, rocisa::PyInstruction>(m_inst, "Instruction")

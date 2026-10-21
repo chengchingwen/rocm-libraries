@@ -496,7 +496,7 @@ def _dependency_map(program, profile=None):
         result.setdefault(complete_id, []).append((
             None,
             (
-                _DependencyEndpoint(crossing_unit, "shared", "copy"),
+                _DependencyEndpoint(crossing_unit, "shared", "tensor_load"),
                 counter,
                 "crossing-RAW",
                 "wave",
@@ -692,7 +692,7 @@ def _build_dependency_ledger(program, profile):
             add(
                 operation,
                 None,
-                _DependencyEndpoint(unit, "shared", "copy"),
+                _DependencyEndpoint(unit, "shared", "tensor_load"),
                 _completion_counter(completion),
                 "crossing-RAW",
                 "wave",
@@ -1101,6 +1101,7 @@ def _convert(
         return Move(
             srcs,
             dsts,
+            op=operation.op.__name__.lower(),
             deps=operation_deps,
             unit=tuple(dict.fromkeys(
                 transfer.local_tile.operand.name

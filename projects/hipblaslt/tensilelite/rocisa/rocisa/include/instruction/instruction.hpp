@@ -173,8 +173,8 @@ namespace rocisa
     enum class GirActionKind : uint8_t
     {
         Other,
-        Read,
-        Copy,
+        Ds,
+        Tensor,
         Wmma
     };
 

@@ -75,7 +75,7 @@ def _plan_read(prog, inst, dst_reg, red, free, order, ext, actions):
             for cd in ({ax: (int(v) if v is not None else 0) for ax, v in c}
                        for c in covered_coords(dst_reg)))
         unit_indexes = tuple(dst_reg.unit_indexes or (dst_reg.unit_index,))
-        actions.append(EmitAction("read", {
+        actions.append(EmitAction(inst.op or "ds_load", {
             "tc": operand, "tile": tile, "k": k, "k_flat": k_flat, "reg_buf": reg_buf,
             # `regions` is THIS OP-CLASS's count, not its movement's: under Phi the movement is keyed
             # `('A','B')` and `_n_regions(prog, ('A',))` would answer 1 for a split fused operand.
@@ -120,7 +120,7 @@ def _plan_move(prog, inst, actions):
         n_reg = _n_regions(prog, members)
         wref = walk_ref(prog, dst_refs)
         reg = region_of(prog, wref) if n_reg > 1 else ()
-        actions.append(EmitAction("copy", {
+        actions.append(EmitAction(inst.op or "tensor_load", {
             "unit": members, "gen": gen, "regions": n_reg,
             "region": _flat(reg, prog, wref.tile.operand) if reg else None}))
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from .analyses.cfg import successors
 from .emit_plan import plan_block
-from .nodes import Mark, Mma, Move
+from .nodes import FILL_OPS, Mark, Mma, Move
 from .render import _mma_line, _move_line
 
 
@@ -76,7 +76,7 @@ def _walk(prog, phase, regs, viol, acts=None):
     """Walk one block's plan, updating `regs` and appending violations."""
     for i, act in enumerate(plan_block(prog, phase) if acts is None else acts):
         at = act.at
-        if act.kind == "read":
+        if act.kind in FILL_OPS:
             fills = tuple(_read_fills(at))
             units = tuple(at.get("unit_indexes") or
                           (at.get("unit_index", at.get("tile_flat", at["tile"])),))
@@ -231,7 +231,7 @@ def check_region_coverage(prog, phase="steady", acts=None) -> list:
     have = prog.meta.get("operand_regions", {}) or {}
     seen = {}
     for act in (plan_block(prog, phase) if acts is None else acts):
-        if act.kind == "read":
+        if act.kind in FILL_OPS:
             seen.setdefault(act.at["tc"], set()).add(act.at.get("region", 0))
     # AN WAVE-RELATIVE REGION IS COVERED BY THE AGENTS, NOT BY THE COORDINATE.
     agent_rel = set(prog.meta.get("wave_relative_regions", ()) or ())
@@ -265,7 +265,7 @@ def check_source_coverage(prog, phase="steady", acts=None) -> list:
             want.setdefault(op, set()).add((idx, act.at["u"], issue))
     got = {}
     for act in acts:
-        if act.kind == "read":
+        if act.kind in FILL_OPS:
             # EXACTLY ONCE is per COORDINATE, not per act.  A Phi-folded read is one act
             # delivering `q` source coordinates, so counting acts would report the `q-1`
             got.setdefault(act.at["tc"], []).extend(_read_fills(act.at))
@@ -295,7 +295,7 @@ def check_address_keys(prog, packed, phase="steady", acts=None, force_within=Fal
     """
     viol, keys = [], {}
     for act in (plan_block(prog, phase) if acts is None else acts):
-        if act.kind != "read":
+        if act.kind not in FILL_OPS:
             continue
         at = act.at
         op = at["tc"]
@@ -326,7 +326,7 @@ def check_refill_splits_consumers(prog, phase="steady", acts=None) -> list:
     order = {}
     for i, act in enumerate(plan_block(prog, phase) if acts is None else acts):
         at = act.at
-        if act.kind == "read":
+        if act.kind in FILL_OPS:
             units = tuple(at.get("unit_indexes") or
                           (at.get("unit_index", at.get("tile_flat", at["tile"])),))
             for unit in units:
@@ -369,7 +369,7 @@ def _read_slot_pattern(prog, label) -> dict:
     """``{operand/group: {(tile, k, region): slot}}`` for this block's reads."""
     out = {}
     for act in plan_block(prog, label):
-        if act.kind == "read":
+        if act.kind in FILL_OPS:
             at = act.at
             key = (at.get("tc"), at.get("group"))
             fills = at.get("fills") or ((
@@ -437,7 +437,7 @@ def check_unit_index_fits_its_buffer(prog) -> list:
     span, frag = {}, {}
     for act in (a for phase in prog.blocks for a in plan_block(prog, phase)):
         at = act.at
-        if act.kind != "read" or at["tc"] not in layout:
+        if act.kind not in FILL_OPS or at["tc"] not in layout:
             continue
         units = tuple(at.get("unit_indexes") or (at.get("unit_index", 0),))
         size = int(at.get("size_regs") or 0)
@@ -469,7 +469,7 @@ def _walk_values(prog, phases, held, viol=None):
     for phase in phases:
         for position, act in enumerate(plan_block(prog, phase)):
             at = act.at
-            if act.kind == "read":
+            if act.kind in FILL_OPS:
                 values = _read_values(at)
                 for unit in (at.get("unit_indexes") or (at.get("unit_index", 0),)):
                     held[(at["tc"], at.get("group"), at["reg_buf"], unit)] = (

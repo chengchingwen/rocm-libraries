@@ -72,10 +72,10 @@ TEST(GirFrameAnalysisTest, ReconstructsRingOnStCfgAndFindsSameTripRaw) {
 
     StinkyInstruction* copy = createTensorLoadInBlock(loop, GfxArchID::Gfx1250, 0, 8);
     copy->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 2, 0, 0, -1, false}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 2, 0, 0, -1, false}}});
     StinkyInstruction* read = createDsReadB128InBlock(loop, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(
-        GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 0, -1, false}}});
+        GirActionData{1, 1, GirActionKind::Ds, {GirAccessData{false, 0, 2, 0, 0, -1, false}}});
     function.setStringMetaData(kGirFrameContractKey, kRingTwoContract);
 
     AnalysisManager analyses;
@@ -103,10 +103,10 @@ TEST(GirFrameAnalysisTest, FrameDerivedRawPlacementUsesCrossAgentHazard) {
 
     StinkyInstruction* copy = createTensorLoadInBlock(loop, GfxArchID::Gfx1250, 0, 8);
     copy->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 2, 0, 0, -1, true}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 2, 0, 0, -1, true}}});
     StinkyInstruction* read = createDsReadB128InBlock(loop, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(
-        GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 0, -1, true}}});
+        GirActionData{1, 1, GirActionKind::Ds, {GirAccessData{false, 0, 2, 0, 0, -1, true}}});
     function.setStringMetaData(kGirFrameContractKey, kRingTwoContract);
 
     AnalysisManager analyses;
@@ -128,7 +128,7 @@ TEST(GirFrameAnalysisTest, TensorRawMarkerMovesBeforeOneWmmaQueue) {
 
     StinkyInstruction* copy = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
     copy->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
     AsmIRBuilder builder(*block, GfxArchID::Gfx1250);
     std::vector<StinkyInstruction*> wmmas;
     for (int i = 0; i < 3; ++i) {
@@ -142,7 +142,7 @@ TEST(GirFrameAnalysisTest, TensorRawMarkerMovesBeforeOneWmmaQueue) {
     }
     StinkyInstruction* read = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(
-        GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+        GirActionData{1, 1, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
     function.setStringMetaData(kGirFrameContractKey, kFenceContract);
 
     PassContext context;
@@ -193,10 +193,10 @@ TEST(GirFrameAnalysisTest, ForwardingPhiDistinguishesLatchBackEdgeFromDrainExit)
 
     StinkyInstruction* copy = createTensorLoadInBlock(loop, GfxArchID::Gfx1250, 0, 8);
     copy->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 2, 0, 0, -1, false}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 2, 0, 0, -1, false}}});
     StinkyInstruction* read = createDsReadB128InBlock(drain, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(
-        GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 0, -1, false}}});
+        GirActionData{1, 1, GirActionKind::Ds, {GirAccessData{false, 0, 2, 0, 0, -1, false}}});
     function.setStringMetaData(kGirFrameContractKey, kForwardingExitContract);
 
     AnalysisManager analyses;
@@ -237,7 +237,7 @@ TEST(GirFrameAnalysisTest, LogicalAnchorsSurviveBlockSplittingAndFoldedFirstActi
     secondAction->addModifier<GirActionData>(GirActionData{1, 0, GirActionKind::Other, {}});
     StinkyInstruction* read = createDsReadB128InBlock(drain, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(
-        GirActionData{3, 2, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 0, -1, false}}});
+        GirActionData{3, 2, GirActionKind::Ds, {GirAccessData{false, 0, 2, 0, 0, -1, false}}});
     function.setStringMetaData(kGirFrameContractKey, kCanonicalSourceAnchorContract);
 
     AnalysisManager analyses;
@@ -257,17 +257,17 @@ TEST(GirFrameAnalysisTest, AgentRelativeReadWaitsForEveryPhysicalRegionProducer)
 
     StinkyInstruction* first = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 0, 8);
     first->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 1, 2, -1, 0, 0, true}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 1, 2, -1, 0, 0, true}}});
     StinkyInstruction* second = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 16, 24);
     second->addModifier<GirActionData>(
-        GirActionData{1, 0, GirActionKind::Copy, {GirAccessData{true, 2, 2, -1, 0, 0, true}}});
+        GirActionData{1, 0, GirActionKind::Tensor, {GirAccessData{true, 2, 2, -1, 0, 0, true}}});
     AsmIRBuilder builder(*drain, GfxArchID::Gfx1250);
     StinkyInstruction* fence = builder.createFence();
     fence->addModifier<GirActionData>(GirActionData{2, 2, GirActionKind::Other, {}});
     StinkyInstruction* read = createDsReadB128InBlock(drain, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(GirActionData{3,
                                                    2,
-                                                   GirActionKind::Read,
+                                                   GirActionKind::Ds,
                                                    {GirAccessData{false, 1, 2, 0, -1, -1, true},
                                                     GirAccessData{false, 2, 2, 0, -1, -1, true}}});
     function.setStringMetaData(kGirFrameContractKey, kAgentRelativeRegionsContract);
@@ -303,17 +303,17 @@ TEST(GirFrameAnalysisTest, LateRawFenceRanksSuccessorRegionAtEndpoint) {
 
     StinkyInstruction* first = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 0, 8);
     first->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* second = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 16, 24);
     second->addModifier<GirActionData>(
-        GirActionData{1, 0, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+        GirActionData{1, 0, GirActionKind::Tensor, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
 
     StinkyInstruction* firstRead = createDsReadB128InBlock(entry, GfxArchID::Gfx1250, 0, 20);
     firstRead->addModifier<GirActionData>(
-        GirActionData{2, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+        GirActionData{2, 0, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* secondRead = createDsReadB128InBlock(drain, GfxArchID::Gfx1250, 4, 24);
     secondRead->addModifier<GirActionData>(
-        GirActionData{3, 3, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+        GirActionData{3, 3, GirActionKind::Ds, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
     function.setStringMetaData(kGirFrameContractKey, kDiamondContract);
 
     PassContext context;
@@ -358,19 +358,19 @@ TEST(GirFrameAnalysisTest, UnwaitedTensorRawFenceIsRemoved) {
 
     StinkyInstruction* producerA = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 0, 8);
     producerA->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* producerB = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 16, 24);
     producerB->addModifier<GirActionData>(
-        GirActionData{1, 0, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+        GirActionData{1, 0, GirActionKind::Tensor, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
     StinkyInstruction* filler = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 32, 40);
     filler->addModifier<GirActionData>(
-        GirActionData{2, 0, GirActionKind::Copy, {GirAccessData{true, 2, 1, -1, 0, 0, true}}});
+        GirActionData{2, 0, GirActionKind::Tensor, {GirAccessData{true, 2, 1, -1, 0, 0, true}}});
     StinkyInstruction* firstRead = createDsReadB128InBlock(first, GfxArchID::Gfx1250, 4, 24);
     firstRead->addModifier<GirActionData>(
-        GirActionData{3, 3, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+        GirActionData{3, 3, GirActionKind::Ds, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
     StinkyInstruction* mergeRead = createDsReadB128InBlock(merge, GfxArchID::Gfx1250, 0, 20);
     mergeRead->addModifier<GirActionData>(
-        GirActionData{4, 4, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+        GirActionData{4, 4, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
     function.setStringMetaData(kGirFrameContractKey, kFenceContract);
 
     PassContext context;
@@ -426,19 +426,19 @@ TEST(GirFrameAnalysisTest, UnwaitedRawOwnershipDropsFromWarFence) {
 
     StinkyInstruction* copyA = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
     copyA->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* firstReadA = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
     firstReadA->addModifier<GirActionData>(
-        GirActionData{1, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+        GirActionData{1, 0, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* readB = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 4, 24);
     readB->addModifier<GirActionData>(
-        GirActionData{2, 0, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+        GirActionData{2, 0, GirActionKind::Ds, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
     StinkyInstruction* secondReadA = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 8, 28);
     secondReadA->addModifier<GirActionData>(
-        GirActionData{3, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+        GirActionData{3, 0, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* copyB = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
     copyB->addModifier<GirActionData>(
-        GirActionData{4, 0, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+        GirActionData{4, 0, GirActionKind::Tensor, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
     function.setStringMetaData(kGirFrameContractKey, kFenceContract);
 
     PassContext context;
@@ -472,17 +472,17 @@ TEST(GirFrameAnalysisTest, EarlyRawFenceDoesNotStealSameTripWarDeadline) {
 
     StinkyInstruction* copyA = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
     copyA->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* readB = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 4, 24);
     readB->addModifier<GirActionData>(
-        GirActionData{1, 0, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+        GirActionData{1, 0, GirActionKind::Ds, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
     StinkyInstruction* readA = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
     readA->addModifier<GirActionData>(
-        GirActionData{2, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+        GirActionData{2, 0, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
     createDsReadB128InBlock(block, GfxArchID::Gfx1250, 8, 28);
     StinkyInstruction* copyB = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
     copyB->addModifier<GirActionData>(
-        GirActionData{3, 0, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+        GirActionData{3, 0, GirActionKind::Tensor, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
     function.setStringMetaData(kGirFrameContractKey, kFenceContract);
 
     PassContext context;
@@ -524,10 +524,10 @@ TEST(GirFrameAnalysisTest, RawFenceReusesWarWhenDscntIsUnchanged) {
 
     StinkyInstruction* copyA = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
     copyA->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* readB = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 4, 24);
     readB->addModifier<GirActionData>(
-        GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+        GirActionData{1, 1, GirActionKind::Ds, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
     AsmIRBuilder builder(*block, GfxArchID::Gfx1250);
     StinkyInstruction* existingWait =
         builder.create(getMCIDByUOp(GFX::s_wait_dscnt, GfxArchID::Gfx1250));
@@ -537,10 +537,10 @@ TEST(GirFrameAnalysisTest, RawFenceReusesWarWhenDscntIsUnchanged) {
     existingWait->addModifier<SWaitCntData>(waitData);
     StinkyInstruction* readA = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
     readA->addModifier<GirActionData>(
-        GirActionData{2, 2, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+        GirActionData{2, 2, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* copyB = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
     copyB->addModifier<GirActionData>(
-        GirActionData{3, 3, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+        GirActionData{3, 3, GirActionKind::Tensor, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
     function.setStringMetaData(kGirFrameContractKey, kFenceContract);
 
     PassContext context;
@@ -570,16 +570,16 @@ TEST(GirFrameAnalysisTest, EarlyRawFenceDoesNotOwnAnOlderWar) {
 
     StinkyInstruction* copyA = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
     copyA->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 2, 0, 0, -1, true}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 2, 0, 0, -1, true}}});
     StinkyInstruction* readA = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
     readA->addModifier<GirActionData>(
-        GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 0, -1, true}}});
+        GirActionData{1, 1, GirActionKind::Ds, {GirAccessData{false, 0, 2, 0, 0, -1, true}}});
     StinkyInstruction* copyB = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
     copyB->addModifier<GirActionData>(
-        GirActionData{2, 2, GirActionKind::Copy, {GirAccessData{true, 1, 2, 0, 0, -1, true}}});
+        GirActionData{2, 2, GirActionKind::Tensor, {GirAccessData{true, 1, 2, 0, 0, -1, true}}});
     StinkyInstruction* readB = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 4, 24);
     readB->addModifier<GirActionData>(
-        GirActionData{3, 3, GirActionKind::Read, {GirAccessData{false, 1, 2, 0, 1, -1, true}}});
+        GirActionData{3, 3, GirActionKind::Ds, {GirAccessData{false, 1, 2, 0, 1, -1, true}}});
     function.setStringMetaData(kGirFrameContractKey, kRingTwoContract);
 
     PassContext context;
@@ -620,32 +620,32 @@ TEST(GirFrameAnalysisTest, UnwaitedRawRemovalReclosesWarCut) {
 
     StinkyInstruction* copyA = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 0, 8);
     copyA->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* copyB = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 16, 24);
     copyB->addModifier<GirActionData>(
-        GirActionData{1, 1, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+        GirActionData{1, 1, GirActionKind::Tensor, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
     StinkyInstruction* filler = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 32, 40);
     filler->addModifier<GirActionData>(
-        GirActionData{2, 2, GirActionKind::Copy, {GirAccessData{true, 2, 1, -1, 0, 0, true}}});
+        GirActionData{2, 2, GirActionKind::Tensor, {GirAccessData{true, 2, 1, -1, 0, 0, true}}});
     StinkyInstruction* copyY = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 48, 56);
     copyY->addModifier<GirActionData>(
-        GirActionData{3, 3, GirActionKind::Copy, {GirAccessData{true, 3, 1, -1, 0, 0, true}}});
+        GirActionData{3, 3, GirActionKind::Tensor, {GirAccessData{true, 3, 1, -1, 0, 0, true}}});
 
     StinkyInstruction* readB = createDsReadB128InBlock(first, GfxArchID::Gfx1250, 4, 24);
     readB->addModifier<GirActionData>(
-        GirActionData{4, 4, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+        GirActionData{4, 4, GirActionKind::Ds, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
     StinkyInstruction* readX = createDsReadB128InBlock(merge, GfxArchID::Gfx1250, 8, 28);
     readX->addModifier<GirActionData>(
-        GirActionData{5, 5, GirActionKind::Read, {GirAccessData{false, 4, 1, -1, 0, 0, true}}});
+        GirActionData{5, 5, GirActionKind::Ds, {GirAccessData{false, 4, 1, -1, 0, 0, true}}});
     StinkyInstruction* readA = createDsReadB128InBlock(merge, GfxArchID::Gfx1250, 0, 20);
     readA->addModifier<GirActionData>(
-        GirActionData{6, 6, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+        GirActionData{6, 6, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* readY = createDsReadB128InBlock(right, GfxArchID::Gfx1250, 12, 32);
     readY->addModifier<GirActionData>(
-        GirActionData{7, 7, GirActionKind::Read, {GirAccessData{false, 3, 1, -1, 0, 0, true}}});
+        GirActionData{7, 7, GirActionKind::Ds, {GirAccessData{false, 3, 1, -1, 0, 0, true}}});
     StinkyInstruction* copyX = createTensorLoadInBlock(join, GfxArchID::Gfx1250, 64, 72);
     copyX->addModifier<GirActionData>(
-        GirActionData{8, 8, GirActionKind::Copy, {GirAccessData{true, 4, 1, -1, 0, 0, true}}});
+        GirActionData{8, 8, GirActionKind::Tensor, {GirAccessData{true, 4, 1, -1, 0, 0, true}}});
     function.setStringMetaData(kGirFrameContractKey, kFenceContract);
 
     PassContext context;
@@ -689,15 +689,15 @@ TEST(GirFrameAnalysisTest, CoLocatedRawsShareOneFence) {
 
     StinkyInstruction* first = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
     first->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* second = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
     second->addModifier<GirActionData>(
-        GirActionData{1, 0, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+        GirActionData{1, 0, GirActionKind::Tensor, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
     StinkyInstruction* read = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(GirActionData{
         2,
         0,
-        GirActionKind::Read,
+        GirActionKind::Ds,
         {GirAccessData{false, 0, 1, -1, 0, 0, true}, GirAccessData{false, 1, 1, -1, 0, 0, true}}});
     function.setStringMetaData(kGirFrameContractKey, kFenceContract);
 
@@ -732,22 +732,22 @@ TEST(GirFrameAnalysisTest, DistinctHazardDeadlinesKeepSeparateFenceKinds) {
 
     StinkyInstruction* copyA = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
     copyA->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* firstCopyC = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
     firstCopyC->addModifier<GirActionData>(
-        GirActionData{1, 0, GirActionKind::Copy, {GirAccessData{true, 2, 1, -1, 0, 0, true}}});
+        GirActionData{1, 0, GirActionKind::Tensor, {GirAccessData{true, 2, 1, -1, 0, 0, true}}});
     StinkyInstruction* readB = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 4, 24);
     readB->addModifier<GirActionData>(
-        GirActionData{2, 0, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+        GirActionData{2, 0, GirActionKind::Ds, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
     StinkyInstruction* readA = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
     readA->addModifier<GirActionData>(
-        GirActionData{3, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+        GirActionData{3, 0, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* copyB = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 32, 40);
     copyB->addModifier<GirActionData>(
-        GirActionData{4, 0, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+        GirActionData{4, 0, GirActionKind::Tensor, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
     StinkyInstruction* secondCopyC = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 48, 56);
     secondCopyC->addModifier<GirActionData>(
-        GirActionData{5, 0, GirActionKind::Copy, {GirAccessData{true, 2, 1, -1, 0, 0, true}}});
+        GirActionData{5, 0, GirActionKind::Tensor, {GirAccessData{true, 2, 1, -1, 0, 0, true}}});
     function.setStringMetaData(kGirFrameContractKey, kFenceContract);
 
     PassContext context;
@@ -783,16 +783,16 @@ TEST(GirFrameAnalysisTest, DistinctWarStorageKeepsSeparateBarriers) {
 
     StinkyInstruction* readA = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
     readA->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+        GirActionData{0, 0, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* readB = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 4, 24);
     readB->addModifier<GirActionData>(
-        GirActionData{1, 0, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+        GirActionData{1, 0, GirActionKind::Ds, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
     StinkyInstruction* copyA = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
     copyA->addModifier<GirActionData>(
-        GirActionData{2, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+        GirActionData{2, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* copyB = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
     copyB->addModifier<GirActionData>(
-        GirActionData{3, 0, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+        GirActionData{3, 0, GirActionKind::Tensor, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
     function.setStringMetaData(kGirFrameContractKey, kFenceContract);
 
     PassContext context;
@@ -829,19 +829,19 @@ TEST(GirFrameAnalysisTest, WarWaitRetainsYoungerReadsOfDifferentStorage) {
 
     StinkyInstruction* readA = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
     readA->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+        GirActionData{0, 0, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
     for (int i = 0; i < 16; ++i) {
         StinkyInstruction* readB =
             createDsReadB128InBlock(block, GfxArchID::Gfx1250, 4 + i * 4, 24);
         readB->addModifier<GirActionData>(
-            GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+            GirActionData{1, 1, GirActionKind::Ds, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
     }
     StinkyInstruction* copyA = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
     copyA->addModifier<GirActionData>(
-        GirActionData{2, 2, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+        GirActionData{2, 2, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* copyB = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
     copyB->addModifier<GirActionData>(
-        GirActionData{3, 3, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+        GirActionData{3, 3, GirActionKind::Tensor, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
     function.setStringMetaData(kGirFrameContractKey, kFenceContract);
 
     PassContext context;
@@ -881,16 +881,16 @@ TEST(GirFrameAnalysisTest, TensorIssueKeepsWarBarriersSeparate) {
 
     StinkyInstruction* readA = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
     readA->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+        GirActionData{0, 0, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* copyA = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
     copyA->addModifier<GirActionData>(
-        GirActionData{1, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+        GirActionData{1, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* readB = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 4, 24);
     readB->addModifier<GirActionData>(
-        GirActionData{2, 0, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
+        GirActionData{2, 0, GirActionKind::Ds, {GirAccessData{false, 1, 1, -1, 0, 0, true}}});
     StinkyInstruction* copyB = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
     copyB->addModifier<GirActionData>(
-        GirActionData{3, 0, GirActionKind::Copy, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
+        GirActionData{3, 0, GirActionKind::Tensor, {GirAccessData{true, 1, 1, -1, 0, 0, true}}});
     function.setStringMetaData(kGirFrameContractKey, kFenceContract);
 
     PassContext context;
@@ -959,10 +959,10 @@ TEST(GirFrameAnalysisTest, FrameWaitPassInsertsTensorWaitAtTaggedConsumer) {
     function.addEdge(loop, loop);
     StinkyInstruction* copy = createTensorLoadInBlock(loop, GfxArchID::Gfx1250, 0, 8);
     copy->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 2, 0, 0, -1, false}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 2, 0, 0, -1, false}}});
     StinkyInstruction* read = createDsReadB128InBlock(loop, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(
-        GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 0, -1, false}}});
+        GirActionData{1, 1, GirActionKind::Ds, {GirAccessData{false, 0, 2, 0, 0, -1, false}}});
     function.setStringMetaData(kGirFrameContractKey, kRingTwoContract);
 
     PassContext context;
@@ -997,10 +997,10 @@ TEST(GirFrameAnalysisTest, JoinIgnoresAbsentPathWithoutInventingPromotion) {
 
     StinkyInstruction* copy = createTensorLoadInBlock(producing, GfxArchID::Gfx1250, 0, 8);
     copy->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, false}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, false}}});
     StinkyInstruction* read = createDsReadB128InBlock(join, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(
-        GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
+        GirActionData{1, 1, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
     function.setStringMetaData(kGirFrameContractKey, kDiamondContract);
 
     PassContext context;
@@ -1029,10 +1029,10 @@ TEST(GirFrameAnalysisTest, FrameWarRetiresVacatingDsRead) {
     BasicBlock* block = function.createBasicBlock("entry");
     StinkyInstruction* read = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
+        GirActionData{0, 0, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
     StinkyInstruction* copy = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
     copy->addModifier<GirActionData>(
-        GirActionData{1, 1, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, false}}});
+        GirActionData{1, 1, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, false}}});
     function.setStringMetaData(kGirFrameContractKey, kWarContract);
 
     PassContext context;
@@ -1060,10 +1060,10 @@ TEST(GirFrameAnalysisTest, FrameWaitReconcilesGenericDscntStream) {
 
     StinkyInstruction* read = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
+        GirActionData{0, 0, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
     StinkyInstruction* copy = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
     copy->addModifier<GirActionData>(
-        GirActionData{1, 1, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, false}}});
+        GirActionData{1, 1, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, false}}});
 
     // The frame WAR adds dscnt 0 before `copy`. Two later issues make the counter bound 2, so a
     // generic dscnt 63 cannot change hardware state. After two more issues, dscnt 1 still tightens
@@ -1110,10 +1110,10 @@ TEST(GirFrameAnalysisTest, SameTripRingAliasWarDrainsBeforeOverwrite) {
 
     StinkyInstruction* read = createDsReadB128InBlock(loop, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 0, -1, false}}});
+        GirActionData{0, 0, GirActionKind::Ds, {GirAccessData{false, 0, 2, 0, 0, -1, false}}});
     StinkyInstruction* copy = createTensorLoadInBlock(loop, GfxArchID::Gfx1250, 0, 8);
     copy->addModifier<GirActionData>(
-        GirActionData{1, 1, GirActionKind::Copy, {GirAccessData{true, 0, 2, 0, 2, -1, false}}});
+        GirActionData{1, 1, GirActionKind::Tensor, {GirAccessData{true, 0, 2, 0, 2, -1, false}}});
     function.setStringMetaData(kGirFrameContractKey, kRingTwoContract);
 
     PassContext context;
@@ -1157,10 +1157,10 @@ TEST(GirFrameAnalysisTest, CrossAgentRingAliasWarDrainsBeforeBarrier) {
 
     StinkyInstruction* read = createDsReadB128InBlock(loop, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 0, -1, true}}});
+        GirActionData{0, 0, GirActionKind::Ds, {GirAccessData{false, 0, 2, 0, 0, -1, true}}});
     StinkyInstruction* copy = createTensorLoadInBlock(loop, GfxArchID::Gfx1250, 0, 8);
     copy->addModifier<GirActionData>(
-        GirActionData{1, 1, GirActionKind::Copy, {GirAccessData{true, 0, 2, 0, 2, -1, true}}});
+        GirActionData{1, 1, GirActionKind::Tensor, {GirAccessData{true, 0, 2, 0, 2, -1, true}}});
     function.setStringMetaData(kGirFrameContractKey, kRingTwoContract);
 
     PassContext context;
@@ -1208,10 +1208,10 @@ TEST(GirFrameAnalysisTest, LoopCarriedWarDrainsAtPredecessorTailFence) {
 
     StinkyInstruction* copy = createTensorLoadInBlock(loop, GfxArchID::Gfx1250, 0, 8);
     copy->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 2, 0, 2, -1, true}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 2, 0, 2, -1, true}}});
     StinkyInstruction* read = createDsReadB128InBlock(loop, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(
-        GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 1, -1, true}}});
+        GirActionData{1, 1, GirActionKind::Ds, {GirAccessData{false, 0, 2, 0, 1, -1, true}}});
     AsmIRBuilder builder(*loop, GfxArchID::Gfx1250);
     StinkyInstruction* fence = builder.createFence();
     function.setStringMetaData(kGirFrameContractKey, kRingTwoContract);
@@ -1256,16 +1256,16 @@ TEST(GirFrameAnalysisTest, EntryAndBackedgeWarUseDifferentFences) {
 
     StinkyInstruction* entryRead = createDsReadB128InBlock(entry, GfxArchID::Gfx1250, 0, 20);
     entryRead->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 0, -1, true}}});
+        GirActionData{0, 0, GirActionKind::Ds, {GirAccessData{false, 0, 2, 0, 0, -1, true}}});
     AsmIRBuilder entryBuilder(*entry, GfxArchID::Gfx1250);
     StinkyInstruction* entryFence = entryBuilder.createFence();
 
     StinkyInstruction* copy = createTensorLoadInBlock(loop, GfxArchID::Gfx1250, 0, 8);
     copy->addModifier<GirActionData>(
-        GirActionData{1, 1, GirActionKind::Copy, {GirAccessData{true, 0, 2, 0, 0, -1, true}}});
+        GirActionData{1, 1, GirActionKind::Tensor, {GirAccessData{true, 0, 2, 0, 0, -1, true}}});
     StinkyInstruction* loopRead = createDsReadB128InBlock(loop, GfxArchID::Gfx1250, 4, 24);
     loopRead->addModifier<GirActionData>(
-        GirActionData{2, 1, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 1, -1, true}}});
+        GirActionData{2, 1, GirActionKind::Ds, {GirAccessData{false, 0, 2, 0, 1, -1, true}}});
     AsmIRBuilder loopBuilder(*loop, GfxArchID::Gfx1250);
     StinkyInstruction* tailFence = loopBuilder.createFence();
     function.setStringMetaData(kGirFrameContractKey, kRingTwoContract);
@@ -1301,10 +1301,10 @@ TEST(GirFrameAnalysisTest, LoopWrapStillUsesUnreducedGenerationSpan) {
 
     StinkyInstruction* read = createDsReadB128InBlock(loop, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 2, -1, false}}});
+        GirActionData{0, 0, GirActionKind::Ds, {GirAccessData{false, 0, 2, 0, 2, -1, false}}});
     StinkyInstruction* copy = createTensorLoadInBlock(loop, GfxArchID::Gfx1250, 0, 8);
     copy->addModifier<GirActionData>(
-        GirActionData{1, 1, GirActionKind::Copy, {GirAccessData{true, 0, 2, 0, 0, -1, false}}});
+        GirActionData{1, 1, GirActionKind::Tensor, {GirAccessData{true, 0, 2, 0, 0, -1, false}}});
     function.setStringMetaData(kGirFrameContractKey, kRingTwoContract);
 
     AnalysisManager analyses;
@@ -1325,13 +1325,13 @@ TEST(GirFrameAnalysisTest, CrossAgentWaitAnchorsAtVirtualFence) {
     BasicBlock* block = function.createBasicBlock("entry");
     StinkyInstruction* copy = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
     copy->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
     AsmIRBuilder builder(*block, GfxArchID::Gfx1250);
     StinkyInstruction* fence = builder.createFence();
     fence->addModifier<GirActionData>(GirActionData{1, 1, GirActionKind::Other, {}});
     StinkyInstruction* read = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(
-        GirActionData{2, 2, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+        GirActionData{2, 2, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
     function.setStringMetaData(kGirFrameContractKey, kFenceContract);
 
     PassContext context;
@@ -1361,10 +1361,10 @@ TEST(GirFrameAnalysisTest, SingleWaveUsesWaitWithoutWorkgroupBarrier) {
 
     StinkyInstruction* copy = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
     copy->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
     StinkyInstruction* read = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(
-        GirActionData{1, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+        GirActionData{1, 0, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
     function.setStringMetaData(kGirFrameContractKey, kFenceContract);
 
     PassContext context;
@@ -1407,21 +1407,21 @@ TEST(GirFrameAnalysisTest, ClonedFenceActionAnchorsWaitOnEachCfgPath) {
 
     StinkyInstruction* copy = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 0, 8);
     copy->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
 
     AsmIRBuilder leftBuilder(*left, GfxArchID::Gfx1250);
     StinkyInstruction* leftFence = leftBuilder.createFence();
     leftFence->addModifier<GirActionData>(GirActionData{1, 1, GirActionKind::Other, {}});
     StinkyInstruction* leftRead = createDsReadB128InBlock(left, GfxArchID::Gfx1250, 0, 20);
     leftRead->addModifier<GirActionData>(
-        GirActionData{2, 2, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+        GirActionData{2, 2, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
 
     AsmIRBuilder rightBuilder(*right, GfxArchID::Gfx1250);
     StinkyInstruction* rightFence = rightBuilder.createFence();
     rightFence->addModifier<GirActionData>(GirActionData{1, 1, GirActionKind::Other, {}});
     StinkyInstruction* rightRead = createDsReadB128InBlock(right, GfxArchID::Gfx1250, 0, 20);
     rightRead->addModifier<GirActionData>(
-        GirActionData{2, 2, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+        GirActionData{2, 2, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
     function.setStringMetaData(kGirFrameContractKey, kFenceContract);
 
     PassContext context;
@@ -1458,16 +1458,16 @@ TEST(GirFrameAnalysisTest, EntrancePhiSurvivesUntaggedScaffoldBlocks) {
 
     StinkyInstruction* prologueCopy = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 0, 8);
     prologueCopy->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 2, -1, 0, 0, false}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 2, -1, 0, 0, false}}});
     AsmIRBuilder bypassBuilder(*bypass, GfxArchID::Gfx1250);
     bypassBuilder.create(getMCIDByUOp(GFX::s_nop, GfxArchID::Gfx1250));
 
     StinkyInstruction* loopCopy = createTensorLoadInBlock(loop, GfxArchID::Gfx1250, 16, 24);
     loopCopy->addModifier<GirActionData>(
-        GirActionData{3, 3, GirActionKind::Copy, {GirAccessData{true, 0, 2, 0, 1, -1, false}}});
+        GirActionData{3, 3, GirActionKind::Tensor, {GirAccessData{true, 0, 2, 0, 1, -1, false}}});
     StinkyInstruction* drainRead = createDsReadB128InBlock(drain, GfxArchID::Gfx1250, 0, 20);
     drainRead->addModifier<GirActionData>(
-        GirActionData{2, 2, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, -1, -1, false}}});
+        GirActionData{2, 2, GirActionKind::Ds, {GirAccessData{false, 0, 2, 0, -1, -1, false}}});
     function.setStringMetaData(kGirFrameContractKey, kEntrancePhiContract);
 
     AnalysisManager analyses;
@@ -1522,7 +1522,7 @@ TEST(GirFrameAnalysisTest, EntranceIdentitySurvivesSamePhaseJoin) {
     joinBuilder.create(getMCIDByUOp(GFX::s_nop, GfxArchID::Gfx1250));
     StinkyInstruction* read = createDsReadB128InBlock(destination, GfxArchID::Gfx1250, 0, 20);
     read->addModifier<GirActionData>(
-        GirActionData{2, 2, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 0, -1, false}}});
+        GirActionData{2, 2, GirActionKind::Ds, {GirAccessData{false, 0, 2, 0, 0, -1, false}}});
     function.setStringMetaData(kGirFrameContractKey, kRingWrapEntranceContract);
 
     AnalysisManager analyses;
@@ -1551,7 +1551,7 @@ TEST(GirFrameAnalysisTest, TripDomainExcludesShortPrefetchPathFromSteadyWaitRank
 
     StinkyInstruction* producer = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 0, 8);
     producer->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, false}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, false}}});
     createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 16, 24);
     createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 32, 40);
     {
@@ -1581,7 +1581,7 @@ TEST(GirFrameAnalysisTest, TripDomainExcludesShortPrefetchPathFromSteadyWaitRank
 
     StinkyInstruction* consumer = createDsReadB128InBlock(loop, GfxArchID::Gfx1250, 0, 20);
     consumer->addModifier<GirActionData>(
-        GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
+        GirActionData{1, 1, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
     function.setStringMetaData(kGirFrameContractKey, kDiamondContract);
 
     PassContext context;
@@ -1616,10 +1616,10 @@ TEST(GirFrameAnalysisTest, PredecessorPromotionRerunsDownstreamCounterflow) {
 
     StinkyInstruction* mx = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 0, 8);
     mx->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Copy, {GirAccessData{true, 3, 1, -1, 0, 0, false}}});
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 3, 1, -1, 0, 0, false}}});
     StinkyInstruction* a = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 16, 24);
     a->addModifier<GirActionData>(
-        GirActionData{1, 1, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, false}}});
+        GirActionData{1, 1, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, false}}});
     createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 32, 40);
     createTensorLoadInBlock(fullPath, GfxArchID::Gfx1250, 48, 56);
     createTensorLoadInBlock(fullPath, GfxArchID::Gfx1250, 64, 72);
@@ -1627,10 +1627,10 @@ TEST(GirFrameAnalysisTest, PredecessorPromotionRerunsDownstreamCounterflow) {
 
     StinkyInstruction* mxRead = createDsReadB128InBlock(join, GfxArchID::Gfx1250, 0, 20);
     mxRead->addModifier<GirActionData>(
-        GirActionData{2, 2, GirActionKind::Read, {GirAccessData{false, 3, 1, -1, 0, 0, false}}});
+        GirActionData{2, 2, GirActionKind::Ds, {GirAccessData{false, 3, 1, -1, 0, 0, false}}});
     StinkyInstruction* aRead = createDsReadB128InBlock(join, GfxArchID::Gfx1250, 4, 24);
     aRead->addModifier<GirActionData>(
-        GirActionData{3, 3, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
+        GirActionData{3, 3, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
     function.setStringMetaData(kGirFrameContractKey, kPromotionContract);
 
     PassContext context;
