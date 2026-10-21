@@ -242,7 +242,7 @@ class LeafEmitters:
             mxScaleBTypeInst=dataTypeNameAbbrevToInstType(pt["DataTypeMXSB"].toNameAbbrev()))
 
     def emitWmmaTile(self, kernel, tPA, tPB, ctx: MfmaTileContext,
-                     idx0: int, idx1: int, u: int, iui: int = 0,
+                     idx0: int, idx1: int, u: int, iui: int = 0, girComment=None,
                      vregSetIdx: int = 0, unrollLoopIdx: int = 0,
                      bufA: int = None, bufB: int = None,
                      bufMXA: int = None, bufMXB: int = None,
@@ -298,14 +298,13 @@ class LeafEmitters:
         src0, src1 = (Str1, Str0) if kernel["SourceSwap"] else (Str0, Str1)
 
         acc = w.accVgprReadWriteIndex(kernel, accStart, (accEnd - accStart + 1))
-        imod = Module("<LoopIR: wmma tile (%u,%u) u=%u>" % (idx0, idx1, u))
-        _loopir = "<LoopIR: C[m=%u,n=%u] += A[m,k=%u]*B[n,k=%u]>" % (idx0, idx1, u, u)
+        imod = Module("wmma tile (%u,%u) u=%u" % (idx0, idx1, u))
         _wmma = "wmma regA=X%u regB=X%u" % (mA, mB)
         if not ctx.mxBlock:
             imod.add(MFMAInstruction(
                 instType=ctx.miInInstType, accType=ctx.miOutInstType, variant=ctx.variant,
                 mfma1k=ctx.mfma_1k, acc=acc, a=src0, b=src1, acc2=acc, neg=ctx.neg_flag,
-                comment="%s  %s" % (_loopir, gir_tag(_wmma))))
+                comment=gir_tag(girComment or _wmma)))
             return imod
 
         # ---- MICROSCALED: the same opcode, plus the two scale registers and a block modifier ---
@@ -358,8 +357,8 @@ class LeafEmitters:
             acc=acc, a=src0, b=src1, acc2=acc,
             mxsa=strMX0, mxsb=strMX1, block=ctx.mxBlock,
             mxScaleASel=selMX0, mxScaleBSel=selMX1,
-            comment="%s  %s" % (_loopir,
-                                gir_tag(_wmma + " mxA=X%u mxB=X%u" % (mMXA, mMXB)))))
+            comment=gir_tag(girComment or
+                            _wmma + " mxA=X%u mxB=X%u" % (mMXA, mMXB))))
         return imod
 
     # ------------------------------------------------------------- MX scale LDS read leaf
@@ -563,6 +562,7 @@ class LeafEmitters:
 
     def emitLdsReadTile(self, kernel, tP, ctx: LdsReadTileContext, tileIdx: int,
                         kIdx: int, bufferIdx: int, iui: int = 0, memToken=None,
+                        girComment=None,
                         region: int = 0, regTileIdx: int = None, regUnitIdx: int = None,
                         regBase: int = None, kFlat: int = None,
                         quantum=None, gen: int = None) -> Module:
@@ -575,7 +575,7 @@ class LeafEmitters:
         comp = Component.LocalRead.find(w)
         tc = ctx.tc
         self._checkRegBuffer(tc, bufferIdx, "ds_read dest")
-        imod = Module("<LoopIR: ldsread %s tile %u k %u buf %u>" % (tc, tileIdx, kIdx, bufferIdx))
+        imod = Module("ldsread %s tile %u k %u buf %u" % (tc, tileIdx, kIdx, bufferIdx))
 
         if quantum is not None:
             if not quantum.emit:
@@ -614,7 +614,9 @@ class LeafEmitters:
         regionOff = region_bytes(ctx, region) + segOff
         # APPEND the GIR act to the existing path comment ("LDS Transpose" / "LDS general" says
         # WHICH READ PATH was taken and must survive); the tile/k/buffer says WHICH ACT it realizes.
-        _cmt = ("<LoopIR: LDS Transpose>" if ctx.enableLDSTr else "<LoopIR: LDS general>") + \
+        _cmt = ("LDS Transpose" if ctx.enableLDSTr else "LDS general") + "  " + \
+               gir_tag(girComment) if girComment else \
+               ("LDS Transpose" if ctx.enableLDSTr else "LDS general") + \
                "  " + gir_tag("read %s[tile=%u,k=%u%s%s]->X%u" % (
                    tc, regTileIdx, kAddr,
                    "" if not ctx.splitBoundaryBytes else ",r%u" % region,

@@ -9,7 +9,8 @@ compiler reads it back.
 
 from __future__ import annotations
 
-from .nodes import Move, Mma, Mark, Goto, CondGoto, CondChain, LoopBack, LoopCopy, Return
+from .nodes import (HAZARD_KINDS, Move, Mma, Mark, Goto, CondGoto, CondChain,
+                    LoopBack, LoopCopy, Return)
 from .analysis import AnalysisManager
 from .analyses.frame_map import FrameMap
 
@@ -25,13 +26,15 @@ def _gen_str(ref):
     parts = []
     if getattr(ref, "gen", None) is not None:
         d = f"+{ref.gdelta}" if ref.gdelta else ""
-        parts.append(f"gen#{ref.gen.id}[v{d}]")           # SSA identity of the phi
+        parts.append(f"gen{ref.gen.id}[v{d}]")           # SSA identity of the phi
     if getattr(ref, "abs_gen", None) is not None:
         parts.append(f"gen@{ref.abs_gen}")                # concrete generation value
     if ref.group is not None:
+        # Partition index shown only when non-zero; every reachable config has one partition.
         ring = getattr(ref, "reg_ring", None)
-        parts.append(f"reg(g{ref.group},s{ref.slot},u{ref.unit_index}"
-                     + (f"/W{ring})" if ring else ")"))
+        buf = f"buf{ref.slot}/{ring}" if ring else f"buf{ref.slot}"
+        group = f"group{ref.group}," if ref.group else ""
+        parts.append(f"{group}{buf},u{ref.unit_index}")
     return " ".join(parts)
 
 
@@ -48,9 +51,10 @@ def _covers_str(ref):
     return "+".join(f"{ax}x{ext}" for ax, ext in cov)
 
 
-def _ref_str(ref):
+def _ref_str(ref, hide_coord=False):
+    """`hide_coord` drops a coord another ref on the same line already states."""
     t = ref.tile
-    pos = _coord_str(t.coord)
+    pos = "" if hide_coord else _coord_str(t.coord)
     tag = _gen_str(ref)
     inner = f"{t.operand}.{t.space}"
     if pos:
@@ -70,12 +74,7 @@ def _dep_str(inst):
         return ""
     parts = []
     for dep, counter, kind, scope in deps:
-        mark = "" if kind in (
-            "RAW-residency",
-            "crossing-RAW",
-            "rotation-WAR",
-            "inplace-WAR",
-        ) else " !UNKNOWN-KIND"
+        mark = "" if kind in HAZARD_KINDS else " !UNKNOWN-KIND"
         # `scope` is load-bearing: a "block" dep asserts this edge needs a cross-wave fence, and
         # `verify.check_block_scope_covered` fails the build when no hazard edge backs the claim.
         sc = "" if scope == "wave" else f"/{scope}"
@@ -152,14 +151,32 @@ def _move_line(mv):
     kind = mv.op or ("tensor_load" if any(d.tile.space == "shared" for d in mv.dsts)
                     else "ds_load")
     srcs = "+".join(_ref_str(r) for r in mv.srcs)
-    dsts = "+".join(_ref_str(r) for r in mv.dsts)
-    return f"{kind:5s} {srcs} -> {dsts}{_dep_str(mv)}"
+    # A destination repeating the source's coord says nothing; a differing one still shows.
+    seen = {r.tile.coord for r in mv.srcs}
+    dsts = "+".join(_ref_str(r, hide_coord=r.tile.coord in seen) for r in mv.dsts)
+    return f"{kind:11s} {srcs} -> {dsts}{_dep_str(mv)}"
 
 
 def _mma_line(mm):
     srcs = ",".join(_ref_str(r) for r in mm.srcs)
-    dst = _ref_str(mm.dsts[0]) if mm.dsts else "acc"
-    return f"mma   {dst} += {srcs}   # {mm.block}{_dep_str(mm)}"
+    # The accumulator's coord is what the inputs already state, repeated over the summation axis.
+    stated = {pair for r in mm.srcs for pair in r.tile.coord}
+    covered = mm.dsts and all(pair in stated for pair in mm.dsts[0].tile.coord)
+    dst = _ref_str(mm.dsts[0], hide_coord=bool(covered)) if mm.dsts else "acc"
+    return f"{'wmma':11s} {dst} += {srcs}   # {mm.block}{_dep_str(mm)}"
+
+
+def inst_line(inst):
+    """One GIR node as a single dump line, quoted by the `.s` comment and the schedule dump."""
+    if isinstance(inst, Move):
+        text = _move_line(inst)
+    elif isinstance(inst, Mma):
+        text = _mma_line(inst)
+    elif isinstance(inst, Mark):
+        text = "mark %s %s" % (inst.kind, inst.at)
+    else:
+        text = repr(inst)
+    return " ".join(str(text).replace("\r", " ").replace("\n", " ").split())
 
 
 def _pred_str(p):
@@ -293,7 +310,7 @@ def _extent_fact(m, prog):
     if ext:
         out.append("# axis extents: " + ", ".join(f"{k}={v}" for k, v in sorted(ext.items()))
                    + "   summation=" + ",".join(m.get("summation_axes") or ())
-                   + "   mma inputs=" + ",".join(m.get("mma_inputs") or ()))
+                   + "   wmma inputs=" + ",".join(m.get("mma_inputs") or ()))
     return out
 
 
