@@ -283,6 +283,16 @@ def test_solution_rejects_outside_the_grouping(
     assert clause in out
 
 
+def test_fuse_one_without_a_scale_to_pair_is_unfused_not_a_refusal(
+        _gp_gfx1250, gfx1250_iim, assembler, capsys):
+    """TDMFuse=1 asks each data tensor to carry its own scale.  With a scale on one side only
+    there is nothing to pair, so the row degrades to `unfused` -- no fuse, not a rejection."""
+    sol, out = _derive(gfx1250_iim, assembler, capsys, TDMFuse=1, ProblemType=_NO_MX_ON_B)
+    assert sol.get("Valid") is True, out
+    assert tdmGrouping(sol._state).name == "unfused"
+    assert tdmFusePaired(sol._state) is False
+
+
 @pytest.mark.parametrize("fuse, predicate", [
     (1, tdmFusePaired),
     (2, lambda ks: tdmGrouping(ks).name == "A_MX"),
