@@ -1104,16 +1104,16 @@ TEST_F(DAGSchedulerPassTest, IndependentWMMAFirst_ThenDsThenVALU) {
 TEST_F(DAGSchedulerPassTest, GirModeledTensorLoadDoesNotCutSchedulingRegion) {
     StinkyInstruction* independentRead = createDsReadB128InBlock(bb, arch, 0, 80);
     independentRead->addModifier<GirActionData>(
-        GirActionData{0, 0, GirActionKind::Read, {GirAccessData{false, 1, 1, -1, 0, 0, false}}});
+        GirActionData{0, 0, GirActionKind::Ds, {GirAccessData{false, 1, 1, -1, 0, 0, false}}});
 
     StinkyInstruction* tensorLoad = createTensorLoadInBlock(bb, arch, 300, 308);
     ASSERT_TRUE(hasSideEffect(*tensorLoad));
     tensorLoad->addModifier<GirActionData>(
-        GirActionData{1, 0, GirActionKind::Copy, {GirAccessData{true, 0, 1, -1, 0, 0, false}}});
+        GirActionData{1, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, false}}});
 
     StinkyInstruction* dependentRead = createDsReadB128InBlock(bb, arch, 4, 84);
     dependentRead->addModifier<GirActionData>(
-        GirActionData{2, 0, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
+        GirActionData{2, 0, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
 
     StinkyInstruction* independentWmma = createWmmaF32_16x16x16_bf16(100, 200);
     ASSERT_NE(independentWmma, nullptr);
@@ -1209,8 +1209,8 @@ TEST_F(DAGSchedulerPassTest, GirFreeScheduleDefersDsThatWouldRequireWaitAlu) {
         createVAddInBlock(bb, arch, /*destReg=*/400, /*src0Reg=*/401, /*src1Reg=*/402);
         createWmmaScaleF8(/*destStart=*/50, /*src0Start=*/400);
         StinkyInstruction* ds = createDsReadB128InBlock(bb, arch, /*destReg=*/600, /*addrReg=*/400);
-        ds->addModifier<GirActionData>(GirActionData{
-            1, 1, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
+        ds->addModifier<GirActionData>(
+            GirActionData{1, 1, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
         std::vector<StinkyInstruction*> independent;
         independent.reserve(4);
         for (int i = 0; i < 4; ++i)
@@ -1273,11 +1273,11 @@ TEST_F(DAGSchedulerPassTest, GirWaitAwareSelectionSkipsHeldDsForIndependentDs) {
 
     StinkyInstruction* held = createDsReadB128InBlock(bb, arch, /*destReg=*/600, /*addrReg=*/400);
     held->addModifier<GirActionData>(
-        GirActionData{1, 1, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
+        GirActionData{1, 1, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
     StinkyInstruction* independent =
         createDsReadB128InBlock(bb, arch, /*destReg=*/620, /*addrReg=*/500);
     independent->addModifier<GirActionData>(
-        GirActionData{2, 2, GirActionKind::Read, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
+        GirActionData{2, 2, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
 
     for (int i = 0; i < 4; ++i)
         createWmmaScaleF8(/*destStart=*/100 + i * 16, /*src0Start=*/300 + i * 16);
@@ -1325,11 +1325,11 @@ TEST_F(DAGSchedulerPassTest, GirBackedgeAffinityBelongsToTheNextFrame) {
         StinkyInstruction* backedgeRead =
             createDsReadB128InBlock(bb, arch, /*destReg=*/200, /*addrReg=*/400);
         backedgeRead->addModifier<GirActionData>(GirActionData{
-            10, 10, GirActionKind::Read, {GirAccessData{false, 0, 2, 0, 1, -1, false}}});
+            10, 10, GirActionKind::Ds, {GirAccessData{false, 0, 2, 0, 1, -1, false}}});
         StinkyInstruction* sameFrameRead =
             createDsReadB128InBlock(bb, arch, /*destReg=*/300, /*addrReg=*/401);
         sameFrameRead->addModifier<GirActionData>(GirActionData{
-            20, 20, GirActionKind::Read, {GirAccessData{false, 1, 2, 0, 0, -1, false}}});
+            20, 20, GirActionKind::Ds, {GirAccessData{false, 1, 2, 0, 0, -1, false}}});
         createWmmaScaleF8(/*destStart=*/40, /*src0Start=*/300);
 
         PassContext ctx;

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .nodes import FILL_OPS
+
 
 @dataclass(frozen=True)
 class Decision:
@@ -121,7 +123,7 @@ def plan_coverage(acts, coverage_of, extent_of=None, folded_of=None) -> Coverage
     groups = {}
 
     for i, act in enumerate(acts):
-        if act.kind != "read":
+        if act.kind not in FILL_OPS:
             continue
         at = act.at
         q = coverage_of(at["tc"])

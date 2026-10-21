@@ -70,7 +70,7 @@ class SplitPrefetchGuardPass(Pass):
 
         def _pins():
             return ([Mark("chunk_pin", {"unit": d, "chunk": gen}) for d in descs] +
-                    [Mark("buffer_pin", {"hop": "copy", "unit": d, "gen": gen}) for d in descs])
+                    [Mark("buffer_pin", {"hop": "tensor_load", "unit": d, "gen": gen}) for d in descs])
 
         head, rest = head + _pins(), _pins() + rest
 
