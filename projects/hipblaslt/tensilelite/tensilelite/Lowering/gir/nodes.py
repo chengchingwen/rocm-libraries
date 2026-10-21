@@ -71,8 +71,16 @@ class Ref:
 # ===========================================================================
 # 4.3  Move and Mma -- the verbs (unified srcs/dsts; semantics from Tile.operand)
 
-# The LoopIR movement ops GIR lowers, and the grouping consumers ask for: "lands in registers"
-# covers the DirectToVgpr hop too, which reaches registers without touching LDS at all.
+# `FILL_OPS` is "lands in registers", which covers the DirectToVgpr hop that never touches LDS.
+# The hazard each `deps` entry settles.  WAR splits on WHERE the refill lands: a rotation puts it
+# in the next buffer, so the ring already orders it; in-place reuses the same one, so it does not.
+HAZARD_KINDS = (
+    "RAW-residency",   # read-after-write: the producer's data must still be resident
+    "crossing-RAW",    # RAW whose producer is the PREVIOUS trip's tensor_load, across the back edge
+    "rotation-WAR",    # write-after-read into the NEXT ring buffer -- the rotation is the order
+    "inplace-WAR",     # write-after-read into the SAME buffer -- nothing but this edge orders it
+)
+
 MOVE_OPS = ("tensor_load", "ds_load", "global_load", "store")
 FILL_OPS = ("ds_load", "global_load")
 
@@ -83,9 +91,8 @@ class Move:
 
  srcs -- (Ref,) e.g. a global tile.
  dsts -- (Ref,) e.g. a shared tile at a Gen (a tensor_load), or a register (a ds_load).
- op   -- the LoopIR operation this lowers, lowercased: one of `MOVE_OPS`.  It names the
-         INSTRUCTION, not a direction; which side holds the shared ref is what says whether
-         the movement writes LDS or reads it.
+ op   -- the LoopIR operation lowercased, one of `MOVE_OPS`; it names the INSTRUCTION, not a
+         direction -- which side holds the shared ref says whether LDS is written or read.
  deps -- RAW + WAR edges carried from the LoopIR awaits (kind on each dep, / analysis).
     """
     srcs: tuple

@@ -76,7 +76,7 @@ from .schedule import (
 )
 
 
-READ_COMPLETION = CompletionClass("read", WAVE)
+READ_COMPLETION = CompletionClass("ds", WAVE)
 LOAD_COMPLETION = CompletionClass("load", WAVE)
 
 
@@ -762,7 +762,7 @@ class _Decoder:
         )
         return self.copy_completions.setdefault(
             key,
-            CompletionClass("copy", WAVE),
+            CompletionClass("tensor", WAVE),
         )
 
     def _nested(self, node, axis_names):

@@ -473,7 +473,7 @@ def _dependency_map(program, profile=None):
             continue
         completion = dependence.complete.operation.completion
         counter = (
-            f"C_{completion.name}"
+            completion.name
             if completion is not IMMEDIATE else "immediate"
         )
         present = tuple(dict.fromkeys(
@@ -508,7 +508,7 @@ def _dependency_map(program, profile=None):
         operand = dependence.complete.tile.operand.name
         completion = dependence.complete.operation.completion
         counter = (
-            f"C_{completion.name}"
+            completion.name
             if completion is not IMMEDIATE
             else "immediate"
         )
@@ -527,7 +527,7 @@ def _dependency_map(program, profile=None):
             )
             issue_completion = dependence.issue.operation.completion
             counter = (
-                f"C_{issue_completion.name}"
+                issue_completion.name
                 if issue_completion is not IMMEDIATE
                 else "immediate"
             )
@@ -620,7 +620,7 @@ def _dependency_map(program, profile=None):
 
 def _completion_counter(completion):
     return (
-        f"C_{completion.name}"
+        completion.name
         if completion is not IMMEDIATE else "immediate"
     )
 
