@@ -1,0 +1,25 @@
+\begin{frame}{The degenerate arm is the unpipelined emission --- three displacements it must shed}
+
+Not ``the steady body with knobs turned down''. A steady body assumes a \emph{predecessor trip}
+supplied its opening producers; a fully-peeled level has neither predecessor nor prologue.
+
+\begin{center}
+\begin{tikzpicture}
+\node[gbox,text width=92mm]{\textbf{Within the arm, every obligation's producer precedes its consumer.}};
+\end{tikzpicture}
+\end{center}
+
+\begin{center}\scriptsize
+\begin{tabular}{p{20mm}p{38mm}p{40mm}}
+\toprule
+displacement & mechanism & removed by \\
+\midrule
+\key{retime-carried} & the staggered copy ramp; the substep read-ahead & a copy phase with no ramp, and zero read shift --- a \emph{consequence} of emitting unpipelined, not the mechanism \\
+\key{rotation-carried} & modulo-$S$ rotation writes each read after the matmul that vacates it; at $W{=}1$ this \bad{is} the only pipeline, and \bad{no retime value expresses it} & not applying the issue-order refinement, whose deferrals both order for a \emph{successor trip} the arm does not have \\
+\key{order-carried} & the copy-first set derived from the \emph{steady} chunk crossing & re-deriving it: at zero retime a step's own copy is its true producer, so it must lead \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\tsub{Fixing one leaves the other two --- three separately diagnosed defects. The ledger caught none: a true-dependency obligation is generation-blind, so \texttt{await A@shared} was discharged by A's copy of chunk $t$ while the read wanted $t{+}1$. Empty ledger, passing gate, a buffer nothing had filled --- hence a structural test over the arm's own instructions.}
+\end{frame}
