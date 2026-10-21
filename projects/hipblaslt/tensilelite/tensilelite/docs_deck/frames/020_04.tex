@@ -1,0 +1,26 @@
+\begin{frame}{What subtraction cost: a register ring rotating on a variable no loop binds}
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize,node distance=6pt]
+\node[wbox,text width=2.3cm] (a) {\bad{misclassified}\\a region axis called a \emph{reduction} axis};
+\node[wbox,right=12pt of a,text width=2.3cm] (b) {kept in the register rotation\\\tsub{free region modes are excluded; reduction ones are not}};
+\node[wbox,right=12pt of b,text width=2.3cm] (c) {the slot \texttt{Expr} names mode \texttt{M\_split}};
+\node[wbox,right=12pt of c,text width=2.4cm] (d) {\bad{no emitted \texttt{Loop} binds it}\\\tsub{gate: \texttt{P3/P5 UNBOUND M\_split}}};
+\draw[ar,draw=warn] (a)--(b); \draw[ar,draw=warn] (b)--(c); \draw[ar,draw=warn] (c)--(d);
+\end{tikzpicture}
+\end{center}
+\vspace{-2pt}
+\begin{itemize}\itemsep2pt
+\item Each wave sees exactly \emph{one} value of that axis, so nothing in the read/compute nest
+      rotates over it: the ring had a period nothing advanced.
+\item \bad{Neither the ring, the gate, nor the slot expression was wrong.} All three did what they
+      were told. The fault was a classification with no name for what the axis actually was.
+\end{itemize}
+\vspace{2pt}
+\begin{tikzpicture}
+\node[gbox,text width=0.95\textwidth]{\good{The guard was written to fail on purpose --- and it did.}
+A test asserted, over three configurations, that\\
+\hspace*{1em}\texttt{inner \textbackslash{} (output presence $\cup$ reduction) == agent\_served $\cap$ inner}\\
+--- ``any \emph{other} mode leaving the wmma's presence is a new fact, not this one''. It then pins
+the equivalence that made the change emit-neutral. Evidence: byte-identical output, both codegen suites.};
+\end{tikzpicture}
+\end{frame}

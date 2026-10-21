@@ -1,0 +1,214 @@
+=== LoopIR ===
+
+# rolled theta-nest IR (the stored IR; render_stream(unroll=True) for the interleaved view)
+  if T > 1:  # peel-validity: enter the software-pipelined body; the predicate beside this note is the authority -- emit.py emits a STRICT `T > M`, so the arm runs at T >= M+1)
+    # --- PROLOGUE (peel 1 of iter) ---
+    iter = -1:  # peel-step chunk binding
+      await   A:shared:copy  on copy@wave  <crossing-RAW>   # A resident
+      tdm     A[M_inner0..1,K_inner0..1] -> shared[buf0]     4096B   # copy
+      await   B:shared:copy  on copy@wave  <crossing-RAW>   # B resident
+      tdm     B[N_inner0..1,K_inner0..1] -> shared[buf0]     4096B   # copy
+    await   A@global:iter  on copy@wave  <RAW-residency>   # A resident
+    ds_read A[K_inner0,M_inner0] -> register[buf0]<-lds[buf0] 8reg   # read
+    await   B@global:iter  on copy@wave  <RAW-residency>   # B resident
+    ds_read B[K_inner0,N_inner0] -> register[buf0]<-lds[buf0] 8reg   # read
+    ds_read B[K_inner0,N_inner1] -> register[buf0]<-lds[buf0] 8reg   # read
+    ds_read A[K_inner0,M_inner1] -> register[buf0]<-lds[buf0] 8reg   # read
+    for iter while (iter < T-1):
+      await   A:shared:copy  on copy@wave  <crossing-RAW>   # A resident
+      await   A:shared:lastread  on read@wave  <rotation-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+      tdm     A[M_inner0..1,K_inner0..1] -> shared[buf(iter+1)%2]     4096B   # copy
+      await   B:shared:copy  on copy@wave  <crossing-RAW>   # B resident
+      await   B:shared:lastread  on read@wave  <rotation-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+      tdm     B[N_inner0..1,K_inner0..1] -> shared[buf(iter+1)%2]     4096B   # copy
+      for K_inner in range(2):
+        M_inner = 0:  # sub-body
+          for N_inner in range(2):
+            await   A@shared  on read@wave  <RAW-residency>   # A resident
+            await   B@shared  on read@wave  <RAW-residency>   # B resident
+            wmma    C[m,n][K_inner,M_inner,N_inner] += A[m,k]*B[n,k]  <- A=reg[buf(0+(M_inner+K_inner*2)//2%2)%2], B=reg[buf(0+(N_inner+K_inner*2)//2%2)%2]   # A(k)*B(k)
+            if (N_inner+K_inner*2)%4 < 2:  # reload_wrap
+              await   B@global:iter  on copy@wave  <RAW-residency>   # B resident
+              await   B:g0:lastread  on read@wave  <rotation-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+              ds_read B[K_inner=((0+(N_inner+K_inner*2+2)//2)%2),N_inner=((0+(N_inner+K_inner*2+2)//1)%2)] -> register[buf(0+(N_inner+K_inner*2+2)//2%2)%2]<-lds[buf(iter+(N_inner+K_inner*2+2)//4)%2] 8reg   # read  advance=2
+          await   A@global:iter  on copy@wave  <RAW-residency>   # A resident
+          await   A:g0:lastread  on read@wave  <rotation-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+          ds_read A[K_inner=((0+(M_inner+K_inner*2+2)//2)%2),M_inner=((0+(M_inner+K_inner*2+2)//1)%2)] -> register[buf(0+(M_inner+K_inner*2+2)//2%2)%2]<-lds[buf(iter+(M_inner+K_inner*2+2)//4)%2] 8reg   # read  advance=2
+        M_inner = 1:  # sub-body
+          for N_inner in range(2):
+            await   A@shared  on read@wave  <RAW-residency>   # A resident
+            await   B@shared  on read@wave  <RAW-residency>   # B resident
+            wmma    C[m,n][K_inner,M_inner,N_inner] += A[m,k]*B[n,k]  <- A=reg[buf(0+(M_inner+K_inner*2)//2%2)%2], B=reg[buf(0+(N_inner+K_inner*2)//2%2)%2]   # A(k)*B(k)
+            if (N_inner+K_inner*2)%4 < 2:  # reload_wrap
+            else:  # short-loop: T is below the peel depth, so the prologue meets the drain
+              await   B@global:iter  on copy@wave  <RAW-residency>   # B resident
+              await   B:g0:lastread  on read@wave  <rotation-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+              ds_read B[K_inner=((0+(N_inner+K_inner*2+2)//2)%2),N_inner=((0+(N_inner+K_inner*2+2)//1)%2)] -> register[buf(0+(N_inner+K_inner*2+2)//2%2)%2]<-lds[buf(iter+(N_inner+K_inner*2+2)//4)%2] 8reg   # read  advance=2
+          await   A@global:iter  on copy@wave  <RAW-residency>   # A resident
+          await   A:g0:lastread  on read@wave  <rotation-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+          ds_read A[K_inner=((0+(M_inner+K_inner*2+2)//2)%2),M_inner=((0+(M_inner+K_inner*2+2)//1)%2)] -> register[buf(0+(M_inner+K_inner*2+2)//2%2)%2]<-lds[buf(iter+(M_inner+K_inner*2+2)//4)%2] 8reg   # read  advance=2
+    # --- DRAIN (peel 1 of iter) ---
+    iter = T-1:  # peel-step chunk binding
+      for K_inner in range(2):
+        M_inner = 0:  # sub-body
+          for N_inner in range(2):
+            await   A@shared  on read@wave  <RAW-residency>   # A resident
+            await   B@shared  on read@wave  <RAW-residency>   # B resident
+            wmma    C[m,n][K_inner,M_inner,N_inner] += A[m,k]*B[n,k]  <- A=reg[buf(0+(M_inner+K_inner*2)//2%2)%2], B=reg[buf(0+(N_inner+K_inner*2)//2%2)%2]   # A(k)*B(k)
+            if N_inner+K_inner*2+2 < 4:  # read-ahead suppress: drop the substep that would read the out-of-bounds next chunk
+              await   B@global:iter  on copy@wave  <RAW-residency>   # B resident
+              await   B:g0:lastread  on read@wave  <rotation-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+              ds_read B[K_inner=((0+(N_inner+K_inner*2+2)//2)%2),N_inner=((0+(N_inner+K_inner*2+2)//1)%2)] -> register[buf(0+(N_inner+K_inner*2+2)//2%2)%2]<-lds[buf(iter+(N_inner+K_inner*2+2)//4)%2] 8reg   # read  advance=2
+          if M_inner+K_inner*2+2 < 4:  # read-ahead suppress: drop the substep that would read the out-of-bounds next chunk
+            await   A@global:iter  on copy@wave  <RAW-residency>   # A resident
+            await   A:g0:lastread  on read@wave  <rotation-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+            ds_read A[K_inner=((0+(M_inner+K_inner*2+2)//2)%2),M_inner=((0+(M_inner+K_inner*2+2)//1)%2)] -> register[buf(0+(M_inner+K_inner*2+2)//2%2)%2]<-lds[buf(iter+(M_inner+K_inner*2+2)//4)%2] 8reg   # read  advance=2
+        M_inner = 1:  # sub-body
+          for N_inner in range(2):
+            await   A@shared  on read@wave  <RAW-residency>   # A resident
+            await   B@shared  on read@wave  <RAW-residency>   # B resident
+            wmma    C[m,n][K_inner,M_inner,N_inner] += A[m,k]*B[n,k]  <- A=reg[buf(0+(M_inner+K_inner*2)//2%2)%2], B=reg[buf(0+(N_inner+K_inner*2)//2%2)%2]   # A(k)*B(k)
+          if M_inner+K_inner*2+2 < 4:  # read-ahead suppress: drop the substep that would read the out-of-bounds next chunk
+            await   A@global:iter  on copy@wave  <RAW-residency>   # A resident
+            await   A:g0:lastread  on read@wave  <rotation-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+            ds_read A[K_inner=((0+(M_inner+K_inner*2+2)//2)%2),M_inner=((0+(M_inner+K_inner*2+2)//1)%2)] -> register[buf(0+(M_inner+K_inner*2+2)//2%2)%2]<-lds[buf(iter+(M_inner+K_inner*2+2)//4)%2] 8reg   # read  advance=2
+  else:  # short-loop: T is below the peel depth, so the prologue meets the drain
+    iter = 0:  # peel-step chunk binding
+      await   A:shared:copy  on copy@wave  <crossing-RAW>   # A resident
+      tdm     A[M_inner0..1,K_inner0..1] -> shared[buf0]     4096B   # copy
+      await   B:shared:copy  on copy@wave  <crossing-RAW>   # B resident
+      tdm     B[N_inner0..1,K_inner0..1] -> shared[buf0]     4096B   # copy
+      for K_inner in range(2):
+        M_inner = 0:  # sub-body
+          await   A@global:iter  on copy@wave  <RAW-residency>   # A resident
+          await   A:g0:lastread  on read@wave  <rotation-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+          ds_read A[K_inner,M_inner] -> register[buf(0+(M_inner+K_inner*2)//2%2)%2]<-lds[buf(iter+(M_inner+K_inner*2)//4)%2] 8reg   # read
+          for N_inner in range(2):
+            await   B@global:iter  on copy@wave  <RAW-residency>   # B resident
+            await   B:g0:lastread  on read@wave  <rotation-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+            ds_read B[K_inner,N_inner] -> register[buf(0+(N_inner+K_inner*2)//2%2)%2]<-lds[buf(iter+(N_inner+K_inner*2)//4)%2] 8reg   # read
+            await   A@shared  on read@wave  <RAW-residency>   # A resident
+            await   B@shared  on read@wave  <RAW-residency>   # B resident
+            wmma    C[m,n][K_inner,M_inner,N_inner] += A[m,k]*B[n,k]  <- A=reg[buf(0+(M_inner+K_inner*2)//2%2)%2], B=reg[buf(0+(N_inner+K_inner*2)//2%2)%2]   # A(k)*B(k)
+        M_inner = 1:  # sub-body
+          await   A@global:iter  on copy@wave  <RAW-residency>   # A resident
+          await   A:g0:lastread  on read@wave  <rotation-WAR> [issue AFTER those readers]   # refill WAR: slot vacated by prior read
+          ds_read A[K_inner,M_inner] -> register[buf(0+(M_inner+K_inner*2)//2%2)%2]<-lds[buf(iter+(M_inner+K_inner*2)//4)%2] 8reg   # read
+          for N_inner in range(2):
+            await   A@shared  on read@wave  <RAW-residency>   # A resident
+            await   B@shared  on read@wave  <RAW-residency>   # B resident
+            wmma    C[m,n][K_inner,M_inner,N_inner] += A[m,k]*B[n,k]  <- A=reg[buf(0+(M_inner+K_inner*2)//2%2)%2], B=reg[buf(0+(N_inner+K_inner*2)//2%2)%2]   # A(k)*B(k)
+
+=== GIR ===
+
+Program(entry=prologue, peel_depth=1, buffer_depths=A=[g0:2] | B=[g0:2], order=['K_inner', 'M_inner', 'N_inner'])
+# axis extents: K_inner=2, M_inner=2, N_inner=2   summation=K_inner   mma inputs=A,B
+# short-loop (T <= M) arm: 1 chunk steps, guards [unguarded]
+#   FOLDED into the drain chain: every def-use pairing survives the reordering (16 corresponded instructions, 6 extra on the folded path)
+#   OBLIGATION ON THE SCAFFOLD: the folded drain chain must be enterable at step M-T, not only at step 0 -- the short arm's `T > t` guards have no counterpart on a single-entry chain (G3/; TensileLite's NoGlobalLoadLoop_k selection supplies this today)
+#   The prologue block sits OUTSIDE the peel-validity guard; the guard's false edge targets drain0.
+# frame token rule: relative token=(frame+gdelta)%ring; absolute generations ignore frame
+# frame topology: uniform rotation only; no divergent entrances
+# frame access: A.shared regions=() abs=0 -> tok0 R=2 advance=0
+# frame access: B.shared regions=() abs=0 -> tok0 R=2 advance=0
+# frame access: A.register regions=() slot=1/W2 R=2 advance=0
+# frame access: B.register regions=() slot=1/W2 R=2 advance=0
+# frame access: B.shared regions=() gdelta=1 -> tok=(frame+1)%2 R=2 advance=0
+# frame access: B.shared regions=() gdelta=0 -> tok=(frame+0)%2 R=2 advance=2
+# frame access: A.register regions=() slot=1/W2 R=2 advance=2
+# frame access: B.register regions=() slot=1/W2 R=2 advance=2
+
+Block prologue  chunk_base=0  path_chunk_base={}  succs=('steady', 'drain0'):
+  copy  A.global -> A.shared[gen@0]  dep=0 tok=('lds', 'A', (0,))  deps[crossing-RAW:A:shared:copy@C_copy]
+  Mark  gr_increment {'unit': ('A',), 'chunks': 1, 'to_chunk': 1}
+  Mark  swap {'hop': 'copy', 'gen_from': 0, 'gen_to': 1, 'unit': ('A',), 'steps': 1}
+  copy  B.global -> B.shared[gen@0]  dep=2 tok=('lds', 'B', (0,))  deps[crossing-RAW:B:shared:copy@C_copy]
+  Mark  gr_increment {'unit': ('B',), 'chunks': 1, 'to_chunk': 1}
+  Mark  swap {'hop': 'copy', 'gen_from': 0, 'gen_to': 1, 'unit': ('B',), 'steps': 1}
+  Mark  phase_boundary {'phase': 'prologue'}
+  Mark  waitcnt {'tensorcnt': 1, 'hazard': 'RAW', 'from': 'A', 'frames': 1, 'frame_relations': 1, 'frame_ranks': (1,)}
+  read  A.shared{K_inner0,M_inner0}[gen@0] -> A.register{K_inner0,M_inner0}[reg(g0,s0,u0/W2)]  dep=0 tok=('lds', 'A', (0,))  deps[RAW-residency:A@global:iter@C_copy]
+  Mark  waitcnt {'tensorcnt': 0, 'hazard': 'RAW', 'from': 'B', 'frames': 1, 'frame_relations': 1, 'frame_ranks': (0,)}
+  read  B.shared{K_inner0,N_inner0}[gen@0] -> B.register{K_inner0,N_inner0}[reg(g0,s0,u0/W2)]  dep=2 tok=('lds', 'B', (0,))  deps[RAW-residency:B@global:iter@C_copy]
+  read  B.shared{K_inner0,N_inner1}[gen@0] -> B.register{K_inner0,N_inner1}[reg(g0,s0,u1/W2)]  dep=2 tok=('lds', 'B', (0,))
+  read  A.shared{K_inner0,M_inner1}[gen@0] -> A.register{K_inner0,M_inner1}[reg(g0,s0,u1/W2)]  dep=0 tok=('lds', 'A', (0,))
+  term: CondGoto('T > 1' [toPGR1] -> steady, else drain0)
+
+Block steady  loop=True  gen_rel=0  chunk_base=0  path_chunk_base={}  preds=('prologue', 'steady')  succs=('steady', 'drain0'):
+  phi:  gen0:A/r0 = phi(prologue:0, steady:forward) ring=2
+  phi:  gen1:B/r0 = phi(prologue:0, steady:forward) ring=2
+  copy  A.global -> A.shared[gen#0[v+1]]  dep=1 tok=('lds', 'A', (1,))  deps[crossing-RAW:A:shared:copy@C_copy, rotation-WAR:A:shared:lastread@C_read]
+  Mark  gr_increment {'unit': ('A',), 'chunks': 1, 'to_chunk': 2}
+  Mark  swap {'hop': 'copy', 'gen_from': 1, 'gen_to': 0, 'unit': ('A',), 'steps': 1}
+  copy  B.global -> B.shared[gen#1[v+1]]  dep=3 tok=('lds', 'B', (1,))  deps[crossing-RAW:B:shared:copy@C_copy, rotation-WAR:B:shared:lastread@C_read]
+  Mark  gr_increment {'unit': ('B',), 'chunks': 1, 'to_chunk': 2}
+  Mark  swap {'hop': 'copy', 'gen_from': 1, 'gen_to': 0, 'unit': ('B',), 'steps': 1}
+  Mark  phase_boundary {'phase': 'steady'}
+  Mark  waitcnt {'dscnt': 4, 'hazard': 'RAW', 'from': 'B', 'frames': 4, 'frame_relations': 2, 'frame_ranks': (4, 6)}
+  mma   acc.register{K_inner0,M_inner0,N_inner0} += A.register{K_inner0,M_inner0}[reg(g0,s0,u0/W2)],B.register{K_inner0,N_inner0}[reg(g0,s0,u0/W2)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read, RAW-residency:B@shared@C_read]
+  Mark  waitcnt {'tensorcnt': 0, 'hazard': 'RAW', 'from': 'B', 'frames': 3, 'frame_relations': 2, 'frame_ranks': (0,)}
+  read  B.shared{K_inner1,N_inner0}[gen#1[v]] -> B.register{K_inner1,N_inner0}[reg(g0,s1,u0/W2)]  dep=2 tok=('lds', 'B', (0,))  deps[RAW-residency:B@global:iter@C_copy, rotation-WAR:B:g0:lastread@C_read]
+  Mark  waitcnt {'dscnt': 4, 'hazard': 'RAW', 'from': 'B', 'frames': 2, 'frame_relations': 1, 'frame_ranks': (4,)}
+  mma   acc.register{K_inner0,M_inner0,N_inner1} += A.register{K_inner0,M_inner0}[reg(g0,s0,u0/W2)],B.register{K_inner0,N_inner1}[reg(g0,s0,u1/W2)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read, RAW-residency:B@shared@C_read]
+  read  B.shared{K_inner1,N_inner1}[gen#1[v]] -> B.register{K_inner1,N_inner1}[reg(g0,s1,u1/W2)]  dep=2 tok=('lds', 'B', (0,))  deps[RAW-residency:B@global:iter@C_copy, rotation-WAR:B:g0:lastread@C_read]
+  read  A.shared{K_inner1,M_inner0}[gen#0[v]] -> A.register{K_inner1,M_inner0}[reg(g0,s1,u0/W2)]  dep=0 tok=('lds', 'A', (0,))  deps[RAW-residency:A@global:iter@C_copy, rotation-WAR:A:g0:lastread@C_read]
+  Mark  waitcnt {'dscnt': 6, 'hazard': 'RAW', 'from': 'A', 'frames': 2, 'frame_relations': 1, 'frame_ranks': (6,)}
+  mma   acc.register{K_inner0,M_inner1,N_inner0} += A.register{K_inner0,M_inner1}[reg(g0,s0,u1/W2)],B.register{K_inner0,N_inner0}[reg(g0,s0,u0/W2)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read, RAW-residency:B@shared@C_read]
+  mma   acc.register{K_inner0,M_inner1,N_inner1} += A.register{K_inner0,M_inner1}[reg(g0,s0,u1/W2)],B.register{K_inner0,N_inner1}[reg(g0,s0,u1/W2)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read, RAW-residency:B@shared@C_read]
+  read  A.shared{K_inner1,M_inner1}[gen#0[v]] -> A.register{K_inner1,M_inner1}[reg(g0,s1,u1/W2)]  dep=0 tok=('lds', 'A', (0,))  deps[RAW-residency:A@global:iter@C_copy, rotation-WAR:A:g0:lastread@C_read]
+  Mark  swap {'hop': 'read', 'gen_from': 0, 'gen_to': 1, 'operand': 'B', 'steps': 1}
+  Mark  waitcnt {'dscnt': 2, 'hazard': 'RAW', 'from': 'A', 'frames': 12, 'frame_relations': 2, 'frame_ranks': (2, 6)}
+  mma   acc.register{K_inner1,M_inner0,N_inner0} += A.register{K_inner1,M_inner0}[reg(g0,s1,u0/W2)],B.register{K_inner1,N_inner0}[reg(g0,s1,u0/W2)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read, RAW-residency:B@shared@C_read]
+  Mark  swap {'hop': 'read', 'gen_from': 0, 'gen_to': 1, 'operand': 'A', 'steps': 1}
+  mma   acc.register{K_inner1,M_inner0,N_inner1} += A.register{K_inner1,M_inner0}[reg(g0,s1,u0/W2)],B.register{K_inner1,N_inner1}[reg(g0,s1,u1/W2)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read, RAW-residency:B@shared@C_read]
+  read  A.shared{K_inner0,M_inner0}[gen#0[v+1]] -> A.register{K_inner0,M_inner0}[reg(g0,s0,u0/W2)]  dep=1 tok=('lds', 'A', (1,))  deps[RAW-residency:A@global:iter@C_copy, rotation-WAR:A:g0:lastread@C_read]
+  Mark  waitcnt {'dscnt': 2, 'hazard': 'RAW', 'from': 'A', 'frames': 6, 'frame_relations': 1, 'frame_ranks': (2,)}
+  mma   acc.register{K_inner1,M_inner1,N_inner0} += A.register{K_inner1,M_inner1}[reg(g0,s1,u1/W2)],B.register{K_inner1,N_inner0}[reg(g0,s1,u0/W2)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read, RAW-residency:B@shared@C_read]
+  read  B.shared{K_inner0,N_inner0}[gen#1[v+1]] -> B.register{K_inner0,N_inner0}[reg(g0,s0,u0/W2)]  dep=3 tok=('lds', 'B', (1,))  deps[RAW-residency:B@global:iter@C_copy, rotation-WAR:B:g0:lastread@C_read]
+  mma   acc.register{K_inner1,M_inner1,N_inner1} += A.register{K_inner1,M_inner1}[reg(g0,s1,u1/W2)],B.register{K_inner1,N_inner1}[reg(g0,s1,u1/W2)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read, RAW-residency:B@shared@C_read]
+  read  B.shared{K_inner0,N_inner1}[gen#1[v+1]] -> B.register{K_inner0,N_inner1}[reg(g0,s0,u1/W2)]  dep=3 tok=('lds', 'B', (1,))  deps[RAW-residency:B@global:iter@C_copy, rotation-WAR:B:g0:lastread@C_read]
+  read  A.shared{K_inner0,M_inner1}[gen#0[v+1]] -> A.register{K_inner0,M_inner1}[reg(g0,s0,u1/W2)]  dep=1 tok=('lds', 'A', (1,))  deps[RAW-residency:A@global:iter@C_copy, rotation-WAR:A:g0:lastread@C_read]
+  Mark  waitcnt {'dscnt': 0, 'hazard': 'RAW', 'from': 'A', 'frames': 48, 'frame_relations': 8, 'frame_ranks': (0, 2, 4, 6)}
+  xfer: gen0:A/r0' = (v + 1) % 2
+  xfer: gen1:B/r0' = (v + 1) % 2
+  term: LoopBack(trips=T - 1 -> steady, exit drain0) [LoopEndL]
+
+Block drain0  gen_rel=-1  chunk_base=1  path_chunk_base={'prologue': 0}  preds=('prologue', 'steady')  succs=('end',):
+  phi:  gen0:A/r0 = phi(prologue:1, steady:forward) ring=2
+  phi:  gen1:B/r0 = phi(prologue:1, steady:forward) ring=2
+  Mark  phase_boundary {'phase': 'drain0'}
+  Mark  waitcnt {'dscnt': 4, 'hazard': 'RAW', 'from': 'B', 'frames': 4, 'frame_relations': 2, 'frame_ranks': (4, 6)}
+  mma   acc.register{K_inner0,M_inner0,N_inner0} += A.register{K_inner0,M_inner0}[reg(g0,s0,u0/W2)],B.register{K_inner0,N_inner0}[reg(g0,s0,u0/W2)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read, RAW-residency:B@shared@C_read]
+  read  B.shared{K_inner1,N_inner0}[gen#1[v+-1]] -> B.register{K_inner1,N_inner0}[reg(g0,s1,u0/W2)]  dep=3 tok=('lds', 'B', (1,))  deps[RAW-residency:B@global:iter@C_copy, rotation-WAR:B:g0:lastread@C_read]
+  Mark  waitcnt {'dscnt': 4, 'hazard': 'RAW', 'from': 'B', 'frames': 2, 'frame_relations': 1, 'frame_ranks': (4,)}
+  mma   acc.register{K_inner0,M_inner0,N_inner1} += A.register{K_inner0,M_inner0}[reg(g0,s0,u0/W2)],B.register{K_inner0,N_inner1}[reg(g0,s0,u1/W2)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read, RAW-residency:B@shared@C_read]
+  read  B.shared{K_inner1,N_inner1}[gen#1[v+-1]] -> B.register{K_inner1,N_inner1}[reg(g0,s1,u1/W2)]  dep=3 tok=('lds', 'B', (1,))  deps[RAW-residency:B@global:iter@C_copy, rotation-WAR:B:g0:lastread@C_read]
+  read  A.shared{K_inner1,M_inner0}[gen#0[v+-1]] -> A.register{K_inner1,M_inner0}[reg(g0,s1,u0/W2)]  dep=1 tok=('lds', 'A', (1,))  deps[RAW-residency:A@global:iter@C_copy, rotation-WAR:A:g0:lastread@C_read]
+  Mark  waitcnt {'dscnt': 6, 'hazard': 'RAW', 'from': 'A', 'frames': 2, 'frame_relations': 1, 'frame_ranks': (6,)}
+  mma   acc.register{K_inner0,M_inner1,N_inner0} += A.register{K_inner0,M_inner1}[reg(g0,s0,u1/W2)],B.register{K_inner0,N_inner0}[reg(g0,s0,u0/W2)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read, RAW-residency:B@shared@C_read]
+  mma   acc.register{K_inner0,M_inner1,N_inner1} += A.register{K_inner0,M_inner1}[reg(g0,s0,u1/W2)],B.register{K_inner0,N_inner1}[reg(g0,s0,u1/W2)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read, RAW-residency:B@shared@C_read]
+  read  A.shared{K_inner1,M_inner1}[gen#0[v+-1]] -> A.register{K_inner1,M_inner1}[reg(g0,s1,u1/W2)]  dep=1 tok=('lds', 'A', (1,))  deps[RAW-residency:A@global:iter@C_copy, rotation-WAR:A:g0:lastread@C_read]
+  Mark  waitcnt {'dscnt': 2, 'hazard': 'RAW', 'from': 'A', 'frames': 6, 'frame_relations': 2, 'frame_ranks': (2, 6)}
+  mma   acc.register{K_inner1,M_inner0,N_inner0} += A.register{K_inner1,M_inner0}[reg(g0,s1,u0/W2)],B.register{K_inner1,N_inner0}[reg(g0,s1,u0/W2)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read, RAW-residency:B@shared@C_read]
+  mma   acc.register{K_inner1,M_inner0,N_inner1} += A.register{K_inner1,M_inner0}[reg(g0,s1,u0/W2)],B.register{K_inner1,N_inner1}[reg(g0,s1,u1/W2)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read, RAW-residency:B@shared@C_read]
+  Mark  waitcnt {'dscnt': 0, 'hazard': 'RAW', 'from': 'A', 'frames': 3, 'frame_relations': 1, 'frame_ranks': (0,)}
+  mma   acc.register{K_inner1,M_inner1,N_inner0} += A.register{K_inner1,M_inner1}[reg(g0,s1,u1/W2)],B.register{K_inner1,N_inner0}[reg(g0,s1,u0/W2)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read, RAW-residency:B@shared@C_read]
+  mma   acc.register{K_inner1,M_inner1,N_inner1} += A.register{K_inner1,M_inner1}[reg(g0,s1,u1/W2)],B.register{K_inner1,N_inner1}[reg(g0,s1,u1/W2)]   # A(k)*B(k)  deps[RAW-residency:A@shared@C_read, RAW-residency:B@shared@C_read]
+  term: Goto(end)
+
+=== ledger ===
+
+Obligation(producer=Endpoint(op='A', at='g0', role='lastread', coord=(), gen=()), consumer=Endpoint(op='A', at='g0', role='refill', coord=(), gen=()), kind='rotation-WAR', counter='C_read')
+Obligation(producer=Endpoint(op='A', at='global', role='', coord=(), gen=()), consumer=Endpoint(op='A', at='shared', role='', coord=(), gen=()), kind='RAW-residency', counter='C_copy')
+Obligation(producer=Endpoint(op='A', at='prologue', role='', coord=(('K_inner', 0), ('M_inner', 0)), gen=()), consumer=Endpoint(op='A', at='wmma', role='', coord=(('K_inner', 0), ('M_inner', 0)), gen=()), kind='readahead-residency', counter='C_read')
+Obligation(producer=Endpoint(op='A', at='prologue', role='', coord=(('K_inner', 0), ('M_inner', 1)), gen=()), consumer=Endpoint(op='A', at='wmma', role='', coord=(('K_inner', 0), ('M_inner', 1)), gen=()), kind='readahead-residency', counter='C_read')
+Obligation(producer=Endpoint(op='A', at='shared', role='', coord=(), gen=()), consumer=Endpoint(op='A', at='register', role='', coord=(), gen=()), kind='RAW-residency', counter='C_read')
+Obligation(producer=Endpoint(op='A', at='shared', role='copy', coord=(), gen=()), consumer=Endpoint(op='A', at='shared', role='crossing-read', coord=(), gen=()), kind='crossing-RAW', counter='C_copy')
+Obligation(producer=Endpoint(op='A', at='shared', role='lastread', coord=(), gen=()), consumer=Endpoint(op='A', at='shared', role='refill', coord=(), gen=()), kind='rotation-WAR', counter='C_read')
+Obligation(producer=Endpoint(op='B', at='g0', role='lastread', coord=(), gen=()), consumer=Endpoint(op='B', at='g0', role='refill', coord=(), gen=()), kind='rotation-WAR', counter='C_read')
+Obligation(producer=Endpoint(op='B', at='global', role='', coord=(), gen=()), consumer=Endpoint(op='B', at='shared', role='', coord=(), gen=()), kind='RAW-residency', counter='C_copy')
+Obligation(producer=Endpoint(op='B', at='prologue', role='', coord=(('K_inner', 0), ('N_inner', 0)), gen=()), consumer=Endpoint(op='B', at='wmma', role='', coord=(('K_inner', 0), ('N_inner', 0)), gen=()), kind='readahead-residency', counter='C_read')
+Obligation(producer=Endpoint(op='B', at='prologue', role='', coord=(('K_inner', 0), ('N_inner', 1)), gen=()), consumer=Endpoint(op='B', at='wmma', role='', coord=(('K_inner', 0), ('N_inner', 1)), gen=()), kind='readahead-residency', counter='C_read')
+Obligation(producer=Endpoint(op='B', at='shared', role='', coord=(), gen=()), consumer=Endpoint(op='B', at='register', role='', coord=(), gen=()), kind='RAW-residency', counter='C_read')
+Obligation(producer=Endpoint(op='B', at='shared', role='copy', coord=(), gen=()), consumer=Endpoint(op='B', at='shared', role='crossing-read', coord=(), gen=()), kind='crossing-RAW', counter='C_copy')
+Obligation(producer=Endpoint(op='B', at='shared', role='lastread', coord=(), gen=()), consumer=Endpoint(op='B', at='shared', role='refill', coord=(), gen=()), kind='rotation-WAR', counter='C_read')

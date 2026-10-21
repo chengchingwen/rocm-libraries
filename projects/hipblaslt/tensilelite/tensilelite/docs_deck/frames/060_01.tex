@@ -1,0 +1,28 @@
+
+\begin{frame}{A residence says three different things --- and the number every consumer wants is a fourth}
+\begin{center}
+\begin{tikzpicture}[node distance=3mm]
+\node[box,text width=3.1cm] (a) {\key{SSA generation identity}\\[2pt]
+  \texttt{gen\#id[v+$\delta$]}\\[2pt]
+  \tsub{which phi feeds this, and how far past it. \emph{Not a number}: $v$ is loop-carried.}};
+\node[box,text width=3.1cm,right=of a] (b) {\key{Concrete generation}\\[2pt]
+  \texttt{gen@n}\\[2pt]
+  \tsub{a peel or short-arm access whose chunk is a compile-time constant. Carries no \texttt{Gen}.}};
+\node[box,text width=3.4cm,right=of b] (c) {\key{Register residence}\\[2pt]
+  \texttt{reg(g,s/W)}\\[2pt]
+  \tsub{the \emph{other} rotation: width $W$ over slots $0..W{-}1$ in a partition. Unrelated to the LDS ring.}};
+\node[gbox,below=7mm of b,text width=8.6cm] (d) {\good{The fourth thing --- derived, and deliberately not a field on the \texttt{Ref}}\\[2pt]
+  \texttt{Reaching.of(ref) = (entry[ref.gen] + ref.gdelta) mod ring}\\[2pt]
+  \tsub{depends on \emph{which block} the instruction sits in --- a field would invite reading it without the frame}};
+\draw[ar] (a) -- (d); \draw[ar] (b) -- (d);
+\end{tikzpicture}
+\end{center}
+\vspace{-1mm}
+\footnotesize
+\textbf{GenReaching} \quad domain: per block, \texttt{Gen $\to$ int}, a flat constant-propagation lattice \quad$\cdot$\quad
+direction: forward \quad$\cdot$\quad
+meet: \emph{agreement-or-bottom} (a \texttt{Gen} one predecessor supplies and another does not is \key{bottom}, not inherited).
+
+\bad{The dump printed (1) as \texttt{gen0[v]} and (2) as \texttt{gen=0}} --- one character apart --- and chained the
+three with early returns, so a register residence was invisible whenever a generation was present.
+\end{frame}

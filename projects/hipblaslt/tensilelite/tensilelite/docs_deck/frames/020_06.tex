@@ -1,0 +1,50 @@
+\begin{frame}[fragile]{Retime is non-negative by type: deferral is a \emph{positive} offset on a reverse hop}
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize]
+\draw[->,thick,draw=gray] (0,0) -- (9.6,0) node[right,font=\tiny]{trip};
+\foreach \x/\l in {0.8/i-2,3.0/i-1,5.2/i,7.4/i+1} \node[font=\tiny,text=gray] at (\x,-0.28) {\l};
+\node[box,anchor=south] at (0.8,0.12) {copy for $i$};
+\node[gbox,anchor=south] at (5.2,0.12) {consumer at $i$};
+\draw[ar,draw=acc] (1.7,0.55) to[out=40,in=140] node[above,font=\scriptsize]{\key{off(copy, chunk) = 2}} (4.4,0.55);
+\end{tikzpicture}
+\end{center}
+\vspace{-4pt}
+\begin{columns}[T]
+\begin{column}{0.52\textwidth}
+\begin{lstlisting}[style=py]
+def off_at(self, opname, role, level_name):
+    name = opname if isinstance(opname, str) \
+           else opname.name
+    return int(self.off_map.get(
+        (name, role, level_name), 0))
+\end{lstlisting}
+\begin{itemize}\itemsep1pt
+\item \key{Absent means 0} --- that op-class is simply not pipelined at that level, so the
+      matrix stays sparse and no point enumerates the full cross product.
+\item Prefer \texttt{off\_of(op, hop, level)}: it takes the role \emph{off the hop}. Restating
+      the role at a call site is how a copy's offset gets read under the read's key.
+\end{itemize}
+\end{column}
+\begin{column}{0.46\textwidth}
+Two entries exist on the shipping parameter path:
+\begin{center}\scriptsize
+\begin{tabular}{ll}
+\toprule
+\texttt{off(copy, chunk)} & global prefetch depth \\
+\texttt{off(read, substep)} & local prefetch depth \\
+\bottomrule
+\end{tabular}
+\end{center}
+\vspace{3pt}
+\begin{tikzpicture}
+\node[gbox,text width=0.95\textwidth]{\good{Nested pipelining is just more entries.} A copy two chunks
+\emph{and} one persistent tile ahead is two keys --- no decoder change. That is the
+payoff for making outer levels real \texttt{ord} modes.};
+\end{tikzpicture}
+\vspace{2pt}
+
+\bad{Nothing here enforces the sign.} A negative entry is rejected downstream, as ill-typed,
+with that explanation.
+\end{column}
+\end{columns}
+\end{frame}

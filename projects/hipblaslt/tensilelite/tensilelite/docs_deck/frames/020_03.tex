@@ -1,0 +1,38 @@
+\begin{frame}[fragile]{Reduction axes are derived by subtraction --- which is exactly why a third class was needed}
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize]
+\node[draw=acc,thick,rounded corners,minimum width=10.6cm,minimum height=2.4cm,fill=lt] (all) {};
+\node[anchor=north west,font=\tiny\bfseries,text=acc] at ([shift={(2pt,-2pt)}]all.north west)
+  {inner modes \tsub{(extent $>0$: statically unrolled)}};
+\node[gbox,below right=0.5cm and 0.15cm of all.north west,text width=2.5cm] (free)
+  {\good{free}\\ in the accumulator's presence\\ \tsub{the $m$/$n$ tiles}};
+\node[box,right=0.15cm of free,text width=2.9cm] (red)
+  {\key{reduction}\\ absent from it \emph{because the contraction sums over them}\\ \tsub{the $k$ axis}};
+\node[wbox,right=0.15cm of red,text width=3.1cm] (ag)
+  {\bad{agent-served}\\ absent from it because \emph{the waves} traverse it, not the coordinate};
+\end{tikzpicture}
+\end{center}
+\vspace{-2pt}
+\begin{columns}[T]
+\begin{column}{0.5\textwidth}
+\textbf{Defined at one point, not at each consumer:}
+\begin{lstlisting}[style=pseudo]
+reduction = inner
+          \ presence(each output op-class)
+          \ agent_served
+free(op)  = presence(op) \ reduction
+\end{lstlisting}
+\end{column}
+\begin{column}{0.47\textwidth}
+\textbf{An axis is agent-served when, for some operand:}
+\begin{itemize}\itemsep0pt
+\item it has region modes, \emph{and}
+\item the region split is $>1$ --- having an axis is not having two of them, \emph{and}
+\item some \key{non-bulk} hop is agent-relative.
+\end{itemize}
+\vspace{2pt}
+The bulk copy still walks every region by index; only the \emph{read} is agent-relative.
+That asymmetry is the whole class.
+\end{column}
+\end{columns}
+\end{frame}

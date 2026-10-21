@@ -1,0 +1,61 @@
+\begin{frame}{Where this deck goes --- one concept per frame, then the evidence}
+\vspace{-1mm}
+\begin{columns}[T,onlytextwidth]
+\begin{column}{0.52\textwidth}
+\textbf{\color{acc}Decides WHEN} \tsub{— the schedule model}\\[1mm]
+{\scriptsize
+\begin{tabular}{@{}rp{0.78\linewidth}@{}}
+\tsub{2} & \textbf{What a schedule IS} — seven fields, op-class, presence, rings\\
+\tsub{3} & \textbf{Placement} — retiming a schedule into a pipeline\\
+\tsub{4} & \textbf{Obligations} — the correctness argument\\
+\end{tabular}}
+
+\vspace{2.5mm}
+\textbf{\color{acc}Resolves WHERE} \tsub{— the dataflow IR}\\[1mm]
+{\scriptsize
+\begin{tabular}{@{}rp{0.78\linewidth}@{}}
+\tsub{5} & \textbf{Why a second IR} — and what a tree cannot answer\\
+\tsub{6} & \textbf{The analyses} — generations, tokens, hazards, fences\\
+\tsub{7} & \textbf{Passes and verification} — and the emission boundary\\
+\end{tabular}}
+
+\vspace{2.5mm}
+\textbf{\color{acc}Decides HOW} \tsub{— the leaves}\\[1mm]
+{\scriptsize
+\begin{tabular}{@{}rp{0.78\linewidth}@{}}
+\tsub{8} & \textbf{Address geometry} — the one thing the model may not know\\
+\end{tabular}}
+
+\vspace{2.5mm}
+\textbf{\color{acc}Evidence}\\[1mm]
+{\scriptsize
+\begin{tabular}{@{}rp{0.78\linewidth}@{}}
+\tsub{9} & \textbf{What shipped}, and how it is validated\\
+\tsub{10} & \textbf{Known gaps}, and the bet this design makes\\
+\end{tabular}}
+\end{column}
+
+\begin{column}{0.46\textwidth}
+\vspace{1mm}
+\begin{tikzpicture}
+  \node[box](w){WHEN};
+  \node[box,right=4mm of w](r){WHERE};
+  \node[gbox,right=4mm of r](h){HOW};
+  \draw[ar](w)--(r); \draw[ar](r)--(h);
+\end{tikzpicture}\\
+\tsub{Each layer is forbidden to know the next one's answer.}
+
+\vspace{4mm}
+\begin{tikzpicture}
+\node[wbox,text width=0.95\columnwidth,align=left]{%
+\scriptsize\textbf{This is the architecture deck.}\\[3pt]
+\raggedright
+One frame per concept, and no frame assumes a term the earlier ones have not defined.\\[4pt]
+The \key{appendix} holds the deep dives — the derivations, the post-mortems and the
+per-feature matrices — each attached to a spine claim. They are there to be \emph{opened when
+challenged}, not presented in order.\\[4pt]
+\tsub{Two in-tree implementation reports carry the full detail; this deck carries the shape.}};
+\end{tikzpicture}
+\end{column}
+\end{columns}
+\end{frame}

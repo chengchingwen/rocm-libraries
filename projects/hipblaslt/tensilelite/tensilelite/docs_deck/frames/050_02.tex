@@ -1,0 +1,37 @@
+\begin{frame}{A rolled tree has no point to reach and no value to propagate}
+\centering
+\begin{tikzpicture}[node distance=4mm,every node/.style={font=\scriptsize}]
+  % ---- left: LoopIR tree
+  \node[box] (r) {main loop};
+  \node[box,below left=6mm and 1mm of r] (c) {copy};
+  \node[box,below=6mm of r] (l) {read};
+  \node[box,below right=6mm and 1mm of r] (m) {mma};
+  \foreach \x in {c,l,m} \draw[ar] (r) -- (\x);
+  \node[below=7mm of l,align=center,font=\tiny\ttfamily,text=warn]
+       (f) {buf = (k+2) mod 2};
+  \node[above=3mm of r,font=\scriptsize\bfseries,text=acc] {LoopIR --- layer 1};
+  \node[below=2mm of f,align=center,font=\tiny]
+       {\bad{rolled}: one node per \emph{kind},\\not per dynamic instance};
+
+  % ---- right: GIR CFG
+  \begin{scope}[xshift=6.4cm]
+    \node[gbox] (p) {\texttt{prologue}};
+    \node[gbox,below=7mm of p] (s) {\texttt{steady}};
+    \node[gbox,below=7mm of s] (d) {\texttt{drain0}};
+    \draw[ar,draw=ok] (p) -- (s);
+    \draw[ar,draw=ok] (s) -- (d);
+    \draw[ar,draw=ok] (s.east) to[out=20,in=-20,looseness=4] (s.north east);
+    \node[right=13mm of s,align=left,font=\tiny\ttfamily,text=ok]
+      {g = $\phi$(0, g')\\g' = (g+adv) \% S};
+    \node[above=3mm of p,font=\scriptsize\bfseries,text=ok] {GIR --- layer 2};
+    \node[below=2mm of d,align=center,font=\tiny]
+      {\good{unrolled}: stages are real blocks,\\each generation a named SSA value};
+  \end{scope}
+\end{tikzpicture}
+
+\vspace{4pt}
+\scriptsize
+Unroll the pipeline stages into basic blocks, give every buffer generation a
+$\phi$ at the loop header --- and all four questions become \key{textbook fixpoints}.
+\emph{That} is the reason for two IRs, not layering for its own sake.
+\end{frame}

@@ -1,0 +1,30 @@
+\begin{frame}{If the token is not trip-invariant, the derived wait guards the wrong producer --- measured as \texttt{-nan}}
+\footnotesize
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize,node distance=3.5mm]
+\node[box,text width=2.5cm] (s1) {\textbf{1.} \texttt{drain0}'s preds are \texttt{prologue} and \texttt{steady}, and they \emph{genuinely} disagree: the residue the loop leaves is trip-parity dependent --- a \emph{runtime} value};
+\node[box,text width=2.5cm,right=of s1] (s2) {\textbf{2.} No compile-time constant is the merge, so \texttt{\_entry\_of} assigns \texttt{RELATIVE\_BASE=0} and flags the block \key{relative}: meaningful only \emph{within} the block};
+\node[wbox,text width=2.5cm,right=of s2] (s3) {\textbf{3.} But a memory token \emph{is} an absolute buffer identity \emph{compared across blocks} --- the scheduler pairs a read against whichever instruction defined it};
+\node[wbox,text width=2.9cm,right=of s3] (s4) {\textbf{4.} So the stamped token \bad{names a different buffer}. On the short path the resident buffer is the \emph{prologue's}; the read was ordered against a non-producer};
+\draw[ar] (s1)--(s2); \draw[ar] (s2)--(s3); \draw[ar] (s3)--(s4);
+\end{tikzpicture}
+\end{center}
+
+\begin{columns}[T]
+\begin{column}{0.5\textwidth}
+\bad{The measurement.} On a microscaling fp8 kernel: \texttt{-nan} in \textbf{23 of 540} swept cells,
+\emph{every one on the short path}. A wrong-generation E8M0 scale poisons the multiply --- wrong-generation
+\emph{data} often stays finite and silently wrong.\\[3pt]
+\good{The fix, in the module's own idiom:} in a relative-frame block the access may touch \emph{every}
+generation of the ring, so it carries every id. A redundant wait, where being optimistic loses one.
+\end{column}
+\begin{column}{0.5\textwidth}
+\textbf{Two edges to keep:} an \texttt{abs\_gen} ref widens to \texttt{range(1)} --- correctly, it names a
+concrete buffer whatever its block's phi frame does. And relativity must stay \key{transitive}: \texttt{drain1}'s
+only predecessor is \texttt{drain0}, and ``one predecessor trivially agrees with itself'' once dropped the flag.\\[3pt]
+\bad{Still open:} a \emph{legitimate} representative-trip frame read as invariant by a cross-trip consumer. Masked
+in multi-wave (a fence stands between the ends anyway); single-wave has no fence, so the token is the only carrier.
+\emph{Before narrowing a token, ask which consumer reads it.}
+\end{column}
+\end{columns}
+\end{frame}

@@ -1,0 +1,44 @@
+\begin{frame}{Everything is keyed on the op-class --- so presence is a per-hop fact, not a per-operand one}
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize,node distance=10pt]
+\node[box] (g) {global};
+\node[box,right=40pt of g] (l) {shared / LDS};
+\node[box,right=40pt of l] (v) {register};
+\node[box,right=26pt of v] (c) {accumulate};
+\draw[ar] (g) -- node[above,font=\scriptsize]{\key{copy}} node[below,font=\tiny,text=gray]{op-class 1} (l);
+\draw[ar] (l) -- node[above,font=\scriptsize]{\key{read}} node[below,font=\tiny,text=gray]{op-class 2} (v);
+\draw[ar] (v) -- (c);
+\draw[ar,dashed] (g) to[out=-40,in=-140]
+  node[below,font=\tiny,text=gray,pos=0.5]{the one-hop \key{read}: global $\to$ register} (v);
+\end{tikzpicture}
+\end{center}
+\vspace{2pt}
+\begin{columns}[T]
+\begin{column}{0.46\textwidth}
+\textbf{An op-class = one operand, one hop.}
+\begin{itemize}\itemsep1pt
+\item \key{role} $\in$ \{copy, read, store\}, from one table.
+\item \key{trajectory} is separate: in a store round trip the middle leg's \emph{role} is
+      \texttt{read} while its \emph{sense} is reverse.
+\item \texttt{off}, the ledger's endpoints and the emitted tree all name op-classes.
+\end{itemize}
+\end{column}
+\begin{column}{0.52\textwidth}
+\textbf{Presence} = the inner axes an op-class varies over.
+\begin{center}\scriptsize
+\begin{tabular}{@{}lc@{}}
+\toprule
+hop & presence \\
+\midrule
+bulk cooperative copy & $\emptyset$ \tsub{(sits at the chunk)} \\
+same copy, tile cut into $n$ regions & \{region axis\} \\
+per-lane read & the operand's data axes \\
+\bottomrule
+\end{tabular}
+\end{center}
+\vspace{2pt}
+\bad{Same operand, different answers.} Asking the operand instead of the hop puts a bulk copy
+at the wrong level --- and a region split is what brings the axis back.
+\end{column}
+\end{columns}
+\end{frame}

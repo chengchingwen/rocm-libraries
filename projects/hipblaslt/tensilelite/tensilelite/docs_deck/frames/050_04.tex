@@ -1,0 +1,43 @@
+\begin{frame}{A hop is derived from the spaces, and a \texttt{Ref} names four residencies}
+\centering
+\begin{tikzpicture}[node distance=9mm,every node/.style={font=\scriptsize}]
+  \node[box] (g) {\texttt{global}};
+  \node[box,right=of g] (s) {\texttt{shared}};
+  \node[box,right=of s] (r) {\texttt{register}};
+  \draw[ar] (g) -- node[above,font=\tiny]{copy hop} node[below,font=\tiny,text=gray]{shared in \texttt{dsts}} (s);
+  \draw[ar] (s) -- node[above,font=\tiny]{read hop} node[below,font=\tiny,text=gray]{shared in \texttt{srcs}} (r);
+  \draw[ar,dashed] (g.north) to[out=40,in=140] node[above,font=\tiny]{one-hop} (r.north);
+\end{tikzpicture}
+
+\vspace{2pt}
+{\scriptsize One \texttt{Move} class, no \texttt{Copy}/\texttt{Read} subclass --- so the analyses can walk
+\emph{every} shared touch without a type switch, and "which movement is this?" is a
+\bad{derived} property every new consumer must be told to get from \texttt{refs.py}.}
+
+\vspace{5pt}
+\begin{columns}[T]
+\begin{column}{0.52\textwidth}
+\scriptsize
+\begin{tabular}{@{}ll@{}}
+\toprule
+\texttt{Ref} field group & residence \\
+\midrule
+\texttt{gen}, \texttt{gdelta}         & loop-carried shared \\
+\texttt{abs\_gen}                     & pinned shared (peel, short arm) \\
+\texttt{group}, \texttt{slot}, \texttt{reg\_ring} & register \\
+\texttt{covers}                       & movement-quantum footprint \\
+\bottomrule
+\end{tabular}
+\end{column}
+\begin{column}{0.46\textwidth}
+\scriptsize
+\key{\texttt{gen} vs \texttt{abs\_gen}} is the peel/steady distinction made structural: a
+prologue fill knows its buffer at compile time, a steady access does not.
+
+\vspace{3pt}
+\bad{"region" means two unrelated things} --- a \emph{storage} region (one piece of a split
+LDS tile) and a \emph{placement} region (the legal window for a \texttt{Mark}).
+They never share an expression, but they do share a file list.
+\end{column}
+\end{columns}
+\end{frame}

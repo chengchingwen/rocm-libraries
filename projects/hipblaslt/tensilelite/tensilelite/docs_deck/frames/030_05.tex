@@ -1,0 +1,31 @@
+\begin{frame}[fragile]{The wrap lead has a closed form --- and prefetch-1 is degenerate, so three calibrated rules shipped wrong}
+
+A staggered workgroup starts at chunk $S$, walks to $T-1$, then \key{wraps} to 0. The compare is
+against the loop counter --- but the counter holds one value per trip, and the increments do not all
+run in the trip whose number it holds. \texttt{lead} is that frame shift.
+
+\begin{lstlisting}[style=pseudo]
+prologue: increment #n targets chunk n, runs at ctr = T,  S = T-n => lead = pf - n
+steady:   increment M+v+1,             runs at ctr = T-v, S = T-n => lead = pf - M - 1
+                                          # v cancels: one instruction, all trips
+          lead = pf - min(to_chunk, M + 1)
+\end{lstlisting}
+
+\begin{center}\scriptsize
+\begin{tabular}{lccc}
+\toprule
+ & prologue, \texttt{to\_chunk}=1 & prologue, \texttt{to\_chunk}=2 & steady \\
+\midrule
+global prefetch 1 ($M{=}1$) & $+1$ & $0$ & \bad{$0$} \\
+global prefetch 2 ($M{=}2$) & $+1$ & $0$ & \good{$-1$} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+At $M{=}1$ prologue and steady \bad{coincide at 0}, so any rule fitted there says nothing about
+$M{=}2$. Three shipped in sequence --- $M-\texttt{to\_chunk}$; \texttt{1 if prologue};
+\texttt{1 if to\_chunk==1} --- each passed its prefetch-1 tests, each gave the prefetch-2 steady
+increment $0$ instead of $-1$: the wrap fires early, a whole tensor stride is subtracted, out of bounds.
+
+\tsub{The same degeneracy bit \texttt{copy\_must\_be\_first} and the shared ring depth. Any rule over peel depth, prefetch depth or counter frame must be pinned against \emph{two} prefetch depths in one table. A negative lead is correct, not a sign error.}
+\end{frame}

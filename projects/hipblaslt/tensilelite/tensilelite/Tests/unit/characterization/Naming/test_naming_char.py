@@ -132,6 +132,20 @@ def test_kernel_name_min(make_state, snapshot):
     assert N.getKernelNameMin(make_state(), splitGSU=False) == snapshot
 
 
+def test_loopmodel_waitcnt_mode_names_only_loopmodel_kernels(make_state):
+    non_loop = N.getKernelNameMin(
+        make_state(UseLoopModel=False, LoopModelWaitCntMode="StinkyTofu"), splitGSU=False)
+    stinky = N.getKernelNameMin(
+        make_state(UseLoopModel=True, LoopModelWaitCntMode="StinkyTofu"), splitGSU=False)
+    gir = N.getKernelNameMin(
+        make_state(UseLoopModel=True, LoopModelWaitCntMode="GIR"), splitGSU=False)
+
+    assert "LMWCM" not in non_loop
+    assert "LMWCMST" in stinky
+    assert "LMWCMGIR" in gir
+    assert stinky != gir
+
+
 def test_name_custom_kernel_early_return(make_state, snapshot):
     # CustomKernelName short-circuits _getName.
     s = make_state(CustomKernelName="MyHandwrittenKernel")

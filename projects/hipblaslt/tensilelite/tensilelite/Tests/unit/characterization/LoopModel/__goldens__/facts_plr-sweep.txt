@@ -1,0 +1,17 @@
+bf16 KMN w1 0/0 plr0 pgr1 du64
+operand  varying axes                        reload axes                  prefetch  whole  tiles f/r/res  regions  regs f/buf  lds
+-------  ----------------------------------  ---------------------------  --------  -----  ------------  -------  ----------  ---
+A        K_inner,M_inner                     K_inner,M_inner              K_inner   False   2/ 2/ 2            1     8/32       2
+B        K_inner,N_inner                     K_inner,N_inner              K_inner   False   2/ 2/ 2            1     8/32       2
+
+bf16 KMN w1 0/0 plr1 pgr1 du64
+operand  varying axes                        reload axes                  prefetch  whole  tiles f/r/res  regions  regs f/buf  lds
+-------  ----------------------------------  ---------------------------  --------  -----  ------------  -------  ----------  ---
+A        K_inner,M_inner                     K_inner,M_inner              K_inner   False   2/ 2/ 2            1     8/32       2
+B        K_inner,N_inner                     K_inner,N_inner              K_inner   False   2/ 2/ 2            1     8/32       2
+
+bf16 KMN w1 0/0 plr2 pgr1 du64
+operand  varying axes                        reload axes                  prefetch  whole  tiles f/r/res  regions  regs f/buf  lds
+-------  ----------------------------------  ---------------------------  --------  -----  ------------  -------  ----------  ---
+A        K_inner,M_inner                     K_inner,M_inner              K_inner   False   2/ 2/ 2            1     8/32       2
+B        K_inner,N_inner                     K_inner,N_inner              K_inner   False   2/ 2/ 3            1     8/32       2
