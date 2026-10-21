@@ -1,0 +1,27 @@
+\begin{frame}{One barrier per obligation was not a worse analysis --- it was an unbatched one}
+\begin{center}
+{\scriptsize
+\begin{tabular}{llll}
+\toprule
+\textbf{formulation} & \textbf{problem shape} & \textbf{result} & \textbf{verdict} \\
+\midrule
+one fence per obligation & --- & \bad{28--48} barriers; the back end needs 7--10 & the baseline \\
+interval greedy & interval cover & splitting a union over-fences & \bad{wrong}, not just larger \\
+ILP / exact search & set cover & microseconds at this size & unstable tie-breaks \\
+greedy cover & set cover & \good{6 fences for 1284 cross-agent edges} & shipped \\
+\bottomrule
+\end{tabular}}
+\end{center}
+\vspace{2mm}
+\begin{itemize}
+\item A fence is a \key{cover}, not the realization of an obligation: one point discharges every
+      edge it happens to stand between. Only cross-agent edges need one, so a single-wave kernel
+      gets \good{zero} --- independently agreeing with the back end's own one-wave skip.
+\item A loop-carried pair's admissible slots are $\{s>a\}\cup\{s\le b\}$ --- a \key{union wrapping
+      the body}, not an interval. That one fact forces set cover.
+\item The \emph{points} are minimised; the \emph{names on each point} are not --- token
+      permeability, from chapter 6, is what forbids minimising both.
+\item ILP was rejected on determinism, not cost --- solver tie-breaking would make the emitted
+      assembly non-reproducible.
+\end{itemize}
+\end{frame}

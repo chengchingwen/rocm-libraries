@@ -1,0 +1,40 @@
+\begin{frame}{The answer is three layers, and each is defined as much by what it is forbidden to know}
+
+\begin{center}
+\begin{tikzpicture}[node distance=4mm]
+  \node[box, text width=62mm, align=left] (a1)
+    {\textbf{Layer 1 --- LoopModel} \tsub{(LoopIR)}\\
+     \key{what happens when}: presence, retime $\mathit{off}$, peel $M$, ring depths $S$ and $W$,
+     read-ahead, the obligation ledger. A \emph{rolled tree}: one node per op-class, buffer indices
+     are formulas.};
+  \node[wbox, text width=44mm, align=left, right=5mm of a1] (b1)
+    {\bad{May not know:} addresses, physical registers, wait counts --- or any TensileLite
+     \texttt{Solution} key.};
+
+  \node[box, text width=62mm, align=left, below=7mm of a1] (a2)
+    {\textbf{Layer 2 --- Lowering} \tsub{(GIR, SSA + CFG)}\\
+     \key{the physical consequences}: which generation an access touches, where the LDS read
+     pointer flips, where the TDM descriptor advances, where fences go. Four textbook fixpoints.};
+  \node[wbox, text width=44mm, align=left, right=5mm of a2] (b2)
+    {\bad{May not know:} how to re-derive $\theta$. Analyses never mutate the IR, and \texttt{gir/}
+     imports nothing from the compiled instruction extension.};
+
+  \node[box, text width=62mm, align=left, below=7mm of a2] (a3)
+    {\textbf{Layer 3 --- leaves / rocisa}\\
+     \key{how}: instruction selection and encoding. A buffer swap becomes an \texttt{s\_xor} on a
+     descriptor, or a \texttt{v\_xor} on an address register.};
+  \node[wbox, text width=44mm, align=left, right=5mm of a3] (b3)
+    {\bad{May not decide:} \emph{what}, or \emph{where}.};
+
+  \draw[ar] (a1) -- node[right,font=\tiny,text=acc,xshift=1mm]{rolled tree, symbolic slot expressions} (a2);
+  \draw[ar] (a2) -- node[right,font=\tiny,text=acc,xshift=1mm]{\texttt{EmitAction(kind, at)} --- 8 kinds, resolved integers, no node reference} (a3);
+\end{tikzpicture}
+\end{center}
+
+\vspace{1mm}
+{\scriptsize \key{The forbidden column is the load-bearing one.} Each boundary is enforced, not
+merely intended: the schedule model reads no \texttt{Solution} key, the dataflow IR imports nothing
+from the instruction extension, and the leaves receive resolved integers with no node reference to
+follow back. A layer that cannot see the next one's inputs cannot silently take over its decision.}
+
+\end{frame}

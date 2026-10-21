@@ -1,0 +1,5 @@
+bf16 KMNKMN w1 1/1 plr1 pgr1 du64
+operand  grp  bufs  axis          ahead  dist  reload_after      lds  refused
+-------  ---  ----  ------------  -----  ----  ---------------   ---  -------
+A        g0      2  K_inner           1     1  -                   2  -
+B        g0      1  K_inner           0     0  -                   2  -

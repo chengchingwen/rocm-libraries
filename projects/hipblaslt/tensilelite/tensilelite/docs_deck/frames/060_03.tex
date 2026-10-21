@@ -1,0 +1,41 @@
+\begin{frame}{A token names a SET of generations --- that is exactly what makes a loop-carried dependence visible to a backend that only sees an order}
+\footnotesize
+A memory token is not a label: it is an \key{LDS pseudo-register}. Downstream, a copy \emph{defs} it, a read
+\emph{uses} it, a barrier does \emph{both} --- and ordinary def-use machinery does the rest. The token relation is
+an alias relation and nothing else.
+
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize,node distance=4mm]
+\node[wbox,text width=4.5cm] (n) {\bad{Singleton token, rolled loop}\\[2pt]
+ copy defs \texttt{buf 1}\quad read uses \texttt{buf 0}\\[2pt]
+ statically \emph{disjoint, forever} $\Rightarrow$ no dependence derived, no ordering inserted ---
+ while the real dependence is loop-carried and needed every trip};
+\node[gbox,right=8mm of n,text width=4.5cm] (w) {\good{Set-valued token (\#197)}\\[2pt]
+ peel access keeps its pinned generation; a loop-carried access gets \texttt{tuple(range(ring))}\\[2pt]
+ the downstream test is \emph{overlap}, so rotating copy $\cap$ rotating read $\neq\emptyset$ --- the edge is found};
+\draw[ar] (n) -- (w);
+\end{tikzpicture}
+\end{center}
+
+\begin{columns}[T]
+\begin{column}{0.5\textwidth}
+\textbf{The asymmetry that governs every choice here}
+\begin{center}\scriptsize
+\begin{tabular}{@{}ll@{}}
+\toprule
+token too \bad{narrow} & a miscompile \\
+token too \good{wide} & a redundant wait, never wrong \\
+\bottomrule
+\end{tabular}
+\end{center}
+So every deliberate imprecision is a \emph{widening}.
+\end{column}
+\begin{column}{0.5\textwidth}
+\textbf{And then the set was retired (\#207)}\\[2pt]
+A set is a \emph{may}-set on a channel written for a \emph{must}-set --- and it says \emph{that} two
+instructions collide, not \emph{after how many trips}. Once GIR derived the hazard edges itself and stood a
+\key{fence} between the ends, the fence carries the must-set and receives each token as def \emph{and} use, so
+\texttt{copy $\to$ fence $\to$ read} chains directly. Tokens went back to naming one buffer.
+\end{column}
+\end{columns}
+\end{frame}

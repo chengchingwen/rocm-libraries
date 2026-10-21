@@ -1,0 +1,36 @@
+\begin{frame}{Load versus broadcast is DERIVED from the movement quantum, never declared}
+\centering
+\begin{tikzpicture}[node distance=0.30cm and 0.34cm, every node/.style={font=\scriptsize}]
+\node[box,inner sep=3pt] (prog) {finalized \\ \texttt{Program}};
+\node[box,inner sep=3pt,right=of prog] (plan) {\texttt{plan\_block} \\ \tsub{flat, ordered}};
+\node[box,inner sep=3pt,right=of plan] (acts) {\texttt{[EmitAction]} \\ \tsub{every index an int}};
+\node[box,inner sep=3pt,right=of acts] (q) {\texttt{plan\_quantum} \\ \tsub{per-act \texttt{Decision}}};
+\node[gbox,inner sep=3pt,right=of q] (rc) {\texttt{gir\_to\_rocisa} \\ + leaves};
+\draw[ar](prog)--(plan); \draw[ar](plan)--(acts); \draw[ar](acts)--(q); \draw[ar](q)--(rc);
+\node[wbox,inner sep=3pt,below=0.34cm of acts] (chk) {\texttt{check\_plan} \tsub{re-reads the same list}};
+\draw[ar,draw=warn](acts)--(chk);
+\end{tikzpicture}
+
+\vspace{3pt}
+\scriptsize
+A quantum is the set of axes one movement \emph{instruction} covers, supplied from outside the model
+as two index expressions over the tile coordinate. Nothing is tagged a broadcast:
+
+\vspace{2pt}
+\begin{tabular}{@{}l c c l@{}}
+\toprule
+mechanism & \texttt{carrier(t)} & \texttt{slot(t)} & \texttt{regs} \\
+\midrule
+wide load of 2 tiles & $t/2$ & $t \bmod 2$ & 2 --- each tile gets its own register \\
+sub-agent broadcast, $N$ partitions & $(t/N)\cdot N$ & $0$ & 1 --- \key{partners SHARE a slot} \\
+\bottomrule
+\end{tabular}
+
+\vspace{3pt}
+The group is the \key{preimage} of \texttt{carrier}, not a contiguous run --- the sub-agent partner
+sits a stride away. \bad{Measured:} a leaf that merged two acts on its own authority folded LDS
+tokens 9 and 8 under one \texttt{ds\_load\_b64}; 4096 of 65536 outputs wrong. And
+\texttt{WHOLE = None} is \emph{silence}, not a permissive decision: returning
+\texttt{Decision(emit=True)} instead made the leaf skip its own fold and failed 16 of 16
+microscaling cells, including the 10 that had been passing.
+\end{frame}

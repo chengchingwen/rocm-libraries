@@ -1,0 +1,126 @@
+# Copyright Advanced Micro Devices, Inc., or its affiliates.
+# SPDX-License-Identifier: MIT
+#
+# DECK ORDER IS DATA, NOT FILENAME SORT.
+#
+# The frames used to be ordered by `ls frames/*.tex | sort`, with \section buried inside
+# whichever frame happened to come first in its group.  That made two things impossible:
+# moving a frame between sections (its \section moved with it), and holding a frame back
+# without deleting it.  Both are needed, because this deck has two audiences.
+#
+# THE SPINE IS ARCHITECTURAL.  Every term in this work is new to a first-time reader --
+# op-class, hop, presence, retime, ring, obligation ledger, Mark, generation, memory token.
+# A reader who has not yet been given those words cannot use a frame that debugs them.  So
+# the main deck spends its frames DEFINING each concept and saying why it must exist, in the
+# WHEN -> WHERE -> HOW order the architecture itself has.
+#
+# THE APPENDIX IS THE EVIDENCE.  The deep dives, the post-mortems and the per-feature
+# matrices are all still here and still built -- they are what a reviewer asks for when they
+# challenge a spine claim.  They sit behind \appendix so they do not count against the
+# progress bar or the frame numbering.
+#
+# Syntax:  @section <name>   start a numbered section
+#          @appendix         everything after this is backup
+#          <basename>        include frames/<basename>.tex
+#          # ...             comment
+
+@section Framing
+010_01     # the six answers every op needs, and who used to give them
+010_02     # three layers, each defined by what it may not know
+010_02b    # the through-line: WHEN / WHERE / HOW
+010_02d    # the nine new words, defined once, up front
+010_02c    # deck map
+
+@section The schedule model -- what a schedule IS
+020_01     # seven fields, none of them an address
+020_02     # op-class and hop: presence is per-hop
+020_03     # reduction axes by subtraction
+020_05     # extent alone tells outer from inner
+020_07     # two rings, one rule: slot = coordinate mod S
+
+@section Placement -- turning a schedule into a pipeline
+030_01     # retime: one integer per op-class, two peels, a fallback arm
+030_02     # a read hoisted d steps owes three things back
+030_04     # the peel is a vector over levels
+030_06     # a Mark has a legal RANGE, and the policy travels with it
+
+@section Obligations -- the correctness argument
+040_01     # a list written BEFORE the code exists
+040_03     # arrive vs vacate: a wait cannot repair an anti-dependency
+040_04     # "the ledger is empty" means coverage AND order
+
+@section Why a second IR
+050_01     # four physical questions, all the same question
+050_02     # a rolled tree has no point to reach and no value to propagate
+050_03     # the node set is semantic: a swap is a fact, not an s_xor
+
+@section The analyses -- what dataflow buys
+060_02     # one pointer, one timeline: the placement fixpoint
+060_03     # the memory token names a SET of generations
+060_07     # an LDS hazard is a trip distance
+090_04     # fences by set cover: one barrier per obligation is unbatched
+
+@section Passes, verification, emission
+070_01     # pass order is fixed by dependency, not preference
+070_03     # a checker that reports clean because it could not tell
+080_05     # verification: a second, independently derived model
+070_06     # the leaf boundary decides HOW -- never WHAT, WHERE or WHY
+
+@section Address geometry
+080_01     # two files import nothing, and that emptiness is the feature
+
+@section Evidence
+010_03     # what shipped, across the feature matrix
+090_08     # four validation layers, each blind to something
+090_07     # the dominant bug shape: two places computing one fact
+
+@section Where to go next
+100_01     # five known gaps, ranked
+100_02     # three optimisations worth doing, and one bet
+
+# ===========================================================================
+@appendix
+# Deep dives. Each one belongs to a spine frame and exists to answer a
+# challenge to it -- not to be presented in order.
+
+@section Backup -- the schedule model
+020_04     # what subtraction cost: a ring rotating on a variable no loop binds
+020_06     # retime is non-negative by type
+
+@section Backup -- placement
+030_03     # two structural vetoes cut the read-ahead distance to zero
+030_05     # the wrap lead has a closed form; prefetch-1 is degenerate
+030_07     # the degenerate arm: three displacements it must shed
+
+@section Backup -- obligations
+040_02     # a closed vocabulary raises; a suffix test schedules
+040_05     # copies-last is SCOPED
+040_06     # a hazard analysis only sees things present
+
+@section Backup -- the IR
+050_04     # a hop is derived from the spaces; what a Ref carries
+050_05     # insertion ranges in the IR
+050_06     # region: an AGENT fact on read, a COORDINATE fact on copy
+
+@section Backup -- the analyses
+060_01     # a residence says three things; consumers want a fourth
+060_04     # a token that is not trip-invariant guards the wrong producer
+060_05     # barriers are permeable per token
+060_06     # existential reachability is not betweenness
+060_08     # one read act, and what it spans
+060_09     # the short-path fold decided on VALUES, not producer identity
+
+@section Backup -- passes and emission
+070_02     # adding a pass: the slot is a claim you must justify
+070_04     # a pass that changes the CFG obliges the verifier to re-check
+070_05     # load vs broadcast is derived from the movement quantum
+
+@section Backup -- address geometry
+080_02     # a partition packs blocks iff it cuts the image's inner axis
+080_03     # a packed split makes the address piecewise
+080_04     # every split failure was one missing term in the tile stride
+
+@section Backup -- feature history
+090_01     # MX-scaled fp8 in five staged steps
+090_02     # per-operand tile splitting and the axis question
+090_03     # a fused copy is one completion; members pair by index

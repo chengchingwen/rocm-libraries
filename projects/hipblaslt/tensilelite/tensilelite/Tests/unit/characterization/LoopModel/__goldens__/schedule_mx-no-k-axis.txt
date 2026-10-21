@@ -1,0 +1,23 @@
+mxf8 MNK w4 0/0 plr0 pgr1 du128
+operand  grp  bufs  axis          ahead  dist  reload_after      lds  refused
+-------  ---  ----  ------------  -----  ----  ---------------   ---  -------
+A        g0      1  M_inner           0     0  -                   2  -
+B        g0      1  M_inner           0     0  -                   2  -
+MXSA     g0      1  M_inner           0     0  -                   2  -
+MXSB     g0      1  M_inner           0     0  -                   2  -
+
+mxf8 MNK w4 0/0 plr1 pgr1 du128
+operand  grp  bufs  axis          ahead  dist  reload_after      lds  refused
+-------  ---  ----  ------------  -----  ----  ---------------   ---  -------
+A        g0      2  M_inner           1     2  -                   2  -
+B        g0      1  M_inner           0     0  -                   2  -
+MXSA     g0      2  M_inner           1     2  -                   2  -
+MXSB     g0      1  M_inner           0     0  -                   2  -
+
+mxf8 MNK w4 0/0 plr2 pgr1 du128
+operand  grp  bufs  axis          ahead  dist  reload_after      lds  refused
+-------  ---  ----  ------------  -----  ----  ---------------   ---  -------
+A        g0      2  M_inner           1     2  -                   2  -
+B        g0      1  M_inner           0     0  -                   2  -
+MXSA     g0      2  M_inner           1     2  -                   2  -
+MXSB     g0      1  M_inner           0     0  -                   2  -

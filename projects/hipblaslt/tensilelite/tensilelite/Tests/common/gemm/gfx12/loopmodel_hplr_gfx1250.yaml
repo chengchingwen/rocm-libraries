@@ -1,0 +1,108 @@
+# Copyright Advanced Micro Devices, Inc., or its affiliates.
+# SPDX-License-Identifier: MIT
+#
+# The HalfPLR SHAPE under UseLoopModel, said as (VgprGroup, VgprAlloc).  `HalfPLR` itself is
+# rejected on this path: VG moves the prefetch unit, so HalfPLR's `PrefetchLocalRead == 1`
+# requirement stops describing the same schedule and cannot be carried over.
+#
+#   VgprGroup = 2   one buffer is HALF a prefetch unit
+#   VgprAlloc = 3   three of them -- the 1.5 blocks HalfPLR allocated
+#
+# `VG=2` makes the solution force SuppressNoLoadLoop, so these take the drain-free lowering, and
+# the 3-copy unrolled body falls out of the rings themselves: a ring of 3 walked 4 positions a
+# trip only comes back round after three of them, which `ring_trip_copies` derives.
+#
+# PLR COUNTS BUFFERS, so the `PrefetchLocalRead: 2` below is the ONE unit of read-ahead that
+# `PrefetchLocalRead: 1` meant at VG=1 -- it is not a deeper pipeline than HalfPLR had.
+# ClusterLocalRead must be 0: CLR=1 means the whole set is resident by definition and overwrites
+# VgprAlloc with the full ring, which would quietly stop being 1.5 buffers.
+#
+# VgprAlloc=3 is not universal, and which cells it serves is NOT a property of the loop order
+# alone: it depends on the halved operand's own ring under that order.  A shape that cannot
+# rotate through three buffers refuses the kernel BY NAME and the run continues -- the same shape
+# as legacy HalfPLR refusing roughly half the (WmmaInnerOrder, HalfPLR) cells.  A cell that wants
+# four is SAYING SO, not failing, so the fork below offers both 3 and 4 and each order takes the
+# one its ring admits.
+TestParameters:
+  marks: [skip-gfx900, skip-gfx906, skip-gfx908, skip-gfx90a, skip-gfx940, skip-gfx941, skip-gfx942, skip-gfx950, skip-gfx1010, skip-gfx1011, skip-gfx1012, skip-gfx1030, skip-gfx1100, skip-gfx1101, skip-gfx1102, skip-gfx1200, skip-gfx1201]
+
+GlobalParameters:
+  SyncsPerBenchmark: 0
+  NumElementsToValidate: -1
+  BoundsCheck: 0
+  PrintSolutionRejectionReason: True
+  Architecture: gfx1250
+  KeepBuildTmp: True
+  OutputLoopIR: True
+  PrintLevel: 2
+  DataInitTypeA: 3
+  DataInitTypeB: 3
+
+BenchmarkProblems:
+
+  -
+    -
+      OperationType: GEMM
+      DataType: F8
+      DestDataType: s
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: True
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 128, 1,  1,  2, 2,  1, 1]
+        - DepthU: [256]
+        - WavefrontSize: [32]
+        # The three arms of HalfPLR's per-operand bitmask: A alone, B alone, both.  Grouped so
+        # that a halved operand always carries BOTH of its dials -- forking them apart would
+        # cross a VgprGroup with a VgprAlloc that is still -1.
+        - Groups:
+          - - VgprGroupA: 2        # HalfPLR=1: A alone
+              VgprAllocA: 3
+              VgprGroupB: -1
+              VgprAllocB: -1
+            - VgprGroupA: -1       # HalfPLR=2: B alone
+              VgprAllocA: -1
+              VgprGroupB: 2
+              VgprAllocB: 3
+            - VgprGroupA: 2        # HalfPLR=3: both
+              VgprAllocA: 3
+              VgprGroupB: 2
+              VgprAllocB: 3
+        - ClusterLocalRead: [0]
+        - InnerUnroll: [1]
+        - PrefetchGlobalRead: [1, 2]
+        - PrefetchLocalRead: [2]
+        - StaggerU: [0]
+        - ScheduleIterAlg: [0]
+        - UseSubtileImpl: [false]
+        - UseLoopModel: [true]
+        - TDMInst: [3]
+        - LDSTrInst: [false]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
+        # WOO=1 pulls a split outermost, so the half comes from the ROTATION unit and the region
+        # axis leads the ring -- the shape that made a shallow group alias its own generations.
+        - WmmaOuterOrder: [0, 1]
+        - TDMSplitA: [0, 1]
+        - TDMSplitB: [0, 1]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 1024]
+          - Exact: [256, 256, 1, 512]
+          - Exact: [257, 129, 1, 1024]   # edge: M and N off the macro tile
+          - Exact: [256, 256, 1, 385]    # tail: the smallest legal partial slab
+          # The steady chain runs (K/DepthU - 2)/copies times, so at K<=1024 only a 2-copy
+          # chain ever executes -- a 3-copy one is skipped entirely and goes untested.
+          - Exact: [256, 256, 1, 2048]   # T=8: exercises every copy count, 2 and 3 alike

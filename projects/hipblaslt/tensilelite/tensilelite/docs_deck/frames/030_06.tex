@@ -1,0 +1,43 @@
+\begin{frame}{A Mark has a legal range, not a point --- so the policy travels with the region}
+
+Two registers are \emph{mutated}, not re-derived: the shared read pointer (a ring swap) and the
+bulk-copy descriptor. Lowering is split three ways --- \key{analysis} emits pending marks over opaque
+anchors, \key{placement} picks a point in the window, \key{apply} is the only IR mutator.
+
+\begin{columns}[T]
+\begin{column}{0.56\textwidth}
+\begin{center}
+\begin{tikzpicture}[font=\tiny]
+  \foreach \i in {0,...,6}{\node[draw=gray,fill=lt,minimum width=4mm,minimum height=3.5mm]
+      at (\i*6mm,0) {};}
+  \draw[dashed,gray] (-0.2,-0.45) -- (-0.2,0.5);
+  \draw[dashed,gray] (3.8,-0.45) -- (3.8,0.5);
+  \node[font=\tiny,text=gray,align=center,anchor=south] at (-0.2,0.5) {last use\\of old};
+  \node[font=\tiny,text=gray,align=center,anchor=south] at (3.8,0.5) {first use\\of new};
+  \draw[ar,draw=acc] (-0.2,-1.15) -- (-0.2,-0.42);
+  \node[font=\tiny,text=acc,anchor=north] at (-0.2,-1.15) {EARLIEST};
+  \draw[ar,draw=ok] (1.8,-1.15) -- (1.8,-0.42);
+  \node[font=\tiny,text=ok,anchor=north] at (1.8,-1.15) {MIDPOINT};
+\end{tikzpicture}
+\end{center}
+\end{column}
+\begin{column}{0.42\textwidth}
+\begin{center}
+\begin{tikzpicture}[font=\tiny,node distance=5mm]
+  \node[box] (p1) at (0,0) {pred A};
+  \node[box] (p2) at (2.4,0) {pred B};
+  \node[box] (j)  at (1.2,-1.1) {join};
+  \draw[ar] (p1) -- node[left,font=\tiny,pos=0.45]{\key{mark}} (j);
+  \draw[ar] (p2) -- node[right,font=\tiny,pos=0.45]{\key{mark}} (j);
+  \node[font=\tiny,warn,below=2mm of j,text width=32mm,align=center] {one register cannot hold a different ``from'' value per edge};
+\end{tikzpicture}
+\end{center}
+\end{column}
+\end{columns}
+
+\begin{itemize}\footnotesize
+  \item \key{Descriptor changes go earliest} --- gr\_inc \emph{and} the copy-hop swap, one rule: they mutate one resource and feed one consumer. Every cycle before the load is overlap, and the window's lower bound already \emph{is} the last use of the old value.
+  \item \key{The read swap goes at the midpoint} --- bounded by two \emph{different} resources, so either edge stalls against that edge's consumer. Honestly a heuristic: a bisection of the node list, not of a cost model.
+  \item \key{One Mark per incoming path} --- an exit def in each predecessor, never one at the join. From an AVAIL/ANTIC fixpoint; \bad{TOP is reported, never resolved}.
+\end{itemize}
+\end{frame}

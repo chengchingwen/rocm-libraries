@@ -1,0 +1,42 @@
+\begin{frame}{The short-path fold is a reordering-legality question --- and it is decided on VALUES reached, not producer identity}
+\footnotesize
+The degenerate ($T\le M$) path exists in every pipelined kernel. The scaffold serves it by \emph{skipping} the
+loop; LoopIR emits a disjoint unpipelined arm. Folding deletes the arm and retargets the guard's false edge into
+the drain head --- legal only if every def-use pairing survives the reordering
+(\texttt{copy,compute,copy,compute} $\to$ \texttt{copy,copy $|$ compute,compute}).
+
+\begin{columns}[T]
+\begin{column}{0.5\textwidth}
+\bad{Why producer identity gives confident false SPLITs.} The two arms are \emph{deliberately} different
+schedules: the arm never enters the loop, so its read-ahead is reset ($dr=0$) while the drain keeps $dr(\theta)$.
+They are not instruction-isomorphic, so ``same instruction'' is not a well-defined question.\\[3pt]
+So each producer carries a value: a copy is \texttt{('copy',ops,coord,occurrence)} --- the $k$-th copy fetches
+chunk $k$ on both arms --- and a read chains \key{transitively} to the copy that filled its buffer. Naming the
+\emph{generation} instead identifies the chunk only while ring $\ge$ peel: at $S=1$ every generation is 0, a
+false FOLD on exactly the configuration that needs the answer.\\[3pt]
+\good{Under producer identity the shipping default reported 24 breaks --- every one an artefact.}
+\end{column}
+\begin{column}{0.5\textwidth}
+\begin{center}\scriptsize
+\begin{tabular}{@{}ll@{}}
+\toprule
+sweep & verdicts \\
+\midrule
+A: 6 orders $\times$ PGR 1--3 $\times$ PLR 0--1, $S{=}2$ & \textbf{24 FOLD / 12 SPLIT} \\
+\quad \tsub{$M{=}1,2$ fold; $M{=}3$ splits, 8 \textsc{overwritten}} & \\
+B: same shape forced to $S{=}1$ & $M{=}1$ folds; $M{=}2,3$ split \\
+\quad \tsub{8 and 16 breaks, all \textsc{overwritten}} & \\
+C: 22 named fixtures & \textbf{19 FOLD / 2 SPLIT / 1 NA} \\
+\bottomrule
+\end{tabular}
+\end{center}
+\tsub{Loop order does not enter the answer in any cell. The two C splits are \emph{not} ring-depth splits: 32 breaks
+over 4 register locations, all \textsc{unwritten} --- the register-side warm-up gap.}\\[3pt]
+\textbf{The summary is ``fold iff ring $\ge$ peel'' --- and the analysis deliberately does not test that
+inequality.} It sees nothing of warm-up (an arm reading what it never wrote is \texttt{UNSOUND}, and the
+inequality calls it foldable).\\[3pt]
+\tsub{\good{The shipping default folds in all six orders} --- as it must, since the scaffold has done exactly
+that for years.}
+\end{column}
+\end{columns}
+\end{frame}
