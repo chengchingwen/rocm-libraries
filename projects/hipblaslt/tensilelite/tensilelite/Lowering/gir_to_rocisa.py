@@ -14,6 +14,7 @@ from .gir.coverage import plan_coverage
 from .gir.emit_plan import plan_block
 from .gir.frame_contract import build_contract
 from .gir.nodes import FILL_OPS, Move
+from .gir.render import inst_line
 from .gir_tag import gir_tag
 from .leaves import LeafEmitters
 from .loopir_to_gir import steady_chain
@@ -117,13 +118,13 @@ class GirToRocisa:
         self._maskedCopy = self._maskedInc = not in_loop
 
         for _i, act in enumerate(acts):
+            # Every tag this act produces quotes the line `render_gir` prints for the node.
+            self._actLine = inst_line(act.source) if getattr(act, "source", None) else act.kind
             self._emit_loop_masks(out, act.kind)
             before = len(out.flatitems())
             kind, at = act.kind, act.at
             if kind == "wmma":
-                self._tag(out, phase, "wmma", "C[m=%s,n=%s] += A[m,k=%s]*B[n,k=%s]  regA=X%s regB=X%s"
-                          % (at["idx0"], at["idx1"], at["u"], at["u"],
-                             at.get("bufA"), at.get("bufB")))
+                self._tag_act(out, phase, act)
                 out.add(w.emitWmmaTile(self.kernel, self.tPA, self.tPB, self._ctxMfma,
                                        idx0=at["idx0"], idx1=at["idx1"], u=at["u"],
                                        bufA=at.get("bufA"), bufB=at.get("bufB"),
@@ -135,15 +136,13 @@ class GirToRocisa:
                                        baseMXA=self._reg_base("MXSA", at.get("groupMXA"),
                                                               at.get("bufMXA")),
                                        baseMXB=self._reg_base("MXSB", at.get("groupMXB"),
-                                                              at.get("bufMXB"))))
+                                                              at.get("bufMXB")),
+                                       girComment=self._actLine))
             elif kind in FILL_OPS:
                 tc = at["tc"]
                 # `tile` is the WITHIN-REGION index and `tile_flat` the register index; they differ
                 # only for a region-split operand, and passing one for both is the defect.
-                self._tag(out, phase, kind, "%s[tile=%s,k=%s%s] shared gen=%s->reg X%s"
-                          % (tc, at.get("tile_flat", at["tile"]), at["k"],
-                             "" if at.get("regions", 1) <= 1 else ",r%s" % at.get("region", 0),
-                             at.get("gen"), at["reg_buf"]))
+                self._tag_act(out, phase, act)
                 _qd = cplan.decision(_i)
                 out.add(w.emitLdsReadTile(self.kernel, self._tp[tc], self._ctxRd[tc],
                                           tileIdx=at["tile"], kIdx=at["k"],
@@ -154,13 +153,13 @@ class GirToRocisa:
                                           regBase=self._reg_base(tc, at.get("group"),
                                                                  at.get("reg_buf")),
                                           kFlat=at.get("k_flat", at["k"]),
-                                          quantum=_qd, gen=at.get("gen")))
+                                          quantum=_qd, gen=at.get("gen"),
+                                          girComment=self._actLine))
             elif kind == "swap":
                 # A read swap names an operand, a copy swap names the Phi movement -- see
                 # `gir/refs.copy_unit` and the act table in `gir/emit_plan`.
                 who = at["operand"] if at["hop"] == "ds_load" else at["unit"]
-                self._tag(out, phase, "swap", "%s %s-hop buffer %s->%s"
-                          % (self._who(who), at["hop"], at.get("gen_from"), at.get("gen_to")))
+                self._tag_act(out, phase, act)
                 self._emit_swap(out, at["hop"], who, tpByOperand, internalPointerSwap)
             elif kind == "gl2_prefetch":
                 #: GIR chose the POINT; the instructions are the scaffold's own, unchanged.
@@ -171,14 +170,11 @@ class GirToRocisa:
                 out.add(self.writer.codes.gl2PrefetchIncrement)
                 out.add(self.writer.codes.gl2Prefetch)
             elif kind == "gr_inc":
-                self._tag(out, phase, "gr_inc", "%s advance %s chunk(s) -> chunk %s"
-                          % (self._who(at["unit"]), at.get("chunks", 1), at.get("to_chunk")))
+                self._tag_act(out, phase, act)
                 self._emit_gr_inc(out, at["unit"], tpByOperand, at.get("chunks", 1),
                                   at.get("to_chunk"), phase=phase)
             elif kind == "tensor_load":
-                self._tag(out, phase, kind, "%s global->shared chunk gen=%s%s"
-                          % (self._who(at["unit"]), at.get("gen", 0),
-                             "" if at.get("region") is None else " region=%s" % at["region"]))
+                self._tag_act(out, phase, act)
                 self._emit_copy_masked(out, at, tpByOperand)
             elif kind == "desc_enable":
                 self._emit_desc_enable(out, tuple(at["unit"]), at["member"],
@@ -254,10 +250,9 @@ class GirToRocisa:
         instruction that also moves B is worse than no tag."""
         return "+".join(unit) if isinstance(unit, tuple) else unit
 
-    @staticmethod
-    def _append_tag(code, tag):
-        """APPEND `tag` to every instruction comment in `code`, preserving what is already there."""
-        mark = gir_tag(tag)
+    def _append_tag(self, code, tag):
+        """APPEND the act's dump line to each comment in `code`; `tag` is the fallback."""
+        mark = gir_tag(getattr(self, "_actLine", "") or tag)
         for item in code.flatitems():
             c = getattr(item, "comment", None)
             if c is None:
@@ -267,6 +262,12 @@ class GirToRocisa:
     def _tag(self, out, phase, kind, detail):
         """Stamp a GIR act so a finding in the `.s` names the node that emitted it."""
         out.addComment0(gir_tag("%s %s %s" % (phase, kind, detail)))
+
+    def _tag_act(self, out, phase, act):
+        """Stamp an act with the GIR dump line of the node that produced it."""
+        node = getattr(act, "source", None)
+        out.addComment0(gir_tag("%s %s" % (
+            phase, inst_line(node) if node is not None else act.kind)))
 
     def _fused_tp(self, unit, tpByOperand, what):
         """`(tP_even, tP_odd)` for a Phi-fused movement, after checking the scaffold can realize it.
