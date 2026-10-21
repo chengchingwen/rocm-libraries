@@ -6506,7 +6506,8 @@ class Solution(collections.abc.Mapping):
     if state["1LDSBuffer"] == -1 and state["DirectToLds"]:
       #1LDS buffer must be 0 for DirectToLdsA
       state["1LDSBuffer"] = 0
-    # MX case
+    # MX case.  `DirectToLdsMXS*` is only assigned for a side that HAS a scale, so a problem
+    # carrying one on A alone compares the live side and leaves the absent one out.
     if (state["ProblemType"]["MXBlockA"] or state["ProblemType"]["MXBlockB"]):
       # One-sided MX is handled on more than one wave only; one wave compares both pairs.
       oneWave = state["NumWaves"] <= 1
