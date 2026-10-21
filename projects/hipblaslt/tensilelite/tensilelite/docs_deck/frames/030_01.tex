@@ -1,0 +1,28 @@
+
+\begin{frame}{Retiming is one integer per op-class; it costs two peels and a fallback arm}
+
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize,node distance=6mm]
+  \node[box] (g) {$T > M$\\\tsub{peel validity}};
+  \node[box,right=9mm of g] (pro) {\key{prologue}\\$M$ steps};
+  \node[box,right=6mm of pro] (st) {\key{steady}\\$T-M$ trips};
+  \node[box,right=6mm of st] (dr) {\key{drain}\\$M$ steps};
+  \node[wbox,below=15mm of pro.west,anchor=west,text width=52mm] (sh)
+       {\bad{degenerate arm} --- $T$ unpipelined steps};
+  \draw[ar] (g) -- node[above,font=\tiny]{then} (pro);
+  \draw[ar] (pro) -- (st);
+  \draw[ar] (st) -- (dr);
+  \draw[ar] (st.north east) to[out=50,in=130] node[above,font=\tiny]{back edge} (st.north west);
+  \draw[ar] (g.south) |- node[below,font=\tiny,pos=0.25]{els} (sh.west);
+  \node[font=\tiny,gray,below=1mm of pro] {copies for chunks $0\dots M{-}1$};
+  \node[font=\tiny,gray,below=1mm of dr] {copy removed};
+\end{tikzpicture}
+\end{center}
+
+\begin{itemize}
+  \item $\mathrm{off}(c,\text{chunk})=\delta$ means \emph{chunk $i$'s copy is issued in iteration $i-\delta$}. That is the whole of software pipelining, as one integer. $M=\max_p \delta_p$.
+  \item The peel is \key{staggered, not uniform}: $\mathrm{copy}_p$ is present at prologue step $t$ iff $\delta_p \ge M-t$, and at drain step $t$ iff $\delta_p \le M-1-t$ --- deepest in first, deepest out first.
+  \item The guard is \key{strictly} $T>M$. The steady region lowers to a \emph{post-tested} block, which cannot express zero trips; under $\ge$, $T=M$ would run one trip computing chunk 0 that the drain also computes.
+  \item Consequence taken deliberately: the short arm is \bad{live code at every peel depth}, not dead at depth 1.
+\end{itemize}
+\end{frame}

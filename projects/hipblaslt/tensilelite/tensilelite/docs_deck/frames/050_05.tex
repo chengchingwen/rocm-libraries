@@ -1,0 +1,51 @@
+\begin{frame}{An insertion has a legal \emph{range}, not a correct point}
+\centering
+\begin{tikzpicture}[node distance=7mm,every node/.style={font=\scriptsize}]
+  \node[box] (a) {analysis};
+  \node[box,right=of a] (p) {plan};
+  \node[box,right=of p] (l) {placement};
+  \node[gbox,right=of l] (y) {apply};
+  \draw[ar] (a) -- (p); \draw[ar] (p) -- (l); \draw[ar] (l) -- (y);
+  \node[below=1mm of a,font=\tiny,text=gray] {IR frozen};
+  \node[below=1mm of p,font=\tiny,text=gray] {\texttt{PendingMark}s};
+  \node[below=1mm of l,font=\tiny,text=gray] {IR frozen};
+  \node[below=1mm of y,font=\tiny,text=ok] {the ONLY body mutator};
+\end{tikzpicture}
+
+\vspace{6pt}
+\begin{columns}[T]
+\begin{column}{0.44\textwidth}
+\centering
+\begin{tikzpicture}[every node/.style={font=\tiny}]
+  \draw[very thick,draw=lt!50!gray] (0,0) -- (4.1,0);
+  \draw[thick,draw=acc] (0.6,-0.12) -- (0.6,0.12);
+  \draw[thick,draw=acc] (3.5,-0.12) -- (3.5,0.12);
+  \draw[decorate,decoration={brace,amplitude=3pt},draw=acc] (0.65,0.18) -- (3.45,0.18);
+  \node[text=acc] at (2.05,0.5) {legal window};
+  \node[anchor=north,text width=1.5cm,align=center] at (0.6,-0.15) {last use of\\old gen};
+  \node[anchor=north,text width=1.5cm,align=center] at (3.5,-0.15) {first use of\\new gen};
+  \node[circle,fill=warn,inner sep=1.2pt] at (0.75,0) {};
+  \node[circle,fill=ok,inner sep=1.2pt] at (2.05,0) {};
+  \node[text=warn,anchor=south] at (0.75,0.55) {};
+\end{tikzpicture}
+\vspace{1pt}
+
+{\tiny \bad{$\bullet$ EARLIEST} descriptor edits \quad \good{$\bullet$ MIDPOINT} LDS read pointer}
+\end{column}
+\begin{column}{0.54\textwidth}
+\begin{itemize}\scriptsize
+  \item Anchors are \key{node references}, not indices --- a window survives other Marks
+        landing in the same body before it resolves.
+  \item Policy travels \emph{with} the region: a descriptor edit wants every cycle of overlap
+        it can get; the read pointer is bounded by two different resources, so neither edge is right.
+  \item Baking the index into the analysis is what the first version did --- and it is why
+        placement policy could not be changed without rewriting the analysis.
+\end{itemize}
+\end{column}
+\end{columns}
+
+\vspace{3pt}
+{\scriptsize One typed exception: \texttt{StructuralPass} may reshape the CFG. It exists because
+\texttt{ApplyMarksPass} called itself "the only mutator" long after the fold pass had started
+\bad{deleting blocks}. What is still \bad{unchecked}: two analyses placing conflicting Marks in one window.}
+\end{frame}

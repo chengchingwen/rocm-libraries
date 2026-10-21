@@ -44,6 +44,7 @@
 #include "stinkytofu/support/LoopDetection.hpp"
 #include "stinkytofu/transforms/asm/BuildDefUseChain.hpp"
 #include "stinkytofu/transforms/asm/ExecMaskGrouping.hpp"
+#include "stinkytofu/transforms/asm/GirFencePlacementPass.hpp"
 #include "stinkytofu/transforms/asm/InsertClusterBarrierPass.hpp"
 
 // Before dag/CDNA*.hpp so PASS_DEBUG inside those headers uses this pass name.
@@ -360,6 +361,80 @@ static void applyClusterBarrierSccRule(
     }
 }
 
+// GIR frame cluster lead. FrameMap owns RAW identity; GirFencePlacementPass's shared query turns
+// that exact frame analysis into the physical publication anchors the wait pass will later
+// materialize. Tensor loads emitted after a window are pulled between its two frame-proven
+// publication points.
+static void applyClusterBarrierTensorLoadDelay(
+    DAGNodeList& dagNodes, const std::unordered_map<StinkyInstruction*, unsigned>& instToId,
+    std::vector<std::unordered_set<unsigned>>& dagGraph, const std::vector<int>& cumCycles,
+    const GirRawPlacementPlan& rawPlacements, int delayCycles) {
+    if (delayCycles <= 0 || rawPlacements.tensorMarkers.size() < 2) return;
+
+    std::vector<unsigned> markers;
+    for (const StinkyInstruction* marker : rawPlacements.tensorMarkers) {
+        auto found = instToId.find(const_cast<StinkyInstruction*>(marker));
+        if (found != instToId.end()) markers.push_back(found->second);
+    }
+    std::sort(markers.begin(), markers.end());
+    markers.erase(std::unique(markers.begin(), markers.end()), markers.end());
+    PASS_DEBUG({
+        std::cerr << "[DAG RAW tensor window] region markers:";
+        for (unsigned id : markers) std::cerr << " " << id;
+        std::cerr << " (function tensor markers=" << rawPlacements.tensorMarkers.size()
+                  << ", target=" << delayCycles << ")\n";
+    });
+
+    for (size_t m = 1; m < markers.size(); ++m) {
+        const unsigned firstId = markers[m - 1];
+        const unsigned secondId = markers[m];
+        if (firstId >= secondId || secondId >= cumCycles.size()) continue;
+        const int span = cumCycles[secondId] - cumCycles[firstId];
+        if (span <= delayCycles) {
+            PASS_DEBUG(std::cerr << "[DAG RAW tensor window] skip short window " << firstId
+                                 << " -> " << secondId << " span=" << span
+                                 << " target=" << delayCycles << "\n");
+            continue;
+        }
+
+        std::vector<unsigned> loads;
+        for (unsigned id = 0; id < dagNodes.size(); ++id) {
+            if (!isTensorLoad(*dagNodes[id].inst)) continue;
+            // A load emitted after the last RAW marker is intentionally pulled back into that
+            // final physical window. Earlier windows own loads textually between their bounds.
+            const bool finalWindow = m + 1 == markers.size();
+            if (id <= firstId || (!finalWindow && id >= secondId)) continue;
+            loads.push_back(id);
+        }
+        if (loads.empty()) continue;
+
+        // The two RAW placements bound one static scheduling window. Every added edge must be
+        // legal together; otherwise leave the whole group unchanged rather than splitting one
+        // frame-proven cluster group into partially delayed loads.
+        bool legal = !dag::hasPath(dagGraph, secondId, firstId);
+        for (unsigned loadId : loads) {
+            legal &= !dag::hasPath(dagGraph, loadId, firstId);
+            legal &= !dag::hasPath(dagGraph, secondId, loadId);
+        }
+        if (!legal) {
+            PASS_DEBUG(std::cerr << "[DAG RAW tensor window] skip constrained window " << firstId
+                                 << " -> " << secondId << "\n");
+            continue;
+        }
+
+        for (unsigned loadId : loads) {
+            addEdgeById(&dagNodes[firstId], &dagNodes[loadId], dagGraph);
+            addEdgeById(&dagNodes[loadId], &dagNodes[secondId], dagGraph);
+            dagNodes[loadId].tensorLoadDelayAnchorId = firstId;
+            dagNodes[loadId].tensorLoadDelayCycles = delayCycles;
+            PASS_DEBUG(std::cerr << "[DAG RAW tensor window] hold tensor_load dagId=" << loadId
+                                 << " after RAW dagId=" << firstId << " until +" << delayCycles
+                                 << " cycles; next RAW dagId=" << secondId << " span=" << span
+                                 << "\n");
+        }
+    }
+}
+
 // VGPR indices of one WMMA input family (A, B, MXSA, or MXSB) so a parent VALU
 // that touches any register of the family can boost every ds_load of that family.
 static void addVgprIdxs(const StinkyRegister& r, std::unordered_set<uint32_t>& out) {
@@ -430,7 +505,9 @@ static int matrixInputKindOfValu(const StinkyInstruction& matrix, const StinkyIn
 static void scheduleRegionWithMovableSideEffects(
     IRList::iterator regionStart, IRList::iterator regionEnd, IRList::iterator blockBegin,
     std::vector<IRBase*>& scheduled, ReadyQueue& readyQueue,
-    const std::unordered_map<StinkyInstruction*, unsigned>& wmmaIndex, int& fillerCount) {
+    const std::unordered_map<StinkyInstruction*, unsigned>& wmmaIndex,
+    const GirFrameHazardAnalysis::Result& girHazards, const GirFrameAnalysis::Result& girFrames,
+    const GirRawPlacementPlan& rawPlacements, int& fillerCount) {
     if (regionStart == regionEnd) {
         return;  // Empty region, nothing to schedule.
     }
@@ -444,6 +521,7 @@ static void scheduleRegionWithMovableSideEffects(
 
     // Map each instruction to an unique id [0..n-1] and build register deps.
     dag::RegionDAG regionDag = dag::buildRegisterDependencyDAG(regionStart, regionEnd);
+    dag::addGirFrameHazardEdges(regionDag, girHazards, girFrames);
     dag::DAGNodeList& dagNodes = regionDag.nodes;
     std::vector<std::unordered_set<unsigned>>& dagGraph = regionDag.graph;
     std::unordered_map<StinkyInstruction*, unsigned>& instToId = regionDag.instToId;
@@ -461,13 +539,22 @@ static void scheduleRegionWithMovableSideEffects(
     // co-issue window; otherwise issueCycles): where the terminator that follows it sits, which
     // DAGNode::earliestClock is built from.
     int regionCycles = 0;
+    // Prefix sum of the same cost, for the rules that need the SPAN between two nodes rather
+    // than the region total: cumCycles[k] is the cycles before node k, so the last element IS
+    // regionCycles.
+    std::vector<int> cumCycles(regionSize + 1, 0);
     for (unsigned k = 0; k < regionSize; ++k) {
         const StinkyInstruction* inst = dagNodes[k].inst;
         regionCycles += isMatrixInstruction(*inst) ? inst->latencyCycles : inst->issueCycles;
+        cumCycles[k + 1] = regionCycles;
     }
 
     if (readyQueue.clusterBarrierEnabled())
         applyClusterBarrierSccRule(dagNodes, instToId, dagGraph, regionCycles);
+    applyClusterBarrierTensorLoadDelay(dagNodes, instToId, dagGraph, cumCycles, rawPlacements,
+                                       readyQueue.getPassContext()
+                                           .getPassFeatureConfig()
+                                           .dagFeatures.clusterBarrierTensorLoadDelayCycles);
 
     // Pre-scan: mark VALU/transcendental nodes that directly feed a matrix op.
     // CDNA5ReadyQueue holds each behind the WMMA two before its first consumer.
@@ -827,7 +914,6 @@ static void scheduleRegionWithMovableSideEffects(
 
     assert(readyQueue.empty() && "Ready queue must be empty before scheduling a region");
 
-    // Initialize the ready queue with instructions that have in-degree 0.
     for (unsigned i = 0; i < regionSize; ++i) {
         if (dagNodes[i].inDegree == 0) readyQueue.push(&dagNodes[i]);
     }
@@ -882,7 +968,10 @@ static void scheduleRegionWithMovableSideEffects(
 // In the end, the instructions will be reordered in the block
 // to reflect the scheduling order.
 static void scheduleInDAG(BasicBlock& bb, ReadyQueue& readyQueue,
-                          const std::unordered_map<StinkyInstruction*, unsigned>& wmmaIndex) {
+                          const std::unordered_map<StinkyInstruction*, unsigned>& wmmaIndex,
+                          const GirFrameHazardAnalysis::Result& girHazards,
+                          const GirFrameAnalysis::Result& girFrames,
+                          const GirRawPlacementPlan& rawPlacements) {
     PASS_DEBUG(std::cerr << "*** Scheduling Instructions in DAG: ***\n");
 
     if (bb.empty()) return;
@@ -909,7 +998,8 @@ static void scheduleInDAG(BasicBlock& bb, ReadyQueue& readyQueue,
             // Non-instruction IR (e.g. AsmDirective): treat as non-movable
             // side-effect boundary so its position is strictly preserved.
             scheduleRegionWithMovableSideEffects(regionStart, it, beginIt, scheduled, readyQueue,
-                                                 wmmaIndex, fillerCount);
+                                                 wmmaIndex, girHazards, girFrames, rawPlacements,
+                                                 fillerCount);
             scheduled.push_back(irNode);
             regionStart = std::next(it);
             continue;
@@ -918,7 +1008,8 @@ static void scheduleInDAG(BasicBlock& bb, ReadyQueue& readyQueue,
         StinkyInstruction& inst = *instPtr;
         if (hasSideEffect(inst)) {
             scheduleRegionWithMovableSideEffects(regionStart, it, beginIt, scheduled, readyQueue,
-                                                 wmmaIndex, fillerCount);
+                                                 wmmaIndex, girHazards, girFrames, rawPlacements,
+                                                 fillerCount);
 
             scheduled.push_back(&inst);
             readyQueue.onScheduled(inst);
@@ -932,7 +1023,8 @@ static void scheduleInDAG(BasicBlock& bb, ReadyQueue& readyQueue,
     }
     // Flush the last region if it has not been flushed yet.
     scheduleRegionWithMovableSideEffects(regionStart, endIt, beginIt, scheduled, readyQueue,
-                                         wmmaIndex, fillerCount);
+                                         wmmaIndex, girHazards, girFrames, rawPlacements,
+                                         fillerCount);
 
     assert(scheduled.size() == bb.size() + static_cast<size_t>(fillerCount) &&
            "Scheduled instructions size must match original plus filler insts");
@@ -1006,6 +1098,38 @@ std::unique_ptr<ReadyQueue> chooseReadyQueue(const PassContext& passCtx) {
     return std::make_unique<ReadyQueueByDAGid>(passCtx);
 }
 
+// Checked on both sides of scheduling: the INCOMING order is the topological witness that keeps
+// the same-trip frame hazard edges acyclic, the SCHEDULED order is what the scheduler owes.
+void validateGirFrameHazardOrder(const GirFrameHazardAnalysis::Result& hazards, const char* when) {
+    std::unordered_map<const StinkyInstruction*, size_t> orderIndex;
+    std::unordered_map<const StinkyInstruction*, const BasicBlock*> orderBlock;
+    std::unordered_set<const BasicBlock*> visited;
+    for (const GirFrameHazard& hazard : hazards.hazards) {
+        for (BasicBlock* block : {hazard.producerBlock, hazard.consumerBlock}) {
+            if (!block || !visited.insert(block).second) continue;
+            size_t index = 0;
+            for (IRBase& node : *block) {
+                auto* inst = dyn_cast<StinkyInstruction>(&node);
+                if (!inst) continue;
+                orderIndex[inst] = index++;
+                orderBlock[inst] = block;
+            }
+        }
+    }
+    for (const GirFrameHazard& hazard : hazards.hazards) {
+        if (hazard.gap != 0 || hazard.producer == hazard.consumer) continue;
+        auto producer = orderIndex.find(hazard.producer);
+        auto consumer = orderIndex.find(hazard.consumer);
+        if (producer == orderIndex.end() || consumer == orderIndex.end()) continue;
+        if (orderBlock[hazard.producer] == orderBlock[hazard.consumer] &&
+            producer->second >= consumer->second)
+            STINKY_UNREACHABLE((std::string("GIR frame hazard: the ") + when +
+                                " order inverts a required same-trip edge in " +
+                                orderBlock[hazard.producer]->getLabel())
+                                   .c_str());
+    }
+}
+
 class StinkyDAGSchedulerPass : public StinkyInstPass {
    public:
     static char ID;
@@ -1043,6 +1167,14 @@ class StinkyDAGSchedulerPass : public StinkyInstPass {
         }
 
         const auto& loops = AM.getResult<LoopAnalysis>(func);
+        const GirFrameAnalysis::Result girFrames = AM.getResult<GirFrameAnalysis>(func);
+        const GirFrameHazardAnalysis::Result girHazards =
+            AM.getResult<GirFrameHazardAnalysis>(func);
+        const GirRawPlacementPlan rawPlacements =
+            passCtx.getPassFeatureConfig().dagFeatures.clusterBarrierTensorLoadDelayCycles > 0
+                ? computeGirRawPlacementPlan(func, girFrames, girHazards)
+                : GirRawPlacementPlan{};
+        validateGirFrameHazardOrder(girHazards, "incoming");
 
         PASS_DEBUG(for (const Loop& loop
                         : loops) {
@@ -1078,7 +1210,7 @@ class StinkyDAGSchedulerPass : public StinkyInstPass {
         auto scheduleBlock = [&](BasicBlock* bb, ReadyQueue& rq) {
             AsmIRBuilder builder(*bb, archId);
             collapseExecMaskedRegions(*bb, builder, wavefrontSize);
-            scheduleInDAG(*bb, rq, wmmaIndex);
+            scheduleInDAG(*bb, rq, wmmaIndex, girHazards, girFrames, rawPlacements);
             expandExecMaskedGroups(*bb);
             auto candidates = rq.takeLayer2BarrierOverlapCandidates();
             layer2BarrierOverlapCandidates.insert(layer2BarrierOverlapCandidates.end(),
@@ -1104,6 +1236,11 @@ class StinkyDAGSchedulerPass : public StinkyInstPass {
                 rq->setAnalysisCache(&analysisCache);
                 scheduleBlock(bb, *rq);
             }
+        }
+        validateGirFrameHazardOrder(girHazards, "scheduled");
+        if (!girHazards.empty()) {
+            AM.invalidate(func, preserveCFGAnalyses());
+            (void)AM.getResult<GirFrameHazardAnalysis>(func);
         }
         AM.getResult<Layer2BarrierOverlapAnalysis>(func) =
             validateLayer2BarrierOverlaps(func, layer2BarrierOverlapCandidates);

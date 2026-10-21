@@ -394,6 +394,9 @@ def getBuildClientLibraryArguments(buildPath, libraryLogicPath, cxxCompiler, tar
   if globalParameters["KeepBuildTmp"]:
     args.append("--keep-build-tmp")
 
+  if globalParameters.get("OutputLoopIR", False):
+    callCreateLibraryCmd += " --output-loop-ir"
+
   if globalParameters["DisableAsmComments"]:
     args.append("--disable-asm-comments")
 

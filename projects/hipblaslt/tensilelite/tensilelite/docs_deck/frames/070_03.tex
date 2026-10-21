@@ -1,0 +1,27 @@
+\begin{frame}{A checker that reports clean because it could not tell is worse than no checker}
+\scriptsize
+Two checkers, disjoint failure modes: \texttt{verify\_gir} asks \emph{is this IR well-formed?} (raises
+on the first violation); \texttt{check\_plan} asks \emph{does this schedule compute the right GEMM?}
+over the flat emit plan (returns a list). Neither subsumes the other.
+
+\vspace{2pt}
+\begin{tabular}{@{}l p{4.9cm} p{5.1cm}@{}}
+\toprule
+& \textbf{what it proves} & \textbf{how it can still pass} \bad{(named in the source)} \\
+\midrule
+G-TERM   & \texttt{preds}/\texttt{succs} agree with the terminators & an \emph{empty} tuple is never checked --- opt-in per block \\
+G-CFG    & exactly $M$ drains; 0 \emph{or} exactly $M$ short blocks, agreeing with the verdict & \texttt{meta['M']} absent disables the count entirely \\
+G-WALK   & the region walk closes \emph{and} every copy is on the region the descriptor is on & a block with no split copies is trivially clean \\
+G-TOKEN  & disjoint LDS storage never shares an id; the \key{stamp} matches the analysis & the fence cover is checked non-empty, never \emph{sufficient} \\
+G-EMIT   & marks dropped into blocks nobody emits are counted & compares a count, not the kind multiset \\
+G-UNIFORM & a proc-scoped rendezvous is on every agent's path & \bad{structurally inert:} \texttt{role} is \texttt{'all'} everywhere and \texttt{Pred} cannot spell an agent test \\
+\bottomrule
+\end{tabular}
+
+\vspace{3pt}
+\good{The guard:} every check needs a negative control --- a fixture that breaks the property and
+asserts the checker fires. \texttt{walk\_violations} first checked only the \emph{net} displacement;
+hoisting every increment mark to the block entry leaves the net at zero while every copy loads the
+wrong region. Net-clean and uniformly wrong. Its control now parameterises over
+\texttt{drop}/\texttt{duplicate}/\texttt{hoist}.
+\end{frame}

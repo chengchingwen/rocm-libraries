@@ -1,0 +1,46 @@
+\begin{frame}{Barriers are PERMEABLE PER TOKEN --- so a fence must name everything live across it}
+\footnotesize
+A barrier is a \emph{point}, and its ordering power comes entirely from its token set: the downstream pass gives
+it each token as both a def and a use. \bad{A buffer the barrier does not name is not chained through it at all}
+--- accesses to it migrate across freely, and get no wait either.
+
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize,node distance=6mm]
+\node[box] (bar) {\texttt{barrier} tokens=$\{1\}$};
+\node[left=16mm of bar] (l) {};
+\node[right=16mm of bar] (r) {};
+\draw[ar] (l) -- node[above,font=\tiny]{buf 1} (bar);
+\draw[ar] (bar) -- node[above,font=\tiny]{buf 1} (r);
+\draw[warn,thick,-{Stealth[length=4pt]}] ($(l)+(0,-6mm)$) -- node[below,font=\tiny,text=warn]{buf 5, buf 7: straight through, unordered, unwaited} ($(r)+(0,-6mm)$);
+\end{tikzpicture}
+\end{center}
+\vspace{-2mm}
+\begin{center}
+\begin{minipage}{0.86\textwidth}
+\key{The design rule that follows:} it does not get to be minimal in both dimensions.
+The set of \textbf{POINTS} is minimised (a greedy set cover over admissible slots); the set of \textbf{NAMES}
+on each point is \emph{not}.
+\end{minipage}
+\end{center}
+
+\begin{columns}[T]
+\begin{column}{0.52\textwidth}
+\bad{The measurement that proved it.} A union-over-covered-edges fence was propped up by an unrelated
+over-approximation. Fixing that widening shrank one steady fence's token list from $(1,5,7)$ to $(1,)$ and took a
+multi-wave split configuration from 42 failures to \textbf{62}. The \emph{placement never moved} --- only the names
+on it did. The widening had been doing liveness's job by accident for months.
+\end{column}
+\begin{column}{0.48\textwidth}
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize]
+\node[gbox,text width=4.6cm] (o) {\textbf{Ownership boundary}\\[3pt]
+ \good{This layer owns:} the memory \key{token}, and the \key{copy order}.\\[3pt]
+ \bad{It never owns:} \texttt{s\_barrier}, \texttt{vmcnt}/\texttt{tensorcnt}, wait strength. There is no
+ \texttt{barrier} kind in \texttt{MARK\_KINDS} and never was --- the kind is \texttt{fence}.\\[3pt]
+ \tsub{One obligation, three realizations (barrier / wait-count / nothing). Name one and you are discarded on the
+ path that wants another.}};
+\end{tikzpicture}
+\end{center}
+\end{column}
+\end{columns}
+\end{frame}

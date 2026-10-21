@@ -1,0 +1,40 @@
+\documentclass[aspectratio=169,9pt]{beamer}
+\usetheme{metropolis}
+\metroset{sectionpage=none,numbering=fraction,progressbar=frametitle}
+\usepackage[T1]{fontenc}
+% Stops the appendix (the deep-dive backup frames, see order.txt) from inflating the frame-number
+% DENOMINATOR on the spine.  Without it the architecture deck reads "34/60" and looks half-finished
+% when it is in fact complete at 34; beamer's own \appendix only fixes the numerator.
+\usepackage{appendixnumberbeamer}
+\usepackage{booktabs,tikz,amsmath,amssymb,xcolor}
+\usepackage{listings}
+\usetikzlibrary{arrows.meta,positioning,fit,backgrounds,shapes.geometric,calc,decorations.pathreplacing}
+\definecolor{acc}{HTML}{2B6CB0}
+\definecolor{warn}{HTML}{C05621}
+\definecolor{ok}{HTML}{2F855A}
+\definecolor{lt}{HTML}{F5F5F5}
+\setbeamercolor{frametitle}{bg=acc}
+\lstset{basicstyle=\ttfamily\scriptsize,keywordstyle=\color{acc}\bfseries,
+  commentstyle=\color{gray}\itshape,stringstyle=\color{ok},
+  showstringspaces=false,breaklines=true,columns=fullflexible,
+  backgroundcolor=\color{lt},frame=leftline,framerule=1.2pt,rulecolor=\color{acc},
+  xleftmargin=6pt,aboveskip=4pt,belowskip=4pt}
+\lstdefinestyle{py}{language=Python}
+\lstdefinestyle{pseudo}{language=,morekeywords={for,if,else,while,return,raise,in,not,and,or,each,foreach,def,yield,assert}}
+\newcommand{\tsub}[1]{{\footnotesize\color{gray}#1}}
+\newcommand{\key}[1]{\textcolor{acc}{\textbf{#1}}}
+\newcommand{\bad}[1]{\textcolor{warn}{\textbf{#1}}}
+\newcommand{\good}[1]{\textcolor{ok}{\textbf{#1}}}
+\tikzset{
+  box/.style={draw=acc,thick,rounded corners=2pt,fill=lt,align=center,inner sep=4pt,font=\scriptsize},
+  gbox/.style={box,draw=ok},
+  wbox/.style={box,draw=warn},
+  ar/.style={-{Stealth[length=4pt]},thick,draw=acc},
+}
+\title{UseLoopModel on gfx1250}
+\subtitle{A schedule model and a dataflow lowering for TensileLite GEMM main loops}
+\date{}
+\author{Architecture review --- the concepts, in the order a schedule is built\\[2pt]
+{\footnotesize\color{gray}Backup frames after the appendix marker carry the derivations and the evidence}}
+\begin{document}
+\maketitle

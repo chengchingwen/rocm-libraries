@@ -1,0 +1,5 @@
+bf16 NKM w4 0/0 plr1 pgr2 du128
+operand  varying axes                        reload axes                  prefetch  whole  tiles f/r/res  regions  regs f/buf  lds
+-------  ----------------------------------  ---------------------------  --------  -----  ------------  -------  ----------  ---
+A        K_inner,M_inner                     K_inner,M_inner              N_inner   True    2/ 4/ 4            1     8/64       2
+B        N_inner,K_inner                     N_inner,K_inner              N_inner   False   2/ 4/ 2            1     8/64       2

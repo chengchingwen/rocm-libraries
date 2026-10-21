@@ -1,0 +1,42 @@
+\begin{frame}{An LDS hazard is a trip distance --- and exactly one bit of it is load-bearing}
+\footnotesize
+\begin{columns}[T]
+\begin{column}{0.5\textwidth}
+An access carries offset $g$ (\texttt{gdelta}) on a ring of depth $S$; the back edge advances by \texttt{adv}:
+\[ \mathrm{buf}(v,g) = (\text{base} + v\!\cdot\!\mathrm{adv} + g) \bmod S \]
+Two accesses collide when
+\[ (v_c - v_p)\cdot \mathrm{adv} \equiv (g_p - g_c) \pmod S \]
+and with $\mathrm{adv}=1$ (every kernel today) the \key{trip distance} is
+\[ d = (g_p - g_c) \bmod S \]
+\good{The base cancels} --- so no absolute buffer identity is needed, which is fortunate, because in the one place
+it would be needed it provably does not exist. Deriving $d$ from resolved generations instead would compare
+\emph{representative-trip} values and under-report every pair that agrees on a different trip.
+\end{column}
+\begin{column}{0.5\textwidth}
+\begin{center}\scriptsize
+\begin{tabular}{@{}lll@{}}
+\toprule
+family & dir. & what breaks without ordering \\
+\midrule
+RAW \tsub{residency} & w$\to$r & read sees stale data \\
+WAR \tsub{rotation} & r$\to$w & copy overwrites unread buffer \\
+WAW \tsub{rotation} & w$\to$w & two copies, unconstrained order \\
+\bottomrule
+\end{tabular}
+\end{center}
+\vspace{2pt}
+\textbf{The one bit:} \texttt{same\_trip} $\equiv (d=0)$.
+$d=0$ $\Rightarrow$ discharge \emph{inside} the body, between the two accesses (an \emph{interval} of admissible
+slots). $d\neq0$ $\Rightarrow$ purely loop-carried, so any fence in the body is crossed on the way --- a
+\emph{union of two} intervals. \key{That union is why fence placement is a set cover and not a shortest-interval
+problem.}\\[3pt]
+\tsub{Two independent derivations agree: TensileLite's barrier pass skips at \texttt{numWaves == 1}; this analysis
+reads only per-op-class agent distribution and finds 84 hazards on each of three single-wave fixtures, of which
+\textbf{zero} need a fence.}
+\end{column}
+\end{columns}
+\vspace{1mm}
+\bad{Why the back end cannot do this:} its phase machine walks a flat stream keyed on a static label. It cannot see
+a dependence whose producer and consumer are the \emph{same static instruction on two different trips} --- which,
+in a rolled loop, is every loop-carried LDS dependence.
+\end{frame}

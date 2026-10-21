@@ -1,0 +1,33 @@
+
+\begin{frame}{Four physical questions --- and all four are the same question}
+\begin{columns}[T]
+\begin{column}{0.56\textwidth}
+\begin{enumerate}\scriptsize
+  \item Which of the $S$ rotating LDS buffers does \emph{this} access touch?
+  \item At which instruction does the LDS \key{read pointer} flip to the next buffer?
+  \item At which instruction does the \key{global read address} advance to the next reduction chunk?
+  \item Where do \key{barriers} go?
+\end{enumerate}
+\vspace{4pt}
+\scriptsize
+Each one reads: \emph{one physical register or resource must hold the right value
+at this program point.}
+\vspace{3pt}
+
+That is a \good{compiler dataflow problem}, not a scheduling problem --- and the
+scheduler is the wrong layer to ask.
+\end{column}
+\begin{column}{0.42\textwidth}
+\centering
+\begin{tikzpicture}[node distance=3.5mm]
+  \node[box,text width=2.0cm] (q1) {which buffer?};
+  \node[box,text width=2.0cm,below=of q1] (q2) {flip read pointer where?};
+  \node[box,text width=2.0cm,below=of q2] (q3) {advance address where?};
+  \node[box,text width=2.0cm,below=of q3] (q4) {barriers where?};
+  \node[gbox,text width=2.0cm,right=5mm of q2.east,yshift=-6mm]
+       (d) {\textbf{must this value\\be live here?}\\[2pt]\tsub{a fixpoint}};
+  \foreach \q in {q1,q2,q3,q4} \draw[ar] (\q.east) -- (d.west);
+\end{tikzpicture}
+\end{column}
+\end{columns}
+\end{frame}

@@ -1,0 +1,41 @@
+\begin{frame}[fragile]{Existential reachability is not betweenness --- so ask the separation question directly}
+\footnotesize
+The cover is computed per block, so without a cross-block check it is blind: the last steady copy feeds reads in
+\emph{two} drain blocks, and the second asks for a fence the first already provides.
+``Is a fence in an earlier block already on every path?'' was approximated as:
+
+\begin{center}\ttfamily\scriptsize
+x in reachable(producer\_block) \quad and \quad x in dominators(consumer\_block) \quad\quad \bad{-- THE OLD FORM}
+\end{center}
+
+\bad{Why it is wrong:} \texttt{reachable} is \emph{existential} --- ``\emph{some} path from the producer reaches
+$x$''. A candidate reachable only along a \key{back edge} satisfies it while sitting \emph{before} the producer on
+every forward path. The hand-written \texttt{x != pb} guard was one instance of that general failure, seen once.
+
+\begin{columns}[T]
+\begin{column}{0.52\textwidth}
+\begin{lstlisting}[style=pseudo]
+_separates(x, pb, cb, succ):
+  if pb == cb: return False
+  stack = [s for s in succ[pb] if s != x]
+  while stack:
+    lab = pop(stack)
+    if lab == cb: return False   # path avoids x
+    if seen or lab == x: continue
+    stack += [s for s in succ[lab] if s != x]
+  return True                    # every path forced
+\end{lstlisting}
+\tsub{Starting at \texttt{pb}'s \emph{successors}, not at \texttt{pb}, is what makes a fence in the producer's own
+block fail correctly.}
+\end{column}
+\begin{column}{0.48\textwidth}
+\good{Delete $x$ from the graph. Is the consumer still reachable from the producer?} If not, every
+producer$\to$consumer path is forced through $x$. One predicate subsumes reachability, dominance \emph{and} the
+guard --- and needs no dominator tree.\\[4pt]
+\textbf{Measured:} the old form left \bad{248 unfenced producer$\to$consumer paths in 14 of 36} swept
+configurations, all \texttt{steady$_{n-1}$:copy $\to$ drain$_0$:read}, all at multi-block steady bodies.
+The separator test drives \good{248 $\to$ 0} for \textbf{+1 fence} in 16 configurations --- and every
+single-block-steady configuration, which is everything shipped today, is \good{bit-identical}.
+\end{column}
+\end{columns}
+\end{frame}

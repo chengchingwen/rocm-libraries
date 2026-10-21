@@ -1,0 +1,34 @@
+
+\begin{frame}{The correctness argument is a list written \emph{before} any code exists}
+
+\begin{columns}[T]
+\begin{column}{0.46\textwidth}
+\vspace{2pt}
+\begin{tikzpicture}[node distance=5mm]
+\node[box,fill=white] (l) {\texttt{build\_ledger($\theta$, S)}\\\tsub{what is owed}};
+\node[box,below=of l] (e) {\texttt{build\_ir($\theta$, S)}\\\tsub{the tree}};
+\node[box,below=of e] (d) {\texttt{discharge\_once(ir)}\\\tsub{collapse restated boundaries}};
+\node[gbox,below=of d] (c) {\texttt{check\_ledger\_discharged}\\\tsub{is it paid}};
+\node[wbox,below=5mm of c] (p) {\texttt{validate} P7\\\tsub{non-empty list $\Rightarrow$ raise}};
+\draw[ar] (l)--(e); \draw[ar] (e)--(d); \draw[ar] (d)--(c); \draw[ar] (c)--(p);
+\draw[ar,dashed] (l.west) to[out=180,in=180] (c.west);
+\end{tikzpicture}
+\end{column}
+\begin{column}{0.52\textwidth}
+\vspace{2pt}
+\key{An obligation is a hazard, named, so it can be tracked to a discharge.}
+
+\vspace{2pt}
+{\ttfamily\small Obligation(producer, consumer, kind, counter)}
+
+\vspace{2pt}
+\begin{itemize}\itemsep2pt
+  \item ends are structured \texttt{Endpoint} records --- op-class, storage/site, role
+  \item \texttt{counter} is a \key{completion class} (\texttt{C\_copy}, \texttt{C\_read}), a model label, not a hardware counter
+  \item \key{symbolic per op-class}, not per iteration: one row for ``A's global$\to$shared feeds A's shared$\to$register''
+\end{itemize}
+\vspace{3pt}
+The ledger is small enough to be built and checked on \emph{every} decode.
+\end{column}
+\end{columns}
+\end{frame}

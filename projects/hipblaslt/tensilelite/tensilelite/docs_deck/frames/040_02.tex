@@ -1,0 +1,43 @@
+\begin{frame}{A closed vocabulary raises on a new kind; a suffix test \emph{schedules} it}
+
+\begin{columns}[T]
+\begin{column}{0.52\textwidth}
+\vspace{-2pt}
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\multicolumn{2}{@{}l}{\texttt{RAW\_KINDS} --- true dependency} \\
+\midrule
+\texttt{RAW-residency} & consumer needs the moved value \\
+\texttt{crossing-RAW}  & read-ahead reaches a chunk \emph{this} \\
+                       & trip's own copy fills \\
+\midrule
+\multicolumn{2}{@{}l}{\texttt{WAR\_KINDS} --- anti-dependency} \\
+\midrule
+\texttt{rotation-WAR}  & refill writes a \emph{different} slot \\
+\texttt{inplace-WAR}   & refill writes the \key{same} slot \\
+\bottomrule
+\end{tabular}
+\vspace{6pt}
+
+\texttt{OBLIGATION\_KINDS = RAW\_KINDS | WAR\_KINDS}, enumerated in exactly one place. \texttt{is\_war} is \key{total over a checked set} --- it raises rather than defaulting; \texttt{is\_raw} inherits the raise.
+\end{column}
+\begin{column}{0.46\textwidth}
+\vspace{-2pt}
+\bad{The prior form was \texttt{kind.endswith("WAR")} at eight sites.}
+
+\vspace{4pt}
+It fails in \emph{both} directions as soon as the vocabulary grows:
+\begin{itemize}\itemsep2pt
+  \item a new anti-dependency not spelled \texttt{...WAR} joins the RAW arm
+  \item a true dependency that happens to end in those letters --- \texttt{read-after-WAR} --- joins the anti-dependency arm
+\end{itemize}
+Neither is an error. \bad{Both are a schedule} --- a slower kernel or a wrong answer, found on hardware.
+
+\vspace{5pt}
+\begin{tikzpicture}
+\node[wbox,text width=0.94\columnwidth,align=left] {\textbf{Already paid for once.} The suffix match forced \emph{copy-last} on \texttt{crossing-RAW} obligations that needed copy-\emph{first}.};
+\end{tikzpicture}
+\end{column}
+\end{columns}
+\end{frame}

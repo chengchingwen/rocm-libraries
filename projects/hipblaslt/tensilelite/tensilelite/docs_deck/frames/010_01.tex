@@ -1,0 +1,41 @@
+\begin{frame}{Every operation in the main loop needs six answers --- and the assembly emitter gave all six by position in a Python function}
+
+\begin{center}
+\begin{tikzpicture}
+  \node[box] (g) {global};
+  \node[box, right=26mm of g] (l) {LDS ring\\$S$ buffers};
+  \node[box, right=22mm of l] (r) {register ring\\$W$ names};
+  \node[box, right=14mm of r] (c) {WMMA};
+  \draw[ar] (g) -- node[above,font=\tiny,text=acc]{copy hop (TDM)} (l);
+  \draw[ar] (l) -- node[above,font=\tiny,text=acc]{read hop} (r);
+  \draw[ar] (r) -- (c);
+\end{tikzpicture}
+\end{center}
+
+\begin{columns}[T]
+\column{0.50\textwidth}
+{\scriptsize \textbf{Per op-class, per hop, the decoder must decide:}}
+\begin{itemize}\scriptsize
+  \item at \key{which loop level} the operation lives
+  \item \key{how far ahead} of its consumer it runs \tsub{(retime $\mathit{off}$, peel depth $M$)}
+  \item \key{which rotating buffer} this access touches
+  \item where the \key{read pointer flips} and the \key{descriptor advances}
+  \item what \key{completion counter} it waits on
+  \item where the \key{fence} goes
+\end{itemize}
+
+\column{0.46\textwidth}
+{\scriptsize \textbf{Times a parameter space that ships:}}
+\begin{itemize}\scriptsize
+  \item six 3-letter loop orders, plus 6-letter interleaved words \tsub{(96 accepted spellings, 90 distinct traversals; only the 6 doubled words collapse, so 84 are non-contiguous)}
+  \item prefetch depths, tile splits per operand \emph{and} per axis, wave count, bf16 / f8 / MX-scaled f8
+  \item \key{5{,}744} bf16, \key{152} f8, \key{404--444} mxf8 kernels in the shipping matrices
+\end{itemize}
+\end{columns}
+
+\vspace{2mm}
+{\scriptsize \bad{Six answers, given implicitly, by where a call sits in a Python function.} No layer
+owned any of them, so each new parameter interacted with all six at once --- and a wrong answer showed
+up as a numeric miscompare on hardware, not as a failure at the point of the decision.}
+
+\end{frame}

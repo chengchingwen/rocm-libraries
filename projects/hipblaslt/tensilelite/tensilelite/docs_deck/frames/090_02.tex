@@ -1,0 +1,35 @@
+\begin{frame}{Tile splitting went per-operand --- and which axis the cut falls on decides the LDS image}
+\begin{columns}[T]
+\begin{column}{0.42\textwidth}
+\begin{center}
+\begin{tikzpicture}[font=\scriptsize]
+\draw[draw=acc,thick] (0,0) rectangle (2.2,1.1);
+\draw[draw=acc,thick,dashed] (0,0.55)--(2.2,0.55);
+\node at (1.1,0.83) {region 0};
+\node at (1.1,0.28) {region 1};
+\node[anchor=north,font=\scriptsize] at (1.1,-0.05) {cut the \key{outer} axis: packed};
+\begin{scope}[yshift=-2.0cm]
+\draw[draw=warn,thick] (0,0) rectangle (2.2,1.1);
+\draw[draw=warn,thick,dashed] (1.1,0)--(1.1,1.1);
+\node at (0.55,0.55) {reg 0};
+\node at (1.65,0.55) {reg 1};
+\node[anchor=north,font=\scriptsize] at (1.1,-0.05) {cut the \bad{inner} axis: interleaved};
+\end{scope}
+\end{tikzpicture}
+\end{center}
+\end{column}
+\begin{column}{0.56\textwidth}
+\begin{itemize}
+\item \texttt{TDMSplitA}/\texttt{TDMSplitB} are \key{three-valued per operand}: off, cut the free
+      axis, cut the reduction axis. The knob names an axis; the factor is fixed at 2.
+\item The schedule model above it is deliberately \emph{more} general --- a positional four-list
+      with any factor on either axis --- so it can be exercised ahead of the emitter.
+\item Packed or interleaved follows the diagonal rule of the previous chapter. How it \emph{shipped}
+      is the part worth keeping: the transposed-N layout inverts the rule, and an earlier version
+      \bad{cut the wrong axis} there --- the two answers had coincided three times before a layout
+      appeared that separates them.
+\item Scale, metadata and sparse operands are never split.
+\end{itemize}
+\end{column}
+\end{columns}
+\end{frame}

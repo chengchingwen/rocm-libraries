@@ -1,0 +1,30 @@
+\begin{frame}{A hazard analysis finds conflicts between things \emph{present}; absence is the schedule's job}
+
+\begin{center}
+\begin{tikzpicture}[node distance=6mm]
+\node[box,text width=4.6cm] (h) {\textbf{Hazard analysis} \tsub{(layer 2)}\\ walks the program, pairs the shared accesses it \emph{finds}, classifies RAW / WAR / WAW, places a cover};
+\node[gbox,right=16mm of h,text width=4.6cm] (s) {\textbf{Schedule model} \tsub{(layer 1)}\\ knows which reads the prologue \emph{must} contain, because it derived the peel that warms them};
+\end{tikzpicture}
+
+\vspace{2pt}
+{\footnotesize A read that was never emitted collides with nothing. It raises no pair, mints no edge, leaves no obligation undischarged.}
+\end{center}
+
+\vspace{-2pt}
+\begin{columns}[T]
+\begin{column}{0.49\textwidth}
+\bad{Measured, twice.}
+\begin{itemize}\itemsep2pt
+  \item A drain read-ahead suppression window widened by one step: bf16 NT, $16{\times}16{\times}32$, $2{\times}2$ wave tile, \texttt{DepthU} 64 --- \key{62 \texttt{ds\_read}s at prefetch depths 1--2, 54 at depth 3}, against an unchanged 36 matmuls. Eight local reads gone, \bad{empty ledger, no warning}.
+  \item The short-arm fold's \texttt{UNSOUND} verdict: an arm that reads a register it never wrote. Repaired for the data operands, \bad{never covered the microscaling scale operands}.
+\end{itemize}
+\end{column}
+\begin{column}{0.49\textwidth}
+\good{So existence is checked separately, and structurally.}
+\begin{itemize}\itemsep2pt
+  \item \texttt{readahead-residency} is an \emph{existence} obligation: arm (c) demands the coordinate be in the prologue body.
+  \item Closed-form gates (\texttt{chunk\_crossing\_violations}) prune bad $(dr,\,\delta)$ pairs \emph{before} emission --- far better as a message: ``operand A, read-ahead 1, reach 1, depth 1, needs 2''.
+\end{itemize}
+\end{column}
+\end{columns}
+\end{frame}

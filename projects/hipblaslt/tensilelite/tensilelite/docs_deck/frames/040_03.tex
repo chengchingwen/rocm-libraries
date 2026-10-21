@@ -1,0 +1,39 @@
+\begin{frame}{A wait cannot repair an anti-dependency --- the read you need has not issued yet}
+
+\begin{columns}[T]
+\begin{column}{0.44\textwidth}
+\vspace{2pt}
+A completion wait makes an instruction wait for \key{already-issued} operations to finish.
+
+\vspace{4pt}
+Ring depth $S_{\text{shared}}$, copy running $\delta$ chunks ahead. At $S_{\text{shared}}=\delta$ the copy of chunk $c+\delta$ lands in slot $c \bmod S_{\text{shared}}$ --- \bad{the slot this trip is reading}.
+
+\vspace{4pt}
+Ask what the copy could wait \emph{on} in a \texttt{copy; reads} body: the reads that must precede it \emph{have not issued}. There is nothing to name. The only repair is to \key{move the copy}.
+
+\vspace{6pt}
+\begin{tikzpicture}
+\node[box,text width=0.94\columnwidth,align=left,font=\scriptsize] {The same asymmetry one ring down: the \texttt{wmma} that must precede a hoisted register refill has not issued either.};
+\end{tikzpicture}
+\end{column}
+\begin{column}{0.54\textwidth}
+\vspace{-4pt}
+\small
+\begin{tabular}{@{}p{2.1cm}p{2.0cm}p{3.0cm}@{}}
+\toprule
+\textbf{Mechanism} & \textbf{Discharges} & \textbf{Enforced by} \\
+\midrule
+a \key{wait} \tsub{(an \texttt{Await} naming the producer)} & \texttt{RAW-residency}, \texttt{crossing-RAW} & arm (a) coverage; order otherwise free \\[4pt]
+a \key{position} \tsub{(the issue order $\sigma_c$)} & \texttt{rotation-WAR}, \texttt{inplace-WAR} & arms (b), (b2), (b3); no wait exists \\[4pt]
+mere \key{presence} \tsub{(a read the prologue must contain)} & \texttt{readahead-residency} & arm (c), against the prologue body \\
+\bottomrule
+\end{tabular}
+
+\vspace{6pt}
+\textbf{Presence is not a wait and not an order.} Arm (c) collects the \emph{coordinates} of every register read the prologue emits and requires each obligation's coordinate to be there. A peel built on the wrong reduction axis is rejected \good{at build time} rather than by a passing-or-failing hardware run.
+
+\vspace{4pt}
+\tsub{That is also why the fifth kind sits outside the closed set --- it never becomes an \texttt{Await}, so \texttt{is\_war} must never see it.}
+\end{column}
+\end{columns}
+\end{frame}

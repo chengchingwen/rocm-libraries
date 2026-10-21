@@ -1,0 +1,31 @@
+\begin{frame}{``The ledger is empty'' means coverage \emph{and} position --- and nothing about addresses}
+
+\begin{columns}[T]
+\begin{column}{0.47\textwidth}
+\vspace{2pt}
+\good{Two statements per obligation:}
+\begin{enumerate}\itemsep3pt
+  \item \key{Coverage} --- somewhere in the tree an \texttt{Await} names the obligation's completion class. Otherwise it is unsatisfiable however the code is ordered.
+  \item \key{Position} --- within one straight-line trip, the emitted order of producer and consumer is the one the hazard demands.
+\end{enumerate}
+
+\vspace{5pt}
+Position is not optional \emph{because the backend is order-driven}: it discards the markers and re-derives synchronization from def-use order of the memory tokens. Coverage alone passes an instruction encoding \bad{the inverse dependency}.
+\end{column}
+\begin{column}{0.50\textwidth}
+\vspace{-2pt}
+\begin{tikzpicture}
+\node[wbox,text width=0.95\columnwidth,align=left] {
+\textbf{What an empty ledger does NOT prove}\\[3pt]
+\raggedright
+$\bullet$~\textbf{It never looks at an address.} No arm computes a byte offset, a lane id, a swizzle or an LDS base. ``The read reads the bytes the copy wrote'' is \emph{assumed}. A wrong-address miscompile is invisible here.\\[3pt]
+$\bullet$~\textbf{Generation-blind on the RAW side.} \texttt{await A@shared} is discharged by \emph{any} copy of A; the wrong-generation case is caught by the separate \texttt{crossing-RAW} row.\\[3pt]
+$\bullet$~\textbf{It does not check the ledger is complete.} A hazard with no row reports success. \bad{Every historical defect in this file is of that shape: a missing row, not a mis-checked one.}
+};
+\end{tikzpicture}
+
+\vspace{3pt}
+\tsub{The cross-check for the missing-row mode re-derives the shared-memory edge set from the lowered CFG and asserts the two sets are equal.}
+\end{column}
+\end{columns}
+\end{frame}

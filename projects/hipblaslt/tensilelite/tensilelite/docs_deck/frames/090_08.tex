@@ -1,0 +1,29 @@
+\begin{frame}{How it is validated: four layers, and each one is blind to something}
+\begin{center}
+{\scriptsize\setlength{\tabcolsep}{4pt}
+\begin{tabular}{p{2.4cm}p{4.2cm}p{5.0cm}}
+\toprule
+\textbf{layer} & \textbf{what it proves} & \textbf{what it cannot catch} \\
+\midrule
+structural checks, on the build path &
+schedule-gate properties, GIR well-formedness, and a per-kernel semantic check over the emit plan --- pure Python &
+they read the structures the passes wrote, in the same vocabulary: good at inconsistency, \bad{blind to the model being uniformly wrong} \\
+\addlinespace
+fixtures and independent oracles &
+22 named scenarios; a 168-cell order $\times$ split $\times$ prefetch sweep; simulators sharing \emph{no code} with what they check &
+coverage bounded by whoever wrote the sweep. One check was correct, had four negative controls, and ran only from tests; a later sweep flagged \bad{216 of 216} single-substep cells and 0 of 432 elsewhere --- all sixteen hardware miscompares of that shape \\
+\addlinespace
+CPU-only generation, emit-diff vs.\ the old path &
+\good{152 of 152} fp8 and \good{404 of 404} MX-scaled fp8 kernels byte-identical; both arms build locally &
+byte equality proves you changed \emph{nothing}, so it is silent on any configuration the old path cannot generate; the coarse offset/count diff has missed two defect classes by ignoring registers and order \\
+\addlinespace
+hardware numerics &
+the only layer that sees what the other three cannot &
+it says \bad{wrong}, never \bad{where} --- one build cycle per bisection step \\
+\bottomrule
+\end{tabular}}
+\end{center}
+\begin{center}
+\key{An oracle that is not on the build path is a test, not a gate.}
+\end{center}
+\end{frame}

@@ -1,0 +1,30 @@
+\begin{frame}{What went wrong: two places computing one fact, agreeing on the common case}
+\begin{center}
+{\scriptsize\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lll}
+\toprule
+\textbf{the one fact} & \textbf{the two derivations} & \textbf{where they diverged} \\
+\midrule
+the region walk & the loader vs.\ the incrementer & $+2$ steps against $-1$: descriptor a chunk ahead \\
+the rotation width & the scheduler's count vs.\ the name table & the degenerate in-place group \\
+the token set & the analysis vs.\ the stamp on the move & a pass that truncated the stamp \\
+the read-ahead depth & three different denominators & same on 100\% of the matrix, differing \\
+ & & in \emph{form} on 47\% of it \\
+the region a tile is in & the name it carries vs.\ where its lanes sit & agree at wave group [1,1], not at [2,2] \\
+\bottomrule
+\end{tabular}}
+\end{center}
+\vspace{1mm}
+\begin{itemize}
+\item \bad{A differential probe reporting ``no difference'' is worthless until it is shown able to
+      report one.} The tile checker applies the same \texttt{max(1,\,$\cdot$)} floor as the
+      derivation it checks: at one tile per two regions both collapse to region 0, so it is
+      \emph{incapable} of disagreeing. A gate was removed on exactly that argument and the client
+      \bad{segfaulted} --- 800 result rows before, 686 after. Reverted, with the argument preserved
+      because it will be made again.
+\item \bad{A rejection that only appears under the new path is a parity failure, not a safety
+      feature} --- and a silent one: the solution stops appearing, its reference twin still passes,
+      the matrix reads green with the arm under test absent. So the gate \key{raises}, and its
+      contract is that it must never fire.
+\end{itemize}
+\end{frame}
