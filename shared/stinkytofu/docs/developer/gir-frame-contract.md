@@ -139,7 +139,7 @@ enum class GirActionKind : uint8_t { Other, Read, Copy, Fence, Wmma, WaitCnt };
 Parsed by `src/serialization/asm/ModifierSerializer.cpp:708`:
 
 ```text
-{ mod.gir_action = { action = 1, anchor = 1, kind = copy,
+{ mod.gir_action = { action = 1, anchor = 1, kind = tensor,
                      access0_write = 1, access0_operand = 0, access0_ring = 2,
                      access0_gen = 0, access0_gdelta = 1,
                      access0_cross = 1 } }
@@ -249,7 +249,7 @@ Use one anchor id for every logical CFG block represented by the contract:
 
 ^join:
   v[0:1] = "st.ds_load_b64"(v10) {
-    mod.gir_action = { action = 21, anchor = 20, kind = read,
+    mod.gir_action = { action = 21, anchor = 20, kind = ds,
                        access0_operand = 0, access0_ring = 2,
                        access0_gen = 0 }
   }
@@ -344,7 +344,7 @@ st.func @absolute_raw() {
 ^entry:
   "st.tensor_load_to_lds"(s[0:3], s[8:15]) {
     mod.gir_action = {
-      action = 0, anchor = 0, kind = copy,
+      action = 0, anchor = 0, kind = tensor,
       access0_write = 1, access0_operand = 0,
       access0_ring = 2, access0_abs = 0, access0_cross = 1
     }
@@ -352,7 +352,7 @@ st.func @absolute_raw() {
   v[0:1] = "st.ds_load_b64"(v10) {
     mod.ds = { na = 1, offset = 0, gds = false },
     mod.gir_action = {
-      action = 1, anchor = 0, kind = read,
+      action = 1, anchor = 0, kind = ds,
       access0_write = 0, access0_operand = 0,
       access0_ring = 2, access0_abs = 0, access0_cross = 1
     }
@@ -375,7 +375,7 @@ instruction updates several logical regions:
 ```text
 "st.tensor_load_to_lds"(s[0:3], s[8:15]) {
   mod.gir_action = {
-    action = 10, anchor = 10, kind = copy,
+    action = 10, anchor = 10, kind = tensor,
     access0_write = 1, access0_operand = 0,
     access0_ring = 2, access0_abs = 0,
     access1_write = 1, access1_operand = 1,
@@ -407,7 +407,7 @@ st.func @ring_two_loop() {
 ^entry:
   "st.tensor_load_to_lds"(s[0:3], s[10:17]) {
     mod.gir_action = {
-      action = 300, anchor = 300, kind = copy,
+      action = 300, anchor = 300, kind = tensor,
       access0_write = 1, access0_operand = 0,
       access0_ring = 2, access0_abs = 0
     }
@@ -418,7 +418,7 @@ st.func @ring_two_loop() {
 ^loop:
   "st.tensor_load_to_lds"(s[4:7], s[10:17]) {
     mod.gir_action = {
-      action = 301, anchor = 301, kind = copy,
+      action = 301, anchor = 301, kind = tensor,
       access0_write = 1, access0_operand = 0,
       access0_ring = 2, access0_gen = 300
     }
@@ -426,7 +426,7 @@ st.func @ring_two_loop() {
   v[0:1] = "st.ds_load_b64"(v10) {
     mod.ds = { na = 1, offset = 0, gds = false },
     mod.gir_action = {
-      action = 302, anchor = 301, kind = read,
+      action = 302, anchor = 301, kind = ds,
       access0_write = 0, access0_operand = 0,
       access0_ring = 2, access0_gen = 300,
       access0_gdelta = 1
@@ -477,7 +477,7 @@ st.func @diamond_join() {
 ^left:
   "st.tensor_load_to_lds"(s[0:3], s[10:17]) {
     mod.gir_action = {
-      action = 100, anchor = 100, kind = copy,
+      action = 100, anchor = 100, kind = tensor,
       access0_write = 1, access0_operand = 0,
       access0_ring = 2, access0_gen = 100
     }
@@ -496,7 +496,7 @@ st.func @diamond_join() {
   v[0:1] = "st.ds_load_b64"(v10) {
     mod.ds = { na = 1, offset = 0, gds = false },
     mod.gir_action = {
-      action = 102, anchor = 102, kind = read,
+      action = 102, anchor = 102, kind = ds,
       access0_write = 0, access0_operand = 0,
       access0_ring = 2, access0_gen = 100
     }

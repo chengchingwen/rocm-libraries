@@ -295,7 +295,7 @@ def _check_marks(prog):
         if inst.kind == "swap":
             # The pointer name is hop-dependent (see _MARK_SCHEMA).  Requiring the RIGHT one, not
             # merely "some name", is what stops a copy swap from being labelled with a bare operand
-            key = "operand" if inst.at.get("hop") == "read" else "unit"
+            key = "operand" if inst.at.get("hop") == "ds_load" else "unit"
             if key not in have:
                 raise RuntimeError(
                     f"G-MARK: Mark('swap', hop={inst.at.get('hop')!r}) in {blk.label} must name "
