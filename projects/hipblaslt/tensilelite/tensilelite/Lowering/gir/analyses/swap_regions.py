@@ -21,18 +21,18 @@ ENTRY_GENERATION = 0
 
 # --------------------------------------------------------------------- hop access helpers
 def _hop_access(prog, inst, hop):
-    """`(unit, shared_ref)` if `inst` is a Move on `hop` ('read'|'copy'), else None.
+    """`(unit, shared_ref)` if `inst` is a Move on `hop` ('ds_load'|'tensor_load'), else None.
 
  `unit` is the POINTER identity, and it is not the same kind of thing on the two hops: a read has
  its own LocalReadAddr per operand, while every member of a Phi group shares one TDM descriptor --
  so a copy's identity is the descriptor, not the members this particular movement carries."""
     if not isinstance(inst, Move):
         return None
-    if hop == "read":
+    if hop == "ds_load":
         op = read_operand(inst)
         if op is not None:
             return (op, first_shared_ref(inst.srcs))
-    elif hop == "copy":
+    elif hop == "tensor_load":
         members, refs = copy_unit(inst)
         if members is not None:
             return (descriptor_unit(prog, members), refs[0])
@@ -166,7 +166,7 @@ class SwapRegions(Analysis):
                 all_succs[p].append(t)
 
         pending = []
-        for hop in ("read", "copy"):
+        for hop in ("ds_load", "tensor_load"):
             for unit in _units(prog, hop):
                 pending += self._flow(prog, hop, unit, all_preds, all_succs, back_pairs)
         return pending
@@ -207,10 +207,10 @@ class SwapRegions(Analysis):
                                       prog.entry, ENTRY_GENERATION, modulus=ring)
         # The Mark names the pointer the way its hop names pointers: a read swap belongs to an
         # operand (`operand`), a copy swap to the Phi movement (`unit`, a member tuple).  Carrying
-        key = "operand" if hop == "read" else "unit"
+        key = "operand" if hop == "ds_load" else "unit"
         return [PendingMark(Mark("swap", {"hop": hop, "gen_from": pl.from_value,
                                           "gen_to": pl.to_value, key: unit,
                                           "steps": (pl.to_value - pl.from_value) % ring}),
                             Region(pl.block, after=pl.after, before=pl.before,
-                                   policy=(MIDPOINT if hop == "read" else EARLIEST)))
+                                   policy=(MIDPOINT if hop == "ds_load" else EARLIEST)))
                 for pl in solver.solve(on_conflict)]

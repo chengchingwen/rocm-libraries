@@ -496,18 +496,18 @@ bool serializeVisit(const MemTokenData& mod, std::ostream& os) {
 
 // GirActionData
 GirActionKind parseGirActionKind(const std::string& kind) {
-    if (kind == "read") return GirActionKind::Read;
-    if (kind == "copy") return GirActionKind::Copy;
+    if (kind == "ds") return GirActionKind::Ds;
+    if (kind == "tensor") return GirActionKind::Tensor;
     if (kind == "wmma") return GirActionKind::Wmma;
     return GirActionKind::Other;
 }
 
 const char* girActionKindName(GirActionKind kind) {
     switch (kind) {
-        case GirActionKind::Read:
-            return "read";
-        case GirActionKind::Copy:
-            return "copy";
+        case GirActionKind::Ds:
+            return "ds";
+        case GirActionKind::Tensor:
+            return "tensor";
         case GirActionKind::Wmma:
             return "wmma";
         default:

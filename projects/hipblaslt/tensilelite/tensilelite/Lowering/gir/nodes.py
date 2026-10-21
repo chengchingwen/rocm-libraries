@@ -70,16 +70,27 @@ class Ref:
 
 # ===========================================================================
 # 4.3  Move and Mma -- the verbs (unified srcs/dsts; semantics from Tile.operand)
+
+# The LoopIR movement ops GIR lowers, and the grouping consumers ask for: "lands in registers"
+# covers the DirectToVgpr hop too, which reaches registers without touching LDS at all.
+MOVE_OPS = ("tensor_load", "ds_load", "global_load", "store")
+FILL_OPS = ("ds_load", "global_load")
+
+
 @dataclass
 class Move:
     """THE data-movement verb: one hop down the memory hierarchy.
 
  srcs -- (Ref,) e.g. a global tile.
- dsts -- (Ref,) e.g. a shared tile at a Gen (a copy), or a register (a read).
+ dsts -- (Ref,) e.g. a shared tile at a Gen (a tensor_load), or a register (a ds_load).
+ op   -- the LoopIR operation this lowers, lowercased: one of `MOVE_OPS`.  It names the
+         INSTRUCTION, not a direction; which side holds the shared ref is what says whether
+         the movement writes LDS or reads it.
  deps -- RAW + WAR edges carried from the LoopIR awaits (kind on each dep, / analysis).
     """
     srcs: tuple
     dsts: tuple
+    op: str = ""
     deps: tuple = ()
     advance: int = 0
     issue: tuple = ()            # invariant-axis pass that owns this residency event

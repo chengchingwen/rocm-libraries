@@ -89,15 +89,17 @@ class Contract:
 
 
 def _shared_refs(action):
-    """The shared-memory refs one action touches, each with whether it writes."""
+    """The shared-memory refs one action touches, each with whether it writes.
+
+    The SIDE the shared ref sits on is the direction -- a destination is a write, a source a
+    read -- which is what the LoopIR op's level pair says.  The op identity does not: a
+    `global_load` names an instruction that never touches LDS at all.
+    """
     source = action.source
     if not isinstance(source, Move):
         return ()
-    if action.kind == "read":
-        return tuple((ref, False) for ref in source.srcs if ref.tile.space == "shared")
-    if action.kind == "copy":
-        return tuple((ref, True) for ref in source.dsts if ref.tile.space == "shared")
-    return ()
+    return (tuple((ref, True) for ref in source.dsts if ref.tile.space == "shared")
+            or tuple((ref, False) for ref in source.srcs if ref.tile.space == "shared"))
 
 
 def _generations(prog) -> dict:

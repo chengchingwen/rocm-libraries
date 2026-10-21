@@ -1092,7 +1092,7 @@ struct MemTokenData : public TypedModifier<MemTokenData> {
 /// Stable identity of one physical realization of a finalized GIR action.
 /// What a GIR action does.  IR vocabulary, not analysis vocabulary: the modifier carries it, so
 /// it cannot live in the analysis header that consumes it.
-enum class GirActionKind : uint8_t { Other, Read, Copy, Wmma };
+enum class GirActionKind : uint8_t { Other, Ds, Tensor, Wmma };
 
 /// One shared-memory touch an instruction makes.  A fact ABOUT THE INSTRUCTION, so it rides on
 /// it rather than in a contract table keyed by action id.
