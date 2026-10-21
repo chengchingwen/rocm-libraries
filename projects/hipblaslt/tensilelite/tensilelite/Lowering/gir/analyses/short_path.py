@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from ..nodes import Move, Mma, Mark
+from ..nodes import FILL_OPS, Move, Mma, Mark
 from ..analysis import Analysis
 
 
@@ -30,11 +30,12 @@ ARM_UNWRITTEN = "arm-unwritten"  # the SHORT ARM reads something IT never wrote;
 # ===========================================================================
 # the two sequences
 def _inst_kind(inst):
-    """'copy' | 'read' | 'mma' -- from the destination SPACE, no name test."""
+    """The LoopIR op this instruction lowers; `wmma` for a Compute."""
     if isinstance(inst, Mma):
-        return "mma"
+        return "wmma"
     if isinstance(inst, Move):
-        return "copy" if any(d.tile.space == "shared" for d in inst.dsts) else "read"
+        return inst.op or ("tensor_load" if any(d.tile.space == "shared" for d in inst.dsts)
+                       else "ds_load")
     return None
 
 
@@ -174,7 +175,7 @@ def _trace(prog, labels, entry, step_of, free_axes):
                 continue
             ops, crd = _operands(inst), _coord(inst)
             defs, uses = _defs_uses(inst, entry, free_axes, base)
-            key = None if (k == "copy" or step is None) else (k, step, ops, crd, _groups(inst))
+            key = None if (k == "tensor_load" or step is None) else (k, step, ops, crd, _groups(inst))
             if key is not None:
                 if key in keys:
                     raise RuntimeError(
@@ -187,13 +188,13 @@ def _trace(prog, labels, entry, step_of, free_axes):
                 nodes[key] = (lab, inst)
             else:
                 extras += 1
-            if k == "copy":
+            if k == "tensor_load":
                 n = copy_seen.get((ops, crd), 0)
                 copy_seen[(ops, crd)] = n + 1
-                value = ("copy", ops, crd, n)
-            elif k == "read":
+                value = ("tensor_load", ops, crd, n)
+            elif k in FILL_OPS:
                 src = next((u for u in uses if u[0] == "shared"), None)
-                value = ("read", ops, crd, last.get(src, ENTRY) if src else None)
+                value = ("ds_load", ops, crd, last.get(src, ENTRY) if src else None)
             else:
                 value = None                      # an Mma defines nothing this analysis tracks
             for d in defs:
@@ -252,7 +253,7 @@ def _compare_shapes(f_reach, f_keys, s_reach, s_keys):
     `breaks`  -- a key both write, but from different sources.
     """
     missing = tuple(sorted((k for k in s_keys
-                            if k[0] == "mma" and k not in f_keys), key=repr))
+                            if k[0] == "wmma" and k not in f_keys), key=repr))
 
     unbound = tuple(sorted(
         ((k, loc) for k, m in s_reach.items() for loc, src in m.items()
@@ -263,7 +264,7 @@ def _compare_shapes(f_reach, f_keys, s_reach, s_keys):
     for k, s_map in s_reach.items():
         # F2 IS ASKED AT THE `wmma` ONLY.  A `wmma` is the sole instruction whose semantics the
         # two shapes must agree on; a read is a MEANS, and its identity is not stable across
-        if not (isinstance(k, tuple) and k and k[0] == "mma"):
+        if not (isinstance(k, tuple) and k and k[0] == "wmma"):
             continue
         f_map = f_reach.get(k)
         if f_map is None:
@@ -305,7 +306,7 @@ def _ordering_constraints(prog, fold_breaks, providers, nodes):
             continue
         label, producer = provider
         _consumer_label, consumer_inst = consumer
-        if _inst_kind(producer) != "read":
+        if _inst_kind(producer) not in FILL_OPS:
             continue
         body = prog.blocks[label].body
         positions = {id(node): pos for pos, node in enumerate(body)}

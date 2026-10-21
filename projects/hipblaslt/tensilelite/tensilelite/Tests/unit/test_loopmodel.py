@@ -721,7 +721,7 @@ def test_a_split_kernel_reaches_EMIT_as_one_copy_per_region_with_a_walk():
     prog = build_gir(adapter.params_to_theta(
         adapter.kernel_to_params(_kernel(TDMSplitA=1, TDMSplitB=1))))
     acts = plan_block(prog, "steady")
-    copies = [a for a in acts if a.kind == "copy"]
+    copies = [a for a in acts if a.kind == "tensor_load"]
     incs = [a for a in acts if a.kind == "region_inc"]
     assert len(copies) == 4, "2 operands x 2 regions, one copy Move each"
     assert all(a.at["regions"] == 2 for a in copies)
@@ -812,7 +812,7 @@ def test_the_quantum_check_still_reports_a_REGISTER_straddle():
     from Tensile.Lowering.gir.coverage import plan_coverage
 
     def _acts(reg_bufs):
-        return [EmitAction(kind="read",
+        return [EmitAction(kind="ds_load",
                            at={"tc": "MXSA", "tile": t, "tile_flat": t, "k": 0, "k_flat": 0,
                                "reg_buf": reg_bufs[t], "token_ids": (1,),
                                "region": 0, "regions": 1})
@@ -863,7 +863,7 @@ def test_absorbing_the_spanned_axis_removes_the_straddle_on_the_shipping_path():
             n = {}
             for name in prog.blocks:
                 for a in plan_block(prog, name):
-                    if a.kind == "read":
+                    if a.kind == "ds_load":
                         n[a.at["tc"]] = n.get(a.at["tc"], 0) + 1
             # one act per instruction: MXSA's acts are now HALF A's, matching the b64 coverage
             assert n.get("MXSA", 0) * 2 == n.get("A", 0) or split == 2, \
