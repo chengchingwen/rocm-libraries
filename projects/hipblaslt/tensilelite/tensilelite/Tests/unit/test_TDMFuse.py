@@ -263,8 +263,6 @@ def test_solution_accepts_stagger(_gp_gfx1250, gfx1250_iim, assembler, capsys, f
          "TDMFuse=2 requires NumWaves=4 for its 2/1/1 split"),
         (2, {"MatrixInstruction": [16, 16, 128, 1, 1, 2, 16, 2, 1], "WorkGroup": [32, 2, 1]},
          "got 2"),
-        (1, {"ProblemType": _NO_MX_ON_B},
-         "TDMFuse=1 requires MX scales on both tensors"),
         (2, {"ProblemType": _NO_MX_ON_B},
          "TDMFuse=2 requires MX scales on both tensors"),
         (1, {"ProblemType": {"Sparse": 1}},
@@ -284,6 +282,16 @@ def test_solution_rejects_outside_the_grouping(
     sol, out = _derive(gfx1250_iim, assembler, capsys, TDMFuse=fuse, **overrides)
     assert sol.get("Valid") is False
     assert clause in out
+
+
+def test_fuse_one_without_a_scale_to_pair_is_unfused_not_a_refusal(
+        _gp_gfx1250, gfx1250_iim, assembler, capsys):
+    """TDMFuse=1 asks each data tensor to carry its own scale.  With a scale on one side only
+    there is nothing to pair, so the row degrades to `unfused` -- no fuse, not a rejection."""
+    sol, out = _derive(gfx1250_iim, assembler, capsys, TDMFuse=1, ProblemType=_NO_MX_ON_B)
+    assert sol.get("Valid") is True, out
+    assert tdmGrouping(sol._state).name == "unfused"
+    assert tdmFusePaired(sol._state) is False
 
 
 @pytest.mark.parametrize("fuse, predicate", [
