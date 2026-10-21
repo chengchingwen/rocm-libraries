@@ -749,6 +749,9 @@ class CDNA5ReadyQueue : public ReadyQueue {
         const int window = std::max(1, wmmaIssueConfig.latency);
         return (dsReadCreditLifetime() + window - 1) / window;
     }
+    // Adjacent all-wave signal/wait pairs in the incoming region, keyed by wait.
+    // This preserves pair identity after scheduling has made the two nodes ready.
+    std::unordered_map<StinkyInstruction*, StinkyInstruction*> barrierWaitToSignal_;
     struct BarrierBeforeOutput {
         int beforeThreshold = 0;
         int baseBeforeThreshold = 0;
@@ -3257,6 +3260,16 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
     barrierDsLoadCounts_.clear();
     barrierDrainWmmas_.clear();
     barrierDrainDropped_.clear();
+    barrierWaitToSignal_.clear();
+    for (const BarrierTokenGroup& group :
+         groupBarrierTokens(collectBarrierTokens(regionStart, regionEnd, /*useSrc=*/true))) {
+        if (group.barriers.size() != 2) continue;
+        StinkyInstruction* signal = group.barriers[0];
+        StinkyInstruction* wait = group.barriers[1];
+        if (isBarrierSignal(*signal) && isBarrierWait(*wait) &&
+            isSplitBarrierAllWave(*signal) && isSplitBarrierAllWave(*wait))
+            barrierWaitToSignal_.emplace(wait, signal);
+    }
     if (hasWMMAInRegion_) {
         // Layer 1/3 (base merge):
         // Build one threshold map from two independent estimators:
@@ -3781,6 +3794,81 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
         };
         for (const auto& group : exclusiveAfterGroups) clampPairHalf(group, /*waitHalf=*/true);
         for (const auto& group : exclusiveBeforeGroups) clampPairHalf(group, /*waitHalf=*/false);
+
+        // A before-only all-wave pair is a loop-carried RAW fence when its LDS token is consumed
+        // by a later ds_load and that token reaches another later all-wave pair. This is the
+        // A -> ds_load -> B token chain: A publishes a stage, the load consumes it, and B fences
+        // the next use of the same slot. It identifies the pipeline head from token lifetime,
+        // rather than assuming a CFG header or the first barrier in the region is the head.
+        if (wmmaQueueDepth() > 1) {
+            const int headThreshold = wmmaQueueDepth();
+            const auto barrierGroups = groupBarrierTokens(
+                collectBarrierTokens(regionStart, regionEnd, /*useSrc=*/true));
+            std::unordered_map<StinkyInstruction*, unsigned> instOrder;
+            unsigned order = 0;
+            for (IRList::iterator it = regionStart; it != regionEnd; ++it) {
+                if (auto* inst = dyn_cast<StinkyInstruction>(it.getNodePtr()))
+                    instOrder.emplace(inst, order);
+                ++order;
+            }
+
+            for (size_t groupIdx = 0; groupIdx < barrierGroups.size(); ++groupIdx) {
+                const BarrierTokenGroup& group = barrierGroups[groupIdx];
+                bool beforeOnlyPair = group.barriers.size() == 2;
+                int shared = std::numeric_limits<int>::max();
+                for (StinkyInstruction* barrier : group.barriers) {
+                    if (!(isBarrierSignal(*barrier) || isBarrierWait(*barrier)) ||
+                        !isSplitBarrierAllWave(*barrier)) {
+                        beforeOnlyPair = false;
+                        break;
+                    }
+                    auto it = barrierWmmaThresholds_.find(barrier);
+                    if (it == barrierWmmaThresholds_.end() ||
+                        !beforeThresholds.contains(barrier) || afterThresholds.contains(barrier)) {
+                        beforeOnlyPair = false;
+                        break;
+                    }
+                    shared = std::min(shared, it->second);
+                }
+                if (!beforeOnlyPair || shared <= headThreshold) continue;
+
+                bool hasLoopCarriedTokenChain = false;
+                const unsigned groupEnd = instOrder.at(group.barriers.back());
+                for (IRList::iterator dsIt = std::next(group.lastIt); dsIt != regionEnd; ++dsIt) {
+                    auto* ds = dyn_cast<StinkyInstruction>(dsIt.getNodePtr());
+                    if (ds == nullptr || !isDSRead(*ds)) continue;
+
+                    std::unordered_set<uint32_t> consumedTokens;
+                    for (const StinkyRegister& src : ds->getSrcRegs())
+                        if (isPseudoReg(src) && group.tokens.contains(src.reg.idx))
+                            consumedTokens.insert(src.reg.idx);
+                    if (consumedTokens.empty()) continue;
+
+                    const unsigned dsOrder = instOrder.at(ds);
+                    for (size_t laterIdx = groupIdx + 1;
+                         laterIdx < barrierGroups.size() && !hasLoopCarriedTokenChain; ++laterIdx) {
+                        const BarrierTokenGroup& later = barrierGroups[laterIdx];
+                        if (instOrder.at(later.barriers.front()) <= dsOrder) continue;
+                        bool laterAllWavePair = later.barriers.size() == 2;
+                        for (StinkyInstruction* barrier : later.barriers)
+                            laterAllWavePair &= (isBarrierSignal(*barrier) ||
+                                                 isBarrierWait(*barrier)) &&
+                                                isSplitBarrierAllWave(*barrier);
+                        if (!laterAllWavePair) continue;
+                        for (uint32_t token : consumedTokens)
+                            hasLoopCarriedTokenChain |= later.tokens.contains(token);
+                    }
+                }
+                if (!hasLoopCarriedTokenChain) continue;
+
+                for (StinkyInstruction* barrier : group.barriers)
+                    barrierWmmaThresholds_[barrier] = headThreshold;
+                PASS_DEBUG(std::cerr << "[CDNA5 onInitRegion loop-carried barrier] threshold="
+                                     << headThreshold << " was=" << shared
+                                     << " groupSize=" << group.barriers.size()
+                                     << " regionOrder=" << groupEnd << "\n");
+            }
+        }
     }
 
     // Install the single DS priority plan after the queue-fill gate. The requested constraints
