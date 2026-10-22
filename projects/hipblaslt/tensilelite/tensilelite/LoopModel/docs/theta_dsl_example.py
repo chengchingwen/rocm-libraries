@@ -1,18 +1,20 @@
-#!/usr/bin/env python3
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
 """Build and render a LoopModel schedule without the Tensile adapter.
 
 `test_a_hand_authored_theta_emits_the_SAME_LoopIR_as_the_adapted_one` proves this surface is
 complete: a theta authored this way emits the LoopIR the adapter's does for the same kernel.
+
+Run with `python -m tensilelite.LoopModel.docs.theta_dsl_example`; the imports are relative, so
+the module cannot be executed as a standalone file.
 """
 
-from Tensile.LoopModel import (
+from .. import (
     Axis, Fragment, Global, Operand, Shared, Theta, Trajectory,
     render_geometry,
 )
-from Tensile.LoopModel.decoder import decode_theta
-from Tensile.LoopModel.loopir import render
+from ..decoder import decode_theta
+from ..loopir import render
 
 
 def staged(name, free_axis, broadcast_axes, copy_ahead=1, read_ahead=0):
