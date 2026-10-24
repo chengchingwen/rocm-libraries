@@ -210,6 +210,15 @@ def seg_component_fold(waveCount: int, numComp: int, perWaveBytes: int, strideBy
     return (wavesPerComp, int(perWaveBytes))
 
 
+@dataclass(frozen=True)
+class _FreeAxisCtx:
+    """Exactly the fields `lds_geometry.free_position` reads, so this module can ask it."""
+    vectorWidth: int
+    MIWaveGroupShape: tuple
+    tile01: int
+    segRowShape: int
+
+
 def seg_interleave_row_shape(kernel, tc: str, tile01: int, groupShape: int) -> int:
     """The LDS row stride under `LDSSegmentInterleave`, or 0 for the baseline layout.
 
@@ -246,8 +255,6 @@ def wave_region_span(kernel, tc: str) -> int:
     `t // tiles_per_region` is right.  At `MIWaveGroup[2,2]` the group jump is a WHOLE region, so
     a wave's tiles sit adjacent (rows 0 and 1) and are BOTH in region 0 -- while the index form
     splits them across regions and gives the second one the wrong region's memory token.
-    `tool/region_derivation_check.check_tiles` is the independent derivation: it disagrees only
-    at `MIWaveGroup[2,2] VW=2`, which is the cell this rule exists for.
 
     The COPY keeps `nsplit` -- it really does write every region.  Whether the LDS address needs
     a region term on M and N is decided by whether the waves' address distribution crosses the
@@ -288,9 +295,13 @@ def wave_region_span(kernel, tc: str) -> int:
         # portSplitA) and coordinate-relative for B, even though both emitted read layouts are
         # coordinate-relative.
         numVectorsPerTile = max(1, wt // vw)
-        groupShape = segShape
         rowsPerRegion = max(1, macroTile // mt // numVectorsPerTile)
     else:
         rowsPerRegion = max(1, macroTile // mt)
-    rows = {((t // vw) * groupShape + (t % vw)) // rowsPerRegion for t in range(max(1, wt))}
+    # The free position is `lds_geometry`'s to state -- its docstring names this function as one of
+    # the three callers that must get ONE answer, and the hand copy that stood here had already
+    # drifted from it.  Imported in the body: `lds_geometry` imports this module.
+    from ..Lowering.lds_geometry import free_position
+    ctx = _FreeAxisCtx(vw, (groupShape, groupShape), t01, segShape)
+    rows = {free_position(ctx, t) // rowsPerRegion for t in range(max(1, wt))}
     return max(1, min(mt, len(rows)))
