@@ -1071,8 +1071,8 @@ walker is deleted).
   verifier, gen-SSA queries). This + **extensibility** (sparse/MX/F32-emul; non-KMN +
   register groups #89; TDMSplit/MX #90; mxf8 #106; wave-spec later — all GEMM-dataflow
   additions, not special cases) justifies GIR as a real IR over a flat timeline.
-  GIR unit tests: `tensilelite/Tests/unit/test_gir.py` (GIR itself) + `test_gir_to_rocisa.py`
-  (the pure emit-plan half), sharing `gir_fixtures.py`.
+  GIR unit tests: `tensilelite/Tests/unit/test_gir.py` (the lowering itself) + `test_loopmodel.py`
+  (what the model derives, and the fixtures both share).
 - `gir_to_rocisa.py` / `leaves.py` exercised in a real build (leaf emitters touch LDS-token
   state); the USER runs numerics.
 - Migration is **complete for bf16**: the θ-IR walker is deleted and `UseLoopModel=True` is the

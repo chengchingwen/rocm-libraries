@@ -723,9 +723,12 @@ def writeSolutionsAndKernels(
         )
         memcompress = numAsmKernels > 10000
     with timing_context("python_kernel_codegen"):
+        # `irPath` is the OutputLoopIR dump, off by default: omit it when there is nothing to
+        # dump so the ordinary call carries exactly the arguments it always did.
+        irKwargs = {} if irOutputPath is None else {"irPath": irOutputPath}
         asmResults = ParallelMap2(
             functools.partial(
-                processKernelSource, compress=memcompress, irPath=irOutputPath),
+                processKernelSource, compress=memcompress, **irKwargs),
             asmIter,
             "Generating assembly kernels",
             return_as="list",
@@ -895,7 +898,7 @@ def writeSolutionsAndKernelsTCL(
         outOptions,
         splitGSU,
         compress=memcompress,
-        irPath=irOutputPath,
+        **({} if irOutputPath is None else {"irPath": irOutputPath}),
     )
 
     unaryWriteAssembly = functools.partial(writeAssembly, assemblyTmpPath, irPath=irOutputPath)

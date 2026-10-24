@@ -437,7 +437,10 @@ def b_rotate_reason(state, persistent=False):
             return "MX: needs MatrixInstN == WavefrontSize/2"
         if wtb // vwb != 2:                                   return "MX: needs MIWaveTile[1]/VectorWidthB == 2"
     if pt.get("Sparse"):                                      return "sparse not supported"
-    for key in ("TDMSplit", "UseSubtileImpl", "DirectToVgprA", "DirectToVgprB", "DirectToLdsB",
+    # Both spellings gate: `TDMSplit` is shorthand for TDMSplitA/B=1, and derivation pops it once
+    # expanded, so testing only the shorthand is blind to every solution that got that far.
+    if state.get("TDMSplit") or TDMSplit.any_split(state):    return "TDMSplit not supported"
+    for key in ("UseSubtileImpl", "DirectToVgprA", "DirectToVgprB", "DirectToLdsB",
                 "enableLDSTrA", "enableLDSTrB", "UseDotInstruction", "UseCustomMainLoopSchedule",
                 "PrefetchAcrossPersistent", "TDMFuse"):
         v = state.get(key)

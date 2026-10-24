@@ -581,6 +581,9 @@ class KernelWriterAssembly(KernelWriter):
       return True
     if self.states.waveIdxReleasedAfterStagger:
       return False
+    # LoopModel never releases it, so liveness does not depend on StaggerU having claimed it.
+    if kernel.get("UseLoopModel", False):
+      return True
     if self.tdmWaveIdxReadAfterPrologue(kernel):
       return True
     return bool(self.states.staggerUCode) and self.isTdmWaveSeparated(kernel)
@@ -1508,7 +1511,7 @@ class KernelWriterAssembly(KernelWriter):
             numBiFactor = kernel["LoopIters"] * 2
           # RAP grows the classic allocation.  UseLoopModel's size is already
           # PU * VA / VG, so the symbol table must not multiply it again.
-          if not kernel["UseLoopModel"]:
+          if not kernel.get("UseLoopModel", False):
             numBiFactor *= self.rapResidentKTiles(kernel)
           if self.states.lrvwTileMXSA > 1:
             moduleVgprMacroMXS.add(RegSet("v", "vgprValuMXSA_X0_I0_BASE", "vgprMXSBase", self.states.mxsa.startVgprValu))
@@ -1647,7 +1650,7 @@ class KernelWriterAssembly(KernelWriter):
           numBiFactor = kernel["LoopIters"] * 2
         # RAP grows the classic allocation.  UseLoopModel's size is already
         # PU * VA / VG, so the symbol table must not multiply it again.
-        if not kernel["UseLoopModel"]:
+        if not kernel.get("UseLoopModel", False):
           numBiFactor *= self.rapResidentKTiles(kernel)
         if self.states.lrvwTileA > 1:
           moduleVgprMacro.add(RegSet("v", "vgprValuA_X0_I0_BASE", "vgprBase", self.states.a.startVgprValu - self.states.startVgpr))
@@ -7228,6 +7231,10 @@ class KernelWriterAssembly(KernelWriter):
     paths that never reach the setupNewTile site.
     """
     module = Module("ReleaseWaveIdxAfterStagger")
+    # LoopModel holds WaveIdx for the whole kernel, which costs no SGPR and buys back the
+    # ArgType packing; the legacy path keeps base's release.
+    if kernel.get("UseLoopModel", False):
+      return module
     # The cluster barrier handshake reads WaveIdx for the whole kernel.
     if kernel["ClusterBarrier"]:
       return module
@@ -7349,8 +7356,8 @@ class KernelWriterAssembly(KernelWriter):
   # a array of pairs of (imod, vgprBase)'s
   # User must call tailLoopFreeVgpr(vgprBase, imod) to release the resources.
   ##############################################################################
-  def tailLoopValuRegs(self, kernel, tc):
-    """Registers the tail loop addresses off `vgprValu{tc}_X0_I0`: one
+  def loopModelTailValuRegs(self, kernel, tc):
+    """LoopModel-only. Registers the tail loop addresses off `vgprValu{tc}_X0_I0`: one
     MatrixInstK slab of the macro tile per buffer it unrolls over."""
     if not kernel["EnableMatrixInstruction"]:
       return 0
@@ -7398,7 +7405,8 @@ class KernelWriterAssembly(KernelWriter):
     # 1024 vgpr: avoid cross pool usage
     valuVgprAlignment = 8 if self.states.asmCaps["HasVgprMSB"] else 2
     if self.states.a.numVgprValu > 0 and not kernel["DirectToVgprA"]:
-      numValuA = self.tailLoopValuRegs(kernel, "A") or self.states.a.numVgprValu
+      numValuA = (self.loopModelTailValuRegs(kernel, "A")
+                  if kernel.get("UseLoopModel", False) else 0) or self.states.a.numVgprValu
       numVgprValuPackA = self.tailLoopValuPackRegs(
           kernel, tensorParametersA, "A")
       vgprBaseA = self.vgprPool.checkOutAligned(numValuA + numVgprValuPackA, 2, tag="tailLoopAllocValuVgpr_vgprBaseA")
@@ -7414,7 +7422,8 @@ class KernelWriterAssembly(KernelWriter):
     numValuB         = 0
     numVgprValuPackB = 0
     if self.states.b.numVgprValu > 0 and not kernel["DirectToVgprB"]:
-      numValuB = self.tailLoopValuRegs(kernel, "B") or self.states.b.numVgprValu
+      numValuB = (self.loopModelTailValuRegs(kernel, "B")
+                  if kernel.get("UseLoopModel", False) else 0) or self.states.b.numVgprValu
       numVgprValuPackB = self.tailLoopValuPackRegs(
           kernel, tensorParametersB, "B")
       vgprBaseB = self.vgprPool.checkOutAligned(numValuB + numVgprValuPackB, 2, tag="tailLoopAllocValuVgpr_vgprBaseB")
@@ -8284,7 +8293,7 @@ class KernelWriterAssembly(KernelWriter):
             module.add((SWaitCnt(dscnt=0, comment="HalfPLR: prevent dummy ds_load from polluting LDS buffer")))
             module.add((SBarrier()))
             module.add(SkipHalfPLRAdjustLabel)
-          elif (kernel["UseLoopModel"] and kernel.get("enableTDMA", False)
+          elif (kernel.get("UseLoopModel", False) and kernel.get("enableTDMA", False)
                 and kernel.get("enableTDMB", False)):
             # The ULM tail path below rebuilds every TDM descriptor and local-read address.
             # Legacy HalfPLR's pointer repair is specific to its own register mapping and refers
@@ -21041,7 +21050,7 @@ class KernelWriterAssembly(KernelWriter):
     mod.add(comp.setDataType(dtype, descSgprName(1), tc == "Metadata"))
     clusterComp = ClusterLoadTDM.find(self)
     if clusterComp:
-      mod.add(clusterComp.applyToDescriptor(self, kernel, descSgprName(1), tc))
+      mod.add(clusterComp.applyToDescriptor(self, kernel, descSgprName(1), tc, waveSeparated=True))
 
     with self.allocTmpSgpr(max(2, self.states.laneSGPRCount),
                            tag="initTDMDescriptorWaveSeparatedImpl_tmpSgprRes") as tmpSgprRes:
@@ -21865,9 +21874,11 @@ class KernelWriterAssembly(KernelWriter):
 
   def tdmWaveIdxArgTypeBits(self, kernel) -> int:
     """Width of the ArgType side channel holding the wave index; bit 8 is its bit 0."""
-    # THE WHOLE INDEX, not just parity: the uneven Φ groupings gate on `wId < first`, which one
-    # bit cannot answer.  `cmpNamedArgTypeEq` masks 0xFF, so every bit from 8 up is free.
-    return max(1, ceil(log2(max(1, kernel["NumWaves"]))))
+    # The uneven shared-scale groupings gate on `wId < first`, which one bit cannot answer;
+    # every other row only needs parity.
+    if tdmSharedScaleSetActive(kernel):
+      return max(1, ceil(log2(max(1, kernel["NumWaves"]))))
+    return 1
 
   def packTdmParityIntoArgType(self, kernel) -> Module:
     """Pack WaveIdx into named ArgType from bit 8 up, then callers may release WaveIdx.
@@ -21877,7 +21888,11 @@ class KernelWriterAssembly(KernelWriter):
     high-water mark). ClusterBarrier and subtile keep WaveIdx and must not pack.
     """
     mod = Module("PackTdmParityIntoArgType")
-    if kernel.get("ClusterBarrier") or kernel.get("UseSubtileImpl"):
+    # These keep WaveIdx (see releaseWaveIdxAfterStagger), so the packed copy is never read.
+    if (kernel.get("UseLoopModel", False) or kernel.get("ClusterBarrier")
+        or kernel.get("UseSubtileImpl") or kernel.get("ReuseAcrossPersistent")):
+      return mod
+    if self.tdmWaveIdxReadAfterPrologue(kernel):
       return mod
     if not (self.states.staggerUCode and self.isTdmWaveSeparated(kernel)):
       return mod
@@ -21890,20 +21905,35 @@ class KernelWriterAssembly(KernelWriter):
     if "ArgType" not in self.sgprs:
       return mod
 
-    # WaveIdx is the shift scratch and is put back, so this still needs no checkout and no label.
-    width = self.tdmWaveIdxArgTypeBits(kernel)
-    mod.add(SAndB32(dst=sgpr("ArgType"), src0=sgpr("ArgType"),
-                    src1=hex(0xFFFFFFFF & ~(((1 << width) - 1) << 8)),
-                    comment=f"clear ArgType bits {8 + width - 1}:8 (TDM wave index)"))
-    mod.add(SLShiftLeftB32(dst=sgpr("WaveIdx"), shiftHex=hex(8), src=sgpr("WaveIdx"),
-                           comment="wave index -> ArgType field position"))
-    mod.add(SOrB32(dst=sgpr("ArgType"), src0=sgpr("ArgType"), src1=sgpr("WaveIdx"),
-                   comment="TDM wave index -> ArgType bit 8 up (bit 8 = parity)"))
-    mod.add(SLShiftRightB32(dst=sgpr("WaveIdx"), shiftHex=hex(8), src=sgpr("WaveIdx"),
-                            comment="restore WaveIdx"))
+    bits: int = self.tdmWaveIdxArgTypeBits(kernel)
+    if bits == 1:
+      skip = Label(label=self.labels.getNameInc("SkipPackTdmParityArgType"),
+                   comment="even wave: ArgType bit 8 stays 0")
+      mod.add(SAndB32(dst=sgpr("ArgType"), src0=sgpr("ArgType"), src1=hex(0xFFFFFEFF),
+                      comment="clear ArgType bit 8 (TDM wave-parity)"))
+      mod.add(SBitcmp1B32(src0=sgpr("WaveIdx"), src1=0,
+                          comment="TDM wave-parity -> ArgType bit 8"))
+      mod.add(SCBranchSCC0(labelName=skip.getLabelName(),
+                           comment="even wave: leave bit 8 clear"))
+      mod.add(SOrB32(dst=sgpr("ArgType"), src0=sgpr("ArgType"), src1=hex(0x100),
+                     comment="odd wave: ArgType bit 8 = 1"))
+      mod.add(skip)
+    else:
+      mod.add(SAndB32(dst=sgpr("ArgType"), src0=sgpr("ArgType"),
+                      src1=hex(0xFFFFFFFF & ~(((1 << bits) - 1) << 8)),
+                      comment=f"clear ArgType bits 8-{8 + bits - 1} (TDM wave id)"))
+      for bit in range(bits):
+        skip = Label(label=self.labels.getNameInc("SkipPackTdmWaveIdArgType"),
+                     comment=f"WaveIdx bit {bit} clear: ArgType bit {8 + bit} stays 0")
+        mod.add(SBitcmp1B32(src0=sgpr("WaveIdx"), src1=bit,
+                            comment=f"WaveIdx bit {bit} -> ArgType bit {8 + bit}"))
+        mod.add(SCBranchSCC0(labelName=skip.getLabelName(),
+                             comment=f"leave ArgType bit {8 + bit} clear"))
+        mod.add(SOrB32(dst=sgpr("ArgType"), src0=sgpr("ArgType"), src1=hex(0x100 << bit),
+                       comment=f"ArgType bit {8 + bit} = 1"))
+        mod.add(skip)
     self.states.tdmParityPackedInArgType = True
-    # The reader (`_emitTdmWaveIdIntoSgpr`) masks by this, so the two ends must agree on the width.
-    self.states.tdmWaveIdBitsInArgType = width
+    self.states.tdmWaveIdBitsInArgType = bits
     return mod
 
   def _emitTdmWaveIdx(self, module: Module, kernel: Mapping, dstTmpIdx: Optional[int] = None):
@@ -22257,7 +22287,7 @@ class KernelWriterAssembly(KernelWriter):
     #   independently, so at a coalesced count of 1 the loop leaves them on opposite buffers.
     #   HalfPLR is the exception: its own tail arm moves the READS to meet these writes.
     needLdsReset = (isPersistent(kernel)
-                    or (kernel["UseLoopModel"] and not self.halfPlrOwnsTailAlignment(kernel))
+                    or (kernel.get("UseLoopModel", False) and not self.halfPlrOwnsTailAlignment(kernel))
                     or self.states.numReadsIterCoalescedA > 1
                     or self.states.numReadsIterCoalescedB > 1)
     if not kernel["1LDSBuffer"] and needLdsReset:
@@ -22307,7 +22337,7 @@ class KernelWriterAssembly(KernelWriter):
     runtime, so only the difference between adjacent chunks is known.
     """
     mod = Module("TDM tail: undo the peel's unconsumed advance")
-    if not kernel["UseLoopModel"]:
+    if not kernel.get("UseLoopModel", False):
       return mod
     # Under wave separation B rides A's descriptor, so only the owner rewinds.
     if not self.tdmIssuesOwnLoad(kernel, tc):

@@ -31,13 +31,16 @@ def split_of(kernel, tc) -> tuple:
 
     MX-scale, sparse and metadata tensors are never split, and answering that here keeps the
     `not MXS and not Sparse` guard from being re-spelled at each site — it was, at nine, and they
-    had already drifted (some also excluded metadata, some did not).  The back-compat spelling
-    `TDMSplit` never reaches here: `assignProblemIndependentDerivedParameters` expands it to the
-    per-operand pair and pops it."""
+    had already drifted (some also excluded metadata, some did not).  The shorthand `TDMSplit`
+    is read as the pair it stands for, so a kernel that has not been through
+    `assignProblemIndependentDerivedParameters` — which expands it and pops it — answers the same
+    as one that has."""
     if "MXS" in tc or tc == "Metadata" \
             or (kernel.get("ProblemType") or {}).get("Sparse", 0):
         return (1, None)
     v = int(kernel.get("TDMSplit%s" % ("A" if tc.endswith("A") else "B"), 0) or 0)
+    if not v and kernel.get("TDMSplit"):
+        v = 1
     mt, du = TDM_SPLIT_AXIS.get(v, (1, 1))
     if mt > 1:
         return (mt, AXIS_MT)
