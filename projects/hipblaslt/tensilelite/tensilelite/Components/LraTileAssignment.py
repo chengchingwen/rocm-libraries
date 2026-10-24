@@ -102,7 +102,7 @@ def mx2dFreeOffset(writer, kernel, tP, dstReg, dummy, tmpVgprRes, dividendReg="S
     return module, None
 
 
-def _rowElemsForRegion(writer, kernel, tP, ldsPad):
+def _rowElemsForRegion(writer, kernel, tP, ldsPad, unrollMajor=None):
     """The LENGTH OF ONE ROW of this operand's LDS image, in elements, made region-aware — the
     per-lane read base's counterpart to the immediates `leaves.py` computes.
 
@@ -112,11 +112,12 @@ def _rowElemsForRegion(writer, kernel, tP, ldsPad):
         tile-major   `[unroll][free]`  : row = MacroTile, outer = unroll  (`strideUnroll`, `strideK`)
         unroll-major `[free][unroll]`  : row = _DepthU,   outer = free    (`strideTile`)
 
-    The extent is therefore DERIVED here rather than passed in.  `mt` is right only on the
-    tile-major path; `LraTileAssignmentMFMA`'s unroll-major branch needs the other extent, and
-    handing it `mt` shortens the wrong number.  `enableLDSTr` implies
-    `not UnrollMajorLDS` (`Solution.isLDSTrEnabled` returns False for unroll-major), so the
-    transpose classes still get exactly the `mt` they asked for.
+    The extent follows from the layout, so `unrollMajor` is what decides it.  A caller that
+    already knows its layout states it: `enableLDSTr` implies `not UnrollMajorLDS`
+    (`Solution.isLDSTrEnabled` returns False for unroll-major), so the transpose classes pass
+    False and never consult the parameter -- it cannot vary for them, and reading it there would
+    make them require a key for a branch they cannot take.  `LraTileAssignmentMFMA` is the one
+    caller whose layout genuinely varies, so it leaves this None and the kernel is asked.
 
     When a split PACKS its regions the row is only `extent / nsplit` long, so the outer
     coordinate must step by the SHORTENED row.  Stepping the full one walks straight out of the
@@ -129,7 +130,10 @@ def _rowElemsForRegion(writer, kernel, tP, ldsPad):
     the (axis, layout) diagonal, which is the same call `leaves.py` makes for the immediates."""
     tc = tP["tensorChar"]
     nsplit, axis = split_of(kernel, tc)
-    unrollMajor = bool(kernel.get("UnrollMajorLDS%s" % tc, True))
+    if unrollMajor is None:
+        # Subscripted, as everywhere else in this file: defaulting it picks a layout, and the
+        # wrong pick swaps _DepthU for MacroTile silently instead of naming the missing key.
+        unrollMajor = bool(kernel["UnrollMajorLDS%s" % tc])
     extent = kernel["_DepthU%s" % tc] if unrollMajor else kernel["MacroTile%u" % tP["tile01Idx"]]
     return region_row_elems(extent, ldsPad, unrollMajor, nsplit, axis)
 
@@ -295,7 +299,8 @@ class LraTileAssignmentTransposedMFMA(LraTileAssignment):
         # strider for each type of index
         mt           = kernel["MacroTile%u" % tile01]
         strideTile   = int(int(tP["localReadInstruction"].blockWidth * writer.states.bpr) // tP["bpeDS"])
-        strideUnroll = _rowElemsForRegion(writer, kernel, tP, ldsPad)
+        strideUnroll = _rowElemsForRegion(writer, kernel, tP, ldsPad,
+                                          unrollMajor=False)  # enableLDSTr => tile-major
         strideWave   = numTileInInst * matrixInstT * vectorWidth
 
         with writer.allocTmpSgpr(1, tag="LraTileAssignmentTransposedMFMA_tmpSgprInfo") as tmpSgprInfo:
@@ -446,7 +451,8 @@ class LraTileAssignmentTransposedMFMAB8(LraTileAssignmentTransposedMFMA):
         # strider for each type of index
         mt           = kernel["MacroTile%u" % tile01]
         strideTile   = int(int(tP["localReadInstruction"].blockWidth * writer.states.bpr) // tP["bpeDS"])
-        strideUnroll = _rowElemsForRegion(writer, kernel, tP, ldsPad)
+        strideUnroll = _rowElemsForRegion(writer, kernel, tP, ldsPad,
+                                          unrollMajor=False)  # enableLDSTr => tile-major
         strideWave   = numTileInInst * matrixInstT * vectorWidth
 
         with writer.allocTmpSgpr(1, tag="LraTileAssignmentTransposedMFMAB8_tmpSgprInfo") as tmpSgprInfo:
@@ -665,7 +671,8 @@ class LraTileAssignmentTransposedMFMAF4(LraTileAssignmentTransposedMFMA):
 
         # strider for each type of index
         mt           = kernel["MacroTile%u" % tile01]
-        strideUnroll = _rowElemsForRegion(writer, kernel, tP, ldsPad)
+        strideUnroll = _rowElemsForRegion(writer, kernel, tP, ldsPad,
+                                          unrollMajor=False)  # enableLDSTr => tile-major
         strideWave   = matrixInstT * vectorWidth
 
         with writer.allocTmpSgpr(1, tag="LraTileAssignmentTransposedMFMAF4_tmpSgprInfo") as tmpSgprInfo:
@@ -764,7 +771,8 @@ class LraTileAssignmentTransposedMFMAF6(LraTileAssignmentTransposedMFMA):
 
         # strider for each type of index
         mt           = kernel["MacroTile%u" % tile01]
-        strideUnroll = _rowElemsForRegion(writer, kernel, tP, ldsPad)
+        strideUnroll = _rowElemsForRegion(writer, kernel, tP, ldsPad,
+                                          unrollMajor=False)  # enableLDSTr => tile-major
         strideWave   = kernel["MatrixInstM"] * vectorWidth
 
         with writer.allocTmpSgpr(1, tag="LraTileAssignmentTransposedMFMAF6_tmpSgprInfo") as tmpSgprInfo:
