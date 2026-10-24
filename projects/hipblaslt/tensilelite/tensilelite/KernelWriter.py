@@ -55,7 +55,8 @@ from .Components.PersistentLoop import PersistentKernelState
 from .Components.StreamK import StreamKKernelState
 from .Components.CustomSchedule import customMainLoopSchedule
 from .Components.ClusterLoad import ClusterLoadTDM
-from .Components.TDMFuse import tdmFusedGroups, tdmGroupWaveRanges
+from .Components.TDMFuse import (tdmFusedGroups, tdmGroupWaveRanges, tdmGrouping,
+                                 TDM_GROUPING_DEFAULT)
 from .Components.Subtile.Kernel import *
 from .Components.Subtile.SubtileLdsLayout import applyLdsLayout
 from .Components.DecouplePGR import decouplePGRBlocks, decoupledSingleBuffered, dcpLdsSide
@@ -3064,18 +3065,30 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
         # Descriptor membership comes from the resolved TDM grouping. This also
         # handles paired and single-member groups.
         _tp = {"A": tensorParametersA, "B": tensorParametersB}
-        if kernel["ProblemType"]["MXBlockA"] and kernel["ProblemType"]["MXBlockB"]:
+        _mx = bool(kernel["ProblemType"]["MXBlockA"] and kernel["ProblemType"]["MXBlockB"])
+        if _mx:
           _tp["MXSA"] = tensorParametersA["MX"]
           _tp["MXSB"] = tensorParametersB["MX"]
         _groups = tdmFusedGroups(kernel)
-        for _g in _groups:
-          _members = [_tp[m] for m in _g]
-          module.add(self.initTDMDescriptorWaveSeparatedGroup(
-              kernel, _members, tdmGroupWaveRanges(kernel, _g)))
-        for _g in _groups:
-          _members = [_tp[m] for m in _g]
-          module.add(self.tdmGlobalOffsetWaveSeparatedGroup(
-              kernel, _members, tdmGroupWaveRanges(kernel, _g)))
+        if tdmGrouping(kernel).name == TDM_GROUPING_DEFAULT:
+          # The default row IS the A/B-then-scale parity pair, so it keeps the pair spelling
+          # rather than being routed through a dispatcher built for the rows that need one.
+          # Those calls are also what the PAP tail rebuild emits, so one form serves both.
+          module.add(self.initTDMDescriptorWaveSeparated(kernel, _tp["A"], _tp["B"]))
+          if _mx:
+            module.add(self.initTDMDescriptorWaveSeparated(kernel, _tp["MXSA"], _tp["MXSB"]))
+          module.add(self.tdmGlobalOffsetWaveSeparated(kernel, _tp["A"], _tp["B"]))
+          if _mx:
+            module.add(self.tdmGlobalOffsetWaveSeparated(kernel, _tp["MXSA"], _tp["MXSB"]))
+        else:
+          for _g in _groups:
+            _members = [_tp[m] for m in _g]
+            module.add(self.initTDMDescriptorWaveSeparatedGroup(
+                kernel, _members, tdmGroupWaveRanges(kernel, _g)))
+          for _g in _groups:
+            _members = [_tp[m] for m in _g]
+            module.add(self.tdmGlobalOffsetWaveSeparatedGroup(
+                kernel, _members, tdmGroupWaveRanges(kernel, _g)))
         # An operand in no group keeps its own descriptor across all waves.
         _soloRange = [(0, 0, kernel["NumWaves"])]
         for _n, _p in _tp.items():
@@ -3339,12 +3352,19 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
         # Use the same resolved groups as descriptor initialization so the
         # selected member and its increment have matching strides.
         _tpI = {"A": tensorParametersA, "B": tensorParametersB}
-        if kernel["ProblemType"]["MXBlockA"] and kernel["ProblemType"]["MXBlockB"]:
+        _mxI = bool(kernel["ProblemType"]["MXBlockA"] and kernel["ProblemType"]["MXBlockB"])
+        if _mxI:
           _tpI["MXSA"] = tensorParametersA["MX"]
           _tpI["MXSB"] = tensorParametersB["MX"]
-        for _g in tdmFusedGroups(kernel):
-          module.add(self.tdmSetupIncrementWaveSeparatedGroup(
-              kernel, [_tpI[m] for m in _g], tdmGroupWaveRanges(kernel, _g)))
+        if tdmGrouping(kernel).name == TDM_GROUPING_DEFAULT:
+          # Pair spelling, matching the descriptor init above.
+          module.add(self.tdmSetupIncrementWaveSeparated(kernel, _tpI["A"], _tpI["B"]))
+          if _mxI:
+            module.add(self.tdmSetupIncrementWaveSeparated(kernel, _tpI["MXSA"], _tpI["MXSB"]))
+        else:
+          for _g in tdmFusedGroups(kernel):
+            module.add(self.tdmSetupIncrementWaveSeparatedGroup(
+                kernel, [_tpI[m] for m in _g], tdmGroupWaveRanges(kernel, _g)))
 
         if isPersistent(kernel):
           module.add(self.tdmApplyTileKOffsetWaveSeparated(kernel, tensorParametersA, tensorParametersB))
@@ -3500,7 +3520,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
         # g2l range, with only one of the two accounted in the address dataflow: a double load and
         # an out-of-bounds descriptor.  Prefetch 0 is not a separate concept from prefetch 1..N-1;
         # it only looks like one because the scaffold emits it from a different place.
-        if not kernel["UseLoopModel"]:
+        if not kernel.get("UseLoopModel", False):
           moduleTmp = self.directToLdsM0Update(kernel, 0, tensorParameters1st)
           module.add(replaceHolder(moduleTmp, 0))
 
@@ -3536,7 +3556,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
             tPA = None
           if kernel["DirectToVgprB"]:
             tPB = None
-        if not kernel["UseLoopModel"]:
+        if not kernel.get("UseLoopModel", False):
           # GIR's gr_increment dataflow places every advance, prefetch 0's included.
           # Decoupled PGR advances both tensors; legality comes from late fill placement.
           module.add(self.globalReadIncrementAB(kernel, tPA, tPB, self.states.unrollIdx, pfi))
@@ -4257,7 +4277,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
             if not kernel["NoLdsWriteCode"]:
               waitLWCode.add(self._wait(kernel, tensorParametersA, tensorParametersB, -1, 0, -1, "3wait for local write"))
             elif (kernel["enableTDMA"] and kernel["enableTDMB"]
-                  and (not kernel["UseLoopModel"] or useTailloopInNll)):
+                  and (not kernel.get("UseLoopModel", False) or useTailloopInNll)):
               waitLWCode.add(self._wait(kernel, tensorParametersA, tensorParametersB, 0, -1, -1, "wait for TDM tensor loads"))
             if (kernel["DirectToVgprA"] or kernel["DirectToVgprB"]) and (kernel["DirectToLdsA"] or kernel["DirectToLdsB"]):
               # DirectToVgpr + DirectToLds case, add waitcnt vmcnt before s_barrier
@@ -4409,7 +4429,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       if kernel["ProblemType"]["Gradient"] and kernel["ProblemType"]["UseBias"] and (kernel["ProblemType"]["BiasSrc"] == "A" or kernel["ProblemType"]["BiasSrc"] == "B"):
         tP = tensorParametersA if kernel["ProblemType"]["BiasSrc"] == "A" else tensorParametersB
         macIterCode.add(self.exclasses.biasSumUnroll.loopSum(self, kernel, tP, u, kernel["InnerUnroll"]))
-      if kernel["UseLoopModel"]:
+      if kernel.get("UseLoopModel", False):
         loopModelDrainIter(self, kernel, tensorParametersA, tensorParametersB, module,
                            LoopModelDrainScaffold, u, waitLWCode, syncCode, remainPgr)
       else:
@@ -4531,12 +4551,12 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       if not kernel["NoLdsWriteCode"]:
         module.add(self._wait(kernel, tensorParametersA, tensorParametersB, -1, 0, -1, "4wait for local write"))
       elif (kernel["enableTDMA"] and kernel["enableTDMB"]
-            and (not kernel["UseLoopModel"] or useTailloopInNll)):
+            and (not kernel.get("UseLoopModel", False) or useTailloopInNll)):
         module.add(self._wait(kernel, tensorParametersA, tensorParametersB, 0, -1, -1, "wait for TDM tensor loads"))
       module.add(self._syncThreads(kernel, "wait for local write done, sync"))
       papPriorSync = True
     elif (kernel["enableTDMA"] and kernel["enableTDMB"]
-          and (not kernel["UseLoopModel"] or useTailloopInNll)):
+          and (not kernel.get("UseLoopModel", False) or useTailloopInNll)):
       module.add(self._wait(kernel, tensorParametersA, tensorParametersB, 0, -1, -1, "wait for tensor load to finish"))
       module.add(self._syncThreads(kernel, "wait for tensor load done, sync"))
       papPriorSync = True
@@ -4592,7 +4612,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
         module.add(self._wait(kernel, tensorParametersA, tensorParametersB, 0, -1, -1, "wait for tensor load to finish"))
       module.add(self._syncThreads(kernel, "4sync for global read, PGR->LW needs sync"))
     elif (kernel["PrefetchGlobalRead"] and kernel["enableTDMA"] and kernel["enableTDMB"]
-          and (not kernel["UseLoopModel"] or self.states.inTailLoop)):
+          and (not kernel.get("UseLoopModel", False) or self.states.inTailLoop)):
       module.add(self._wait(kernel, tensorParametersA, tensorParametersB, 0, -1, -1, "wait for tensor load to finish"))
       module.add(self._syncThreads(kernel, "wait for tensor load to finish, PGR->LW needs sync"))
 
@@ -5196,7 +5216,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
             waitLWCode.add(self._wait(kernel, tensorParametersA, tensorParametersB, vlcntVal, -1, -1, \
                                       "wait for previous set of global reads"))
           elif (kernel["enableTDMA"] and kernel["enableTDMB"]
-                and (not kernel["UseLoopModel"] or self.states.inTailLoop)):
+                and (not kernel.get("UseLoopModel", False) or self.states.inTailLoop)):
             # TDM case: tensor_load_to_lds instructions (issued in prior iter) write to LDS via the
             # tensor counter. A s_wait_tensorcnt 0 is required before the barrier to guarantee all
             # TDM stores to LDS have landed before other waves read from that LDS buffer.
@@ -5206,7 +5226,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
           if not kernel["NoLdsWriteCode"]:
             waitLWCode.add(self._wait(kernel, tensorParametersA, tensorParametersB, -1, 0, -1, "3wait for local write"))
           elif (kernel["enableTDMA"] and kernel["enableTDMB"]
-                and (not kernel["UseLoopModel"] or self.states.inTailLoop)):
+                and (not kernel.get("UseLoopModel", False) or self.states.inTailLoop)):
             waitLWCode.add(self._wait(kernel, tensorParametersA, tensorParametersB, 0, -1, -1, "wait for TDM tensor loads"))
           skipForceWaitcnt0 = False
           if kernel["DirectToVgprA"] or kernel["DirectToVgprB"] or kernel["DirectToLdsA"] or kernel["DirectToLdsB"] or \
@@ -5342,7 +5362,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       # Is this test necessary because of the global variable this if was previously always true
       # after removing the global variable it is always false...
       # if self.states.numItersPLR:
-      if kernel["UseLoopModel"]:
+      if kernel.get("UseLoopModel", False):
         loopModelSteadyIter(self, kernel, tensorParametersA, tensorParametersB, module,
                             LoopModelScaffold, u, waitLWCode, syncCode, loopCopy=lc)
       elif not kernel["UseCustomMainLoopSchedule"]:
@@ -5998,7 +6018,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
         module.add(self.closeShadowInit(kernel))
 
       # Wait for PGR code in setupNewTile
-      if not kernel["UseLoopModel"]:
+      if not kernel.get("UseLoopModel", False):
         module.add(self.getWaitcntCodeForPGR(
             kernel, tensorParametersA, tensorParametersB, "wait for global read"))
       # These cases loop back and run the prefetch loop again
@@ -6023,27 +6043,27 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       # rotates twice and lands chunk 0 in buffer 1 — inverting the whole ring against what the
       # reads expect.  Verified in the .s: two `s_xor tdm ^= 0x4000` ahead of the first
       # `tensor_load_to_lds`, with GIR's own swap+load pairs following.
-      if not kernel["UseLoopModel"] and kernel["enableTDMA"]:
+      if not kernel.get("UseLoopModel", False) and kernel["enableTDMA"]:
         module.addComment1("TDM swap lds a")
         module.add(self.tdmSwapLdsOffset(kernel, tensorParametersA))
       else:
         module.addComment1("local write swap a")
         module.add(self.localWriteSwapOffsets(kernel, expand, tensorParametersA))
-      if "MX" in tensorParametersA and not kernel["UseLoopModel"]:
+      if "MX" in tensorParametersA and not kernel.get("UseLoopModel", False):
         module.addComment1("local write swap mxsa")
         if kernel["enableTDMA"]:
           module.add(self.tdmSwapLdsOffset(kernel, tensorParametersA["MX"]))
         else:
           module.add(self.localWriteSwapOffsets(kernel, expand, tensorParametersA["MX"]))
       # Swap local ptrs B(MXSB)
-      if "MX" in tensorParametersB and not kernel["UseLoopModel"]:
+      if "MX" in tensorParametersB and not kernel.get("UseLoopModel", False):
         module.addComment1("local write swap mxsb")
         if kernel["enableTDMA"] and kernel["enableTDMB"] and kernel["NumWaves"] == 1:
           module.add(self.tdmSwapLdsOffset(kernel, tensorParametersB["MX"]))
         elif not kernel["enableTDMB"]:
           module.add(self.localWriteSwapOffsets(kernel, expand, tensorParametersB["MX"]))
 
-      if kernel["UseLoopModel"]:                # GIR owns the copy-descriptor swap (see above)
+      if kernel.get("UseLoopModel", False):                # GIR owns the copy-descriptor swap (see above)
         pass
       elif kernel["enableTDMB"]:
         #TODO: TDM refactor
@@ -6054,7 +6074,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
         module.addComment1("local write swap b")
         module.add(self.localWriteSwapOffsets(kernel, expand, tensorParametersB))
       # Swap Metadata
-      if kernel["enableTDMMetadata"] and not kernel["UseLoopModel"]:
+      if kernel["enableTDMMetadata"] and not kernel.get("UseLoopModel", False):
           module.addComment1("TDM swap lds metadata")
           module.add(self.tdmSwapLdsOffset(kernel, tPM))
       # swap local write memory token
@@ -6064,7 +6084,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       # prefetch global read for PGR>=2
       if kernel["PrefetchGlobalRead"] >= 2:
         for idxPgr in range(1, kernel["PrefetchGlobalRead"]):
-          if kernel["UseLoopModel"]:
+          if kernel.get("UseLoopModel", False):
             # GIR OWNS the prefetch peel.  Its prologue block carries one copy Move per (operand,
             # buffer) plus the swap and gr_increment Marks its dataflows placed, and the prologue
             # fork realizes every one of them through the leaf emitters.  Emitting the scaffold's
@@ -6160,7 +6180,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
 
         # generate exit code.  Under UseLoopModel the guard belongs at GIR's branch point, in the
         # prologue fork below; emitting the labels here would put the peel past both of them.
-        if not kernel["UseLoopModel"]:
+        if not kernel.get("UseLoopModel", False):
           for idxPgr in range(0, kernel["PrefetchGlobalRead"] + 1):
             module.add(self.closePrefetchGlobalRead2orMore(kernel, tensorParametersA, tensorParametersB, idxPgr))
 
@@ -6187,7 +6207,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       # LoopIters==1 — made it 0 and skipped the fork entirely: no copies before the loop at all,
       # and the steady body then reads uninitialised LDS.  The read-fill this replaces is PLR-shaped;
       # the COPIES are not, and they must be emitted for every PLR.
-      if kernel["UseLoopModel"]:
+      if kernel.get("UseLoopModel", False):
         loopModelPrologue(self, kernel, tensorParametersA, tensorParametersB, module, pack, packPre)
       elif self.states.numItersPLR:
         # in some cases need an extra copy of the LDS read with appropriate double buffer offsets
@@ -6347,7 +6367,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       module.add(skipGL2Label)
 
     loopCopies = 3 if kernel["HalfPLR"] else 2 if expand else 1
-    if kernel["UseLoopModel"]:
+    if kernel.get("UseLoopModel", False):
       # GIR's chain IS the unroll: a ring the trip does not close keeps turning, and emitting
       # fewer copies than it built leaves blocks whose frame edges name instructions nobody wrote.
       loopCopies = max(loopCopies, len(loopModelSteadyBlocks(self, kernel)))
@@ -6839,7 +6859,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       # descriptor the owners map names: (MXSA,MXSB) is a second one and owes its own chunk.
       # HalfPLR never over-advances: `graIncrementMask` zeroes the increments over the same
       # iterations the descriptor is silenced, so there is nothing to rewind.
-      if kernel["UseLoopModel"] and not self.halfPlrOwnsTailAlignment(kernel):
+      if kernel.get("UseLoopModel", False) and not self.halfPlrOwnsTailAlignment(kernel):
         _tailOwners = tuple(self.tdmDescriptorOwners(kernel))
         if _tailOwners:
           _skipTailRewind = Label(self.labels.getNameInc("SkipTdmTailUndoPeel"), "")
@@ -7095,7 +7115,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       # HalfPLR's own tail arm already swapped the reads onto the write side's buffer.
       needResetLROffsets = not kernel["1LDSBuffer"] and (
           not tdm or tdmTailWasWiderLR
-          or (kernel["UseLoopModel"] and not self.halfPlrOwnsTailAlignment(kernel)))
+          or (kernel.get("UseLoopModel", False) and not self.halfPlrOwnsTailAlignment(kernel)))
       # change local read policy from wider local read to one unit of K at a time
       # DirectToVgpr case, use original wider local read instead of recalculating local read address
       if not (kernel["DirectToVgprA"] or kernel["DirectToVgprB"]):
@@ -7512,7 +7532,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       # waits from the post-schedule frame graph.
       enableWaitCntInsertion = (stinky_opt_level != 0
                                 or dcpThickGateFromTokenPasses(kernel)
-                                or bool(kernel["UseLoopModel"])
+                                or bool(kernel.get("UseLoopModel", False))
                                 or not globalParameters.get("DisableSTWaitCnt", True))
 
       # Set StinkyTofu module options
@@ -7532,15 +7552,15 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
                                # The legacy ST tensor arm stays disabled under ULM so exactly one
                                # implementation owns tagged tensorcnt.
                                "EnableWaitCntInsertion": enableWaitCntInsertion,
-                               "DisableTensorcntInsertion": bool(kernel["UseLoopModel"]),
-                               "LockDsReadOrder": not bool(kernel["UseLoopModel"]),
+                               "DisableTensorcntInsertion": bool(kernel.get("UseLoopModel", False)),
+                               "LockDsReadOrder": not bool(kernel.get("UseLoopModel", False)),
                                # The WMMA order is LoopIR's derived schedule, so the DAG scheduler
                                # issues it as given. Only tensor_load and ds_load move under ULM.
-                               "LockWmmaOrder": bool(kernel["UseLoopModel"]),
+                               "LockWmmaOrder": bool(kernel.get("UseLoopModel", False)),
                                # Fences, memory tokens and numeric waits are all StinkyTofu's under
                                # ULM, derived after scheduling from the frame contract GIR exports.
-                               "EnableGirFramePipeline": bool(kernel["UseLoopModel"]),
-                               "EnableGirFrameWaitCntInsertion": bool(kernel["UseLoopModel"]),
+                               "EnableGirFramePipeline": bool(kernel.get("UseLoopModel", False)),
+                               "EnableGirFrameWaitCntInsertion": bool(kernel.get("UseLoopModel", False)),
                                "RegisterAllocation": self.stinkyTofuRegisterAllocationMode(kernel),
                                # The rest of StinkyTofuRegisterAllocation, in its shortest
                                # spelling; the mode above is the one that holds.
@@ -8660,7 +8680,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
         # pack or input conversion DTV case, need double buffer (LoopIters * 2).
         # UseLoopModel's buffer count is VA, assigned with the Valu size below,
         # so DTV does not replace it here.
-        if kernel["UseLoopModel"]:
+        if kernel.get("UseLoopModel", False):
           numVgprBufferA = self.states.numVgprBufferA
           numVgprBufferB = self.states.numVgprBufferB
         else:
@@ -8676,12 +8696,12 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
         if kernel["ProblemType"]["MXBlockA"]:
           # Off UseLoopModel, MX shares A's buffer, including its RAP growth.
           # Under UseLoopModel, MXSA keeps its own ring depth.
-          if kernel["UseLoopModel"]:
+          if kernel.get("UseLoopModel", False):
             valuBlocksMXSA = self.states.numVgprBufferMXSA * self.rapResidentKTiles(kernel) * kernel["InnerUnroll"]
           else:
             valuBlocksMXSA = numVgprBufferA * kernel["InnerUnroll"]
         if kernel["ProblemType"]["MXBlockB"]:
-          if kernel["UseLoopModel"]:
+          if kernel.get("UseLoopModel", False):
             valuBlocksMXSB = self.states.numVgprBufferMXSB * kernel["InnerUnroll"]
           else:
             valuBlocksMXSB = numVgprBufferB * kernel["InnerUnroll"]
@@ -8769,7 +8789,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
         # registers of one prefetch unit after VG.  VA is the buffer count.
         # The scaffold product above (wave tile, RAP, InnerUnroll, HalfPLR)
         # does not modify that number.
-        if kernel["UseLoopModel"]:
+        if kernel.get("UseLoopModel", False):
           operands = [("A", self.states.a, tensorParametersA["bpe"], "numVgprBufferA"),
                       ("B", self.states.b, tensorParametersB["bpe"], "numVgprBufferB")]
           if kernel["ProblemType"]["MXBlockA"]:
@@ -9754,7 +9774,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       # Registers allocated above this point can be used as temps during setup
       # Registers above here are reserved in initC, near the end of the setup
       # code
-      if kernel["UseLoopModel"] and not kernel["NoTailLoop"] \
+      if kernel.get("UseLoopModel", False) and not kernel["NoTailLoop"] \
           and not kernel["ReuseAcrossPersistent"]:
         # The tail frees this contiguous ValuA/B range, then checks out one
         # full tail slab for each operand.  If VG shrinks the main-loop rings
@@ -9769,7 +9789,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
           if state.numVgprValu <= 0 or kernel["DirectToVgpr" + tc]:
             continue
           tailEnd = ((tailEnd + 1) // 2) * 2
-          tailEnd += (self.tailLoopValuRegs(kernel, tc)
+          tailEnd += (self.loopModelTailValuRegs(kernel, tc)
                       or state.numVgprValu)
           tailEnd += self.tailLoopValuPackRegs(kernel, tP, tc)
         vgprIdx = max(vgprIdx, tailEnd)

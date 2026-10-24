@@ -528,7 +528,7 @@ def _splitTdmLoad(grCode):
 
 
 def noSchedGlobalRead(writer, kernel, globalReadIncACode, globalReadIncBCode):
-    if kernel["UseLoopModel"]:
+    if kernel.get("UseLoopModel", False):
         return [], 0
 
     # For TDM+SIA0: defer tensor_load_to_lds to after the LDS swap to avoid writing

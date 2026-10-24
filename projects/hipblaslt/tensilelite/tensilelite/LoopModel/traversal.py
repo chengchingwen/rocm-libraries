@@ -61,17 +61,6 @@ def _position(theta, terms, add=0):
     return value
 
 
-def _digits(theta, terms, add, fields, modulus=0):
-    position = _position(theta, terms, add)
-    value = Expr.constant(0)
-    for coefficient, divisor, extent in fields:
-        digit = position // max(1, int(divisor))
-        if int(extent):
-            digit = digit % int(extent)
-        value = value + int(coefficient) * digit
-    return value % int(modulus) if int(modulus) > 1 else value
-
-
 # --- tile and register arithmetic ------------------------------------------------------------
 
 def _inner_axes(theta):
@@ -418,11 +407,6 @@ def rotation_unit_tiles(theta, operand) -> int:
     return product(extent for _name, extent in rotation_unit_modes(theta, operand))
 
 
-def rotation_unit_positions(theta, operand) -> int:
-    """Read-order positions in the ungrouped rotation unit."""
-    return _covered_positions(theta, operand, rotation_unit_modes(theta, operand))
-
-
 def group_rotation_unit_tiles(theta, operand) -> int:
     """Tiles in one extra-axis value of one register group's rotation unit."""
     regions = set(getattr(operand, "factor_axes", ()) or ())
@@ -439,38 +423,6 @@ def group_rotation_unit_tiles(theta, operand) -> int:
     return max(1, unit)
 
 
-def grouping_preserves_coverage(theta, operand, groups) -> bool:
-    """Whether contiguous ``groups`` keep every read carrier preimage whole."""
-    groups = max(1, int(groups))
-    if groups <= 1:
-        return True
-    modes = grouping_modes(theta, operand)
-    if not modes:
-        return False
-    mode, extent = modes[0]
-    if extent % groups:
-        return False
-    hop = operand.trajectory.shared_read
-    coverage = getattr(hop, "coverage", None) if hop is not None else None
-    if coverage is None:
-        return True
-
-    axes = _coverage_candidate_axes(theta, operand)
-    if mode not in {name for name, _extent in axes}:
-        return False
-    block = extent // groups
-    carriers = {}
-    ranges = [range(max(1, axis_extent)) for _name, axis_extent in axes]
-    for tile, values in enumerate(_iproduct(*ranges)):
-        coord = dict(zip((name for name, _extent in axes), values))
-        group = int(coord[mode]) // block
-        carrier = coverage.carrier_of(tile)
-        previous = carriers.setdefault(carrier, group)
-        if previous != group:
-            return False
-    return True
-
-
 def reloads_whole_set(theta, operand) -> bool:
     """Whether this operand is invariant over the global outermost logical role."""
     return theta.geometry(operand).reloads_whole_set
@@ -484,12 +436,6 @@ def group_unit_tile_count(theta, operand) -> int:
 def group_unit_tiles(theta, operand, group) -> int:
     """Tiles in one rotation unit of this group."""
     return group_unit_tile_count(theta, operand)
-
-
-def group_owned_tiles(theta, operand) -> int:
-    """Tiles from one chunk assigned to one group."""
-    return group_unit_tiles(theta, operand, operand.fragment.groups()[0]) \
-        * group_fan_reloads(theta, operand, operand.fragment.groups()[0])
 
 
 def group_fan_reloads(theta, operand, group) -> int:
@@ -1053,13 +999,6 @@ def ring_slot(theta, operand, group, buffers, advance=0, strides=None):
     shifted = _shifted_ring_slot(theta, operand, group, int(advance), walk_strides, buffers,
                                  read_coverage(theta, operand))
     return shifted if shifted is not None else Expr.constant(0)
-
-
-def _summation_ring_axis(theta, operand, group):
-    summation = summation_names(theta)
-    on_summation = [(name, extent) for name, extent in ring_axes(theta, operand, group)
-                    if name in summation]
-    return on_summation[-1] if on_summation else None
 
 
 def axis_strides(theta, modes=None, extents=None):

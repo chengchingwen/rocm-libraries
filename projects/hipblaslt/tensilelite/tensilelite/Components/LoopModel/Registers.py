@@ -278,7 +278,7 @@ def loopModelRegBuffers(writer, kernel):
   over its groups.  A, B, and the MX scales do not share a depth; the caller keeps one count
   per operand.
   """
-  if not kernel["UseLoopModel"]:
+  if not kernel.get("UseLoopModel", False):
     return {}
   from .Theta import loopModelTheta
   theta, S = loopModelTheta(writer, kernel)
@@ -297,7 +297,7 @@ def loopModelValuRegs(writer, kernel):
 
   Each register group owns a compact block for every one of its W rotation slots.
   """
-  if not kernel["UseLoopModel"]:
+  if not kernel.get("UseLoopModel", False):
     return {}
   from .Theta import loopModelTheta
   theta, S = loopModelTheta(writer, kernel)
@@ -311,7 +311,7 @@ def loopModelValuRegs(writer, kernel):
 
 def loopModelRegisterLayout(writer, kernel):
   """Compact per-group physical register offsets from the cached θ/S."""
-  if not kernel["UseLoopModel"]:
+  if not kernel.get("UseLoopModel", False):
     return {}
   from .Theta import loopModelTheta
   theta, S = loopModelTheta(writer, kernel)
@@ -320,7 +320,7 @@ def loopModelRegisterLayout(writer, kernel):
 
 def applyLoopModelValuRegs(writer, kernel):
   """Overwrite the scaffold's Valu-ring sizing with θ/S's, after it has run."""
-  if not kernel["UseLoopModel"]:
+  if not kernel.get("UseLoopModel", False):
     return
   required = writer.states.loopModelValuVgprs
   byOperand = {"A": writer.states.a, "B": writer.states.b}
