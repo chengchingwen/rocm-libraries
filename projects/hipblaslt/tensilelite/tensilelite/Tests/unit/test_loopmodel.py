@@ -110,9 +110,54 @@ SCENARIOS = {
 _RAW_PARAMS_TO_THETA = adapter.params_to_theta
 
 
-def _calculated_theta(params, *, validate_register_depths=True):
-    from gir_fixtures import calculate_registers
+def mi_inputs(kernel):
+    """Add what a Solution derives about read COUNTS, so a fixture counts reads like a real kernel.
 
+    `MIInputPerThread*` is M (or N) x K x B / wavefront, then `// MXBlock * (32 // MatrixInstM)`
+    for a scale.  `ReadInstructions` is resolved here too, because a fixture handed straight to
+    `params_to_theta` never passes through the `kernel_to_params` that would resolve it.
+    """
+    mi, wave = kernel["MatrixInstruction"], kernel.get("WavefrontSize") or 32
+    pt = kernel.get("ProblemType", {})
+    out = {"MIInputPerThreadA": mi[0] * mi[2] * mi[3] // wave,
+           "MIInputPerThreadB": mi[1] * mi[2] * mi[3] // wave}
+    for tc, mn in (("A", mi[0]), ("B", mi[1])):
+        block = pt.get("MXBlock%s" % tc)
+        if block:
+            out["MIInputPerThreadMXS%s" % tc] = out["MIInputPerThread%s" % tc] // block * (32 // mn)
+    merged = {**kernel, **out}
+    # A scale's read width is kernel-wide, an input's is per-operand -- LraTileAssignment's rule.
+    reads = {}
+    for tc, per_thread in out.items():
+        name = tc[len("MIInputPerThread"):]
+        key = "LocalReadVectorWidthMXS" if "MXS" in name else "LocalReadVectorWidth%s" % name
+        lrvw = int(merged.get(key) or merged.get("LocalReadVectorWidth") or 0)
+        if lrvw > 0 and per_thread >= lrvw and not per_thread % lrvw:
+            reads[name] = per_thread // lrvw
+    return {**merged, "ReadInstructions": {**(kernel.get("ReadInstructions") or {}), **reads}}
+
+
+def calculate_registers(kernel):
+    """Apply the Solution-owned LoopModel register derivation to a test kernel."""
+    from Tensile.Components.LoopModel import Order, Registers
+
+    calculated = dict(adapter.DEFAULTS)
+    calculated.update(kernel)
+    kernel = calculated
+    kernel["UseLoopModel"] = True
+    mi = kernel["MatrixInstruction"]
+    kernel.setdefault("MatrixInstK", mi[2])
+    if "MIWaveTile" not in kernel:
+        kernel["MIWaveTile"] = [mi[5], mi[6]]
+    kernel.setdefault("MIWaveTileA", kernel["MIWaveTile"][0])
+    kernel.setdefault("MIWaveTileB", kernel["MIWaveTile"][1])
+    kernel.setdefault("LoopIters", int(kernel["DepthU"]) // int(kernel["MatrixInstK"]))
+    Order.calculate(kernel)
+    Registers.calculate(kernel)
+    return kernel
+
+
+def _calculated_theta(params, *, validate_register_depths=True):
     if validate_register_depths:
         params = calculate_registers(params)
     return _RAW_PARAMS_TO_THETA(
@@ -162,6 +207,17 @@ BF16_NT_KMN = {
 # software-pipeline read stage and exercises the single-buffer drain path -- the shape that
 # regressed repeatedly during Phase 3h (register depth, sigma_c copy order, drain read-ptr swaps).
 BF16_NT_KMN_PLR0 = {**BF16_NT_KMN, "PrefetchLocalRead": 0}
+
+
+def theta(params):
+    """Build theta, re-deriving the read counts from whatever shape the caller ended up with.
+
+    Applied on every call because a test typically spreads a base fixture and then overrides
+    MatrixInstruction or a read width -- which would otherwise keep the base's count.
+    """
+    if params.get("MatrixInstruction"):
+        params = mi_inputs(params)
+    return adapter.params_to_theta(calculate_registers(params))
 
 
 def _theta(params):
@@ -2647,16 +2703,12 @@ def test_cached_loopir_text_keeps_target_prefetch_and_vgpr_header():
 
 
 def test_two_chunk_global_prefetch_lowers_to_valid_gir():
-    from Tensile.Tests.unit.gir_fixtures import BF16_NT_KMN_PLR0, theta
-
     point = theta(dict(BF16_NT_KMN_PLR0))
     _decoded, actual = _lower_theta(point)
     assert actual.blocks
 
 
 def test_nested_local_and_global_prefetch_lower_to_valid_gir():
-    from Tensile.Tests.unit.gir_fixtures import BF16_NT_KMN, theta
-
     point = theta(dict(BF16_NT_KMN))
     _decoded, actual = _lower_theta(point)
     assert actual.blocks
@@ -3072,6 +3124,36 @@ def test_no_load_loop_is_an_explicit_program_transform():
     }
     _decoded, actual = _lower_theta(point)
     assert actual.blocks
+
+
+# --- AB_first (TDMFuse=4): region 0 fused, every later region one member at a time -------------
+
+_AB_FIRST = {"NumWaves": 4, "TDMInst": 3, "MIWaveTile": [2, 2],
+             "TDMSplit": [2, 2, 1, 1], "TDMSplitA": 1, "TDMSplitB": 1}
+
+
+def _walk(fuse, loopOrder):
+    """The movement steps of the A/B unit as `[(region, members)]`."""
+    from Tensile.LoopModel.decoder import _Decoder
+    th = theta({**BF16_NT_KMN_PLR0, **_AB_FIRST, "TDMFuse": fuse, "LoopOrder": loopOrder})
+    key, members, regions = th.movement_units()[0]
+    return [(region, [m.name for m in moving])
+            for region, moving in _Decoder(th)._copy_steps(key, members, regions)]
+
+
+def test_ab_first_walk():
+    """Both tensors split in two: one cooperative load, then each region 1 on its own."""
+    assert _walk(4, "KMN") == [(0, ["A", "B"]), (1, ["A"]), (1, ["B"])]
+
+
+def test_ab_first_issues_the_earlier_read_operand_first():
+    """Which solo load leads is the loop order's answer, not the table's member order."""
+    assert _walk(4, "KNM") == [(0, ["A", "B"]), (1, ["B"]), (1, ["A"])]
+
+
+def test_the_default_row_fuses_every_region():
+    """The same split under TDMFuse=0 keeps both members on both loads."""
+    assert _walk(0, "KMN") == [(0, ["A", "B"]), (1, ["A", "B"])]
 
 
 # ------------------------------------------------------------------------------------------------
