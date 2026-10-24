@@ -60,15 +60,16 @@ class ClusterLoadTDM(ClusterLoad):
                 return False
         return True
 
-    def maskSgprName(self, kernel: Mapping, tc: str, *, subtile: bool = False) -> str:
+    def maskSgprName(self, kernel: Mapping, tc: str, *, subtile: bool = False,
+                     waveSeparated: bool = False) -> str:
         """Resolve the multicast-mask SGPR name; a scale borrows its parent tensor's.
 
-        `subtile` is the caller's own statement that it issues A and B on every wave, so no
-        descriptor is parity-shared and the split names always apply. Wave separation is not a
-        caller's claim here: `usesCombinedMask` already decides it, so B never resolves to the
-        never-declared combined SGPR.
+        Wave-separated (non-subtile) uses the combined ``"MulticastMask"`` when
+        ``usesCombinedMask`` holds; everything else uses the split
+        ``f"MulticastMask{tc}"`` (any ``MXS`` prefix stripped) so B never resolves
+        to the never-declared combined SGPR.
         """
-        if not subtile and self.usesCombinedMask(kernel):
+        if waveSeparated and not subtile and self.usesCombinedMask(kernel):
             return "MulticastMask"
         return f"MulticastMask{tc.removeprefix('MXS')}"
 
@@ -222,7 +223,8 @@ class ClusterLoadTDM(ClusterLoad):
     # -- descriptor attach ---------------------------------------------------
 
     def applyToDescriptor(self, writer: "KernelWriterAssembly", kernel: Mapping,
-                          group1: int | str, tc: str, *, subtile: bool = False) -> Module:
+                          group1: int | str, tc: str, *, subtile: bool = False,
+                          waveSeparated: bool = False) -> Module:
         """OR the multicast mask into descriptor ``Group1[word0]``.
 
         Folds the ``Multicast and enableCluster`` gate, mask-name choice, and the
@@ -231,7 +233,7 @@ class ClusterLoadTDM(ClusterLoad):
         from .TensorDataMover import TensorDataMoverLoad
         mod = Module()
         if kernel["Multicast"] and clusterEnabled(kernel["ClusterDim"]):
-            mask = self.maskSgprName(kernel, tc, subtile=subtile)
+            mask = self.maskSgprName(kernel, tc, subtile=subtile, waveSeparated=waveSeparated)
             # A persistent self-only A-side mask SGPR is freed (see
             # persistentDropsSelfOnlyMaskA): with Ck == 1 the A mask carries no
             # multicast peers, so re-applying it is a no-op. Skip it so the freed

@@ -762,6 +762,9 @@ def writeSolutionsAndKernels(
         numKernels = len(asmKernels)
         assert numKernels == numAsmKernels, "Only assembly kernels are supported in TensileLite"
         memcompress = numAsmKernels > 10000
+        # `irPath` is the OutputLoopIR dump, off by default: omit it when there is nothing to
+        # dump so the ordinary call carries exactly the arguments it always did.
+        irKwargs = {} if irOutputPath is None else {"irPath": irOutputPath}
         unaryProcessKernelSource = functools.partial(
             processKernelSource,
             kernelWriterAssembly,
@@ -769,7 +772,7 @@ def writeSolutionsAndKernels(
             outOptions,
             splitGSU,
             compress=memcompress,
-            irPath=irOutputPath,
+            **irKwargs,
         )
     with timing_context("python_kernel_codegen"):
         asmResults = _mapKernels(unaryProcessKernelSource, asmKernels)
@@ -938,7 +941,7 @@ def writeSolutionsAndKernelsTCL(
         rocisa.rocIsa.getInstance().getData(),
         outOptions,
         splitGSU,
-        irPath=irOutputPath,
+        **({} if irOutputPath is None else {"irPath": irOutputPath}),
     )
 
     unaryWriteAssembly = functools.partial(writeAssembly, assemblyTmpPath, irPath=irOutputPath)

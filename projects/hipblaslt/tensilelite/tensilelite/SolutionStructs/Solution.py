@@ -293,16 +293,6 @@ def _validateMXLocalReadWidth(state, asmCaps, printRejectionReason):
 
   return True
 
-def localReadPair(state, base):
-  """`(decoupled, a, b)` for PrefetchLocalRead/ClusterLocalRead, falling back to the scalar."""
-  scalar = state.get(base, 0)
-  a, b = state.get(base + "A"), state.get(base + "B")
-  if a is None and b is None:
-    return False, scalar, scalar
-  return True, scalar if a is None or int(a) == -1 else a, \
-      scalar if b is None or int(b) == -1 else b
-
-
 def _validateMX2DFreeTile(state, printRejectionReason):
   """Reject 2D MX tiles whose scale rows the TDM / LRA codegen misplaces.
 
@@ -1180,13 +1170,6 @@ class Solution(collections.abc.Mapping):
       state["TDMSplitA"] = 1
       state["TDMSplitB"] = 1
 
-    if "LoopOrder" not in state:
-      try:
-        Order.calculate(state)
-      except (RuntimeError, ValueError) as error:
-        reject(state, printRejectionReason, str(error))
-        return
-
     # The traversal order is only meaningful on the LoopModel path.  Naming a non-default one off
     # that path is a no-op that would spawn redundant, mis-deduped baseline kernels, so reject it.
     if (int(state.get("WmmaInnerOrder", 1) or 1) != 1
@@ -1197,14 +1180,25 @@ class Solution(collections.abc.Mapping):
              "LoopModel-only knob)")
       return
 
-    # Same for the extra axis: only the LoopModel nest has one to add.
-    _statedFactors = [_name for _name in Order.FACTOR_PARAM.values()
-                      if int(state.get(_name, 1) or 1) > 1]
+    # Same for the extra axis: only the LoopModel nest has one to add.  Measured against what
+    # TDMSplit FORCES, not against 1: a split operand pins its own factor, `Order.calculate`
+    # writes that back over the -1, and this function re-runs from the top after a rejected
+    # pass -- so a plain comparison reads the derived extent as if the solution had named it.
+    _forcedFactors = Order.forcedFactors(state)
+    _statedFactors = [_name for _role, _name in Order.FACTOR_PARAM.items()
+                      if int(state.get(_name, 1) or 1) > max(1, _forcedFactors[_role])]
     if _statedFactors and not state.get("UseLoopModel", False):
       reject(state, printRejectionReason,
              "%s require UseLoopModel (the extra wmma axis is a LoopModel-only knob)"
              % "/".join(_statedFactors))
       return
+
+    if "LoopOrder" not in state:
+      try:
+        Order.calculate(state)
+      except (RuntimeError, ValueError) as error:
+        reject(state, printRejectionReason, str(error))
+        return
 
     # UseLoopModel routes the inner-loop body through the LoopModel
     if state.get("UseLoopModel", False):
@@ -4068,7 +4062,7 @@ class Solution(collections.abc.Mapping):
     # part GIR replaces: under UseLoopModel the region walk, its tokens and its fences are all
     # GIR's, so the disable does not apply there.  `TDMSplit` is per-operand now, so the
     # truthiness test on the old scalar becomes `any_split`.
-    if TDMSplit.any_split(state) and not state["UseLoopModel"]:
+    if TDMSplit.any_split(state) and not state.get("UseLoopModel", False):
       reject(state, printRejectionReason,
              "TDMSplit is currently disabled: it has unresolved read-token and tensorcnt races "
              "under the decoupled load-vs-compute wave layout. Use TDMSplit=0, or UseLoopModel")

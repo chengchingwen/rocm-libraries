@@ -73,7 +73,7 @@ def loopModelPrologueCopies(writer, kernel, tensorParametersA, tensorParametersB
   from, which is a different basic block.  Every other UseLoopModel shape keeps the single site,
   so nothing but HalfPLR moves.
   """
-  if kernel["UseLoopModel"] and kernel["HalfPLR"]:
+  if kernel.get("UseLoopModel", False) and kernel["HalfPLR"]:
     module.add(girEmitStage(writer, kernel, tensorParametersA, tensorParametersB, "prologue",
                             kinds=PROLOGUE_MOVEMENT))
     _prologueGuardLadder(writer, kernel, tensorParametersA, tensorParametersB, module)

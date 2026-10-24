@@ -10,7 +10,7 @@ each test starts from is a means; `test_loopmodel.py` owns what the model derive
 import inspect
 import itertools
 import pytest
-from gir_fixtures import calculate_registers, mi_inputs
+from test_loopmodel import BF16_NT_KMN, calculate_registers, mi_inputs, theta
 from Tensile.LoopModel import adapter
 from Tensile.LoopModel.adapter import kernel_to_params as _kernel_to_params
 from Tensile.LoopModel.decoder import decode_theta
@@ -29,7 +29,6 @@ from Tensile.Lowering.gir.analyses.trip_domains import TripDomains
 from Tensile.Lowering.gir.emit_plan import plan_program
 from Tensile.Lowering.gir.frame_contract import build_contract
 from Tensile.Lowering.gir.nodes import CondChain
-from gir_fixtures import BF16_NT_KMN, theta
 
 
 # ------------------------------------------------------------------------------------------------
@@ -95,14 +94,6 @@ def _mxf8(blk=None):
     if blk:
         o["ProblemType"] = {**o["ProblemType"], "MXBlockA": blk, "MXBlockB": blk, "Sparse": 0}
     return o
-
-
-def test_local_read_pair_auto_side_inherits_scalar():
-    from Tensile.SolutionStructs.Solution import localReadPair
-
-    state = {"PrefetchLocalRead": 3, "PrefetchLocalReadA": -1,
-             "PrefetchLocalReadB": 5}
-    assert localReadPair(state, "PrefetchLocalRead") == (True, 3, 5)
 
 
 def test_k_axis_read_ahead_cap_counts_vg_buffers():

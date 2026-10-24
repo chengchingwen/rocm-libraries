@@ -47,7 +47,6 @@ def test_defaults(monkeypatch):
     assert a["AsmDebug"] is False
     assert a["BuildIdKind"] == "sha1"
     assert a["KeepBuildTmp"] is False
-    assert a["LoopModelIRVerify"] is True
     assert a["AsanBuild"] is False
     assert a["UseCompression"] is True  # NoCompress default False
     assert a["LogicFilter"] == "*"
@@ -100,11 +99,6 @@ def test_no_lazy_library_loading(monkeypatch):
 def test_no_generate_solution_table(monkeypatch):
     a = _run(monkeypatch, ["--no-generate-solution-table"])
     assert a["GenSolTable"] is False
-
-
-def test_no_loopmodel_ir_verify(monkeypatch):
-    a = _run(monkeypatch, ["--no-loopmodel-ir-verify"])
-    assert a["LoopModelIRVerify"] is False
 
 
 # ---------------------------------------------------------------------------
