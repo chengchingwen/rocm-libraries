@@ -749,9 +749,6 @@ class CDNA5ReadyQueue : public ReadyQueue {
         const int window = std::max(1, wmmaIssueConfig.latency);
         return (dsReadCreditLifetime() + window - 1) / window;
     }
-    // Adjacent all-wave signal/wait pairs in the incoming region, keyed by wait.
-    // This preserves pair identity after scheduling has made the two nodes ready.
-    std::unordered_map<StinkyInstruction*, StinkyInstruction*> barrierWaitToSignal_;
     struct BarrierBeforeOutput {
         int beforeThreshold = 0;
         int baseBeforeThreshold = 0;
@@ -3260,16 +3257,6 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
     barrierDsLoadCounts_.clear();
     barrierDrainWmmas_.clear();
     barrierDrainDropped_.clear();
-    barrierWaitToSignal_.clear();
-    for (const BarrierTokenGroup& group :
-         groupBarrierTokens(collectBarrierTokens(regionStart, regionEnd, /*useSrc=*/true))) {
-        if (group.barriers.size() != 2) continue;
-        StinkyInstruction* signal = group.barriers[0];
-        StinkyInstruction* wait = group.barriers[1];
-        if (isBarrierSignal(*signal) && isBarrierWait(*wait) && isSplitBarrierAllWave(*signal) &&
-            isSplitBarrierAllWave(*wait))
-            barrierWaitToSignal_.emplace(wait, signal);
-    }
     if (hasWMMAInRegion_) {
         // Layer 1/3 (base merge):
         // Build one threshold map from two independent estimators:

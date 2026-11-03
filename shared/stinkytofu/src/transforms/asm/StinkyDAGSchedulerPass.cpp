@@ -518,7 +518,8 @@ static void scheduleRegionWithMovableSideEffects(
 
     // Map each instruction to an unique id [0..n-1] and build register deps.
     dag::RegionDAG regionDag = dag::buildRegisterDependencyDAG(regionStart, regionEnd);
-    dag::addGirFrameHazardEdges(regionDag, girHazards, girFenceCoverage);
+    // Only GIR places the fences these edges order, so a region with no frames has none to order.
+    if (!girFrames.empty()) dag::addGirFrameHazardEdges(regionDag, girHazards, girFenceCoverage);
     dag::DAGNodeList& dagNodes = regionDag.nodes;
     std::vector<std::unordered_set<unsigned>>& dagGraph = regionDag.graph;
     std::unordered_map<StinkyInstruction*, unsigned>& instToId = regionDag.instToId;

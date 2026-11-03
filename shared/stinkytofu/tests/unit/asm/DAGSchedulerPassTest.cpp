@@ -1781,7 +1781,12 @@ TEST_F(DAGSchedulerPassTest, GirWaitAwareSelectionSkipsHeldDsForIndependentDs) {
            "wait_alu hold";
 }
 
-TEST_F(DAGSchedulerPassTest, GirBackedgeAffinityBelongsToTheNextFrame) {
+// A ds_load whose only matrix consumer is the header, reached through the latch backedge, has
+// no consumer inside this region: the region DAG is linear, so that consumer is a predecessor
+// here and never a successor. It therefore carries no deadline and issues after every load the
+// region does wait on -- the ordering the backedge affinity correction exists to protect, now
+// also guaranteed one level above it by the deadline bucket. Both arms must agree.
+TEST_F(DAGSchedulerPassTest, GirBackedgeLoadCarriesNoRegionDeadline) {
     auto schedule = [&](bool girFramePipeline) {
         am.clear();
         func = std::make_unique<Function>(girFramePipeline ? "gir_backedge" : "flat_indices");
@@ -1826,12 +1831,72 @@ TEST_F(DAGSchedulerPassTest, GirBackedgeAffinityBelongsToTheNextFrame) {
     };
 
     const auto [flatBackedge, flatSameFrame] = schedule(/*girFramePipeline=*/false);
-    EXPECT_LT(flatBackedge, flatSameFrame)
-        << "the control must expose function-index wrap at the latch";
+    EXPECT_LT(flatSameFrame, flatBackedge)
+        << "the load this region waits on must precede one no consumer here waits on";
 
     const auto [girBackedge, girSameFrame] = schedule(/*girFramePipeline=*/true);
     EXPECT_LT(girSameFrame, girBackedge)
         << "a header consumer reached through the latch backedge belongs to the next frame";
+}
+
+// The same rule where the deadline bucket cannot express it. Both loads feed the SAME latch
+// WMMA, so both carry that deadline and the bucket cannot separate them; only affinity orders
+// them. One of them is also read by the header across the backedge, whose low function index
+// would otherwise win the comparison and drag it ahead of the peer this trip actually waits on.
+TEST_F(DAGSchedulerPassTest, GirBackedgeAffinityDoesNotOutrankItsDeadlinePeer) {
+    auto schedule = [&](bool girFramePipeline) {
+        am.clear();
+        func = std::make_unique<Function>(girFramePipeline ? "gir_peer" : "flat_peer");
+        setFunctionArch(*func, arch);
+        BasicBlock* preheader = func->createBasicBlock("preheader");
+        BasicBlock* header = func->createBasicBlock("header");
+        BasicBlock* latch = func->createBasicBlock("latch");
+        func->addEdge(preheader, header);
+        func->addEdge(header, latch);
+        func->addEdge(latch, header);
+
+        auto contract = std::make_shared<GirFrameContract>();
+        contract->loaded = true;
+        contract->generations.emplace(0, GirGenerationSpec{0, 2, 0});
+        func->setStructMetaData<GirFrameContract>(kGirFrameContractKey, contract);
+
+        bb = preheader;
+        createVAddInBlock(bb, arch, /*destReg=*/200, /*src0Reg=*/500, /*src1Reg=*/501);
+        bb = header;
+        createWmmaScaleF8(/*destStart=*/12, /*src0Start=*/200);
+
+        bb = latch;
+        // Lower dag id, and the only consumer is this trip's WMMA.
+        StinkyInstruction* peerRead =
+            createDsReadB128InBlock(bb, arch, /*destReg=*/300, /*addrReg=*/400);
+        peerRead->addModifier<GirActionData>(GirActionData{
+            20, 20, GirActionKind::Ds, {GirAccessData{false, 1, 2, 0, 0, -1, false}}});
+        // Feeds this trip's WMMA too, but its dest is also the header's source next trip.
+        StinkyInstruction* dualRead =
+            createDsReadB128InBlock(bb, arch, /*destReg=*/200, /*addrReg=*/401);
+        dualRead->addModifier<GirActionData>(GirActionData{
+            10, 10, GirActionKind::Ds, {GirAccessData{false, 0, 2, 0, 1, -1, false}}});
+        StinkyInstruction* latchWmma = createWmmaScaleF8(/*destStart=*/40, /*src0Start=*/300);
+        latchWmma->addSrcReg(StinkyRegister("v", 200, 1));
+
+        PassContext ctx;
+        ctx.setGemmTileConfig(config);
+        PassFeatureConfig pfc;
+        pfc.loopConfig.unrollGemm = true;
+        pfc.dagFeatures.girFramePipeline = girFramePipeline;
+        ctx.setPassFeatureConfig(pfc);
+        pass->run(*func, ctx, am);
+
+        return std::pair{positionOf(*latch, peerRead), positionOf(*latch, dualRead)};
+    };
+
+    const auto [flatPeer, flatDual] = schedule(/*girFramePipeline=*/false);
+    EXPECT_LT(flatDual, flatPeer)
+        << "without the correction the header's function index drags the backedge load ahead";
+
+    const auto [girPeer, girDual] = schedule(/*girFramePipeline=*/true);
+    EXPECT_LT(girPeer, girDual)
+        << "inside one deadline the backedge consumer must not outrank this trip's peer";
 }
 
 // ---------------------------------------------------------------------------

@@ -285,8 +285,8 @@ Legalized legalizeBarrier(StinkyInstruction* inst, AsmIRBuilder& irBuilder, GfxA
         lastInst = createBarrier(GFX::s_barrier_wait);
     }
     if (girActionMod) {
-        signalInst->addModifier<GirActionData>(*girActionMod);
-        waitInst->addModifier<GirActionData>(*girActionMod);
+        firstInst->addModifier<GirActionData>(*girActionMod);
+        if (lastInst != firstInst) lastInst->addModifier<GirActionData>(*girActionMod);
     }
 
     if (!comment.empty()) lastInst->addModifier<CommentData>(CommentData{comment});
