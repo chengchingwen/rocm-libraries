@@ -7392,10 +7392,13 @@ class Solution(collections.abc.Mapping):
       if _bRotReason is not None:
         reject(state, printRejectionReason, "LDSSegmentBRotate: %s" % _bRotReason)
         return
+    # Derivation pops the TDMSplit shorthand after expanding it into TDMSplitA/B, so the key is
+    # gone here. Either spelling is a split; the paired layout does not support one.
+    _tdmSplit = bool(state.get("TDMSplit")) or TDMSplit.any_split(state)
     # Tight layouts pair each component's ping/pong buffers when supported. Persistent
     # kernels retain their existing unpaired interleave if pairing is unavailable;
     # those that cannot afford the swap-mask SGPRs skip the attempt entirely.
-    if state["LDSSegmentInterleave"] == 1 and not state["TDMSplit"] and not _segAligned \
+    if state["LDSSegmentInterleave"] == 1 and not _tdmSplit and not _segAligned \
         and not (isPersistent(state) and segPersistentKeepsUnpaired(state)):
       _pairedReason = None if state["LDSSegmentBRotate"] else segPairedReason(state)
       if _pairedReason is None:
@@ -7416,7 +7419,7 @@ class Solution(collections.abc.Mapping):
         # Non-persistent auto mode disables interleave when pairing fails. Persistent
         # kernels keep the unpaired interleave offsets, swaps and byte count above.
         state["LDSSegmentInterleave"] = 0
-    if state["LDSSegmentInterleave"] == 0 and not state["TDMSplit"]:
+    if state["LDSSegmentInterleave"] == 0 and not _tdmSplit:
       state["LDSSegInterleaveOffsets"] = {}
 
     # lds size is the greater of the two

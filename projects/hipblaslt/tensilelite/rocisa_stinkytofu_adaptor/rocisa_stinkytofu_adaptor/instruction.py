@@ -11,10 +11,14 @@ from __future__ import annotations
 from copy import deepcopy as _deepcopy
 from typing import Any, Dict, List, Optional
 
-from ._dummy import make_dummy_class, make_dummy_func
+from ._dummy import make_dummy_class, make_dummy_enum, make_dummy_func
 from .enum import CacheScope, DelayALUSkip, DelayALUType, InstType
 
 _P = "rocisa.instruction"
+
+# Mirrors rocisa::GirActionKind (instruction.hpp). Values are the C++ order:
+# Other=0, Ds=1, Tensor=2, Wmma=3. setGirActionData stores int(kind).
+GirActionKind = make_dummy_enum(f"{_P}.GirActionKind", ["Other", "Ds", "Tensor", "Wmma"])
 
 
 # ==========================================================================

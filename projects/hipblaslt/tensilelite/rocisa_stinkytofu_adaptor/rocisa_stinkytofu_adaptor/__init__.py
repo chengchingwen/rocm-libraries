@@ -34,20 +34,8 @@ _LAZY_SUBMODULES = frozenset({
     "instruction", "label", "macro", "register",
 })
 
-def __getattr__(name: str):
-    if name in _LAZY_SUBMODULES:
-        import importlib, sys as _sys
-        mod = importlib.import_module(f".{name}", __name__)
-        globals()[name] = mod
-        # Wire under ``rocisa.*`` so ``from rocisa.code import Module``
-        # finds the same object (the adapter is installed as ``rocisa``).
-        _sys.modules.setdefault(f"rocisa.{name}", mod)
-        return mod
-    if name in ("toStinkyTofuModule", "StinkyAsmModule", "CloneSpec"):
-        _ensure_stinky_types()
-        val = globals()[name]
-        return val
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+# ``__getattr__`` is defined once, after ``_ensure_stinky_types``. A second
+# definition would replace this lookup and hide ``toStinkyTofuModule``.
 
 _P = "rocisa"
 
@@ -461,11 +449,22 @@ def _mfma_types():
 
 
 def __getattr__(name: str):
-    """Fall back to the stinkytofu binding for symbols native rocisa re-exports.
+    """Lazy submodules, the conversion entry points, then stinkytofu re-exports.
 
     ``PipelineExtensionPoint`` and friends are defined by the stinkytofu module and surfaced
     through ``rocisa`` on the native backend; forward them rather than restate the enum here.
     """
+    if name in _LAZY_SUBMODULES:
+        import importlib, sys as _sys
+        mod = importlib.import_module(f".{name}", __name__)
+        globals()[name] = mod
+        # Wire under ``rocisa.*`` so ``from rocisa.code import Module``
+        # finds the same object (the adapter is installed as ``rocisa``).
+        _sys.modules.setdefault(f"rocisa.{name}", mod)
+        return mod
+    if name in ("toStinkyTofuModule", "StinkyAsmModule", "CloneSpec"):
+        _ensure_stinky_types()
+        return globals()[name]
     import stinkytofu as _st
     try:
         return getattr(_st, name)
