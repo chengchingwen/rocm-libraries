@@ -1236,6 +1236,10 @@ class Solution(collections.abc.Mapping):
                "UseLoopModel supports only ScheduleIterAlg 0 or 4 (Stinkytofu)")
         return
 
+      if state["ProblemType"]["Sparse"]:
+        reject(state, printRejectionReason, "ULM does not support sparse yet")
+        return
+
       if state["HalfPLR"]:
         reject(state, printRejectionReason,
                "UseLoopModel does not support HalfPLR: under theta `VgprGroup` IS the prefetch "
