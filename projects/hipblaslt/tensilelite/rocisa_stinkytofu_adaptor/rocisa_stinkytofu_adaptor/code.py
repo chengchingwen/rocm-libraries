@@ -107,6 +107,25 @@ def _forward_gir_action(rocisa_item: Any, logical: Any) -> None:
             setter(data)
 
 
+def _forward_gir_action_tag_count(module: Any, asm_module: Any) -> None:
+    """Publish how many rocisa items carried a GIR action, as module plugin data.
+
+    Mirrors the native converter (``ToStinkyTofuUtils.cpp``), which bumps
+    ``gir.action_tag_count`` once per tagged instruction. ``GirFrameContractImportPass``
+    reads it to tell "no GIR in this kernel" from "the contract arrived but the tags did
+    not"; without it a contract-carrying module aborts the pipeline.
+    """
+    tagged = 0
+    for item in module.flatitems():
+        getter = getattr(item, "getGirActionData", None)
+        if callable(getter) and getter() is not None:
+            tagged += 1
+    if not tagged:
+        return
+    key = "gir.action_tag_count"
+    asm_module.setPluginDataI64(key, asm_module.getPluginDataI64(key, 0) + tagged)
+
+
 # Synthetic instruction-group name that marks the DAG-scheduler region spanning
 # the persistent prefetch prologue + main loop. Must match the registered gfx125x
 # group name (see Gfx1250Backend.cpp) and native's kPGR literal.
@@ -1514,7 +1533,9 @@ class Module(Item):
         epilogue_range = _detect_epilogue_range(self.itemList)
         self._populate_logical_module(lm, pgr_range, epilogue_range)
 
-        return _PostProcessModule(_st.lower_logical_module(lm, list(arch), options))
+        asm = _st.lower_logical_module(lm, list(arch), options)
+        _forward_gir_action_tag_count(self, asm)
+        return _PostProcessModule(asm)
 
     def _populate_logical_module(
         self, lm: Any, pgr_range: Any = None, epilogue_range: Any = None
