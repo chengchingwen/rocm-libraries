@@ -1559,17 +1559,15 @@ class Module(Item):
         before epilogue so a shared boundary matches native's push order
         (``kEpilogue`` then ``kPGR``). Recursive walks pass neither range.
 
-        The epilogue span is bracketed by empty text blocks. Group endpoints
-        are recorded on the logical IR, and ``ToStinkyAsmPass`` then unlinks
-        every Python-owned logical (``safeErase`` only removes it). A group
-        whose first node was that logical starts ``ScopeAdaptor`` on a
-        detached ``LogicalInstruction``, which is neither a
-        ``StinkyInstruction`` nor an ``AsmDirective``. An empty
-        ``TEXTBLOCK`` stays linked and emits no bytes, so it can be the
-        endpoint instead. A later ``noLoadLoopBody`` copy can extend the
-        earlier multi-region extract past that opening anchor; the extract
-        deletes the comment and retargets any group still pointing at it
-        onto the neighboring instruction before ``EpilogueStoreSinkPass``.
+        Every span is bracketed by empty text blocks. Group endpoints are
+        recorded while this incremental walk is still appending the rest of
+        the kernel. Without a closing anchor, a group ending at the current
+        end of the list records ``end == nullptr``; after the tail and
+        epilogue are appended, ``ScopeAdaptor`` then reads that as the new end
+        of the whole kernel and schedules code outside the group. The anchors
+        are stable linked nodes and emit no bytes. They also keep
+        ``ToStinkyAsmPass`` from leaving an endpoint on a detached logical
+        instruction.
         """
         for idx, it in enumerate(self.itemList):
             if epilogue_range is not None and idx == epilogue_range[0]:
@@ -1577,8 +1575,10 @@ class Module(Item):
                 lm.add_textblock("")
             if pgr_range is not None and idx == pgr_range[0]:
                 lm.begin_group(_PGR_GROUP)
+                lm.add_textblock("")
             self._populate_one_item(lm, it)
             if pgr_range is not None and idx == pgr_range[1]:
+                lm.add_textblock("")
                 lm.end_group(_PGR_GROUP)
             if epilogue_range is not None and idx == epilogue_range[1]:
                 lm.add_textblock("")
@@ -1595,8 +1595,10 @@ class Module(Item):
                 return
             if it.name:
                 lm.begin_group(it.name)
+                lm.add_textblock("")
             it._populate_logical_module(lm)
             if it.name:
+                lm.add_textblock("")
                 lm.end_group(it.name)
             return
         if isinstance(it, ValueIf):
