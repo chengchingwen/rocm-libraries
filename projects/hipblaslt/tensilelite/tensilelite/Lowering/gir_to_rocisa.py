@@ -64,6 +64,7 @@ class GirToRocisa:
                   kernel.get("PrefetchLocalRead")), file=_sys.stderr)
         self._memberRegions = dict(prog.meta.get("unit_member_regions", {}) or {})
         self._regLayout = dict(prog.meta.get("register_layout", {}) or {})
+        self._coveredReads = frozenset((prog.meta.get("read_coverage", {}) or {}).keys())
         # Instruction anchors and accesses are carried by the frame contract;
         # only generation and phi-edge data remains in the module metadata.
         contract = build_contract(prog)
@@ -130,13 +131,16 @@ class GirToRocisa:
                                        bufA=at.get("bufA"), bufB=at.get("bufB"),
                                        bufMXA=at.get("bufMXA"), bufMXB=at.get("bufMXB"),
                                        unitA=at.get("unitA"), unitB=at.get("unitB"),
-                                       unitMXA=at.get("unitMXA"), unitMXB=at.get("unitMXB"),
+                                       unitMXA=(None if "MXSA" in self._coveredReads
+                                                else at.get("unitMXA")),
+                                       unitMXB=(None if "MXSB" in self._coveredReads
+                                                else at.get("unitMXB")),
                                        baseA=self._reg_base("A", at.get("groupA"), at.get("bufA")),
                                        baseB=self._reg_base("B", at.get("groupB"), at.get("bufB")),
-                                       baseMXA=self._reg_base("MXSA", at.get("groupMXA"),
-                                                              at.get("bufMXA")),
-                                       baseMXB=self._reg_base("MXSB", at.get("groupMXB"),
-                                                              at.get("bufMXB")),
+                                       baseMXA=self._reg_base(
+                                           "MXSA", at.get("groupMXA"), at.get("bufMXA")),
+                                       baseMXB=self._reg_base(
+                                           "MXSB", at.get("groupMXB"), at.get("bufMXB")),
                                        girComment=self._actLine))
             elif kind in FILL_OPS:
                 tc = at["tc"]

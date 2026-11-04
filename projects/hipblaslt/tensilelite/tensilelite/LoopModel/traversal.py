@@ -330,9 +330,9 @@ def _issue_order(keys) -> list:
 
 
 def unit_tile_index(theta, operand, coord) -> int:
-    """Dense covered-register index inside this group's physical rotation block."""
+    """Dense lifetime-unit index inside this group's rotation block."""
     at = dict(coord)
-    digits, grouping, group_extent = _rotation_block_digits(theta, operand)
+    digits, _grouping, group_extent = _rotation_block_digits(theta, operand)
     movement = operand.trajectory.shared_read
     coverage = getattr(movement, "coverage", None) if movement is not None else None
     if coverage is None:
@@ -344,8 +344,7 @@ def unit_tile_index(theta, operand, coord) -> int:
     reduction_value, reduction_total = _flatten_digits(
         [d for d in digits if d[0] in reduction], at, group_extent)
 
-    keys = [(coverage.carrier_of(tile), coverage.slot_of(tile))
-            for tile in range(max(1, free_total))]
+    keys = [coverage.carrier_of(tile) for tile in range(max(1, free_total))]
     order = _issue_order(keys)
     free_index = order.index(keys[free_value])
     return free_index * reduction_total + reduction_value

@@ -477,11 +477,11 @@ def _ref(
             size_regs=size_regs,
         )
         if destination:
-            indexes = tuple(
+            indexes = tuple(dict.fromkeys(
                 profile.unit_index(tile.operand.name, dict(coordinate))
                 if profile is not None else unit_index
                 for coordinate in covered_coords(reference)
-            )
+            ))
             reference = replace(reference, unit_indexes=indexes)
         return reference
     return Ref(gir_tile, covers=covers, size_bytes=size_bytes)

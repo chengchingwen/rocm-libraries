@@ -314,10 +314,11 @@ class LeafEmitters:
         if tPA.get("MX") is not None:
             mA_idx, selA = w.mxsTileSpanScaleSel(kernel, tPA["MX"], idxA)
             self._checkRegBuffer(tPA["MX"]["tensorChar"], mMXA, "wmma scale source A")
-            if baseMXA is not None and unitMXA is not None:
+            if baseMXA is not None:
+                offset = mA_idx if unitMXA is None else unitMXA
                 mxaStr = vgpr(self._valuSymbol(
                     kernel, tPA["MX"]["tensorChar"],
-                    baseMXA + unitMXA * ctx.vgprPerInputMXSA), ctx.vgprPerInputMXSA)
+                    baseMXA + offset * ctx.vgprPerInputMXSA), ctx.vgprPerInputMXSA)
             else:
                 mxaStr = vgpr(w.generateSrcStrForMFMA(
                     kernel, tPA["MX"], kernel["InnerUnroll"], vregSetIdx,
@@ -325,10 +326,11 @@ class LeafEmitters:
         if tPB.get("MX") is not None:
             mB_idx, selB = w.mxsTileSpanScaleSel(kernel, tPB["MX"], idxB)
             self._checkRegBuffer(tPB["MX"]["tensorChar"], mMXB, "wmma scale source B")
-            if baseMXB is not None and unitMXB is not None:
+            if baseMXB is not None:
+                offset = mB_idx if unitMXB is None else unitMXB
                 mxbStr = vgpr(self._valuSymbol(
                     kernel, tPB["MX"]["tensorChar"],
-                    baseMXB + unitMXB * ctx.vgprPerInputMXSB), ctx.vgprPerInputMXSB)
+                    baseMXB + offset * ctx.vgprPerInputMXSB), ctx.vgprPerInputMXSB)
             else:
                 mxbStr = vgpr(w.generateSrcStrForMFMA(
                     kernel, tPB["MX"], kernel["InnerUnroll"], vregSetIdx,

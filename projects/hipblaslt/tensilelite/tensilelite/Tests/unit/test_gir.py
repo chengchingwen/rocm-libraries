@@ -179,6 +179,75 @@ def test_folded_mxsb_refill_follows_its_last_broadcast_consumer(
     assert check_plan(build_gir(theta)) == []
 
 
+def _grouped_mxsb_theta():
+    k = _kernel(
+        _mxf8(32),
+        _mi("fp8", (1, 4), (1, 4)),
+        2,
+        1,
+        loopOrder(6, 2, 0, 1),
+        0,
+        1,
+        4,
+    )
+    k.update(
+        TDMFuse=2,
+        ISA=[12, 5, 0],
+        MXScaleFormat="InMemorySwizzle",
+        LocalReadVectorWidthMXS=4,
+        MatrixInstM=16,
+        MatrixInstN=16,
+        SuppressNoLoadLoop=False,
+    )
+    k = calculate_registers(k)
+    target = {
+        "ReadVectorElems": {"MXSA": 4, "MXSB": 16},
+        "ReadPhi": {"MXSA": 1, "MXSB": 4},
+        "ReadRho": {"MXSA": 0, "MXSB": 0},
+    }
+    return adapter.params_to_theta(
+        _kernel_to_params(k, target=target),
+        validate_register_depths=False,
+    )
+
+
+def test_grouped_mxsb_refill_follows_its_one_unit():
+    actions = plan_program(build_gir(_grouped_mxsb_theta()))["steady"]
+    refill, refill_action = next(
+        (index, action)
+        for index, action in enumerate(actions)
+        if action.kind == "ds_load"
+        and action.at["tc"] == "MXSB"
+        and action.at["reg_buf"] == 0
+    )
+    uses = [
+        (index, unit)
+        for index, action in enumerate(actions)
+        if action.kind == "wmma"
+        for operand, _group, buffer, unit, _logical in action.at["srcs"]
+        if operand == "MXSB" and buffer == 0
+    ]
+    assert refill_action.at["unit_indexes"] == (0,)
+    assert {unit for _index, unit in uses} == {0}
+    assert max(index for index, _unit in uses) < refill
+
+
+def test_verifier_rejects_refill_before_all_unit_values(monkeypatch):
+    from tensilelite.LoopModel.decoder import _Decoder
+
+    monkeypatch.setattr(
+        _Decoder,
+        "_schedule_refill_run",
+        lambda _self, operations: tuple(operations),
+    )
+    violations = check_plan(build_gir(_grouped_mxsb_theta()))
+    assert any(
+        "OVERWRITE-BEFORE-USE" in violation
+        and "unconsumed value(s)" in violation
+        for violation in violations
+    )
+
+
 def test_pgr3_decode_is_structurally_supported():
     """The decoder itself carries PGR3; Solution policy may still reject a concrete kernel."""
     k = {**_BASE, "PrefetchGlobalRead": 3, "NumLdsBlk": 3}
