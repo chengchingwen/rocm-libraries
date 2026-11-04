@@ -516,6 +516,7 @@ class Stub:
         for name in ("isTdmWaveSeparated", "tdmFusePaired",
                      "tdmSeparateABDescriptors", "tdmSetupIncrementWaveSeparated",
                      "tdmDescriptorSetOwner", "tdmLastIterDisableSgprs", "defineTdmSgprs",
+                     "graPrefetchSilenceMask",
                      "_dcpTokenSide", "_dcpCurrentToken", "_dcpTdmIssueTokens",
                      "tdmPairOnEveryWave", "removeStaggerCopies", "tdmHalfPlrReenableSgprs",
                      "removeStaggerIncs", "graIncrementMask", "releaseGlobalReadIncsSgprsAfterTdmWaveSep",
@@ -589,6 +590,38 @@ def test_every_tdm_sgpr_alias_targets_a_defined_set(monkeypatch, name, mxA, mxB)
 def test_last_iter_disable_names_per_grouping(monkeypatch, name, expected):
     monkeypatch.setattr(TF, "tdmGrouping", lambda _ks: TF.TDM_GROUPS[name])
     assert Stub().tdmLastIterDisableSgprs(_ksOwner()) == expected
+
+
+_SNLL_MASK_CASES = [
+    (fuse, name, {"MXBlockA": 32, "MXBlockB": 32})
+    for fuse, name in sorted(TDM_FUSE_GROUPING.items())
+] + [(1, "unfused", {"MXBlockA": 0, "MXBlockB": 0})]
+
+
+@pytest.mark.parametrize("fuse, name, problem", _SNLL_MASK_CASES)
+def test_loop_model_snll_mask_uses_base_descriptor_owners(fuse, name, problem):
+    """ULM must not retain the pre-#12825 A/MXSA-only last-iteration mask."""
+    writer = Stub(
+        states=types.SimpleNamespace(unrollIdx=0),
+        rapTdmPrefetchIsDead=lambda _kernel: False,
+        loopCounter=lambda _kernel, _loop_idx: 0,
+    )
+    state = _ksOwner(
+        TDMFuse=fuse,
+        ProblemType=problem,
+        SuppressNoLoadLoop=True,
+        PrefetchGlobalRead=2,
+    )
+    if name == "AB_first":
+        state.update(UseLoopModel=True, TDMSplit=True)
+    assert TF.tdmGrouping(state).name == name
+
+    mask = Module("ULM SNLL mask")
+    writer.graPrefetchSilenceMask(state, mask)
+
+    text = str(mask)
+    for name in writer.tdmLastIterDisableSgprs(state):
+        assert name in text
 
 
 @pytest.mark.parametrize("over", [dict(enableTDMB=False), dict(UseSubtileImpl=True)])

@@ -13521,9 +13521,9 @@ class KernelWriterAssembly(KernelWriter):
     loopIdx = self.states.unrollIdx # TODO - does this handle multiple summation indices?
     # The last PrefetchGlobalRead sections of the resident block have their TDM
     # silenced on every path, so neither the transfer nor the descriptor zeroing
-    # that silences it needs to be there. Every A-side load below is skipped
-    # together, TDMSplit's included, so dropping the zeroing cannot leave one
-    # behind that would reach past the K this tile covers.
+    # that silences it needs to be there. Every descriptor set's load below is
+    # skipped together, TDMSplit's included, so dropping the zeroing cannot leave
+    # one behind that would reach past the K this tile covers.
     rapTdmDead = mode == 1 and self.rapTdmPrefetchIsDead(kernel)
     if kernel["SuppressNoLoadLoop"] and not rapTdmDead:
       if mode==1 and tP["isA"]:
@@ -26404,20 +26404,17 @@ class KernelWriterAssembly(KernelWriter):
     loopIdx = self.states.unrollIdx
     if kernel.get("enableTDMA", False) and kernel.get("enableTDMB", False):
       if kernel["PrefetchGlobalRead"] > 0:
-        # Wave-separated TDM aliases one descriptor set, with even waves
-        # carrying A/MXSA and odd waves B/MXSB, so zeroing A's enable word
-        # silences whichever this wave holds and two writes cover all four
-        # tensors. Re-applied on every load because the descriptor is rebuilt
-        # each persistent iteration.
+        # Re-applied on every load because the descriptor is rebuilt each
+        # persistent iteration. Use the same descriptor-set ownership as the
+        # legacy SNLL path; TDMFuse 1/2 can keep B on a distinct set.
         mod.addComment0("disable TDM in last %u loop(s)" % kernel["PrefetchGlobalRead"])
         mod.add(SCmpLeI32(
           src0=self.loopCounter(kernel, loopIdx), \
           src1=kernel["PrefetchGlobalRead"], \
           comment="%s"%"is this the last iters"))
         if kernel["NumWaves"] > 1:
-          mod.add(SCMovB32(dst=sgpr("tdmAGroup0+0"), src=0, comment=""))
-          if kernel["ProblemType"]["MXBlockA"]:
-            mod.add(SCMovB32(dst=sgpr("tdmMXSAGroup0+0"), src=0, comment=""))
+          for name in self.tdmLastIterDisableSgprs(kernel):
+            mod.add(SCMovB32(dst=sgpr(name), src=0, comment=""))
         else:
           mod.add(SCMovB32(dst=sgpr("tdmAGroup0+0"), src=0, comment=""))
           mod.add(SCMovB32(dst=sgpr("tdmBGroup0+0"), src=0, comment=""))
