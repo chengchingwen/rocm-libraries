@@ -405,6 +405,15 @@ class STINKYTOFU_EXPORT StinkyAsmModule {
     void retargetGroupEndpoint(IRBase* from, IRBase* ifFirst, IRBase* ifLast);
 
     /**
+     * @brief Is \p node stored as some group's first or last?
+     *
+     * An endpoint must outlive every pass that runs over the range it bounds, so a
+     * region extractor keeps it rather than retargeting onto a neighbor the inner
+     * pipeline is free to erase or reorder.
+     */
+    bool isGroupEndpoint(const IRBase* node) const;
+
+    /**
      * @brief Get the ModuleOptions
      * @return ModuleOptions
      */
