@@ -574,7 +574,12 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         if (!source && !destination) continue;
         if (!namedActions.contains(incoming.sourceAction) ||
             !namedActions.contains(incoming.destinationAction))
-            STINKY_UNREACHABLE("GirFrameAnalysis: INCOMING names unknown action");
+            STINKY_UNREACHABLE(("GirFrameAnalysis: INCOMING names unknown action (src=" +
+                                std::to_string(incoming.sourceAction) + (source ? " here" : " ABSENT") +
+                                ", dst=" + std::to_string(incoming.destinationAction) +
+                                (destination ? " here" : " ABSENT") + ", function " +
+                                function.getName() + ")")
+                                   .c_str());
         if (!source || !destination)
             STINKY_UNREACHABLE(
                 "GirFrameAnalysis: INCOMING action anchor has no physical realization");
