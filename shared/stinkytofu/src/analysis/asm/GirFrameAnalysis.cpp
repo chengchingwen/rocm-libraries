@@ -70,22 +70,6 @@ GirFrame advanceFrame(const GirFrame& input, BasicBlock* from, BasicBlock* to,
     return result;
 }
 
-// The operand id already names one (operand, region) pair, so two touches meet exactly when
-// they carry the same id.
-bool disjointStorage(const GirAccessSpec& a, const GirAccessSpec& b) {
-    return a.operand != b.operand;
-}
-
-bool wawOrderedByRead(const GirAccessSpec& producer, const GirAccessSpec& consumer,
-                      const GirFrameContract& contract) {
-    if (producer.ring <= 1) return false;
-    for (const GirAccessSpec& access : contract.accesses)
-        if (!access.isWrite && !disjointStorage(producer, access) &&
-            !disjointStorage(consumer, access))
-            return true;
-    return false;
-}
-
 using StorageKey = std::pair<int, int>;
 
 // (operand, generation) names exactly one slot, so a touch has exactly one storage id.
@@ -117,8 +101,16 @@ struct LiveTouchKey {
     }
 };
 
+/// A live write, plus whether a read of the same slot has intervened on EVERY path that carries
+/// it here.  That read is pinned after the write by RAW and before the next write by WAR, so it
+/// already orders the write pair and the WAW adds nothing.
+struct LiveWrite {
+    int distance = 0;
+    bool readOrdered = false;
+};
+
 struct SlotLive {
-    std::map<LiveTouchKey, int> writes;
+    std::map<LiveTouchKey, LiveWrite> writes;
     std::map<LiveTouchKey, int> reads;
 };
 
@@ -152,11 +144,13 @@ HazardState walkHazards(const GirFrameNode& node,
                                 "GirFrameHazardAnalysis lost a live reader occurrence");
                         (*emit)(*occurrence->second, *touch, distance);
                     }
-                for (const auto& [prior, distance] : slot->second.writes) {
+                for (const auto& [prior, live] : slot->second.writes) {
+                    // The read that retired this write still needs its own RAW against it.
+                    if (spec.isWrite && live.readOrdered) continue;
                     auto occurrence = registry.find(prior);
                     if (occurrence == registry.end())
                         STINKY_UNREACHABLE("GirFrameHazardAnalysis lost a live writer occurrence");
-                    (*emit)(*occurrence->second, *touch, distance);
+                    (*emit)(*occurrence->second, *touch, live.distance);
                 }
             }
         }
@@ -168,7 +162,7 @@ HazardState walkHazards(const GirFrameNode& node,
                 slots.erase(storage);
             }
             SlotLive replacement;
-            replacement.writes.emplace(me, 0);
+            replacement.writes.emplace(me, LiveWrite{0, false});
             state[node.frame][storage] = std::move(replacement);
         } else {
             bool filed = false;
@@ -176,6 +170,15 @@ HazardState walkHazards(const GirFrameNode& node,
                 (void)storedFrame;
                 auto slot = slots.find(storage);
                 if (slot == slots.end()) continue;
+                // Only rotating storage claims the suppression; at ring 1 the write pair keeps
+                // its own WAW.
+                for (auto& [prior, live] : slot->second.writes) {
+                    auto occurrence = registry.find(prior);
+                    if (occurrence == registry.end())
+                        STINKY_UNREACHABLE("GirFrameHazardAnalysis lost a live writer occurrence");
+                    if (contract.accesses.at(occurrence->second->accessIndex).ring > 1)
+                        live.readOrdered = true;
+                }
                 slot->second.reads[me] = 0;
                 filed = true;
             }
@@ -190,9 +193,9 @@ HazardState stepHazards(HazardState state) {
         (void)frame;
         for (auto& [storage, live] : slots) {
             (void)storage;
-            for (auto& [touch, distance] : live.writes) {
+            for (auto& [touch, write] : live.writes) {
                 (void)touch;
-                ++distance;
+                ++write.distance;
             }
             for (auto& [touch, distance] : live.reads) {
                 (void)touch;
@@ -216,12 +219,36 @@ bool mergeNearest(Map& destination, const Map& source) {
     return changed;
 }
 
+/// `readOrdered` must hold on every incoming path, so a join clears it; `distance` keeps the
+/// nearest, exactly as `mergeNearest`.
+bool mergeWrites(std::map<LiveTouchKey, LiveWrite>& destination,
+                 const std::map<LiveTouchKey, LiveWrite>& source) {
+    bool changed = false;
+    for (const auto& [key, live] : source) {
+        auto found = destination.find(key);
+        if (found == destination.end()) {
+            destination[key] = live;
+            changed = true;
+            continue;
+        }
+        if (live.distance < found->second.distance) {
+            found->second.distance = live.distance;
+            changed = true;
+        }
+        if (found->second.readOrdered && !live.readOrdered) {
+            found->second.readOrdered = false;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 bool mergeHazardState(HazardState& destination, const HazardState& source) {
     bool changed = false;
     for (const auto& [frame, slots] : source)
         for (const auto& [storage, live] : slots) {
             SlotLive& target = destination[frame][storage];
-            changed |= mergeNearest(target.writes, live.writes);
+            changed |= mergeWrites(target.writes, live.writes);
             changed |= mergeNearest(target.reads, live.reads);
         }
     return changed;
@@ -913,9 +940,6 @@ GirFrameHazardAnalysis::Result GirFrameHazardAnalysis::run(Function& function,
         if (producerSpec.isWrite)
             kind = consumerSpec.isWrite ? GirHazardKind::WAW : GirHazardKind::RAW;
         if (!producerSpec.isWrite && !consumerSpec.isWrite) return;
-        if (kind == GirHazardKind::WAW &&
-            wawOrderedByRead(producerSpec, consumerSpec, frames.contract))
-            return;
 
         const bool crossAgent = function.getGemmTileConfig().NumWaves > 1 &&
                                 (producerSpec.crossAgent || consumerSpec.crossAgent);

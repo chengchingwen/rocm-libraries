@@ -599,7 +599,9 @@ TEST(GirFrameAnalysisTest, EarlyRawFenceDoesNotOwnAnOlderWar) {
         stamps.push_back(comment->comment);
     }
     std::sort(stamps.begin(), stamps.end());
-    EXPECT_EQ(stamps, (std::vector<std::string>{"GIR fence (RAW)", "GIR fence (WAR)"}));
+    // `readB` names the generation `copyB` does NOT write, so nothing ever reads copyB's slot and
+    // its loop-carried WAW stands.  The point is the WAR: it keeps a fence of its own.
+    EXPECT_EQ(stamps, (std::vector<std::string>{"GIR fence (RAW,WAW)", "GIR fence (WAR)"}));
 }
 
 TEST(GirFrameAnalysisTest, UnwaitedRawRemovalReclosesWarCut) {
@@ -1710,4 +1712,141 @@ TEST(GirFrameAnalysisTest, PredecessorPromotionRerunsDownstreamCounterflow) {
             joinWaits.push_back(inst->getModifier<SWaitTensorCntData>()->tlcnt);
     }
     EXPECT_EQ(joinWaits, (std::vector<int>{5, 4}));
+}
+
+namespace {
+
+/// The hazards between two instructions, as kinds.  A WAW survives only when no read orders the
+/// write pair, so these four tests read the kind set directly rather than the fences it produces.
+std::multiset<GirHazardKind> hazardKindsBetween(AnalysisManager& analyses, Function& function,
+                                                const StinkyInstruction* producer,
+                                                const StinkyInstruction* consumer) {
+    std::multiset<GirHazardKind> kinds;
+    const auto& result = analyses.getResult<GirFrameHazardAnalysis>(function);
+    for (const GirFrameHazard& hazard : result.hazards)
+        if (hazard.producer == producer && hazard.consumer == consumer) kinds.insert(hazard.kind);
+    return kinds;
+}
+
+}  // namespace
+
+// A read only discharges a WAW on the paths that run it.  The `skip` arm reaches the second write
+// without the read, so the write pair keeps its own order there.
+TEST(GirFrameAnalysisTest, WawSurvivesTheArmThatSkipsTheRead) {
+    Function function("waw_skipped_read");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* entry = function.createBasicBlock("entry");
+    BasicBlock* consume = function.createBasicBlock("consume");
+    BasicBlock* skip = function.createBasicBlock("skip");
+    BasicBlock* join = function.createBasicBlock("join");
+    function.addEdge(entry, consume);
+    function.addEdge(entry, skip);
+    function.addEdge(consume, join);
+    function.addEdge(skip, join);
+
+    StinkyInstruction* first = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 0, 8);
+    first->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 2, -1, 0, 0, true}}});
+    StinkyInstruction* read = createDsReadB128InBlock(consume, GfxArchID::Gfx1250, 0, 20);
+    read->addModifier<GirActionData>(
+        GirActionData{1, 1, GirActionKind::Ds, {GirAccessData{false, 0, 2, -1, 0, 0, true}}});
+    StinkyInstruction* second = createTensorLoadInBlock(join, GfxArchID::Gfx1250, 16, 24);
+    second->addModifier<GirActionData>(
+        GirActionData{2, 2, GirActionKind::Tensor, {GirAccessData{true, 0, 2, -1, 0, 0, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kFenceContract);
+
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    EXPECT_EQ(hazardKindsBetween(analyses, function, first, second),
+              (std::multiset{GirHazardKind::WAW}));
+    EXPECT_EQ(hazardKindsBetween(analyses, function, first, read),
+              (std::multiset{GirHazardKind::RAW}));
+    EXPECT_EQ(hazardKindsBetween(analyses, function, read, second),
+              (std::multiset{GirHazardKind::WAR}));
+}
+
+// With the read on every path, RAW then WAR already order the two writes.  Every read still keeps
+// its own RAW: the first one does not stand in for the second.
+TEST(GirFrameAnalysisTest, InterveningReadDropsTheWawAndKeepsEveryRaw) {
+    Function function("waw_ordered_by_read");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* block = function.createBasicBlock("entry");
+
+    StinkyInstruction* first = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
+    first->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 2, -1, 0, 0, true}}});
+    StinkyInstruction* early = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
+    early->addModifier<GirActionData>(
+        GirActionData{1, 1, GirActionKind::Ds, {GirAccessData{false, 0, 2, -1, 0, 0, true}}});
+    StinkyInstruction* late = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 4, 24);
+    late->addModifier<GirActionData>(
+        GirActionData{2, 2, GirActionKind::Ds, {GirAccessData{false, 0, 2, -1, 0, 0, true}}});
+    StinkyInstruction* second = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
+    second->addModifier<GirActionData>(
+        GirActionData{3, 3, GirActionKind::Tensor, {GirAccessData{true, 0, 2, -1, 0, 0, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kFenceContract);
+
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    EXPECT_TRUE(hazardKindsBetween(analyses, function, first, second).empty());
+    EXPECT_EQ(hazardKindsBetween(analyses, function, first, early),
+              (std::multiset{GirHazardKind::RAW}));
+    EXPECT_EQ(hazardKindsBetween(analyses, function, first, late),
+              (std::multiset{GirHazardKind::RAW}));
+    EXPECT_EQ(hazardKindsBetween(analyses, function, early, second),
+              (std::multiset{GirHazardKind::WAR}));
+    EXPECT_EQ(hazardKindsBetween(analyses, function, late, second),
+              (std::multiset{GirHazardKind::WAR}));
+}
+
+// The read names generation 1, the writes name generation 0.  Sharing an operand is not sharing a
+// slot, so this read orders nothing.
+TEST(GirFrameAnalysisTest, AReadOfAnotherGenerationDoesNotOrderTheWaw) {
+    Function function("waw_other_generation");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* block = function.createBasicBlock("entry");
+
+    StinkyInstruction* first = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
+    first->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 2, -1, 0, 0, true}}});
+    StinkyInstruction* read = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
+    read->addModifier<GirActionData>(
+        GirActionData{1, 1, GirActionKind::Ds, {GirAccessData{false, 0, 2, -1, 0, 1, true}}});
+    StinkyInstruction* second = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
+    second->addModifier<GirActionData>(
+        GirActionData{2, 2, GirActionKind::Tensor, {GirAccessData{true, 0, 2, -1, 0, 0, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kFenceContract);
+
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    EXPECT_EQ(hazardKindsBetween(analyses, function, first, second),
+              (std::multiset{GirHazardKind::WAW}));
+    EXPECT_TRUE(hazardKindsBetween(analyses, function, first, read).empty());
+}
+
+// The claim is about rotating storage.  A ring of 1 has one slot and keeps its WAW.
+TEST(GirFrameAnalysisTest, RingOneKeepsItsWawThroughTheRead) {
+    Function function("waw_ring_one");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* block = function.createBasicBlock("entry");
+
+    StinkyInstruction* first = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
+    first->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* read = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
+    read->addModifier<GirActionData>(
+        GirActionData{1, 1, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* second = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 16, 24);
+    second->addModifier<GirActionData>(
+        GirActionData{2, 2, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kFenceContract);
+
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    EXPECT_EQ(hazardKindsBetween(analyses, function, first, second),
+              (std::multiset{GirHazardKind::WAW}));
 }

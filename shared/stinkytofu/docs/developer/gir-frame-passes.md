@@ -275,9 +275,18 @@ feeding a read earlier in the body at `gdelta=2` is loop-carried with `gap=2`.
 
 ### Additional hazard rules
 
-**WAW suppressed by an intervening read.** `wawOrderedByRead` drops a WAW when
-some read of the same storage already orders the two writes; the read's
-ordering discharges that write/write relation.
+**WAW suppressed by an intervening read.** A WAW is dropped only when a read of
+the same concrete slot intervenes on **every** path that carries the first write
+to the second. RAW pins that read after the first write and WAR pins the second
+write after the read, so the pair is already ordered and the WAW adds nothing.
+
+The fact is carried on the live write itself (`LiveWrite::readOrdered`) during
+the reaching walk: a read sets it, a join clears it unless every incoming path
+agrees, and a path that reaches the second write without the read keeps its WAW.
+Sharing an operand is not sharing a slot — a read of another generation orders
+nothing. The claim is made for rotating storage only; at ring 1 the write pair
+keeps its own WAW. Every read still receives its own RAW: the first read does
+not stand in for a later one.
 
 **Single-wave accesses are not cross-agent.** Contract access flags describe
 visibility, but a function with one wave cannot require inter-wave publication.
