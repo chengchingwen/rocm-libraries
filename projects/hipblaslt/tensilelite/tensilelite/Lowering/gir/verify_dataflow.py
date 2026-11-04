@@ -59,14 +59,14 @@ def _event(phase, position, action):
 
 
 class _RegFile:
-    """`name -> (source coordinates, used, defining event)` -- one abstract vgpr file."""
+    """`name -> (source coordinates, consumed coordinates, defining event)`."""
 
     def __init__(self, initial=None):
         self.slots = dict(initial or {})
 
     def snapshot(self):
-        return {name: (sources, True, event)
-                for name, (sources, _used, event) in self.slots.items()}
+        return {name: (sources, frozenset(sources), event)
+                for name, (sources, _consumed, event) in self.slots.items()}
 
     def clone(self):
         return _RegFile(self.slots)
@@ -91,16 +91,17 @@ def _walk(prog, phase, regs, viol, acts=None):
             for unit, sources in writes:
                 name = (at["tc"], at.get("group"), at["reg_buf"], unit)
                 prev = regs.slots.get(name)
-                if prev is not None and not prev[1] and prev[0] != sources:
+                unread = frozenset() if prev is None else prev[0] - prev[1]
+                if unread and (prev[0] != sources or at.get("advance")):
                     viol.append(
                         "OVERWRITE-BEFORE-USE\n"
                         "    refill: %s\n"
                         "    prior fill: %s\n"
-                        "    register %s held source(s) %s (never read by a wmma) and is refilled "
-                        "with %s. The rotation width cannot hold both generations."
-                        % (_event(phase, i, act), prev[2], name, sorted(prev[0]),
+                        "    register unit %s still has unconsumed value(s) %s and is refilled "
+                        "with %s. The refill overwrites the whole unit."
+                        % (_event(phase, i, act), prev[2], name, sorted(unread),
                            sorted(sources)))
-                regs.slots[name] = (sources, False, _event(phase, i, act))
+                regs.slots[name] = (sources, frozenset(), _event(phase, i, act))
         elif act.kind == "wmma":
             # EVERY REGISTER SOURCE, READ OFF THE ACT (`srcs`) -- not reconstructed here.
             # `emit_plan._plan_mma` already DERIVES which operand each source is and which grid
@@ -120,7 +121,7 @@ def _walk(prog, phase, regs, viol, acts=None):
                            unit_index))
                     continue
                 for n in cand:
-                    held, _used, defining_event = regs.slots[n]
+                    held, consumed, defining_event = regs.slots[n]
                     if need not in held:
                         viol.append(
                             "WRONG SOURCE\n"
@@ -130,7 +131,9 @@ def _walk(prog, phase, regs, viol, acts=None):
                             "source(s) %s but needs (tile=%s,k=%s)."
                             % (_event(phase, i, act), defining_event, at["idx0"], at["idx1"],
                                at["u"], op, n, sorted(held), logical_index, u))
-                    regs.slots[n] = (held, True, defining_event)
+                    else:
+                        consumed = consumed | {need}
+                    regs.slots[n] = (held, frozenset(consumed), defining_event)
 
 
 def prologue_blocks(prog, entry="prologue", loop="steady"):

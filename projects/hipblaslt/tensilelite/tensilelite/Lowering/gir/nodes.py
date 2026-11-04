@@ -59,8 +59,8 @@ class Ref:
     reg_ring: object = None      # register rotation WIDTH W for this group -- a LoopIR fact GIR
                                  # CONSUMES : read from the LoopIR slot Expr.mod, never
                                  # decided in GIR; reg_band only validates it.
-    unit_index: int = 0          # dense tile offset inside this group's rotation unit
-    unit_indexes: tuple = ()     # every scalar unit a covered register write defines
+    unit_index: int = 0          # dense lifetime unit inside this group's rotation block
+    unit_indexes: tuple = ()     # every lifetime unit this register write defines
     issue_axes: tuple = ()       # invariant axes that delimit re-read residency events
     covers:   tuple = ()
     # -- size --
