@@ -465,7 +465,7 @@ def _emitKernel(kernelWriterAssembly, splitGSU, kernel, compress=False,
     if globalParameters.get("OutputLoopIR", False):
         # Observability only, and never allowed to break codegen: both render what the writer
         # already cached, so neither can disagree with the `.s` beside it.
-        irText, girText = _loopModelDumpTexts(kernelWriter)
+        irText, girText = _loopModelDumpTexts(kernelWriterAssembly)
     return KernelCodeGenResult(
         err, src, header, asmFilename, objFilename, tuple(kernel["ISA"]),
         kernel["WavefrontSize"], cuocc,
