@@ -413,6 +413,12 @@ class STINKYTOFU_EXPORT StinkyAsmModule {
      */
     bool isGroupEndpoint(const IRBase* node) const;
 
+   private:
+    /// (Re)bind the Function erase observer that keeps group endpoints off freed nodes.
+    void installEraseObserver();
+
+   public:
+
     /**
      * @brief Get the ModuleOptions
      * @return ModuleOptions
