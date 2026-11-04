@@ -118,6 +118,9 @@ st.func @gir_frame_waitcnt_inflight_depth() {
 # the prologue arm delivers.  Without them the two predecessors of ^loop disagree and no single
 # placement is correct.
 #
+# The prologue fills generation 1 because that is the one the first trip reads: the entry arm
+# delivers phase 0, so the first trip writes generation 0 and reads generation 0+1.
+#
 # CHECK-LABEL: @gir_frame_waitcnt_loop_rotation
 # CHECK: ^loop:
 # CHECK-NEXT: "st.s_wait_dscnt"(0)
@@ -130,7 +133,7 @@ st.func @gir_frame_waitcnt_inflight_depth() {
 
 st.func @gir_frame_waitcnt_loop_rotation() {
 ^entry:
-  "st.tensor_load_to_lds"(s[0:3], s[10:17]) { mod.gir_action = { action = 300, anchor = 300, kind = tensor, access0_write = 1, access0_operand = 0, access0_ring = 2, access0_abs = 0 } }
+  "st.tensor_load_to_lds"(s[0:3], s[10:17]) { mod.gir_action = { action = 300, anchor = 300, kind = tensor, access0_write = 1, access0_operand = 0, access0_ring = 2, access0_abs = 1 } }
   "st.s_branch"("loop")
   Successors: ^loop
 ^loop:
