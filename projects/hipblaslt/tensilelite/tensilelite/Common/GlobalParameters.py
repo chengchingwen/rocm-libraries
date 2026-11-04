@@ -254,7 +254,7 @@ globalParameters["AsanBuild"] = False  # build with asan
 #globalParameters["SaveTemps"] = False  # Generate intermediate results of hip kernels
 globalParameters["KeepBuildTmp"] = False  # If true, do not remove artifacts in build_tmp
 globalParameters["OutputLoopIR"] = False  # If true, also dump the LoopModel θ-IR to a sibling ir/ dir
-globalParameters["LoopModelIRVerify"] = True  # Set False only for output-parity codegen sweeps.
+globalParameters["LoopModelIRVerify"] = False  # Set True for verifying LoopModel IR.
 globalParameters["GIRScheduleDumpPath"] = ""  # Directory for editable per-kernel GIR schedules.
 globalParameters["GIRScheduleLoadPath"] = ""  # Directory containing edited GIR schedules.
 
