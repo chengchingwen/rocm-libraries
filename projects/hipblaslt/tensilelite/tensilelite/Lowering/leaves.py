@@ -335,11 +335,13 @@ class LeafEmitters:
                 mxbStr = vgpr(w.generateSrcStrForMFMA(
                     kernel, tPB["MX"], kernel["InnerUnroll"], vregSetIdx,
                     ctx.vgprPerInputMXSB, mMXB, u, iui, mB_idx), ctx.vgprPerInputMXSB)
-        if mxaStr is None or mxbStr is None:
-            raise NotImplementedError(
-                "LeafEmitters: one-sided MX (only one of A/B carries scales) is not supported; "
-                "the absent side needs the scaffold's ValuMXSDummy, whose width follows the "
-                "present side's block size")
+        # One-sided MX: the absent side reads ValuMXSDummy, width from the PRESENT block.
+        if mxaStr is None:
+            mxaStr = (vgpr("ValuMXSDummy") if kernel["ProblemType"]["MXBlockB"] == 32
+                      else vgpr("ValuMXSDummy", 2))
+        if mxbStr is None:
+            mxbStr = (vgpr("ValuMXSDummy") if kernel["ProblemType"]["MXBlockA"] == 32
+                      else vgpr("ValuMXSDummy", 2))
 
         # The scale operands follow the SAME tile01/SourceSwap swap as the data operands, because
         # `matrix_a_scale`/`matrix_b_scale` name the operand POSITIONS, not A and B.

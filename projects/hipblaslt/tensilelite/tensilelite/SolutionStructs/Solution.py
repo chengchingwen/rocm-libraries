@@ -1224,12 +1224,8 @@ class Solution(collections.abc.Mapping):
                "UseLoopModel: MXBlockA=%d != MXBlockB=%d — the WMMA carries one block modifier "
                "for both scale operands" % (_mxA, _mxB))
         return
-      if bool(_mxA) != bool(_mxB):
-        reject(state, printRejectionReason,
-               "UseLoopModel does not support one-sided MX (MXBlockA=%d MXBlockB=%d): the absent "
-               "side needs the scaffold's ValuMXSDummy, whose width follows the present side's "
-               "block size" % (_mxA, _mxB))
-        return
+      # One-sided MX rides the scaffold's ValuMXSDummy on the absent side (Lowering/leaves.py),
+      # which defineVgprs and openLoop already provide on exactly that XOR.
 
       if state["_ScheduleIterAlg"] != 0:
         reject(state, printRejectionReason,
@@ -4001,8 +3997,9 @@ class Solution(collections.abc.Mapping):
              "TDMFuse=%r names no descriptor grouping; supported values are %s and %d"
              % (tdmFuse, ", ".join(str(v) for v in fuseValues[:-1]), fuseValues[-1]))
       return
-    # A single wave shares no descriptor, so an unfused row is already TDMFuse=0.
-    if tdmFuse == 1 and state["NumWaves"] <= 1 and tdmGroupingName(state) == "unfused":
+    # A single wave shares no descriptor, so a row with no scale to pair is already TDMFuse=0.
+    if tdmFuse == 1 and state["NumWaves"] <= 1 \
+        and not (state["ProblemType"]["MXBlockA"] or state["ProblemType"]["MXBlockB"]):
       state["TDMFuse"] = tdmFuse = 0
     if tdmFuse:
       if not tdmBothTensors(state):

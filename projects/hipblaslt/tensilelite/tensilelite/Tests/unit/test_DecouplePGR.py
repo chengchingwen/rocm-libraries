@@ -1598,12 +1598,14 @@ DECLINES = (
 )
 
 
-# Not declines: the split is per operand, and a pair with no scale to pair has nothing to share,
-# so each resolves to a row of its own instead of collapsing onto the shared default.
+# Not declines: the split is per operand, and ONE live scale still has a data tensor's set to
+# ride, so it keeps `paired`. Only a problem with no scale at all has nothing to pair.
 RESOLVES = (
     ("TDMSplit", {"TDMSplit": True}, "paired"),
-    ("no MX scale on A", {"ProblemType": {"MXBlockA": 0, "MXBlockB": 32}}, "unfused"),
-    ("no MX scale on B", {"ProblemType": {"MXBlockA": 32, "MXBlockB": 0}}, "unfused"),
+    ("no MX scale on A", {"ProblemType": {"MXBlockA": 0, "MXBlockB": 32}}, "paired"),
+    ("no MX scale on B", {"ProblemType": {"MXBlockA": 32, "MXBlockB": 0}}, "paired"),
+    # The scale-less row carries paired's name too; only the row object separates them.
+    ("no MX scale at all", {"ProblemType": {"MXBlockA": 0, "MXBlockB": 0}}, "paired"),
 )
 
 

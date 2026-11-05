@@ -56,7 +56,7 @@ from .Components.StreamK import StreamKKernelState
 from .Components.CustomSchedule import customMainLoopSchedule
 from .Components.ClusterLoad import ClusterLoadTDM
 from .Components.TDMFuse import (tdmFusedGroups, tdmGroupWaveRanges, tdmGrouping,
-                                 TDM_GROUPING_DEFAULT)
+                                 tdmLiveScales, tdmStashedMembers, TDM_GROUPING_DEFAULT)
 from .Components.Subtile.Kernel import *
 from .Components.Subtile.SubtileLdsLayout import applyLdsLayout
 from .Components.DecouplePGR import decouplePGRBlocks, decoupledSingleBuffered, dcpLdsSide, dcpLateFillIncrements
@@ -3142,7 +3142,8 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
           _tp["MXSB"] = tensorParametersB["MX"]
         _groups = tdmFusedGroups(kernel)
         _mxA, _mxB = _tp.get("MXSA"), _tp.get("MXSB")
-        if tdmGrouping(kernel).name == TDM_GROUPING_DEFAULT:
+        if (tdmGrouping(kernel).name == TDM_GROUPING_DEFAULT
+            or len(tdmLiveScales(kernel)) == 1 or tdmStashedMembers(kernel)):
           # The default row IS the A/B-then-scale parity pair, so it keeps the pair spelling
           # rather than being routed through a dispatcher built for the rows that need one.
           # Those calls are also what the PAP tail rebuild emits, so one form serves both.
@@ -3430,7 +3431,8 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
         if kernel["ProblemType"]["MXBlockB"]:
           _tpI["MXSB"] = tensorParametersB["MX"]
         _mxIA, _mxIB = _tpI.get("MXSA"), _tpI.get("MXSB")
-        if tdmGrouping(kernel).name == TDM_GROUPING_DEFAULT:
+        if (tdmGrouping(kernel).name == TDM_GROUPING_DEFAULT
+            or len(tdmLiveScales(kernel)) == 1 or tdmStashedMembers(kernel)):
           # Pair spelling, matching the descriptor init above.
           module.add(self.tdmSetupIncrementWaveSeparated(kernel, _tpI["A"], _tpI["B"]))
           if _mxIA or _mxIB:
@@ -7058,18 +7060,29 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
           if kernel["ProblemType"]["MXBlockB"]:
             _tpT["MXSB"] = tensorParametersB["MX"]
           _groupsT = tdmFusedGroups(kernel)
-          for _g in _groupsT:
-            _mem = [_tpT[m] for m in _g]
-            _rng = tdmGroupWaveRanges(kernel, _g)
-            if self.isPrefetchAcrossPersistentEnabled(kernel):
-              assert _rng is None, "PAP tail reset has no ranged form yet"
-              module.add(self.papResetTDMDescriptorForTailWaveSeparated(kernel, _mem[0], _mem[1]))
-            else:
-              module.add(self.resetTDMDescriptorForTailWaveSeparatedGroup(kernel, _mem, _rng))
-          # An operand in no group owns its descriptor; every wave cooperates, so reset it plainly.
-          for _n, _p in _tpT.items():
-            if not any(_n in _g for _g in _groupsT):
-              module.add(self.resetTDMDescriptorForTail(kernel, _p))
+          if self.isPrefetchAcrossPersistentEnabled(kernel):
+            # papTdmRefreshPairs resolves the grouping itself, from the DATA pair; the default
+            # row keeps the scales apart, so they need their own call.
+            module.add(self.papResetTDMDescriptorForTailWaveSeparated(
+                kernel, tensorParameters1st, tensorParameters2nd))
+            if kernel["ProblemType"]["MXBlockA"] and kernel["ProblemType"]["MXBlockB"]:
+              module.add(self.papResetTDMDescriptorForTailWaveSeparated(
+                  kernel, tensorParameters1st["MX"], tensorParameters2nd["MX"]))
+          elif (len(tdmLiveScales(kernel)) == 1
+                and tdmGrouping(kernel).name != TDM_GROUPING_DEFAULT):
+            # A lone scale is reset by the guarded dispatch that set it up, not a group walk.
+            module.add(self.resetTDMDescriptorForTailWaveSeparated(
+                kernel, tensorParameters1st, tensorParameters2nd))
+            module.add(self.resetTDMDescriptorForTailWaveSeparated(
+                kernel, tensorParameters1st.get("MX"), tensorParameters2nd.get("MX")))
+          else:
+            for _g in _groupsT:
+              module.add(self.resetTDMDescriptorForTailWaveSeparatedGroup(
+                  kernel, [_tpT[m] for m in _g], tdmGroupWaveRanges(kernel, _g)))
+            # An operand in no group owns its descriptor; every wave cooperates, so reset it plainly.
+            for _n, _p in _tpT.items():
+              if not any(_n in _g for _g in _groupsT):
+                module.add(self.resetTDMDescriptorForTail(kernel, _p))
         else:
           module.add(self.resetTDMDescriptorForTail(kernel, tensorParameters1st))
           module.add(self.resetTDMDescriptorForTail(kernel, tensorParameters2nd))
