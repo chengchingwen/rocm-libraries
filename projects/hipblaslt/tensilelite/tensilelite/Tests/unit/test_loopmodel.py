@@ -3132,7 +3132,7 @@ _AB_FIRST = {"NumWaves": 4, "TDMInst": 3, "MIWaveTile": [2, 2],
              "TDMSplit": [2, 2, 1, 1], "TDMSplitA": 1, "TDMSplitB": 1}
 
 
-def _walk(fuse, loopOrder):
+def _abFirstCopySteps(fuse, loopOrder):
     """The movement steps of the A/B unit as `[(region, members)]`."""
     from tensilelite.LoopModel.decoder import _Decoder
     th = theta({**BF16_NT_KMN_PLR0, **_AB_FIRST, "TDMFuse": fuse, "LoopOrder": loopOrder})
@@ -3143,17 +3143,17 @@ def _walk(fuse, loopOrder):
 
 def test_ab_first_walk():
     """Both tensors split in two: one cooperative load, then each region 1 on its own."""
-    assert _walk(4, "KMN") == [(0, ["A", "B"]), (1, ["A"]), (1, ["B"])]
+    assert _abFirstCopySteps(4, "KMN") == [(0, ["A", "B"]), (1, ["A"]), (1, ["B"])]
 
 
 def test_ab_first_issues_the_earlier_read_operand_first():
     """Which solo load leads is the loop order's answer, not the table's member order."""
-    assert _walk(4, "KNM") == [(0, ["A", "B"]), (1, ["B"]), (1, ["A"])]
+    assert _abFirstCopySteps(4, "KNM") == [(0, ["A", "B"]), (1, ["B"]), (1, ["A"])]
 
 
 def test_the_default_row_fuses_every_region():
     """The same split under TDMFuse=0 keeps both members on both loads."""
-    assert _walk(0, "KMN") == [(0, ["A", "B"]), (1, ["A", "B"])]
+    assert _abFirstCopySteps(0, "KMN") == [(0, ["A", "B"]), (1, ["A", "B"])]
 
 
 # ------------------------------------------------------------------------------------------------
