@@ -360,3 +360,17 @@ def test_workgroup_mapping_xcc_key_folds_fixed_but_preserves_auto(make_state):
     assert automatic != fixed_eight
     assert "_WGMXCC1_" in fixed_eight
     assert "_WGMXCCn1_" in automatic
+
+
+def test_loop_model_names_its_registers_knobs_and_factors(make_state):
+    """UseLoopModel names what only exists on that path; every other kernel keeps its name."""
+    off = N.getKernelNameMin(make_state(UseLoopModel=False, WmmaFactorM=2), True)
+    on = N.getKernelNameMin(
+        make_state(UseLoopModel=True, WmmaInnerOrder=1, WmmaOuterOrder=0,
+                   WmmaFactorM=2, WmmaFactorN=1, WmmaFactorK=1,
+                   VgprGroupA=2, VgprGroupB=2, VgprAllocA=3, VgprAllocB=3), True)
+    for token in ("_ULM1_", "_WIO1_", "_WOO0_", "_VGA2_", "_VGB2_", "_VAA3_", "_VAB3_", "_WFM2_"):
+        assert token in on, (token, on)
+        assert token not in off, (token, off)
+    # A factor of 1 adds no axis, so it is not named even under the loop model.
+    assert "_WFN" not in on and "_WFK" not in on, on
