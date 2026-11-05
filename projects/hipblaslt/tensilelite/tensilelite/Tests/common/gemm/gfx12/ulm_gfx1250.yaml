@@ -495,3 +495,115 @@ BenchmarkProblems:
           - Exact: [257, 129, 1, 1024]
           - Exact: [256, 256, 1, 416]
           - Exact: [257, 129, 1, 416]
+
+  # mxf8 TN, scales on A only -- B's scale operand reads the all-ones ValuMXSDummy
+  -
+    -
+      OperationType: GEMM
+      DataType: F8
+      DestDataType: s
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      MXBlockA: 32
+      MXBlockB: 0
+      DataTypeMXSA: e8
+      DataTypeMXSB: e8
+      TransposeA: True
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 128, 1,  1,  4, 4,  2, 2]
+        - DepthU: [256]
+        - WavefrontSize: [32]
+        - UseLoopModel: [true]
+        - UseSubtileImpl: [false]
+        - TDMInst: [3]
+        - TDMIterateMode: [-1]
+        - LDSTrInst: [false, true]
+        - LDSSegmentInterleave: [0, 1]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - StaggerU: [0]
+        - PrefetchGlobalRead: [1, 2]
+        - PrefetchLocalRead: [1, 3]
+        - ScheduleIterAlg: [4]
+        - VectorWidthA: [-1, 1, 2, 4]
+        - VectorWidthB: [-1, 1, 2, 4]
+        - TDMSplitA: [0, 1, 2]
+        - TDMSplitB: [0, 1, 2]
+        - TDMFuse: [0, 1, 2, 3]
+        - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
+        - WmmaOuterOrder: [-1]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 1024]
+          - Exact: [256, 256, 1, 512]
+          - Exact: [256, 256, 1, 256]
+          - Exact: [257, 129, 1, 1024]
+          - Exact: [256, 256, 1, 416]
+          - Exact: [257, 129, 1, 416]
+
+  # mxf8 TN, scales on B only -- the mirror, A's scale operand takes the dummy
+  -
+    -
+      OperationType: GEMM
+      DataType: F8
+      DestDataType: s
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      MXBlockA: 0
+      MXBlockB: 32
+      DataTypeMXSA: e8
+      DataTypeMXSB: e8
+      TransposeA: True
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 128, 1,  1,  4, 4,  2, 2]
+        - DepthU: [256]
+        - WavefrontSize: [32]
+        - UseLoopModel: [true]
+        - UseSubtileImpl: [false]
+        - TDMInst: [3]
+        - TDMIterateMode: [-1]
+        - LDSTrInst: [false, true]
+        - LDSSegmentInterleave: [0, 1]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - StaggerU: [0]
+        - PrefetchGlobalRead: [1, 2]
+        - PrefetchLocalRead: [1, 3]
+        - ScheduleIterAlg: [4]
+        - VectorWidthA: [-1, 1, 2, 4]
+        - VectorWidthB: [-1, 1, 2, 4]
+        - TDMSplitA: [0, 1, 2]
+        - TDMSplitB: [0, 1, 2]
+        - TDMFuse: [0, 1, 2, 3]
+        - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
+        - WmmaOuterOrder: [-1]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 1024]
+          - Exact: [256, 256, 1, 512]
+          - Exact: [256, 256, 1, 256]
+          - Exact: [257, 129, 1, 1024]
+          - Exact: [256, 256, 1, 416]
+          - Exact: [257, 129, 1, 416]

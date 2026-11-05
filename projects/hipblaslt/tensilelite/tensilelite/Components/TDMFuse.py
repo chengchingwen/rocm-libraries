@@ -53,7 +53,9 @@ TDM_GROUPS = {
     "A_MX": TdmGrouping("A_MX", (("A", "MXSA", "MXSB"), ("B",)), layout="block"),
     "B_MX": TdmGrouping("B_MX", (("B", "MXSA", "MXSB"), ("A",)), layout="block"),
     "AB_first": TdmGrouping("AB_first", (("A", "B"), ("A",), ("B",), ("MXSA", "MXSB"))),
-    "unfused": TdmGrouping("unfused", (("A",), ("B",))),
+    # Paired with nothing to pair: the scales keep their SEATS so a dead member still
+    # answers tdmWavePartition; liveGroups is what drops them, leaving {A} + {B}.
+    "unfused": TdmGrouping("paired", (("A", "MXSA"), ("MXSB", "B"))),
 }
 
 # Baked into shipped solution names, so these integers cannot move.
@@ -66,10 +68,10 @@ def tdmBothTensors(ks):
     return bool(tdmInst & 0x01) and bool(tdmInst & 0x02)
 
 
-def _mxScalesLive(ks):
-    """True when both data tensors carry an MX scale."""
+def _noScaleToPair(ks):
+    """True when NEITHER tensor carries a scale; one live scale still rides its data set."""
     pt = ks.get("ProblemType") or {}
-    return bool(pt.get("MXBlockA") and pt.get("MXBlockB"))
+    return not (pt.get("MXBlockA") or pt.get("MXBlockB"))
 
 
 def _tdmFuseCanShareDescriptors(ks):
@@ -122,7 +124,7 @@ _GROUPING_ACCEPTED = {
     "A_MX": _acceptSharedScaleSet,
     "B_MX": _acceptSharedScaleSet,
     "AB_first": _acceptStaggeredRegions,
-    "unfused": _acceptAlways,
+    "unfused": _acceptPairedSets,
 }
 
 # The row a declined grouping falls back to, which is also TDMFuse=0's row.
@@ -136,9 +138,6 @@ def tdmGroupingName(ks):
     if name is None:
         raise ValueError("TDMFuse=%r names no grouping; mapped values are %s"
                          % (fuse, sorted(TDM_FUSE_GROUPING)))
-    if name == "paired" and not _mxScalesLive(ks):
-        # No scale to pair, so each set holds one data tensor and nothing is shared.
-        name = "unfused"
     if name not in TDM_GROUPS:
         raise ValueError("TDMFuse=%r maps to %r, which is not a row of TDM_GROUPS (%s)"
                          % (fuse, name, sorted(TDM_GROUPS)))
@@ -158,6 +157,8 @@ def tdmGrouping(ks):
     name = tdmGroupingName(ks)
     if not _GROUPING_ACCEPTED[name](ks):
         return TDM_GROUPS[TDM_GROUPING_DEFAULT]
+    if name == "paired" and _noScaleToPair(ks):
+        return TDM_GROUPS["unfused"]
     return TDM_GROUPS[name]
 
 
@@ -451,10 +452,13 @@ def tdmWaveShares(grouping, numWaves, isLive):
     Reads nothing but its arguments: `isLive(tc)` says which members the
     problem carries.
     """
-    return {tc: (numComp, waves)
-            for group in grouping.groups
-            for tc, (waves, numComp) in zip(
-                group, _setWaveShares(group, grouping.layout, numWaves, isLive))}
+    shares = {}
+    for group in grouping.groups:
+        for tc, (waves, numComp) in zip(
+                group, _setWaveShares(group, grouping.layout, numWaves, isLive)):
+            # A later tuple repeating a member is a region step; the first names its seat.
+            shares.setdefault(tc, (numComp, waves))
+    return shares
 
 
 def tdmWavePartition(ks, tc):
