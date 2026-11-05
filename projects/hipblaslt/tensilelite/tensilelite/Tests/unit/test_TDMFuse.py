@@ -887,12 +887,14 @@ _ONE_WAVE_64X64 = {"MatrixInstruction": [16, 16, 128, 1, 1, 4, 4, 1, 1], "WorkGr
 _WAVES = {1: _ONE_WAVE_64X64, 2: _TWO_WAVES, 4: {}}
 _ONE_SCALE = {"mx_a": _MXSA_ONLY, "mx_b": _MXSB_ONLY}
 _ONE_SIDED_MX = "MX scales on one tensor only"
+# The rows a lone scale leaves distinct; 2-4 give row 1's two sets on a block wave layout.
+_ONE_SIDED_FUSES = [0, 1]
 _STREAMK = {"StreamK": 3, "StreamKForceDPOnly": 1}
 
 
 @pytest.mark.parametrize("numWaves", [2, 4])
 @pytest.mark.parametrize("mx", sorted(_ONE_SCALE))
-@pytest.mark.parametrize("fuse", _SCAFFOLD_FUSES)
+@pytest.mark.parametrize("fuse", _ONE_SIDED_FUSES)
 def test_solution_on_one_mx_scale_for_every_grouping_and_wave_count(
         _gp_gfx1250, gfx1250_iim, assembler, capsys, fuse, mx, numWaves):
     """One-sided MX derives on gfx1250 TDM kernels of more than one wave."""
@@ -916,7 +918,7 @@ def test_solution_on_one_mx_scale_for_every_grouping_and_wave_count(
     ({"PrefetchGlobalReadA": 2, "PrefetchGlobalReadB": 1}, "PGRA=2, PGRB=1"),
 ], ids=["subtile", "pap", "rap", "divergent_pair", "divergent_pair_ba"])
 @pytest.mark.parametrize("mx", sorted(_ONE_SCALE))
-@pytest.mark.parametrize("fuse", [0, 1, 2, 3])
+@pytest.mark.parametrize("fuse", _ONE_SIDED_FUSES)
 def test_solution_rejects_one_mx_scale_outside_its_limits(
         _gp_gfx1250, gfx1250_iim, assembler, capsys, fuse, mx, overrides, found):
     sol, out = _derive(gfx1250_iim, assembler, capsys, TDMFuse=fuse,
@@ -993,14 +995,16 @@ _ONE_SIDED_MI = {
     2: [16, 16, 128, 1, 1, 2, 4, 2, 1],
     4: [16, 16, 128, 1, 1, 2, 4, 2, 2],
 }
+# One scale leaves rows 2-4 the same two sets row 1 already gives, on a block wave layout
+# the split region step cannot express, so the solution gate declines them.
+_ONE_SIDED_DECLINED = (2, 3, 4)
 _ONE_SIDED_CELLS = [(fuse, scale, numWaves)
-                    for fuse in (0, 1, 2, 3)
+                    for fuse in (0, 1)
                     for numWaves in (2, 4)
                     for scale in ("MXSA", "MXSB")]
 _ONE_SIDED_IDS = ["tdmfuse%d-%s-w%d" % cell for cell in _ONE_SIDED_CELLS]
-# The data tensor whose descriptor set the lone scale rides on TDMFuse 1-3.
-_SCALE_SET_OWNER = {(1, "MXSA"): "A", (1, "MXSB"): "B", (2, "MXSA"): "A",
-                    (2, "MXSB"): "A", (3, "MXSA"): "B", (3, "MXSB"): "B"}
+# The data tensor whose descriptor set the lone scale rides on TDMFuse 1.
+_SCALE_SET_OWNER = {(1, "MXSA"): "A", (1, "MXSB"): "B"}
 _GROUP1_SGPRS = 8
 _ONE_SIDED_FORK = {
     "DepthU": 256,
@@ -1287,14 +1291,20 @@ def test_onesided_mx_every_live_set_swaps_its_lds_buffer_inside_the_main_loop(
     assert not unswapped, unswapped
 
 
-@pytest.mark.parametrize("fuse, scale", [(fuse, scale) for fuse in (2, 3) for scale in ("MXSA", "MXSB")])
-def test_onesided_mx_lone_scale_on_a_block_set_subtracts_its_wave_offset(oneSidedKernel, fuse, scale):
-    """On four waves the scale is the run on waves 2-3, so its setup and its tail reset use WaveIdx - 2."""
-    kernel = oneSidedKernel(fuse, scale, 4)
-    before = kernel.source.partition("label_LoopBeginL:")[0]
-    after = kernel.source.partition("label_LoopEndL:")[2]
-    assert len(re.findall(r"WaveIdx - 2\b", before)) >= 2, "component id and global offset"
-    assert re.search(r"WaveIdx - 2\b", after), "tail reset"
+@pytest.mark.parametrize("fuse", _ONE_SIDED_DECLINED)
+@pytest.mark.parametrize("mx", ["mx_a", "mx_b"])
+@pytest.mark.parametrize("waves", [_TWO_WAVES, {}], ids=["2w", "4w"])
+def test_solution_rejects_a_block_set_with_one_mx_scale(
+        _gp_gfx1250, gfx1250_iim, assembler, capsys, fuse, mx, waves):
+    """A lone scale puts rows 2-4 on a block wave layout that the split region step reads as parity.
+
+    The surviving rows name the same two sets, so the gate declines rather than silently
+    downgrading -- and the wave layout the emitted kernel then carries is parity throughout.
+    """
+    sol, out = _derive(gfx1250_iim, assembler, capsys, TDMFuse=fuse,
+                       ProblemType=_ONE_SCALE[mx], **waves)
+    assert sol.get("Valid") is not True, out
+    assert "MX scales on one tensor only" in out, out
 
 
 @pytest.mark.parametrize("fuse", [1, 2, 3])
@@ -1562,8 +1572,9 @@ def test_two_waves_advance_mxsas_set_and_mxsbs_stash(tdmKernel, fuse, owner):
     assert advanced("s[sgprtdmMXSBGroup0+2"), "the stash's address must advance"
 
 
+# One scale is declined on these rows, so their cells are both scales or neither.
 _TWO_SET_CELLS = [(fuse, waves, mxA, mxB) for fuse in (2, 3) for waves in (2, 4)
-                  for mxA, mxB in ((32, 32), (32, 0), (0, 32), (0, 0))]
+                  for mxA, mxB in ((32, 32), (0, 0))]
 
 
 @pytest.mark.parametrize("fuse, numWaves, mxA, mxB", _TWO_SET_CELLS,
@@ -2447,12 +2458,15 @@ _SPARSE_PROBLEM = {"mx": {}, "mx_a": _MXSA_ONLY, "mx_b": _MXSB_ONLY, "no_mx": _N
 
 # Sparse B with F4 B (mx) stays out: its global-read width is 2, not the multiple of 4 Sparse B needs,
 # and TDMFuse=0 refuses it the same way.
-_SPARSE_ACCEPT_CELLS = [(mx, sparse) for mx in sorted(_SPARSE_PROBLEM) for sparse in (1, 2)
-                        if (mx, sparse) != ("mx", 2)]
+# One scale is declined on rows 2-3, so it rides only row 1 here.
+_SPARSE_ACCEPT_CELLS = [(fuse, mx, sparse)
+                        for fuse in (1, 2, 3) for mx in sorted(_SPARSE_PROBLEM)
+                        for sparse in (1, 2)
+                        if (mx, sparse) != ("mx", 2)
+                        and not (fuse != 1 and mx in _ONE_SCALE)]
 
 
-@pytest.mark.parametrize("mx, sparse", _SPARSE_ACCEPT_CELLS)
-@pytest.mark.parametrize("fuse", [1, 2, 3])
+@pytest.mark.parametrize("fuse, mx, sparse", _SPARSE_ACCEPT_CELLS)
 def test_solution_accepts_sparse_metadata_on_rows_one_to_three(
         _gp_gfx1250, gfx1250_iim, assembler, capsys, fuse, mx, sparse):
     """Rows 1-3 take TDM sparse metadata with MX scales on both tensors, on one, or on neither."""
@@ -2651,9 +2665,9 @@ def test_streamk_moves_a_lone_tdmfuse0_scale_by_its_own_increment(scale, numWave
 
 @pytest.mark.parametrize("numWaves", [2, 4])
 @pytest.mark.parametrize("scale", ["MXSA", "MXSB"])
-@pytest.mark.parametrize("fuse", [1, 2, 3])
+@pytest.mark.parametrize("fuse", [1])
 def test_streamk_moves_a_lone_scale_on_a_shared_set_only_on_the_ab_call(fuse, scale, numWaves):
-    """On TDMFuse 1-3 a lone scale rides its data tensor's set: the A/B call moves that set by
+    """On TDMFuse 1 a lone scale rides its data tensor's set: the A/B call moves that set by
     tdmABIncs, which holds the scale's increment on the scale's waves, and the other data set by
     its own increment; the scale call adds nothing."""
     state = _policyState(fuse, "mx_a" if scale == "MXSA" else "mx_b", numWaves, "streamk")
@@ -2743,10 +2757,10 @@ def _sgprNamesUsed(kernel, *prefixes):
 # Every arrangement with separate A and B sets under a cluster, which drops stagger code:
 # DataParallel with [2, 4]; StreamK takes a cluster only without a Y-extent, so [2, 1].
 _CLUSTER_CELLS = [(fuse, 2, 0, 0, "dp", (2, 4)) for fuse in (1, 2, 3)] \
-    + [(1, 2, 0, 32, "dp", (2, 4)), (2, 2, 32, 0, "dp", (2, 4)), (3, 2, 0, 32, "dp", (2, 4))] \
+    + [(1, 2, 0, 32, "dp", (2, 4)), (1, 2, 32, 0, "dp", (2, 4))] \
     + [(fuse, 2, 32, 32, "dp", (2, 4)) for fuse in (1, 2, 3)] + [(2, 4, 32, 32, "dp", (2, 4))] \
     + [(fuse, 2, 0, 0, "streamk", (2, 1)) for fuse in (1, 2, 3)] \
-    + [(2, 2, 32, 0, "streamk", (2, 1)), (2, 2, 32, 32, "streamk", (2, 1)), (3, 2, 32, 32, "streamk", (2, 1))]
+    + [(1, 2, 32, 0, "streamk", (2, 1)), (2, 2, 32, 32, "streamk", (2, 1)), (3, 2, 32, 32, "streamk", (2, 1))]
 
 
 @pytest.mark.parametrize("fuse, numWaves, mxA, mxB, policy, cluster", _CLUSTER_CELLS,
@@ -2781,7 +2795,7 @@ def _expectedKOffsets(fuse, mxA, mxB):
 
 _STREAMK_CELLS = [(fuse, numWaves, 0, 0) for fuse in (1, 2, 3) for numWaves in (2, 4)] \
     + [(0, numWaves, mxA, mxB) for numWaves in (2, 4) for mxA, mxB in ((32, 0), (0, 32))] \
-    + [(fuse, 2, mxA, mxB) for fuse in (1, 2, 3) for mxA, mxB in ((32, 0), (0, 32))] \
+    + [(1, 2, mxA, mxB) for mxA, mxB in ((32, 0), (0, 32))] \
     + [(2, 2, 32, 32), (3, 2, 32, 32), (0, 2, 32, 32)]
 
 
@@ -2821,7 +2835,7 @@ def test_each_persistent_tile_rebuilds_mxsb_disabled_on_wave_0(gfx1250_iim, tmp_
 
 @pytest.mark.parametrize("policy", [_STREAMK, _STREAMK_SPLIT], ids=["persistent_dp", "streamk"])
 @pytest.mark.parametrize("mx", sorted(_ONE_SCALE))
-@pytest.mark.parametrize("fuse", [0, 1, 2, 3])
+@pytest.mark.parametrize("fuse", _ONE_SIDED_FUSES)
 def test_solution_accepts_one_mx_scale_with_streamk_and_data_parallel(
         _gp_gfx1250, gfx1250_iim, assembler, capsys, fuse, mx, policy):
     """One-sided MX takes StreamK and data-parallel persistent kernels."""

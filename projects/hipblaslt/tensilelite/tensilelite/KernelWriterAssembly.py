@@ -23315,9 +23315,12 @@ class KernelWriterAssembly(KernelWriter):
 
     Each arm advances by ITS member's step, which is A-vs-B only on the default row; under
     `paired` the set is (A, MXSA).  A set with one live member is wave-uniform.
+
+    `ranges is None` is what names a parity set -- a member COUNT of two does not, because a
+    block-layout set whose other scale is dead also has two, and its members do not alternate.
     """
-    _members, _ = self.tdmFuseGroupOf(kernel, tc)
-    if _members and len(_members) == 2:
+    _members, _ranges = self.tdmFuseGroupOf(kernel, tc)
+    if _members and _ranges is None:
       _even, _odd = tdmParityOrder(kernel, _members)
       return self._tdmSplitMultiWaveInc(module, kernel, gIncIdx, scratchIdx,
                                         self.tdmTpByChar(_even), self.tdmTpByChar(_odd))
