@@ -277,5 +277,15 @@ def plan_block(prog, phase):
 
 
 def plan_program(prog):
-    """{phase: [EmitAction]} for every block, in block order."""
-    return {phase: plan_block(prog, phase) for phase in prog.blocks}
+    """{phase: [EmitAction]} for every block, in block order.
+
+    The id base is the running action count, so each block is planned ONCE -- asking
+    `plan_block` per phase re-plans every preceding block to rediscover the same count.
+    """
+    plans, base = {}, 0
+    for phase in prog.blocks:
+        raw = _plan_block_raw(prog, phase)
+        plans[phase] = [replace(action, action_id=base + i)
+                        for i, action in enumerate(raw)]
+        base += len(raw)
+    return plans
