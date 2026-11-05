@@ -4123,6 +4123,13 @@ class Solution(collections.abc.Mapping):
                "descriptor set can be shared. Use UseSubtileImpl=0, or TDMFuse=0"
                % (tdmFuse, state["NumWaves"]))
         return
+      if tdmFuse in (2, 3, 4) and _oneSidedMX(state):
+        reject(state, printRejectionReason,
+               "TDMFuse=%d is not implemented with %s: the dead scale leaves a set of one data "
+               "tensor and one scale, which is the TDMFuse=0 or 1 grouping already, and its "
+               "block wave layout then disagrees with the parity the split region step emits. "
+               "Use TDMFuse=0 or 1" % (tdmFuse, _oneSidedMXHead(state)))
+        return
       if tdmFuse in (2, 3) and bothScales and state["NumWaves"] not in (2, 4):
         reject(state, printRejectionReason,
                "TDMFuse=%d with MX scales on both tensors supports 2 or 4 waves; got "
