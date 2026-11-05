@@ -11,10 +11,24 @@ from ...Lowering.gir_to_rocisa import GirToRocisa
 from .Program import loopModelGirProgram
 
 
+def _girEmitter(writer, kernel, tPA, tPB, prog):
+  """The ONE emitter for this program, as its docstring says it is built to be.
+
+  Construction settles the frame contract, the act plan and the leaf contexts -- all facts of
+  the finalized program, so a per-stage rebuild re-derives them for every stage.
+  """
+  cache = getattr(writer, "_loopModelEmitterCache", None)
+  if not (cache and cache[0] is prog and cache[1] == prog.version
+          and cache[2] is tPA and cache[3] is tPB):
+    cache = (prog, prog.version, tPA, tPB, GirToRocisa(writer, kernel, tPA, tPB, prog))
+    writer._loopModelEmitterCache = cache
+  return cache[4]
+
+
 def girEmitStage(writer, kernel, tPA, tPB, phase, *, internalPointerSwap=False, kinds=None):
   """Emit one GIR stage from the cached program."""
   prog = loopModelGirProgram(writer, kernel)
-  return GirToRocisa(writer, kernel, tPA, tPB, prog).emit_block(
+  return _girEmitter(writer, kernel, tPA, tPB, prog).emit_block(
       prog, phase, internalPointerSwap=internalPointerSwap, kinds=kinds)
 
 
