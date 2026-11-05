@@ -418,7 +418,6 @@ class STINKYTOFU_EXPORT StinkyAsmModule {
     void installEraseObserver();
 
    public:
-
     /**
      * @brief Get the ModuleOptions
      * @return ModuleOptions
