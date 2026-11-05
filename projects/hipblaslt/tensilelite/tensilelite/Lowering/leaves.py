@@ -638,7 +638,9 @@ class LeafEmitters:
             if regUnitIdx is not None:
                 regSlot = regUnitIdx
             scalar_unit = quantum is not None and tc.startswith("MXS") and regUnitIdx is not None
-            regOff = ((regSlot * ctx.unitRegStride if scalar_unit else
+            # THE STEP MUST COVER THE READ.  One ds_read carries `tilePerRead` tiles' scales, so
+            # stepping by a single tile's width overlaps the previous read and loses it.
+            regOff = ((regSlot * ctx.unitRegStride * max(1, ctx.tilePerRead) if scalar_unit else
                        ctx.wtRegStride * (regSlot if regSlot is not None
                                          else regTileIdx // ctx.tilePerRead))
                       + fragReg)
