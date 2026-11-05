@@ -330,10 +330,11 @@ def test_valid_parameters_and_the_mapping_name_the_same_integers():
 
 
 def test_every_shipped_row_is_reachable():
-    """`unfused` is the one row no integer names: it is where `paired` lands when there is no
-    scale to pair, so it is reached through that remap rather than from TDMFuse directly."""
+    """`unfused` is the one row no integer names: `tdmGrouping` selects it where `paired` has no
+    scale to pair. It carries paired's name and seats, so only the row object tells them apart."""
     assert set(TF.TDM_GROUPS) - set(TF.TDM_FUSE_GROUPING.values()) == {"unfused"}
-    assert TF.tdmGroupingName(ks(fuse=1, ProblemType=_NO_MX_ON_B)) == "unfused"
+    assert TF.tdmGrouping(ks(fuse=1, ProblemType={"MXBlockA": 0, "MXBlockB": 0})) \
+        is TF.TDM_GROUPS["unfused"]
     assert set(TF.TDM_GROUPS) == set(TF._GROUPING_ACCEPTED)
 
 
@@ -595,7 +596,7 @@ def test_last_iter_disable_names_per_grouping(monkeypatch, name, expected):
 _SNLL_MASK_CASES = [
     (fuse, name, {"MXBlockA": 32, "MXBlockB": 32})
     for fuse, name in sorted(TDM_FUSE_GROUPING.items())
-] + [(1, "unfused", {"MXBlockA": 0, "MXBlockB": 0})]
+] + [(1, "paired", {"MXBlockA": 0, "MXBlockB": 0})]
 
 
 @pytest.mark.parametrize("fuse, name, problem", _SNLL_MASK_CASES)
@@ -892,7 +893,7 @@ _STREAMK = {"StreamK": 3, "StreamKForceDPOnly": 1}
 
 @pytest.mark.parametrize("numWaves", [2, 4])
 @pytest.mark.parametrize("mx", sorted(_ONE_SCALE))
-@pytest.mark.parametrize("fuse", sorted(TDM_FUSE_GROUPING))
+@pytest.mark.parametrize("fuse", _SCAFFOLD_FUSES)
 def test_solution_on_one_mx_scale_for_every_grouping_and_wave_count(
         _gp_gfx1250, gfx1250_iim, assembler, capsys, fuse, mx, numWaves):
     """One-sided MX derives on gfx1250 TDM kernels of more than one wave."""
@@ -1315,6 +1316,8 @@ _MX_PROBLEMS = {"mx": {}, "no_mx": _NO_MX, "mx_a": _MXSA_ONLY, "mx_b": _MXSB_ONL
 @pytest.mark.parametrize("mx", sorted(_MX_PROBLEMS))
 def test_solution_rejects_rows_one_to_three_on_one_wave(
         _gp_gfx1250, gfx1250_iim, assembler, capsys, fuse, mx):
+    if fuse == 1 and mx == "no_mx":
+        pytest.skip("downgrades to TDMFuse=0; see test_one_wave_no_scale_downgrades_to_zero")
     sol, out = _derive(gfx1250_iim, assembler, capsys, TDMFuse=fuse,
                        ProblemType=_MX_PROBLEMS[mx], **_ONE_WAVE_64X64)
     assert sol.get("Valid") is False
@@ -1616,7 +1619,9 @@ def test_only_rows_without_scales_put_both_data_tensors_on_every_wave(fuse):
     assert TF.tdmPairOnEveryWave(ks(fuse=fuse), "A", "B") is False
     assert TF.tdmPairOnEveryWave(ks(fuse=fuse), "MXSA", "MXSB") is False
     unscaled = ks(fuse=fuse, ProblemType={"MXBlockA": 0, "MXBlockB": 0})
-    assert TF.tdmPairOnEveryWave(unscaled, "A", "B") is (fuse != 0)
+    # A declined row falls back to TDMFuse=0's, which keeps A and B on one parity set.
+    assert TF.tdmPairOnEveryWave(unscaled, "A", "B") \
+        is (fuse != 0 and TF.tdmGroupingAccepted(unscaled))
 
 
 def test_a_single_member_set_alone_rides_every_wave():
@@ -1718,8 +1723,9 @@ def test_rows_one_to_three_reduce_to_a_and_b_on_every_wave_without_scales(fuse, 
     assert TF.tdmGroupPartner(state, "B", "A") == "A"
 
 
+# TDMSplit is absent: it is per operand now, so it refuses the solution without declining a row.
 @pytest.mark.parametrize("over", [
-    {"TDMSplit": True}, {"UseSubtileImpl": True}, {"TDMInst": 1},
+    {"UseSubtileImpl": True}, {"TDMInst": 1},
 ])
 @pytest.mark.parametrize("fuse", [1, 2, 3])
 def test_rows_one_to_three_without_scales_decline_outside_their_limits(fuse, over):
@@ -1822,9 +1828,14 @@ def test_a_lone_scale_on_a_block_set_rides_an_offset_run(fuse, mx, scale):
 def test_wave_shares_with_every_member_live_split_each_full_set():
     for grouping, numWaves in itertools.product(TF.TDM_GROUPS.values(), range(1, 17)):
         shares = TF.tdmWaveShares(grouping, numWaves, lambda _tc: True)
+        seen = set()
         for group in grouping.groups:
             split = TF._waveShares(numWaves, len(group), grouping.layout)
             for tc, (waves, numComp) in zip(group, split):
+                # A later tuple repeating a member is a region step, not a second seat.
+                if tc in seen:
+                    continue
+                seen.add(tc)
                 assert shares[tc] == (numComp, waves), (grouping.name, numWaves, tc)
 
 
@@ -1911,6 +1922,17 @@ _ALLOCATION = {
     (3, "mx_a", 4):  ("B_MX",   False,    (0, 1, 2, 3), (2, 3),       (),           (0, 1)),
     (3, "mx_b", 4):  ("B_MX",   False,    (0, 1, 2, 3), (),           (2, 3),       (0, 1)),
     (3, "mx", 4):    ("B_MX",   False,    (0, 1, 2, 3), (2,),         (3,),         (0, 1)),
+    # TDMFuse=4 AB_first stages a later region, so it needs UseLoopModel and both operands
+    # split alike. This scaffold state carries neither: every entry declines to the default
+    # row and takes TDMFuse=0's wave layout. Its own walk is asserted by test_ab_first_walk.
+    (4, "no_mx", 2): ("MX_AB",  True,     (0,),         (),           (),           (1,)),
+    (4, "mx_a", 2):  ("MX_AB",  True,     (0,),         (0, 1),       (),           (1,)),
+    (4, "mx_b", 2):  ("MX_AB",  True,     (0,),         (),           (0, 1),       (1,)),
+    (4, "mx", 2):    ("MX_AB",  True,     (0,),         (0,),         (1,),         (1,)),
+    (4, "no_mx", 4): ("MX_AB",  True,     (0, 2),       (),           (),           (1, 3)),
+    (4, "mx_a", 4):  ("MX_AB",  True,     (0, 2),       (0, 1, 2, 3), (),           (1, 3)),
+    (4, "mx_b", 4):  ("MX_AB",  True,     (0, 2),       (),           (0, 1, 2, 3), (1, 3)),
+    (4, "mx", 4):    ("MX_AB",  True,     (0, 2),       (0, 2),       (1, 3),       (1, 3)),
 }
 
 # What a wave share means at its NumWaves: (numComp, wave mask, tdmWaveComponents,
@@ -2014,11 +2036,12 @@ def test_shared_scale_set_over_the_allocation_matrix(fuse, mx, numWaves):
 
 # Tensors whose own GlobalReadIncs HalfPLR's last-iteration mask zeroes on more than one wave,
 # by whether A and B carry MX scales, then TDMFuse.
+# Row 4 declines on this scaffold state (no UseLoopModel, no split), so it takes row 0's answer.
 _HALFPLR_MASKED_INCS = {
-    (False, False): {0: (), 1: ("A", "B"), 2: ("A", "B"), 3: ("A", "B")},
-    (True, True): {0: (), 1: (), 2: ("B",), 3: ("A",)},
-    (True, False): {0: ("MXSA",), 1: ("B",), 2: ("B",), 3: ("A",)},
-    (False, True): {0: ("MXSB",), 1: ("A",), 2: ("B",), 3: ("A",)},
+    (False, False): {0: (), 1: ("A", "B"), 2: ("A", "B"), 3: ("A", "B"), 4: ()},
+    (True, True): {0: (), 1: (), 2: ("B",), 3: ("A",), 4: ()},
+    (True, False): {0: ("MXSA",), 1: ("B",), 2: ("B",), 3: ("A",), 4: ("MXSA",)},
+    (False, True): {0: ("MXSB",), 1: ("A",), 2: ("B",), 3: ("A",), 4: ("MXSB",)},
 }
 
 
@@ -2167,14 +2190,14 @@ _HEAD = {"mx_a": "MX scales on one tensor only (MXBlockA=32, MXBlockB=0)",
 
 @pytest.mark.parametrize("overrides", [{}, {"TDMInst": 0, "ProblemType": _NO_MX}],
                          ids=["tdm_on_a_and_b", "tdm_off"])
-@pytest.mark.parametrize("fuse", [-1, 4])
+@pytest.mark.parametrize("fuse", [-1, 5])
 def test_solution_rejects_a_tdmfuse_value_that_names_no_grouping(
         _gp_gfx1250, gfx1250_iim, assembler, capsys, fuse, overrides):
     """Rejected ahead of every row rule; the layer itself raises for such a value."""
     assert fuse not in validParameters["TDMFuse"]
     sol, out = _derive(gfx1250_iim, assembler, capsys, TDMFuse=fuse, **overrides)
     assert sol.get("Valid") is False
-    assert ("TDMFuse=%d names no descriptor grouping; supported values are 0, 1, 2 and 3"
+    assert ("TDMFuse=%d names no descriptor grouping; supported values are 0, 1, 2, 3 and 4"
             % fuse) in out, out
 
 
@@ -2184,28 +2207,48 @@ _LAYER_DECLINES = {
     "tdminst0": ((1, 2, 3), {"TDMInst": 0, "ProblemType": _NO_MX}, "is not implemented with TDMInst=0"),
     "tdminst1": ((1, 2, 3), {"TDMInst": 1}, "TDMA and TDMB must be enabled simultaneously"),
     "tdminst2": ((1, 2, 3), {"TDMInst": 2}, "TDMA and TDMB must be enabled simultaneously"),
-    "tdmsplit": ((1, 2, 3), {"TDMSplit": True}, "TDMSplit is currently disabled"),
+    # The split is per operand now, so it refuses the SOLUTION without declining the grouping.
+    "tdmsplit": ((1, 2, 3), {"TDMSplit": True}, "TDMSplit is currently disabled", False),
     "tdmsplit_one_wave": ((1, 2, 3), dict(_ONE_WAVE_64X64, TDMSplit=True),
                           "TDMSplit is currently disabled"),
     "one_wave": ((1, 2, 3), _ONE_WAVE_64X64, "needs more than one wave (NumWaves=1)"),
-    "one_wave_no_mx": ((1, 2, 3), dict(_ONE_WAVE_64X64, ProblemType=_NO_MX),
+    # TDMFuse=1 is absent: with no scale to pair on one wave the row IS TDMFuse=0, so
+    # derivation downgrades it instead of refusing (test_one_wave_no_scale_downgrades_to_zero).
+    "one_wave_no_mx": ((2, 3), dict(_ONE_WAVE_64X64, ProblemType=_NO_MX),
                        "needs more than one wave (NumWaves=1)"),
     "subtile": ((1, 2, 3), _SUBTILE, _SUBTILE_RULE),
     "subtile_no_mx": ((1, 2, 3), dict(_SUBTILE, ProblemType=_NO_MX), _SUBTILE_RULE),
     "waves8": ((2, 3), _EIGHT_WAVES, _WAVE_RULE % 8),
     "waves16": ((2, 3), _SIXTEEN_WAVES, _WAVE_RULE % 16),
 }
-_DECLINE_CASES = [(name, fuse) for name, (fuses, _, _) in _LAYER_DECLINES.items() for fuse in fuses]
+_DECLINE_CASES = [(name, fuse) for name, entry in _LAYER_DECLINES.items() for fuse in entry[0]]
 
 
 @pytest.mark.parametrize("name, fuse", _DECLINE_CASES, ids=["%s-%d" % case for case in _DECLINE_CASES])
 def test_every_layer_decline_is_rejected_by_an_earlier_named_rule(
         _gp_gfx1250, gfx1250_iim, assembler, capsys, name, fuse):
-    _, overrides, rule = _LAYER_DECLINES[name]
+    entry = _LAYER_DECLINES[name]
+    overrides, rule = entry[1], entry[2]
+    declines = entry[3] if len(entry) > 3 else True
     sol, out = _derive(gfx1250_iim, assembler, capsys, TDMFuse=fuse, **overrides)
-    assert _groupingAccepted(sol._state) is False, name
+    if declines:
+        assert _groupingAccepted(sol._state) is False, name
     assert sol.get("Valid") is False
     assert rule in out, out
+
+
+@pytest.mark.parametrize("subtile", [False, True], ids=["dense", "subtile"])
+def test_one_wave_no_scale_downgrades_to_zero(
+        _gp_gfx1250, gfx1250_iim, assembler, capsys, subtile):
+    """One wave shares no descriptor, so TDMFuse=1 with no scale to pair IS TDMFuse=0."""
+    overrides = dict(_ONE_WAVE_64X64, ProblemType=_NO_MX)
+    if subtile:
+        overrides["UseSubtileImpl"] = True
+    sol0, _ = _derive(gfx1250_iim, assembler, capsys, TDMFuse=0, **overrides)
+    sol, out = _derive(gfx1250_iim, assembler, capsys, TDMFuse=1, **overrides)
+    assert sol.get("Valid") is sol0.get("Valid"), out
+    if sol.get("Valid"):
+        assert sol._state["TDMFuse"] == 0, out
 
 
 @pytest.mark.parametrize("mx", ["mx", "no_mx"])
@@ -2213,6 +2256,9 @@ def test_every_layer_decline_is_rejected_by_an_earlier_named_rule(
 def test_one_wave_subtile_rows_are_rejected(
         _gp_gfx1250, gfx1250_iim, assembler, capsys, fuse, mx):
     """Subtile does not lift the one-wave limit: rows 1-3 are rejected, by it wherever TDMFuse=0 derives."""
+    if fuse == 1 and mx == "no_mx":
+        pytest.skip("one wave with no scale to pair downgrades TDMFuse=1 to 0; see "
+                    "test_one_wave_no_scale_downgrades_to_zero")
     overrides = dict(_ONE_WAVE_64X64, UseSubtileImpl=True, ProblemType=_MX_PROBLEMS[mx])
     sol0, out0 = _derive(gfx1250_iim, assembler, capsys, TDMFuse=0, **overrides)
     sol, out = _derive(gfx1250_iim, assembler, capsys, TDMFuse=fuse, **overrides)

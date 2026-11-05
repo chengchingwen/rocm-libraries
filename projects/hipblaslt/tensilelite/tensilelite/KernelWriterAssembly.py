@@ -26014,8 +26014,58 @@ class KernelWriterAssembly(KernelWriter):
     return mod
 
   def resetTDMDescriptorForTailWaveSeparated(self, kernel, tPA, tPB) -> Module:
-    """Two-member form; the group form below is the general one."""
+    """Two-member form. A lone scale, a shared scale set, or an every-wave pair is rebuilt
+    per member first -- the group form's parity walk expresses none of them."""
+    lonePair = tPA is None or tPB is None
+    if lonePair or tdmSharedScaleSetActive(kernel) or self.tdmPairOnEveryWave(kernel, tPA, tPB):
+      return self._resetTDMDescriptorForTailPerMember(kernel, tPA, tPB, lonePair)
     return self.resetTDMDescriptorForTailWaveSeparatedGroup(kernel, [tPA, tPB], None)
+
+  def _resetTDMDescriptorForTailPerMember(self, kernel, tPA, tPB, lonePair: bool) -> Module:
+    """Rebuild each member's tail descriptor on its assigned waves, guarded as at setup."""
+    mod = Module("TDM Init Wave Separated")
+    du: int = kernel["DepthU"]
+    assert kernel["NumWaves"] > 1
+    with self.allocTmpSgpr(2, tag="resetTDMDescriptorForTailSharedScale") as tmpRes:
+      waveIdxTmp = tmpRes.idx
+      waveOfstTmp = tmpRes.idx + 1
+      mod.add(VReadfirstlaneB32(sgpr(waveIdxTmp), vgpr("Serial"), "first tId"))
+      mod.add(SLShiftRightB32(sgpr(waveIdxTmp), ceil(log2(kernel["WavefrontSize"])),
+              sgpr(waveIdxTmp), "wId=fTid // wavelen"))
+
+      def resetForTail(tP):
+        """One member's tail reset, with its own component's K offset."""
+        tcM: str = tP["tensorChar"]
+        m = Module(f"TDM ResetTail {tcM}")
+        numCompM, compShiftM, compOffsetM = tdmWaveComponents(kernel, tcM)
+        isMXSM: bool = tcM.startswith("MX")
+        unrolledMajorM = not tP["tlu"]
+        if isMXSM:
+          subM = tcM[3]
+          mxUnitM: int = kernel["MatrixInstK"] // kernel["ProblemType"][f"MXBlock{subM}"]
+          mxDUM = kernel["DepthU"] // kernel["ProblemType"][f"MXBlock{subM}"]
+          mxKSplittingM = (mxDUM // mxUnitM) >= numCompM
+        else:
+          mxKSplittingM = False
+        if not unrolledMajorM or mxKSplittingM:
+          compIdComment = f"wOffset={tcM} compId"
+          if compOffsetM:
+            compIdComment += f" = WaveIdx - {compOffsetM}"
+          m.add(self.tdmEmitWaveCompId(waveOfstTmp, compShiftM, waveIdxTmp,
+                                       compIdComment, compOffsetM))
+          m.add(SMulI32(sgpr(waveOfstTmp), sgpr(waveOfstTmp), int(du // numCompM),
+                        "wOffset = compId * du // numComp"))
+          m.add(self.resetTDMDescriptorForTail(kernel, tP, waveOfstTmp))
+        else:
+          m.add(self.resetTDMDescriptorForTail(kernel, tP))
+        return m
+
+      if lonePair:
+        mod.add(self._tdmLoneScaleSetup(kernel, tPA or tPB, waveIdxTmp, resetForTail, "ResetTail"))
+      else:
+        mod.add(self._tdmSharedScaleDispatch(kernel, tPA, tPB, waveIdxTmp,
+                resetForTail, "ResetTail"))
+    return mod
 
   def resetTDMDescriptorForTailWaveSeparatedGroup(self, kernel, tps, ranges) -> Module:
     """Reset each group member's tail-loop TDM tensor dim, in the arm that member's waves take.
