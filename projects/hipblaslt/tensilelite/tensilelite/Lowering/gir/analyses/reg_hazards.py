@@ -61,6 +61,19 @@ def _same_register(a, b):
     return a.operand == b.operand and a.ring_pos == b.ring_pos
 
 
+def _reg_key(touch):
+    """The register name `_same_register` compares, as a dict key."""
+    return (touch.operand, touch.ring_pos)
+
+
+def _by_register(accesses):
+    """{register: [touch]} in access order, so a scan can visit only same-register pairs."""
+    buckets = {}
+    for touch in accesses:
+        buckets.setdefault(_reg_key(touch), []).append(touch)
+    return buckets
+
+
 class RegHazardSet:
     """Iterable register hazard result."""
 
@@ -76,14 +89,20 @@ class RegHazards(Analysis):
 
     def run(self, prog, am):
         by_block = {blk.label: list(_accesses(blk)) for blk in prog.blocks.values()}
+        # Only same-register pairs can be a hazard, so the scan walks the register's own
+        # bucket instead of every later access; `seen` is where `a` sits in that bucket.
+        by_reg = {label: _by_register(accesses) for label, accesses in by_block.items()}
         rch = reachable(prog)
         edges = []
         for label, accesses in by_block.items():
             repeats = label in rch.get(label, ())
-            for i, a in enumerate(accesses):
-                for b in accesses[i + 1:]:
+            buckets, seen = by_reg[label], {}
+            for a in accesses:
+                key = _reg_key(a)
+                pos = seen[key] = seen.get(key, -1) + 1
+                for b in buckets[key][pos + 1:]:
                     self._pair(a, b, edges, repeats)
-        self._cross_block(by_block, rch, edges)
+        self._cross_block(by_block, by_reg, rch, edges)
         return RegHazardSet(edges)
 
     @staticmethod
@@ -103,14 +122,15 @@ class RegHazards(Analysis):
             edges.append(Hazard(kind=kind, producer=producer, consumer=consumer,
                                 ring=self._ring(producer), gap=gap, cross_agent=False))
 
-    def _cross_block(self, by_block, rch, edges):
+    def _cross_block(self, by_block, by_reg, rch, edges):
         """A prologue fill and the steady read of it: real, and with no trip distance to speak of."""
         for pb, pas in by_block.items():
-            for cb, cas in by_block.items():
+            for cb in by_block:
                 if pb == cb or cb not in rch.get(pb, ()):
                     continue
+                buckets = by_reg[cb]
                 for p in pas:
-                    for c in cas:
+                    for c in buckets.get(_reg_key(p), ()):
                         kind = hazard_kind(p, c)
                         if kind is None or not _same_register(p, c):
                             continue

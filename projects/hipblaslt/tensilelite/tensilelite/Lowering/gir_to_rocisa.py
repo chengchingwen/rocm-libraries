@@ -11,7 +11,7 @@ from rocisa.code import Module
 from .gir.analysis import AnalysisManager
 from .gir.analyses.reg_band import RegBandAnalysis
 from .gir.coverage import plan_coverage
-from .gir.emit_plan import plan_block
+from .gir.emit_plan import plan_program
 from .gir.frame_contract import build_contract
 from .gir.nodes import FILL_OPS, Move
 from .gir.render import inst_line
@@ -68,6 +68,8 @@ class GirToRocisa:
         # Instruction anchors and accesses are carried by the frame contract;
         # only generation and phi-edge data remains in the module metadata.
         contract = build_contract(prog)
+        # The act plan is program-wide and loop-order invariant, like the contract above.
+        self._plans = plan_program(prog)
         self._actionAnchors = {a.id: a.anchor for a in contract.actions.values()}
         self._actionAccesses = {}
         for access in contract.accesses:
@@ -100,7 +102,7 @@ class GirToRocisa:
         w = self._leaf                      # reg_depth already set at construction (a GIR fact)
         out = Module("GIR %s body" % phase)
 
-        acts = plan_block(prog, phase)
+        acts = list(self._plans[phase])
         if kinds is not None:
             acts = [a for a in acts if a.kind in kinds]
         cplan = plan_coverage(
