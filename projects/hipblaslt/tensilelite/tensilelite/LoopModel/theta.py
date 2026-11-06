@@ -543,7 +543,7 @@ class Theta:
         return axis.name if axis is not None else default
 
     #: tile axis -> the storage-region axis whose liveness keeps it in the walk
-    _TILE_REGION = {"K_inner": "K_split", "M_inner": "M_split", "N_inner": "N_split"}
+    _TILE_REGION = {"Ki": "Ko", "Mi": "Mo", "Ni": "No"}
 
     def inner_axes(self) -> tuple:
         """The inner axes a traversal WALKS, fixed in `__post_init__` beside `inner`/`outer`.
