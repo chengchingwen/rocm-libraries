@@ -160,6 +160,13 @@ struct CDNA5ReadyQueueTestPeer {
     static void setQueueDepth(CDNA5ReadyQueue& q, const HwInstDesc& desc) {
         q.hardwareWmmaQueueDepth_ = std::max(1, static_cast<int>(desc.wmmaQueueDepth));
     }
+    static std::unordered_map<const StinkyInstruction*, StinkyInstruction*>& gapBarrier(
+        CDNA5ReadyQueue& q) {
+        return q.tensorLoadGapBarrier_;
+    }
+    static std::unordered_map<StinkyInstruction*, int>& barrierWindows(CDNA5ReadyQueue& q) {
+        return q.barrierWmmaThresholds_;
+    }
     static constexpr uint8_t kBlocked = CDNA5ReadyQueue::kBlockedSlot;
 };
 
@@ -602,6 +609,48 @@ TEST_F(CDNA5ReadyQueueTest, RawWindowDelayLetsRealWorkFillBeforeTensorLoad) {
     }
     EXPECT_GE(workBeforeLoad, 4)
         << "the tensor load must stay held while real ready work covers the RAW-window floor";
+}
+
+// The RAW window is measured in pre-schedule cycles, so a schedule that shortens it would have
+// the hold outlast the window. A load the exclusive after/before rule pinned in front of a before
+// group carries that barrier's planned window: at it the load goes, or the hold pushes the barrier
+// -- and every ds_load waiting behind it -- past the window the thresholds reserved for them.
+TEST_F(CDNA5ReadyQueueTest, RawWindowDelayEndsAtThePinnedBeforeBarrierWindow) {
+    PassContext ctx = makeClusterBarrierCtx(/*clusterBarrier=*/true);
+    PassFeatureConfig pfc = ctx.getPassFeatureConfig();
+    pfc.loopConfig.unrollGemm = true;
+    pfc.dagFeatures.distributeGlobalRead = true;
+    ctx.setPassFeatureConfig(pfc);
+    CDNA5ReadyQueue queue(ctx);
+
+    StinkyInstruction* anchorInst =
+        createVAddInBlock(bb, GfxArchID::Gfx1250, /*dst=*/0, /*src0=*/4, /*src1=*/8);
+    DAGNode anchor(anchorInst, /*id=*/0);
+    queue.push(&anchor);
+    EXPECT_EQ(queue.pickOne(), &anchor);
+
+    StinkyInstruction* loadInst =
+        createTensorLoadInBlock(bb, GfxArchID::Gfx1250, /*src0Reg=*/20, /*src1Reg=*/24);
+    DAGNode load(loadInst, /*id=*/1);
+    load.tensorLoadDelayAnchorId = anchor.id;
+    load.tensorLoadDelayCycles = 4;
+    queue.push(&load);
+
+    // The before group's barrier is due at window 0, which the region has already reached.
+    StinkyInstruction* barrier = makeWorkgroupBarrierSignal(*bb, /*ldsToken=*/1);
+    CDNA5ReadyQueueTestPeer::gapBarrier(queue)[loadInst] = barrier;
+    CDNA5ReadyQueueTestPeer::barrierWindows(queue)[barrier] = 0;
+
+    std::vector<std::unique_ptr<DAGNode>> fillers;
+    for (unsigned i = 0; i < 6; ++i) {
+        StinkyInstruction* filler = createVAddInBlock(bb, GfxArchID::Gfx1250, /*dst=*/40 + i,
+                                                      /*src0=*/60 + i, /*src1=*/80 + i);
+        fillers.push_back(std::make_unique<DAGNode>(filler, /*id=*/2 + i));
+        queue.push(fillers.back().get());
+    }
+
+    EXPECT_EQ(queue.pickOne(), &load)
+        << "the pinned barrier's window has come, so the RAW-window hold must not hold it longer";
 }
 
 TEST_F(CDNA5ReadyQueueTest, ZeroRawWindowDelayLeavesTensorLoadPriorityUnchanged) {
