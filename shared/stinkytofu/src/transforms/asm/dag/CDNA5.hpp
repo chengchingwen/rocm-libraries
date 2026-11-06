@@ -4221,6 +4221,7 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
             !loads.empty() && static_cast<long long>(loads.size()) *
                                       dsIssueCost(*deps.dag.nodes[loads.front().nodeId].inst) >
                                   static_cast<long long>(wmmaTotalThisRegion_) * windowCycles;
+        PASS_DEBUG(std::cerr << "[CDNA5 dsSpread] stages:\n" << dsSpread_.planSummary());
         for (const auto& r : dsSpread_.rateLimited())
             PASS_DEBUG(std::cerr << "[CDNA5 dsSpread] WARNING: "
                                  << DsSpreadPacer::rateLimitedMessage(
