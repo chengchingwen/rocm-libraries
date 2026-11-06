@@ -37,7 +37,8 @@ def loopModelGirProgram(writer, kernel):
     dump_schedule = globalParameters.get("GIRScheduleDumpPath", "") if true_sia0 else ""
     load_schedule = globalParameters.get("GIRScheduleLoadPath", "") if true_sia0 else ""
     schedule_tag = schedule_cache_tag(str(key), dump_schedule, load_schedule)
-    verify_ir = bool(globalParameters.get("LoopModelIRVerify", True))
+    # Match the default this key carries in GlobalParameters.
+    verify_ir = bool(globalParameters.get("LoopModelIRVerify", False))
     include_dependencies = verify_ir or bool(
         globalParameters.get("OutputLoopIR", False)
     )
