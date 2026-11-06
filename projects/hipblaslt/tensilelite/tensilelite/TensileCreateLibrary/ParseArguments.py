@@ -221,7 +221,7 @@ def parseArguments(input: Optional[List[str]] = None) -> Dict[str, Any]:
         "--no-loopmodel-ir-verify",
         dest="LoopModelIRVerify",
         action="store_false",
-        default=True,
+        default=None,   # unpassed leaves the globalParameters default alone
         help="Skip LoopIR/GIR verification for output-parity codegen sweeps",
     )
     argParser.add_argument(
@@ -279,7 +279,8 @@ def parseArguments(input: Optional[List[str]] = None) -> Dict[str, Any]:
     arguments["KeepBuildTmp"] = args.KeepBuildTmp
     arguments["BuildGfx1250v0"] = args.BuildGfx1250v0
     arguments["OutputLoopIR"] = args.OutputLoopIR
-    arguments["LoopModelIRVerify"] = args.LoopModelIRVerify
+    if args.LoopModelIRVerify is not None:
+        arguments["LoopModelIRVerify"] = args.LoopModelIRVerify
     arguments["GIRScheduleDumpPath"] = args.GIRScheduleDumpPath
     arguments["GIRScheduleLoadPath"] = args.GIRScheduleLoadPath
     arguments["AsanBuild"] = args.AsanBuild
