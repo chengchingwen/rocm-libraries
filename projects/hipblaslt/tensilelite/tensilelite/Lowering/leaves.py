@@ -437,7 +437,10 @@ class LeafEmitters:
         if kernel.get("LDSSegmentInterleave") != 1:
             return (0, 0, 0)
         off = kernel["LDSSegInterleaveOffsets"] or {}
-        stride = int(off.get("writeStrideBytes", 0))
+        # The component fold is a READ displacement, so it owes the read stride: B-rotate keeps that
+        # logical (< 128K) so `offset // 64K` still names the component, while the paired write
+        # stride is the larger physical one and would ask for an address register that does not exist.
+        stride = int(off.get("readStrideBytes" + tc, off.get("writeStrideBytes", 0)))
         baseKey = _SEG_INTERLEAVE_KEYS[tc][2]
         # ONE derivation, shared with `TDMSplit.wave_region_span`: the row stride decides both the
         # read address and whether a wave's share crosses a TDMSplit region.
