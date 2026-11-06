@@ -61,7 +61,7 @@ from .Components.Subtile.Kernel import *
 from .Components.Subtile.SubtileLdsLayout import applyLdsLayout
 from .Components.DecouplePGR import decouplePGRBlocks, decoupledSingleBuffered, dcpLdsSide, dcpLateFillIncrements
 from .Components.DecouplePGR import tdmWaveIssueOrder, decoupledThickGateRelaxation, dcpThickGateFromTokenPasses, dcpThickGateUncoveredSites, dcpIsFillLabel, DCP_TENSORCNT_RE, DCP_THICK_GATE_TEXT, DCP_THICK_GATE_TOKENS
-from .Components.TDMFuse import tdmWavePartition
+from .Components.TDMFuse import tdmWavePartition, tdmPairedSwapMask, tdmPairedSwapOwners
 from .Components import TDMSplit as _tdm_split
 from .Components.LoopModel.Emit import (loopModelDrainIter, loopModelPrologue,
                                         loopModelPrologueCopies, loopModelSteadyBlocks,
@@ -10561,10 +10561,13 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       # Defined here (not in defineVariableSgprs) because lraDeclareAddresses is emitted first.
       self.defineSgpr("BRotateLRDelta", 1)
     if (kernel.get("LDSSegInterleaveOffsets") or {}).get("pairedBuffers"):
-      # A/B descriptors alias on separate waves; each wave keeps its own ping/pong mask.
-      self.defineSgpr("PairedTDMSwap", 1)
+      # One mask per live descriptor SET: fused A|B alias onto one set and share it, unfused
+      # own a set each and need one apiece. Scales own their sets the same way.
+      for _owner in tdmPairedSwapOwners(kernel) or ["A"]:
+        self.defineSgpr(tdmPairedSwapMask(kernel, _owner), 1)
       if kernel["ProblemType"]["MXBlockA"] or kernel["ProblemType"]["MXBlockB"]:
-        self.defineSgpr("PairedTDMScaleSwap", 1)
+        for _owner in tdmPairedSwapOwners(kernel, True) or ["MXSA"]:
+          self.defineSgpr(tdmPairedSwapMask(kernel, _owner), 1)
 
     # PostLoopStoreInNll: persistent "this tile fuses the store" predicate, precomputed
     # per-tile before the main loop (see computePostLoopFusedStore). It ANDs every

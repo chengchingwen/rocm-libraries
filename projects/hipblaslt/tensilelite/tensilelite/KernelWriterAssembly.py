@@ -86,6 +86,7 @@ from .KernelWriterModules import *
 from .AsmMemoryHelpers import dsStore, dsLoad, _vgprOffset
 from .Components.DecouplePGR import decouplePGRBlocks, decoupledSingleBuffered, dcpLdsSide
 from .Components.TDMFuse import tdmFusePaired, tdmGroupPartner, \
+                                tdmPairedSwapMask, \
                                 tdmSeparateABDescriptors, tdmWaveSeparated, \
                                 tdmSharedScaleSetOwner, tdmSetOwner, tdmSetGroup, \
                                 tdmGrouping, tdmSharedSetOrder, tdmSharedScaleSetActive, \
@@ -13963,7 +13964,7 @@ class KernelWriterAssembly(KernelWriter):
 
     if (kernel.get("LDSSegInterleaveOffsets") or {}).get("pairedBuffers"):
       module = Module("TDM LDS swap (paired buffers)")
-      swapMask = "PairedTDMScaleSwap" if tc.startswith("MXS") else "PairedTDMSwap"
+      swapMask = tdmPairedSwapMask(kernel, tc)
       module.add(SXorB32(sgpr(ldsAddrSgprName), sgpr(ldsAddrSgprName), sgpr(swapMask),
                          "Swap the owning wave's paired TDM buffers"))
       return module
@@ -23878,7 +23879,7 @@ class KernelWriterAssembly(KernelWriter):
       mod.add(comp.setLdsAddr(descSgprName(0), sgpr(waveOffsetSgprIdx)))
       if (kernel.get("LDSSegInterleaveOffsets") or {}).get("pairedBuffers"):
         # Each descriptor set has one per-wave mask; scales own a separate set.
-        swapMask = "PairedTDMScaleSwap" if isMX else "PairedTDMSwap"
+        swapMask = tdmPairedSwapMask(kernel, tc)
         mod.add(SAddU32(sgpr(swapMask), sgpr(waveOffsetSgprIdx),
                          kernel["LDSSegInterleaveOffsets"]["bufferStride" + tc], "Paired TDM buffer base"))
         mod.add(SXorB32(sgpr(swapMask), sgpr(swapMask), sgpr(waveOffsetSgprIdx),
@@ -24918,7 +24919,9 @@ class KernelWriterAssembly(KernelWriter):
       # The per-wave mask exchanges this descriptor's ping/pong addresses, including
       # its component offset. Ping is always the lower address. Taking the minimum
       # resets either phase to ping and leaves repeated resets unchanged.
-      swapMask = "PairedTDMScaleSwap" if ldsAddrSgprName.startswith("tdmMXS") else "PairedTDMSwap"
+      # The descriptor is mutated through its owner, so its name IS the set. `tdm<tc>Group0`
+      # may carry a word suffix, so take the char between the prefix and the group.
+      swapMask = tdmPairedSwapMask(kernel, ldsAddrSgprName.split("Group0")[0][3:])
       with self.allocTmpSgpr(1, tag="tdmResetTailPaired") as tmpSgprRes:
         mod.add(SXorB32(dst=sgpr(tmpSgprRes.idx), src0=sgpr(ldsAddrSgprName), src1=sgpr(swapMask),
                         comment="Compute the other paired LDS buffer address"))
