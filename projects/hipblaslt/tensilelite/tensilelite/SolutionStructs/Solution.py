@@ -1160,7 +1160,9 @@ class Solution(collections.abc.Mapping):
       state["_ScheduleIterAlg"] = state["ScheduleIterAlg"]
       state["_StinkyTofuOptLevel"] = 0
 
-    if state.pop("TDMSplit", 0):
+    # Read, do not consume: the scalar stays in the state so an equal 0/1 pair keeps spelling
+    # itself the way every kernel always has. It is normalized against the pair below.
+    if state.get("TDMSplit", 0):
       if int(state.get("TDMSplitA", 0) or 0) or int(state.get("TDMSplitB", 0) or 0):
         reject(state, printRejectionReason,
                "TDMSplit is shorthand for TDMSplitA=1 and TDMSplitB=1, so it cannot be combined "
@@ -8170,6 +8172,19 @@ class Solution(collections.abc.Mapping):
               state["_VectorStore"] = 0
             else:
               reject(state, printRejectionReason, "packedC0 Assembly requires AF0EM>=VectorWidth or not VectorStore (for stores)")
+
+    # -1 means "take the scalar"; LoopModel's Registers.calculate already resolved the pair on
+    # its own path. Settling it here leaves no -1 for a later reader -- or a name -- to carry.
+    for _perOperand in ("PrefetchLocalRead", "ClusterLocalRead"):
+      for _side in ("A", "B"):
+        if int(state.get(_perOperand + _side, -1) or -1) == -1:
+          state[_perOperand + _side] = state[_perOperand]
+
+    # The bool spells only an equal 0/1 pair; any other pair has no scalar form and is named
+    # per operand instead, so the scalar is simply false there.
+    _splitA = int(state.get("TDMSplitA", 0) or 0)
+    _splitB = int(state.get("TDMSplitB", 0) or 0)
+    state["TDMSplit"] = bool(_splitA) if (_splitA == _splitB and _splitA in (0, 1)) else False
 
     state["_PrefetchAcrossPersistentEnabled"] = bool(state["PrefetchAcrossPersistent"])
     state["AssignedDerivedParameters"] = True
