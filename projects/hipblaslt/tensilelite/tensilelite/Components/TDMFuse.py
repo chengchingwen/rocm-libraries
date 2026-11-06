@@ -287,6 +287,32 @@ def tdmSetOwners(ks):
     return owners
 
 
+def tdmPairedSwapOwners(ks, scales=False):
+    """Live descriptor-set owners among the data (or scale) tensors, in tensor order."""
+    owners = []
+    for member in (("MXSA", "MXSB") if scales else TDM_DATA_TENSORS):
+        if not tdmMemberIsLive(ks, member):
+            continue
+        owner = tdmSetOwner(ks, member)
+        if owner not in owners:
+            owners.append(owner)
+    return owners
+
+
+def tdmPairedSwapMask(ks, tc):
+    """The paired ping/pong mask SGPR for the descriptor SET that carries `tc`.
+
+    THE SET IS WHAT PING/PONGS, so each live set owns a mask: fused A|B share one set and one
+    mask, unfused they are two sets and need two -- one mask for both would swap the second
+    set's descriptor by the first's stride. The leading owner keeps the unsuffixed name, so a
+    fused kernel is unchanged.
+    """
+    base = "PairedTDMScaleSwap" if tc.startswith("MXS") else "PairedTDMSwap"
+    owners = tdmPairedSwapOwners(ks, tc.startswith("MXS"))
+    owner = tdmSetOwner(ks, tc)
+    return base if (not owners or owner == owners[0]) else base + owner
+
+
 def tdmSetIncsSgpr(ks, tc):
     """The SGPR holding one advance of `tc`'s descriptor set.
 
