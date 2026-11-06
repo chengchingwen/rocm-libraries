@@ -853,15 +853,16 @@ class CDNA5ReadyQueue : public ReadyQueue {
     bool heldBackForTensorLoadDelay(const DAGNode* node) const {
         if (node->tensorLoadDelayCycles <= 0 || node->tensorLoadDelayAnchorId == UINT_MAX)
             return false;
-        // A load the exclusive rule pinned in front of a before group carries that barrier's
-        // window too: the hold is sized in pre-schedule cycles, so left alone it would push the
-        // barrier -- and every ds_load behind it -- past the window the thresholds planned. At
-        // that window the load goes, whatever the hold still owes.
+        // A load the exclusive rule pinned in front of a before group belongs in the gap that
+        // rule opened: the gap is the tensor-load spacing, so the load is due that many windows
+        // in front of the barrier. The hold is sized in pre-schedule cycles, and left alone it
+        // would carry the load to the far end of the gap and the barrier -- with every ds_load
+        // behind it -- past the window the thresholds planned.
         auto pin = tensorLoadGapBarrier_.find(node->inst);
         if (pin != tensorLoadGapBarrier_.end()) {
             auto window = barrierWmmaThresholds_.find(pin->second);
             if (window != barrierWmmaThresholds_.end() &&
-                wmmaIssuedCountThisRegion_ >= window->second)
+                wmmaIssuedCountThisRegion_ >= std::max(0, window->second - tensorLoadGapWmmas_))
                 return false;
         }
         auto anchor = issuedEndClock_.find(node->tensorLoadDelayAnchorId);
@@ -900,9 +901,10 @@ class CDNA5ReadyQueue : public ReadyQueue {
     // Earliest WMMA count at which each prefetch may issue (blockPrefetchLead_).
     std::unordered_map<const StinkyInstruction*, int> prefetchEarliestWmma_;
     // The before-group barrier the exclusive after/before rule pinned each tensor_load in front
-    // of. Its planned window is where a RAW-window hold on that load has to end
-    // (heldBackForTensorLoadDelay).
+    // of, and the spacing that rule left in front of it. The barrier's planned window less that
+    // spacing is where a RAW-window hold on the load has to end (heldBackForTensorLoadDelay).
     std::unordered_map<const StinkyInstruction*, StinkyInstruction*> tensorLoadGapBarrier_;
+    int tensorLoadGapWmmas_ = 0;
     // Single-stage loop body (tensilelite: no HalfPLR), signalled by a short prefetch lead.
     bool singleStageLoop() const {
         const int lead = blockPrefetchLead_;
@@ -3270,6 +3272,7 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
     barrierDrainWmmas_.clear();
     barrierDrainDropped_.clear();
     tensorLoadGapBarrier_.clear();
+    tensorLoadGapWmmas_ = 0;
     if (hasWMMAInRegion_) {
         // Layer 1/3 (base merge):
         // Build one threshold map from two independent estimators:
@@ -3586,8 +3589,10 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
                         // The edge above makes the load the barrier's predecessor, so the load now
                         // owes that barrier its window (heldBackForTensorLoadDelay). The first pin
                         // stands, as the rest of this rule is written for one before group.
-                        if (!beforeGroup.barriers.empty())
+                        if (!beforeGroup.barriers.empty()) {
                             tensorLoadGapBarrier_.emplace(tensorLoad, beforeGroup.anchor);
+                            tensorLoadGapWmmas_ = tensorLoadDsLoadGapWmma;
+                        }
                         for (StinkyInstruction* dsLoad : beforeGroup.descendantLoads) {
                             requireOrdering(tensorLoad, dsLoad);
                         }
