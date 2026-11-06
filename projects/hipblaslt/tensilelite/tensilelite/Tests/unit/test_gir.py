@@ -10,6 +10,7 @@ each test starts from is a means; `test_loopmodel.py` owns what the model derive
 import inspect
 import itertools
 import pytest
+from tensilelite.Tests.unit.test_halfplr_streamk_rejects import _gp_gfx1250  # noqa: F401
 from test_loopmodel import BF16_NT_KMN, calculate_registers, mi_inputs, theta
 from tensilelite.LoopModel import adapter
 from tensilelite.LoopModel.adapter import kernel_to_params as _kernel_to_params
@@ -993,3 +994,31 @@ def test_frame_contract_keeps_three_folded_main_loop_exit_frames():
     assert required[(anchors["drain0"], anchors["prologue_join"], guard_gen)] == (0, 3)
     assert required[(anchors["steady"], anchors["steady"], guard_gen)] == (0, 2)
     assert required[(anchors["drain0"], anchors["steady"], guard_gen)] == (0, 2)
+
+
+def test_lds_read_folds_on_the_read_stride(_gp_gfx1250, gfx1250_iim, assembler):
+    """The component fold is a READ displacement, so it owes `readStrideBytes<tc>`.
+
+    A paired layout keeps that logical stride under 128K precisely so `offset // 64K` still
+    names the component; folding on the physical `writeStrideBytes` instead asks
+    `cal_offset_srcAddr` for a third B address register that is never allocated or written.
+    """
+    from tensilelite.SolutionStructs.Solution import Solution
+    from tensilelite.Lowering.leaves import LeafEmitters
+    from tensilelite.Tests.unit.test_halfplr_streamk_rejects import _make_params
+    sol = Solution(_make_params(
+        gfx1250_iim, mi=[16, 16, 128, 1, 1, 8, 8, 2, 2], StreamK=0, GlobalSplitU=1,
+        SourceSwap=True, TDMIterateMode=-1, HalfPLR=1, PrefetchGlobalRead=1,
+        LDSSegmentInterleave=1, LDSSegmentBRotate=1, VectorWidthA=8, VectorWidthB=4,
+    ), False, True, False, assembler, gfx1250_iim)
+    assert sol["Valid"]
+    off = sol["LDSSegInterleaveOffsets"]
+    # Only a layout whose two strides DIFFER discriminates; assert that before the fold.
+    assert off["readStrideBytesB"] != off["writeStrideBytes"]
+    groupShape = (sol["MatrixInstN"] * sol["MatrixInstBN"]
+                  * sol["MIWaveGroup"][1] * sol["VectorWidthB"])
+    _rowShape, _compCols, stride = LeafEmitters._segInterleaveTerms(
+        sol._state, "B", 1, groupShape)
+    assert stride == off["readStrideBytesB"]
+    # B-rotate allocates exactly two B local-read addresses, so the fold may not reach a third.
+    assert stride // 65536 <= 1
