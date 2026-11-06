@@ -505,9 +505,14 @@ def b_rotate_reason(state, persistent=False):
     # Both spellings gate: `TDMSplit` is shorthand for TDMSplitA/B=1, and derivation pops it once
     # expanded, so testing only the shorthand is blind to every solution that got that far.
     if state.get("TDMSplit") or TDMSplit.any_split(state):    return "TDMSplit not supported"
+    # Rows 0/1 give each data tensor a set of its own or share one pair-wise, which the
+    # per-set swap masks carry.  2/3 share a BLOCK-layout set and collapse a scale onto one
+    # wave; 4 stages a later region.  Neither is modelled by this two-component layout.
+    if state.get("TDMFuse", 0) not in (0, 1):
+        return "TDMFuse=%d is not supported" % state.get("TDMFuse", 0)
     for key in ("UseSubtileImpl", "DirectToVgprA", "DirectToVgprB", "DirectToLdsB",
                 "enableLDSTrA", "enableLDSTrB", "UseDotInstruction", "UseCustomMainLoopSchedule",
-                "PrefetchAcrossPersistent", "TDMFuse"):
+                "PrefetchAcrossPersistent"):
         v = state.get(key)
         # -1 (auto) means unresolved/off for the tri-state knobs; only a positive value enables.
         if v is True or (isinstance(v, int) and v > 0):      return "%s not supported" % key
@@ -532,10 +537,15 @@ def paired_buffer_reason(state):
     for key in ("ExpandPointerSwap", "TDMSplit", "UseSubtileImpl", "DirectToVgprA",
                 "DirectToVgprB", "DirectToLdsA", "DirectToLdsB", "enableLDSTrA",
                 "enableLDSTrB", "UseDotInstruction", "UseCustomMainLoopSchedule",
-                "PrefetchAcrossPersistent", "TDMFuse"):
+                "PrefetchAcrossPersistent"):
         v = state.get(key)
         if v is True or (isinstance(v, int) and v > 0):
             return "%s is not supported" % key
+    # Rows 0/1 give each data tensor a set of its own or share one pair-wise, which the
+    # per-set swap masks carry.  2/3 share a BLOCK-layout set and collapse a scale onto one
+    # wave; 4 stages a later region.  Neither is modelled by this two-component layout.
+    if state.get("TDMFuse", 0) not in (0, 1):
+        return "TDMFuse=%d is not supported" % state.get("TDMFuse", 0)
     if state.get("LocalSplitU", 1) != 1 or state.get("NumWaveSplitK", 1) > 1:
         return "split-K LDS layout is not supported"
     return None
