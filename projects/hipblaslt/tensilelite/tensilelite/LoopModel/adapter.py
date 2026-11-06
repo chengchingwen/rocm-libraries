@@ -45,8 +45,8 @@ def _mx_frag_elems(kernel, free_mi, mxblock):
     return max(1, data // max(1, mxblock) * dup)
 
 
-AXIS_NAMES = ["K_split", "K_inner",
-              "M_split", "M_inner", "N_split", "N_inner"]
+AXIS_NAMES = ["Ko", "Ki",
+              "Mo", "Mi", "No", "Ni"]
 
 # --- build -----------------------------------------------------------------
 
@@ -180,11 +180,11 @@ def _build_ord(fanM, fanN, kernel, substeps, splits):
     ord_ = [iter_mode] + [
         axes[str(name)] for name, _extent in axis_values
     ]
-    m_inner = extents["M_inner"]
-    n_inner = extents["N_inner"]
+    m_inner = extents["Mi"]
+    n_inner = extents["Ni"]
 
-    N_BCAST = {"N_split", "N_inner"}  # A is broadcast over N modes
-    M_BCAST = {"M_split", "M_inner"}  # B is broadcast over M modes
+    N_BCAST = {"No", "Ni"}  # A is broadcast over N modes
+    M_BCAST = {"Mo", "Mi"}  # B is broadcast over M modes
     aRegions = shape["regions"]["A"]
     bRegions = shape["regions"]["B"]
     span = shape["span"]
@@ -213,8 +213,8 @@ def _read_movements(kernel):
 def _build_agent_assignment(movements, nest):
     """Build agent-axis assignments and adapter movement inputs."""
     agent_inputs = {
-        "A": "M_inner", "MXSA": "M_inner",
-        "B": "N_inner", "MXSB": "N_inner",
+        "A": "Mi", "MXSA": "Mi",
+        "B": "Ni", "MXSB": "Ni",
     }
     _by_mode = {}
 
@@ -261,8 +261,8 @@ def _build_fragments(kernel, matrix_instruction, nest, splits):
         return Fragment(broadcast_axes=set(bcast), parts=1, labels=group_labels(1),
                         grouping_mode=grp_mode, group_policy={"*": "pipeline"})
 
-    fragA = reg_fragment(nest.N_BCAST, "M_inner")
-    fragB = reg_fragment(nest.M_BCAST, "N_inner")
+    fragA = reg_fragment(nest.N_BCAST, "Mi")
+    fragB = reg_fragment(nest.M_BCAST, "Ni")
 
     fragElA = _frag_elems(kernel, matrix_instruction[0])
     fragElB = _frag_elems(kernel, matrix_instruction[1])
@@ -316,13 +316,13 @@ def _build_operands(configure_read, elem_bytes, frags, movements, kernel, matrix
                               configure_read(fragment, name, movements.lrvw))
         return Operand(name, free_mode, trajectory=path, elem_bytes=elem_bytes)
 
-    A = input_operand("A", "M_inner", kernel["DirectToVgprA"], movements.grvwA, "A")
-    B = input_operand("B", "N_inner", kernel["DirectToVgprB"], movements.grvwB, "B")
+    A = input_operand("A", "Mi", kernel["DirectToVgprA"], movements.grvwA, "A")
+    B = input_operand("B", "Ni", kernel["DirectToVgprB"], movements.grvwB, "B")
 
     accumulator = Fragment(
-        broadcast_axes={"K_split", "K_inner"},
+        broadcast_axes={"Ko", "Ki"},
         fragment_elements=_acc_frag_elems(kernel))
-    C = Operand("C", "M_inner", trajectory=Trajectory(accumulator),
+    C = Operand("C", "Mi", trajectory=Trajectory(accumulator),
                 elem_bytes=REG_BYTES, role="output")
     operands = [A, B, C]
 
@@ -341,10 +341,10 @@ def _build_operands(configure_read, elem_bytes, frags, movements, kernel, matrix
             elem_bytes=1))
 
     if hasMXA:
-        add_scale("MXSA", "M_inner", movements.grvwA, nest.N_BCAST,
+        add_scale("MXSA", "Mi", movements.grvwA, nest.N_BCAST,
                   matrix_instruction[0], kernel["MXBlockA"])
     if hasMXB:
-        add_scale("MXSB", "N_inner", movements.grvwB, nest.M_BCAST,
+        add_scale("MXSB", "Ni", movements.grvwB, nest.M_BCAST,
                   matrix_instruction[1], kernel["MXBlockB"])
 
     return hasMXA, hasMXB, operands
@@ -501,10 +501,10 @@ def _assign_effects(operands, kernel, nest, splits):
                     semantic = tile.operand[(wave, *sourced)]
                 return Effect(semantic)
             reduction_region = Expr.constant(0)
-            if reduction_split > 1 and "K_split" in values:
+            if reduction_split > 1 and "Ko" in values:
                 reduction_region = (
-                    reduction_split * values["K_split"]
-                ) // axis_extent["K_split"]
+                    reduction_split * values["Ko"]
+                ) // axis_extent["Ko"]
             return Effect(
                 semantic,
                 free_region * reduction_split + reduction_region == int(region),

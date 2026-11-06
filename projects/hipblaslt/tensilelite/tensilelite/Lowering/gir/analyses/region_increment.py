@@ -12,7 +12,7 @@ from ..analysis import Analysis
 def region_of(prog, ref):
     """Return the region coordinate named by a shared reference."""
     rms = (prog.meta.get("region_axes", {}) or {}).get(ref.tile.operand) or ()
-    # An MX scale follows its parent's M_split but has one storage region, so it
+    # An MX scale follows its parent's Mo but has one storage region, so it
     # has no region coordinate of its own.
     if not rms or int((prog.meta.get("operand_regions", {}) or {}).get(ref.tile.operand, 1)) <= 1:
         return ()
@@ -55,7 +55,7 @@ def _n_regions(prog, unit):
 
     From `meta['unit_regions']`, the count theta derived -- NOT from `region_axes` being non-empty.
     An operand can own a region AXIS while being split into ONE region (the MX scale operands:
-    `region_modes=('M_split',)`, `split=1`); its copy is a single movement and carries no region
+    `region_modes=('Mo',)`, `split=1`); its copy is a single movement and carries no region
     coordinate, so treating the axis as a walk asks it for a value it correctly does not have."""
     reg = prog.meta.get("unit_regions", {}) or {}
     if tuple(unit) in reg:

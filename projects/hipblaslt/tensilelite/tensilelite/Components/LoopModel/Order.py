@@ -146,26 +146,26 @@ def axes(kernel):
   extra = factors(kernel)
   k_tiles = max(1, int(kernel["LoopIters"]))
   extents = {
-      "M_split": extra["M"],
-      "M_inner": factor_axis(wave_tiles[0], extra["M"], "MIWaveTileA", "WmmaFactorM"),
-      "N_split": extra["N"],
-      "N_inner": factor_axis(wave_tiles[1], extra["N"], "MIWaveTileB", "WmmaFactorN"),
-      "K_split": extra["K"],
-      "K_inner": factor_axis(k_tiles, extra["K"], "LoopIters", "WmmaFactorK"),
+      "Mo": extra["M"],
+      "Mi": factor_axis(wave_tiles[0], extra["M"], "MIWaveTileA", "WmmaFactorM"),
+      "No": extra["N"],
+      "Ni": factor_axis(wave_tiles[1], extra["N"], "MIWaveTileB", "WmmaFactorN"),
+      "Ko": extra["K"],
+      "Ki": factor_axis(k_tiles, extra["K"], "LoopIters", "WmmaFactorK"),
   }
 
   seen = set()
   names = []
   for axis in word:
-    name = axis + ("_split" if axis not in seen else "_inner")
+    name = axis + ("o" if axis not in seen else "i")
     seen.add(axis)
-    if name.endswith("_inner") or extents[name] > 1:
+    if name.endswith("i") or extents[name] > 1:
       names.append(name)
 
   # A REGION AXIS IS ONE THIS OPERAND SPLITS STORAGE ON.  An axis the factor alone makes is
   # walked like any other; its copy writes one region and owes no region term.
-  a_cuts = (("M_split", a_mt), ("K_split", a_du))
-  b_cuts = (("N_split", b_mt), ("K_split", b_du))
+  a_cuts = (("Mo", a_mt), ("Ko", a_du))
+  b_cuts = (("No", b_mt), ("Ko", b_du))
   regions_a = tuple(name for name, split in a_cuts if split > 1 and extents[name] > 1)
   regions_b = tuple(name for name, split in b_cuts if split > 1 and extents[name] > 1)
   # The span is how many axis values ONE region covers: 1 when the factor is the split.

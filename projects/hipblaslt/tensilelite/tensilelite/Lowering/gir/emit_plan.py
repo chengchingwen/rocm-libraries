@@ -61,7 +61,7 @@ def _plan_read(prog, inst, dst_reg, red, free, order, ext, actions):
         address_region = 0 if operand in agent_relative else region
         tile_flat = _project(coord, freeset, order, ext)
         # AND `k` IS WITHIN-REGION TOO, for the same reason `tile` is.  When the split cuts the
-        # REDUCTION axis the region already carries `K_split`, so leaving it in `k` would count
+        # REDUCTION axis the region already carries `Ko`, so leaving it in `k` would count
         k = _project(coord, set(red) - rmodes, order, ext)
         # AND THE ABSOLUTE REDUCTION INDEX, which `k` is not once a region carries part of it.
         k_flat = _project(coord, set(red), order, ext)

@@ -570,7 +570,7 @@ def test_chunk_reach_is_the_distance_over_the_span():
         LoopOrder="KMN", PrefetchGlobalRead=2, PrefetchLocalRead=1))
     A = next(o for o in th.operands if o.name == "A")
     level = traversal.readahead_level(th)
-    assert level[0] == "K_inner", level         # KMN: the outermost non-region inner axis
+    assert level[0] == "Ki", level         # KMN: the outermost non-region inner axis
     n_s = level[1]                              # the level's own extent, 2 here
     assert traversal.chunks_crossed(th, A, 0) == 0, "no read-ahead -> no crossing"
     for dr in range(1, n_s + 1):
@@ -908,10 +908,10 @@ def test_absorbing_the_spanned_axis_removes_the_straddle_on_the_shipping_path():
             th = adapter.params_to_theta(adapter.kernel_to_params(k, target=target))
             mxsa = next(o for o in th.operands if o.name == "MXSA")
             hop = next(h for h in mxsa.movements if not h.is_bulk)
-            if split == 1:                     # an MT split is what makes M_split exist at all
-                assert geometry.coverage_axes(th, mxsa, hop.coverage) == {"M_split"}, \
-                    f"{order}: the 2-tile load spans the real factorized M_split axis"
-                assert "M_split" not in {
+            if split == 1:                     # an MT split is what makes Mo exist at all
+                assert geometry.coverage_axes(th, mxsa, hop.coverage) == {"Mo"}, \
+                    f"{order}: the 2-tile load spans the real factorized Mo axis"
+                assert "Mo" not in {
                     axis.name for axis in presence_axes(th, mxsa, hop=hop)
                 }, \
                     "a spanned axis is ABSENT from that hop's presence "
@@ -1069,7 +1069,7 @@ def test_agent_assignment_deduplicates_subwave_coverage_without_absorbing_split_
                                   "ReadRho": {"A": 2, "MXSA": 2}})
     axes = [r.axis for r in th.agent_assignment.axis_assignments if r.role == "read"]
     assert len(axes) == len(set(axes)), "axis assigned twice: %r" % (axes,)
-    assert "M_split" not in axes and "N_split" not in axes, \
+    assert "Mo" not in axes and "No" not in axes, \
         "TDMSplit is coordinate geometry, not an agent assignment"
 
 
@@ -1107,13 +1107,13 @@ def test_agent_assignment_carries_copy_shares_for_every_fusion():
 def test_read_assignment_queries_exclude_copy_entries():
     from tensilelite.LoopModel.theta import AgentAssignment, AgentAxisAssignment
     assignment = AgentAssignment(axis_assignments=(
-        AgentAxisAssignment("M_inner", "wave", 2, ("A", "read")),
-        AgentAxisAssignment("M_inner", "wave", 2, ("A", "copy"), role="copy"),
-        AgentAxisAssignment("M_inner", "wave", 1, ("MXSA", "copy"), role="copy"),
+        AgentAxisAssignment("Mi", "wave", 2, ("A", "read")),
+        AgentAxisAssignment("Mi", "wave", 2, ("A", "copy"), role="copy"),
+        AgentAxisAssignment("Mi", "wave", 1, ("MXSA", "copy"), role="copy"),
     ))
-    assert assignment.group_size_over({"M_inner"}, "wave") == 2
+    assert assignment.group_size_over({"Mi"}, "wave") == 2
     assert [item.extent for item in assignment.assignments_at("wave")] == [2]
-    assert assignment.served_axes() == {"M_inner"}
+    assert assignment.served_axes() == {"Mi"}
     assert (assignment.copy_agent_count("A"), assignment.copy_agent_count("MXSA")) == (2, 1)
     assert assignment.copy_agent_count("nobody") == 1
 
@@ -1204,7 +1204,7 @@ def test_whole_set_residency_grows_the_unit_not_the_width_floor(mi_k, kext):
     assert next(
         int(m.extent.constant_value)
         for m in th.inner_axes()
-        if m.name == "K_inner"
+        if m.name == "Ki"
     ) == kext
     steps = geometry._inner_steps(th)
     a, b = th.op("A"), th.op("B")
@@ -1271,16 +1271,16 @@ def test_tdmsplit_is_an_exact_wave_tile_axis_factorization(split, wave_regions):
         axis.name: int(axis.extent.constant_value)
         for axis in th.inner_axes()
     }
-    assert extents.get("M_split", 1) * extents.get("M_inner", 1) == wt
-    assert extents.get("N_split", 1) * extents.get("N_inner", 1) == wt
+    assert extents.get("Mo", 1) * extents.get("Mi", 1) == wt
+    assert extents.get("No", 1) * extents.get("Ni", 1) == wt
 
 
 @pytest.mark.parametrize("order,broadcast_outer_op", [
     ("KMN", None),   # K outermost of the inner nest -> neither operand is broadcast-outer
     ("KNM", None),
-    ("NKM", "A"),    # A is broadcast over N_inner, the OUTERMOST inner mode: every A name is
+    ("NKM", "A"),    # A is broadcast over Ni, the OUTERMOST inner mode: every A name is
     ("NMK", "A"),    # consumed once per N pass, so it is live for the WHOLE trip
-    ("MKN", "B"),    # mirror: B broadcast over M_inner
+    ("MKN", "B"),    # mirror: B broadcast over Mi
     ("MNK", "B"),
 ])
 def test_plr_is_honoured_on_every_loop_order(order, broadcast_outer_op):
@@ -2663,9 +2663,9 @@ def test_vector_width_changes_the_explicit_tdmsplit_effect(width, expected):
         assert expression.evaluate({
             axes["wave"]: wave,
             axes["iter"]: 0,
-            axes["K_inner"]: 0,
-            axes["M_split"]: split,
-            axes["M_inner"]: 0,
+            axes["Ki"]: 0,
+            axes["Mo"]: split,
+            axes["Mi"]: 0,
         }) == region
 
 
@@ -2916,7 +2916,7 @@ def test_mixed_tdmsplit_fused_copy_covers_the_peer_axis_logically():
     transfer_b = b_transfers[0]
     k_split = next(
         index for index, axis in enumerate(transfer_b.local_tile.operand.axes)
-        if axis.name == "K_split"
+        if axis.name == "Ko"
     )
     assert {
         transfer.local_tile.indices[k_split].constant_value
@@ -3441,7 +3441,7 @@ def test_lowering_folds_the_layout_address_into_the_allocation():
     assert fold(256, 7 * 128 + 7 * 16) == 240
     assert fold(256, 2 * 128 + 0 * 16) == 0
     # NKM: slot stride 128, 2 slots, allocation 4 * 64.  Nothing to fold, and
-    # the two M_split halves keep their own registers.
+    # the two Mo halves keep their own registers.
     assert fold(256, 0 * 128 + 7 * 16) == 112
     assert fold(256, 1 * 128 + 7 * 16) == 240
     # A zero span is the non-UseLoopModel path.
@@ -3518,7 +3518,7 @@ def test_split_mxs_allocation_uses_its_model_footprint():
         "ProblemType": {"Sparse": 0, "MXBlockA": 32, "MXBlockB": 32},
     }
 
-    # M_split advances the ring offset; it does not duplicate the physical PU.
+    # Mo advances the ring offset; it does not duplicate the physical PU.
     assert _valu_alloc(kernel, "MXSA", None).total == 4
 
 
@@ -3674,8 +3674,8 @@ def test_split_regions_are_flattened_offsets_with_loop_split_refills():
         assert geometry.ring_positions(theta, operand, group, width) == period
 
     a_slot = geometry.ring_slot(theta, theta.op("A"), "g0", 3)
-    assert a_slot.evaluate({"M_split": 1, "K_inner": 0, "M_inner": 0}) == 2
-    assert a_slot.evaluate({"M_split": 1, "K_inner": 1, "M_inner": 0}) == 0
+    assert a_slot.evaluate({"Mo": 1, "Ki": 0, "Mi": 0}) == 2
+    assert a_slot.evaluate({"Mo": 1, "Ki": 1, "Mi": 0}) == 0
     assert prefetch_refusals(theta, depths) == ()
 
     decoded = decode_theta(theta)

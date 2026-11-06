@@ -29,6 +29,11 @@ class ValuAlloc(NamedTuple):
 _READ_AXES = {"A": frozenset(("M", "K")), "B": frozenset(("N", "K"))}
 
 
+def _role(name: str) -> str:
+  """The M/N/K an axis belongs to. An axis name is the role plus `o` (outer) or `i` (inner)."""
+  return name[:1]
+
+
 def calculate(kernel):
   """Calculate the concrete per-operand PLR, CLR, VG and VA values."""
   if not kernel.get("UseLoopModel"):
@@ -50,16 +55,16 @@ def calculate(kernel):
       (name, extent)
       for name, extent in axes
       if extent > 1
-      or extents.get(name.replace("_inner", "_split"), 1) > 1
+      or extents.get(name[:-1] + "o" if name.endswith("i") else name, 1) > 1
   )
   # THE FACTOR AXES, not the storage ones: an extra axis structures the walk whether or not
   # TDMSplit put a region behind it, so the unit, the rotation and the caps follow it.
   factor_axes = shape.get("factor_axes") or shape["regions"]
   all_regions = set(factor_axes["A"]) | set(factor_axes["B"])
   global_outer = next(
-      (name.split("_", 1)[0] for name, _extent in walked
+      (_role(name) for name, _extent in walked
        if name not in all_regions),
-      walked[0][0].split("_", 1)[0],
+      _role(walked[0][0]),
   )
   requested_plr = max(0, value("PrefetchLocalRead", 0))
   scalar_clr = max(0, value("ClusterLocalRead", 0))
@@ -71,16 +76,16 @@ def calculate(kernel):
     varying = tuple(
         (name, extent)
         for name, extent in walked
-        if name.split("_", 1)[0] in roles
+        if _role(name) in roles
     )
     role_modes = tuple(item for item in varying if item[0] not in regions) \
         or varying
-    outer_role = role_modes[0][0].split("_", 1)[0]
-    inner_role = role_modes[-1][0].split("_", 1)[0]
+    outer_role = _role(role_modes[0][0])
+    inner_role = _role(role_modes[-1][0])
     reloads = outer_role != global_outer
     original_unit = tuple(
         item for item in varying
-        if item[0].split("_", 1)[0] == inner_role
+        if _role(item[0]) == inner_role
     )
     unit_modes = tuple(item for item in original_unit if item[0] not in regions)
     unit = _geometry.product(extent for _name, extent in unit_modes)
@@ -103,13 +108,13 @@ def calculate(kernel):
     role_extents = {
         role: _geometry.product(
             extent for name, extent in role_modes
-            if name.split("_", 1)[0] == role
+            if _role(name) == role
         )
         for role in roles
     }
     cap_role = next(
-        (name.split("_", 1)[0] for name, _extent in role_modes
-         if role_extents[name.split("_", 1)[0]] > 1),
+        (_role(name) for name, _extent in role_modes
+         if role_extents[_role(name)] > 1),
         outer_role,
     )
     cap = max(1, role_extents[cap_role] * vg)
@@ -134,15 +139,15 @@ def calculate(kernel):
     if va == -1:
       rotation = varying if reloads else tuple(
           item for item in varying
-          if item[0].split("_", 1)[0] != outer_role
+          if _role(item[0]) != outer_role
       )
       summation = tuple(
           item for item in varying
-          if item[0].split("_", 1)[0] == "K"
+          if _role(item[0]) == "K"
       )
       enumerator = tuple(
           item for item in varying
-          if item[0].split("_", 1)[0] == outer_role
+          if _role(item[0]) == outer_role
       )
       unpacked = _geometry.product(
           extent for name, extent in unit_modes
@@ -154,8 +159,8 @@ def calculate(kernel):
       )
       reduction_ring = tuple(
           item for item in rotation
-          if item[0].split("_", 1)[0] == "K"
-      ) if level and level.startswith("K_") and unpacked > 1 else ()
+          if _role(item[0]) == "K"
+      ) if level and level.startswith("K") and unpacked > 1 else ()
       ring = reduction_ring or (summation if reloads else enumerator)
       rotation_regions = regions & {name for name, _extent in rotation}
       positions = max(
@@ -180,7 +185,7 @@ def calculate(kernel):
           folded_across_broadcast = folded and ring_at and unit_at and any(
               min(ring_at) < index < max(unit_at)
               for index, (name, _extent) in enumerate(walked)
-              if name.split("_", 1)[0] == broadcast_role
+              if _role(name) == broadcast_role
           )
           floor = positions if folded_across_broadcast else 1
           want = max(plr + 1, floor)

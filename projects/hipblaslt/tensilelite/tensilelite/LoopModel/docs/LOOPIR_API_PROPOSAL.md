@@ -193,11 +193,11 @@ position + logical_advance < logical_span
 ```
 
 This handles the TDMSplit cases without address data. For example, with
-`M_split=2, M_inner=1`, a one-tile advance maps:
+`Mo=2, Mi=1`, a one-tile advance maps:
 
 ```text
-(iter, M_split=0, M_inner=0) -> (iter,   M_split=1, M_inner=0)
-(iter, M_split=1, M_inner=0) -> (iter+1, M_split=0, M_inner=0)
+(iter, Mo=0, Mi=0) -> (iter,   Mo=1, Mi=0)
+(iter, Mo=1, Mi=0) -> (iter+1, Mo=0, Mi=0)
 ```
 
 An operand invariant over an enclosing axis may need two first-touch placements around a wrap.

@@ -137,17 +137,17 @@ LoopIR's iteration space has **six** canonical modes, because each of K/M/N cont
 region interleaving:
 
 ```
-0  K_split   (K/DU region)
-1  K_inner   (inner K-reduction remainder / substep)      [reducible]
-2  M_split   (M region)
-3  M_inner   (in-region M fan — A's grouping mode)
-4  N_split   (N region)
-5  N_inner   (in-region N fan — B's grouping mode)
+0  Ko   (K/DU region)
+1  Ki   (inner K-reduction remainder / substep)      [reducible]
+2  Mo   (M region)
+3  Mi   (in-region M fan — A's grouping mode)
+4  No   (N region)
+5  Ni   (in-region N fan — B's grouping mode)
 ```
 
 `LoopOrder` is a word over {K,M,N}: a 3-letter shortcut keeps each axis's (split,inner) pair
 contiguous (`"KMN"` = the six in canonical order); a 6-letter word lets regions interleave.
-A split of 1 drops that mode; all-1 degenerates to `[K_inner, M_inner, N_inner]` (the KMN
+A split of 1 drops that mode; all-1 degenerates to `[Ki, Mi, Ni]` (the KMN
 case in §2.3). The outer reduction trip `iter` (K//DU) is implicit above the six.
 
 **GIR's coordinate system is these six modes + `iter`.** A design keyed only on (m,n,k)
@@ -185,19 +185,19 @@ absolute); **I-AWAIT** (deps on `Inst.awaits`, carrying RAW/WAR `kind`).
 ### 2.3 Ground truth — one concrete steady trip (KMN, S=2, bf16, VgprPartition=1)
 
 ```
-for K_inner in 0,1:
-  for M_inner in 0,1:
-    READ A   reg(group 0, slot=(K_inner+1)%2)   lds_gen=(iter+(K_inner+1)//2)%2
-    for N_inner in 0,1:
-      (M_inner==0) READ B  reg(group 0, slot=(K_inner+1)%2)  lds_gen=(iter+(K_inner+1)//2)%2
-      MMA acc[M,N] += A*B  at (K_inner, M_inner, N_inner)
+for Ki in 0,1:
+  for Mi in 0,1:
+    READ A   reg(group 0, slot=(Ki+1)%2)   lds_gen=(iter+(Ki+1)//2)%2
+    for Ni in 0,1:
+      (Mi==0) READ B  reg(group 0, slot=(Ki+1)%2)  lds_gen=(iter+(Ki+1)//2)%2
+      MMA acc[M,N] += A*B  at (Ki, Mi, Ni)
 COPY A  global->shared  lds_gen=(iter+2)%2 = iter%2
 COPY B  global->shared  lds_gen=iter%2
 ```
 
 | quantity | expression | depends on | after inner enumeration |
 |---|---|---|---|
-| register slot (read dst / mma src) | `(K_inner+1)%2` | bounded inner index only | **concrete int** — not loop-carried |
+| register slot (read dst / mma src) | `(Ki+1)%2` | bounded inner index only | **concrete int** — not loop-carried |
 | LDS generation (read src / copy dst) | `(iter+…)%2` | `iter` (+ inner carry) | **loop-carried** — a `Gen` |
 
 Only the LDS generation is loop-carried → it is the one SSA value class (`Gen`). Register
@@ -543,7 +543,7 @@ Block steady  loop=True  preds=(prologue,steady)  succs=(steady,drain0):
   # MIWaveTile 2x2: m,n in {0,1}. acc(m,n)=A(m,k)*B(n,k): A shared across n, B across m.
   # A/B tiles at the same k differ by tile.coord (m for A, n for B); reg slot rotates on k.
   body:
-    # --- substep K_inner=0: reads use generation v (this buffer) ---
+    # --- substep Ki=0: reads use generation v (this buffer) ---
     Move  A.shared[gen=v,δ=0]{m=0,k=0} -> A.reg(grp=0, slot=0){m=0,k=0}   # head reads
     Move  A.shared[gen=v,δ=0]{m=1,k=0} -> A.reg(grp=0, slot=0){m=1,k=0}
     Move  B.shared[gen=v,δ=0]{n=0,k=0} -> B.reg(grp=0, slot=0){n=0,k=0}
@@ -553,7 +553,7 @@ Block steady  loop=True  preds=(prologue,steady)  succs=(steady,drain0):
     Mma   srcs=(A.reg{m=1}, B.reg{n=0}) -> acc{m=1,n=0,k=0}
     Mma   srcs=(A.reg{m=1}, B.reg{n=1}) -> acc{m=1,n=1,k=0}
     Mark  swap {hop:read, gen_from:v, gen_to:v+1}          # placed by swap_regions→apply (§7.1)
-    # --- substep K_inner=1: read-ahead uses generation v, δ=1 (next buffer), slot=1 ---
+    # --- substep Ki=1: read-ahead uses generation v, δ=1 (next buffer), slot=1 ---
     Move  A.shared[gen=v,δ=1]{m=0,k=1} -> A.reg(grp=0, slot=1){m=0,k=1}
     Move  A.shared[gen=v,δ=1]{m=1,k=1} -> A.reg(grp=0, slot=1){m=1,k=1}
     Move  B.shared[gen=v,δ=1]{n=0,k=1} -> B.reg(grp=0, slot=1){n=0,k=1}
