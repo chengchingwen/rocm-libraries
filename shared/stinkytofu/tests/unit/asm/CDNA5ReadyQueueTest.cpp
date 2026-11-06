@@ -164,6 +164,12 @@ struct CDNA5ReadyQueueTestPeer {
     static std::unordered_map<StinkyInstruction*, int>& barrierWindows(CDNA5ReadyQueue& q) {
         return q.barrierWmmaThresholds_;
     }
+    static std::unordered_map<const StinkyInstruction*, int>& plannedWmma(CDNA5ReadyQueue& q) {
+        return q.tensorLoadPlannedWmma_;
+    }
+    static int& gapWmmas(CDNA5ReadyQueue& q) {
+        return q.tensorLoadGapWmmas_;
+    }
     static constexpr uint8_t kBlocked = CDNA5ReadyQueue::kBlockedSlot;
 };
 
@@ -601,6 +607,50 @@ TEST_F(CDNA5ReadyQueueTest, RawWindowDelayEndsAtThePinnedBeforeBarrierWindow) {
 
     EXPECT_EQ(queue.pickOne(), &load)
         << "the pinned barrier's window has come, so the RAW-window hold must not hold it longer";
+}
+
+// The pinned barrier's gap is one window for the whole group. A load whose own barrier puts it
+// earlier is due then: held to the shared point instead, a group of loads collapses onto one
+// window and every load but the last loses the cover its own barrier gave it.
+TEST_F(CDNA5ReadyQueueTest, RawWindowDelayEndsAtTheLoadsOwnPlannedWindow) {
+    PassContext ctx = makeClusterBarrierCtx(/*clusterBarrier=*/true);
+    PassFeatureConfig pfc = ctx.getPassFeatureConfig();
+    pfc.loopConfig.unrollGemm = true;
+    pfc.dagFeatures.distributeGlobalRead = true;
+    ctx.setPassFeatureConfig(pfc);
+    CDNA5ReadyQueue queue(ctx);
+
+    StinkyInstruction* anchorInst =
+        createVAddInBlock(bb, GfxArchID::Gfx1250, /*dst=*/0, /*src0=*/4, /*src1=*/8);
+    DAGNode anchor(anchorInst, /*id=*/0);
+    queue.push(&anchor);
+    EXPECT_EQ(queue.pickOne(), &anchor);
+
+    StinkyInstruction* loadInst =
+        createTensorLoadInBlock(bb, GfxArchID::Gfx1250, /*src0Reg=*/20, /*src1Reg=*/24);
+    DAGNode load(loadInst, /*id=*/1);
+    load.tensorLoadDelayAnchorId = anchor.id;
+    load.tensorLoadDelayCycles = 4;
+    queue.push(&load);
+
+    // The gap bound is still ahead (barrier at 20, gap 2 -> 18), but this load's own barrier
+    // put it at 0, which the region has reached.
+    StinkyInstruction* barrier = makeWorkgroupBarrierSignal(*bb, /*ldsToken=*/1);
+    CDNA5ReadyQueueTestPeer::gapBarrier(queue)[loadInst] = barrier;
+    CDNA5ReadyQueueTestPeer::barrierWindows(queue)[barrier] = 20;
+    CDNA5ReadyQueueTestPeer::gapWmmas(queue) = 2;
+    CDNA5ReadyQueueTestPeer::plannedWmma(queue)[loadInst] = 0;
+
+    std::vector<std::unique_ptr<DAGNode>> fillers;
+    for (unsigned i = 0; i < 6; ++i) {
+        StinkyInstruction* filler = createVAddInBlock(bb, GfxArchID::Gfx1250, /*dst=*/40 + i,
+                                                      /*src0=*/60 + i, /*src1=*/80 + i);
+        fillers.push_back(std::make_unique<DAGNode>(filler, /*id=*/2 + i));
+        queue.push(fillers.back().get());
+    }
+
+    EXPECT_EQ(queue.pickOne(), &load)
+        << "the load's own planned window has come, so the shared gap bound must not hold it";
 }
 
 TEST_F(CDNA5ReadyQueueTest, ZeroRawWindowDelayLeavesTensorLoadPriorityUnchanged) {
