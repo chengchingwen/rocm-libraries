@@ -465,10 +465,10 @@ def _assign_effects(operands, kernel, nest, splits):
                 if wave is not None and wave_sensitive
                 else tile
             )
-            split_name = free_role + "_split"
+            split_name = free_role + "o"
 
             flat = Expr.constant(0)
-            for name in (split_name, free_role + "_inner"):
+            for name in (split_name, free_role + "i"):
                 if name in values:
                     flat = flat * axis_extent[name] + values[name]
             wave_value = (

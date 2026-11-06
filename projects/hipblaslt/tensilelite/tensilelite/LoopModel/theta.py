@@ -390,8 +390,11 @@ class AgentAssignment:
         return int(hits[0].extent)
 
 def mode_role(name) -> str:
-    """Logical K/M/N role of a factorized mode name, or ``None``."""
-    role = str(name).split("_", 1)[0]
+    """Logical K/M/N role of a factorized mode name, or ``None``.
+
+    A factorized mode is the role plus `o` (outer) or `i` (inner), so the role is its head.
+    """
+    role = str(name)[:1]
     return role if role in ("K", "M", "N") else None
 
 
