@@ -3925,7 +3925,7 @@ proceed* and `steps` to decide how many single-region walks to issue (`gir_to_ro
 (`Tests/unit/test_gir.py:3656`) sweeps seven two-axis split configurations and asserts three things:
 `walk_violations` is empty; every emitted region step carries a non-empty `axis_steps`; and — the
 sharp part — that the flat scalar is the **mixed-radix combination** of the per-axis deltas, not
-their sum. Its comment gives the counterexample that forces the distinction: `{K_split:+1,
+their sum. Its comment gives the counterexample that forces the distinction: `{Ko:+1,
 K_split2:−1}` sums to zero and is nevertheless a real step (flat 1 → 2 over radices [2,2]).
 
 ##### 7.5.6 `walk_violations` — the checker
@@ -4681,7 +4681,7 @@ Two properties make it non-trivial.
 
 *It is read per operand from `Program.meta['free_modes']`, not derived by subtracting the reduction
 modes from the coordinate.* The historical reason was that an `Mma` source `Ref` used to carry the
-whole `(K, M, N)` coordinate, so the B operand's ref mentioned `M_inner` even though B is broadcast
+whole `(K, M, N)` coordinate, so the B operand's ref mentioned `Mi` even though B is broadcast
 over it; keying on that would have split B's register per `m`, inventing differences instead of
 merging them. **That is now fixed at source** — the lowering projects each `Mma` source onto its own
 operand's presence when it builds the ref (`loopir_to_gir.py:462` records the fix) — so this function
@@ -4692,7 +4692,7 @@ The two spellings this must equate do not both come from an `Mma`. When one inst
 logical tiles at once — a wide `ds_load` whose *quantum* spans two tiles along an axis — that axis is
 **absent** from the read's coordinate upstream, and `refs.covered_coords` re-inserts it by
 *appending*. The consuming `Mma`'s coordinate carries the same axis in its declared position. Since
-keys are compared for equality, `(M_inner, M_split)` and `(M_split, M_inner)` would be different
+keys are compared for equality, `(Mi, Mo)` and `(Mo, Mi)` would be different
 keys and every wide read's second tile would look unfed. Imposing `free_modes`'s order canonicalises
 both spellings. The function now does exactly one job (canonicalisation) where it used to do two.
 
@@ -8522,8 +8522,8 @@ all** except `dataclasses` (`Lowering/gir/quantum.py:51-53`) and receives the me
 #### 13.1 What an emit plan is, and why it is a flat list
 
 **The problem.** A finalized GIR block body is a list of `Move`, `Mma` and `Mark` nodes whose
-operands are `Ref`s over `Tile`s whose coordinates are `(mode, value)` pairs — `K_inner=1`,
-`M_split=0`, `M_inner=1`. A leaf emitter, by contrast, wants numbers: *tile 3, substep 1, register
+operands are `Ref`s over `Tile`s whose coordinates are `(mode, value)` pairs — `Ki=1`,
+`Mo=0`, `Mi=1`. A leaf emitter, by contrast, wants numbers: *tile 3, substep 1, register
 buffer 0*. Somebody has to collapse a coordinate over an arbitrary set of named modes into the small
 integers the emitters index by, and that collapse depends on the loop order (which mode is the
 fastest-varying), on each operand's own presence (which modes it is *indexed by* at all, as opposed
@@ -8607,8 +8607,8 @@ seeding. `max(1, ...)` on the extent means a mode declared with extent 0 or abse
 the roles `m`, `n`, `k` to *one* mode name each, so "A's free index" was a single coordinate lookup.
 That is correct exactly while each role is carried by one axis. It stops being correct the moment a
 storage split factors the free axis: with `TDMSplitA` cutting the macro-tile, A's free presence is
-`{M_split, M_inner}` — **two** modes, both with extent > 1 — and a single-mode lookup silently
-returns `M_inner` and drops `M_split`. Half of A's tiles then alias onto the other half's indices.
+`{Mo, Mi}` — **two** modes, both with extent > 1 — and a single-mode lookup silently
+returns `Mi` and drops `Mo`. Half of A's tiles then alias onto the other half's indices.
 The loop-order sweep that makes this visible is
 `Tests/unit/test_gir.py:788` (`test_every_six_axis_reorder_emits_and_lowers`), which decodes and
 lowers all 90 permutations of the six-letter word `KKMMNN` at extent 2 on every axis and asserts
@@ -8762,7 +8762,7 @@ Pinned by `Tests/unit/test_gir.py:3215`
 **(b) `region` must be projected over ALL region axes, free *or* reduction.**
 An earlier form computed `freeset & rmodes` — the region axes that are also free axes. That is the
 same set exactly while every region axis is a free one, which is true for a macro-tile split (whose
-axes are `M_split` / `N_split`) and **false** for a reduction-axis split, whose axis is `K_split`.
+axes are `Mo` / `No`) and **false** for a reduction-axis split, whose axis is `Ko`.
 On the reduction split the intersection emptied and every read came out `region = 0`.
 
 > Measured 2026-08-18 on a TN-layout kernel with both operands split on the reduction axis: `k=0`
@@ -8785,7 +8785,7 @@ still splitting the coordinate unconditionally.
 It goes wrong specifically on the **shared reduction axis**, which is the only region axis two
 operands can both name:
 
-> Measured 2026-08-18, A split on the reduction axis and B unsplit: the `K_split` axis of extent 2
+> Measured 2026-08-18, A split on the reduction axis and B unsplit: the `Ko` axis of extent 2
 > sits in *both* operands' `region_modes` (the axis is the finest split in play; the unsplit operand
 > is simply present at every value of it). B's reads therefore came out with `region ∈ {0,1}` and
 > `k` pinned to 0 — a region displacement into an image that has none, and the same half read twice.
@@ -8796,7 +8796,7 @@ Pinned by the parametrized `Tests/unit/test_gir.py:3438`
 mirror at `:3456`.
 
 **(d) `k` must subtract the region modes too, for the same reason `tile` does.** When the split cuts
-the reduction axis, the region already carries `K_split`; leaving it in `k` counts that displacement
+the reduction axis, the region already carries `Ko`; leaving it in `k` counts that displacement
 twice, once as `region × splitBoundary` and again as `k × substepStride`. Subtracting is a no-op for
 a macro-tile split, whose axes were never in the reduction set to begin with — which is why the fix
 is safe to apply unconditionally rather than under a per-axis-kind branch.
@@ -9825,7 +9825,7 @@ That is the whole language. The rest of §14 goes line by line.
 
 ```
 Program(entry=prologue, M=1, S=A=[g0:2, shared:2] | B=[g0:2, shared:2] | MXSA=[…] | MXSB=[…],
-        order=['K_inner', 'M_split', 'M_inner', 'N_split', 'N_inner'])
+        order=['Ki', 'Mo', 'Mi', 'No', 'Ni'])
 ```
 
 (wrapped here; it is one physical line). Built at `gir/render.py:305-306` from four facts, three of
@@ -9844,8 +9844,8 @@ correct behaviour for a debug view and would be wrong for anything else.
   §14.12's `Mark swap` lines will be absent for it — a unit test asserts exactly that asymmetry).
 - **`order`** — `meta['inner_order']`, the loop-order word: the inner modes from outermost to
   innermost. **This is the radix order every coordinate in the dump is written in**, and it is the
-  first thing to check when a body looks reordered: `['K_inner','M_split','M_inner','N_split',
-  'N_inner']` is a `KMN` kernel with both tile axes split.
+  first thing to check when a body looks reordered: `['Ki','Mo','Mi','No',
+  'Ni']` is a `KMN` kernel with both tile axes split.
 
 #### 14.4 `_theta_facts_lines` — the premises the blocks are derived from
 
@@ -9930,10 +9930,10 @@ size > 1 print, so an unfused kernel omits the line entirely. The trailing paren
 marker points at an external design note and can be ignored; the sentence before it is the whole
 content.
 
-**Line 2 — `#   A: 2 storage regions on M_split — <who>`** (`gir/render.py:258-278`). An operand's
+**Line 2 — `#   A: 2 storage regions on Mo — <who>`** (`gir/render.py:258-278`). An operand's
 LDS tile can be *split* into storage-disjoint pieces; each piece is a **storage region**, and the
-axes that enumerate them are its `region_modes`. `2 storage regions on M_split` says A's tile is cut
-in half along the `M_split` axis, so `A.shared{M_split0}` and `A.shared{M_split1}` are different
+axes that enumerate them are its `region_modes`. `2 storage regions on Mo` says A's tile is cut
+in half along the `Mo` axis, so `A.shared{M_split0}` and `A.shared{M_split1}` are different
 memory, not two coordinates of one buffer. When an operand has region modes but only one region
 (the MX scale operands are the standing case), the count is 1 and the line is suppressed by the
 `> 1` filter at `:258` — deliberately, because "one region on an axis that could enumerate several"
@@ -9988,8 +9988,8 @@ need when reading fence Marks: for such an operand, a cross-agent ordering oblig
 at **block** scope rather than per access, so you will see one `Mark fence` with `'scope': 'block'`
 covering many accesses instead of a fence per pair.
 
-**Line 5 — `# §2.2 absorbed axes (removed from presence, re-inserted as `spans`): MXSA:(('M_split',
-2),); MXSB:(('N_split', 2),)`** (`gir/render.py:289-292`). This is the header for the `<spans …>`
+**Line 5 — `# §2.2 absorbed axes (removed from presence, re-inserted as `spans`): MXSA:(('Mo',
+2),); MXSB:(('No', 2),)`** (`gir/render.py:289-292`). This is the header for the `<spans …>`
 suffix documented in §14.8. The concept: when one `ds_load` instruction fills several logical tiles,
 the axis it runs along is **removed** from the read hop's coordinate set upstream, so the read's
 definition names a single location while every consumer names all of them. The line lists, per
@@ -9999,17 +9999,17 @@ tuple is rendered by plain `f"{k}:{v}"` — i.e. Python `repr` of the tuple, whi
 comma of a one-element tuple appears. It is ugly and it is unambiguous; a prettier
 `MXSA:M_splitx2` spelling would match the `<spans>` suffix's own format and is worth doing.
 
-**Line 6 — `# mode extents: K_inner=2, M_inner=2, M_split=2, N_inner=2, N_split=2   reduction=K_inner
+**Line 6 — `# mode extents: Ki=2, Mi=2, Mo=2, Ni=2, No=2   reduction=Ki
 mma inputs=A,B`** (`gir/render.py:294-298`). Three facts on one line, and the only line printed
 unconditionally (given any inner mode):
 
-- **mode extents** — the radix table. `M_split=2` means the coordinate `M_split` takes values 0 and 1,
+- **mode extents** — the radix table. `Mo=2` means the coordinate `Mo` takes values 0 and 1,
   so `M_split1` is the last one. Sorted by name, *not* by `ord`; the `order=[…]` field of the
   `Program` header carries the ordering, this carries the sizes. (Layer 1's own dump had the mirror
   bug — reduction modes printed alphabetically directly under an `ord`-ordered levels line — and was
   fixed to print in `ord` order. Doing the same here would be consistent, though the two lines are
   far enough apart that the confusion has not been observed.)
-- **`reduction=K_inner`** — which of those modes is the reduction (K) axis. Everything else is a free
+- **`reduction=Ki`** — which of those modes is the reduction (K) axis. Everything else is a free
   axis. This is what tells you that a `read A.shared{K_inner1,M_inner0}` is the *second* K sub-step of
   the chunk rather than a second tile.
 - **`mma inputs=A,B`** — which op-classes are the multiply inputs, as distinct from the scale operands
@@ -10346,7 +10346,7 @@ MXSA.shared{K_inner0,M_inner0}[gen#2[v+-1]]
 ",".join(f"{ax}{v}" for ax, v in coord if v is not None)
 ```
 
-So `(('K_inner',0), ('M_inner',1))` renders `K_inner0,M_inner1`. Two consequences. First, an axis
+So `(('Ki',0), ('Mi',1))` renders `K_inner0,M_inner1`. Two consequences. First, an axis
 present in the coordinate but *unpinned* (value `None`) is **invisible** — indistinguishable from an
 axis that is not in the coordinate at all. That distinction matters (an unpinned axis means "any
 value", an absent one means "this operand is broadcast over it"), and today only the θ-facts block
@@ -10439,7 +10439,7 @@ Rendering is one line:
 "+".join(f"{ax}x{ext}" for ax, ext in (ref.covers or ()))
 ```
 
-giving `M_splitx2` for a load spanning both values of `M_split`, and `M_splitx2+K_innerx2` for a
+giving `M_splitx2` for a load spanning both values of `Mo`, and `M_splitx2+K_innerx2` for a
 two-axis span. `_ref_str:76-78` wraps it as `<spans M_splitx2>` and omits the whole suffix when
 `covers` is empty (the ordinary one-location reference, and the overwhelming majority).
 
@@ -10460,7 +10460,7 @@ which the writer does, and therefore the dump does too. Concretely, feeding a tw
 
 ```
 # §2.2 absorbed axes (removed from presence, re-inserted as `spans`):
-#   MXSA:(('M_split', 2),); MXSB:(('N_split', 2),)
+#   MXSA:(('Mo', 2),); MXSB:(('No', 2),)
   read  MXSA.shared{K_inner0,M_inner0}[gen#2[v]] -> MXSA.register{K_inner0,M_inner0}[reg(g0,s0/W2)]
         <spans M_splitx2>  bufs=8 tok=('lds', 'MXSA', (0,))  deps[…]
 ```
@@ -10655,7 +10655,7 @@ Mark  swap {'hop': 'copy', 'gen_from': 0, 'gen_to': 1, 'unit': ('A','B'), 'steps
 Mark  swap {'hop': 'read', 'gen_from': 0, 'gen_to': 1, 'operand': 'B', 'steps': 1}
 Mark  gr_increment {'unit': ('A','B'), 'chunks': 1, 'to_chunk': 2}
 Mark  region_increment {'unit': ('A','B'), 'steps': 1, 'from_region': 0, 'to_region': 1,
-                        'axis_steps': {'M_split': 1}}
+                        'axis_steps': {'Mo': 1}}
 ```
 
 - **`phase_boundary`** — inserted by the lowering at each block head; its `phase` is the block's own
@@ -10827,14 +10827,14 @@ is the hardest shape the pipeline currently handles and it exercises almost ever
 
 ```
 Program(entry=prologue, M=1, S=A=[g0:2, shared:2] | B=[g0:2, shared:2] | MXSA=[g0:2, shared:2]
-        | MXSB=[g0:2, shared:2], order=['K_inner','M_split','M_inner','N_split','N_inner'])
+        | MXSB=[g0:2, shared:2], order=['Ki','Mo','Mi','No','Ni'])
 # Φ fuse groups: A+B, MXSA+MXSB   (one cooperative movement, one completion — §2.8 move 9)
-#   A: 2 storage regions on M_split — region is the AGENT's on the read hop (address agent-chosen)
+#   A: 2 storage regions on Mo — region is the AGENT's on the read hop (address agent-chosen)
 #      and the COORDINATE's on the copy hop — see render_geometry for the per-hop split
-#   B: 2 storage regions on N_split — …same…
+#   B: 2 storage regions on No — …same…
 #   movement A+B: 2 regions (the walk is per MOVEMENT, not per operand — #236)
 # agent-distributed operands: A, B, MXSA, MXSB   (their cross-agent obligations are block-scoped)
-# mode extents: K_inner=2, M_inner=2, M_split=2, N_inner=2, N_split=2   reduction=K_inner
+# mode extents: Ki=2, Mi=2, Mo=2, Ni=2, No=2   reduction=Ki
                 mma inputs=A,B
 # short-loop (T <= M) arm: 1 chunk steps, guards [unguarded]
 #   FOLDED into the drain chain (#183): every def-use pairing survives the reordering
@@ -10847,17 +10847,17 @@ Everything you need to read the body is in those twelve lines:
 
 - `M=1` ⇒ one drain block. `shared:2` ⇒ each operand's LDS ring is double-buffered, so you should
   see `Mark swap` for every one of them, and generation tags alternating between two values.
-- `order=[K_inner, M_split, M_inner, N_split, N_inner]` ⇒ `K_inner` is outermost of the inner modes,
-  `N_inner` innermost. Together with `reduction=K_inner` and `mode extents` (all 2), the whole
+- `order=[Ki, Mo, Mi, No, Ni]` ⇒ `Ki` is outermost of the inner modes,
+  `Ni` innermost. Together with `reduction=Ki` and `mode extents` (all 2), the whole
   coordinate space is 2×2×2×2×2.
 - **Two fuse groups.** A copy line whose sources are `A.global{…}+B.global{…}` is one instruction; so
   is `MXSA.global+MXSB.global`. Expect two copy *events* per chunk-fill, not four — and in fact three
   copy lines, because the `A+B` movement has two regions and walks them.
-- **A and B are region-split; the scales are not.** `A: 2 storage regions on M_split` and no line for
+- **A and B are region-split; the scales are not.** `A: 2 storage regions on Mo` and no line for
   `MXSA`/`MXSB`. So `A.shared{M_split0}` and `A.shared{M_split1}` are different memory, and
   `MXSA.shared{…}` has no region coordinate at all.
-- **The regions are the agent's on the read hop.** A's *reads* below carry **no** `M_split` coordinate
-  — the wave selects its own region — while A's *copies* do. If you see an `M_split` in a read
+- **The regions are the agent's on the read hop.** A's *reads* below carry **no** `Mo` coordinate
+  — the wave selects its own region — while A's *copies* do. If you see an `Mo` in a read
   coordinate on this kernel, that is the defect the retraction was written for.
 - **`FOLDED`** ⇒ no `short{i}` blocks exist, the guard's false edge lands in `drain0`, and `drain0`
   has two predecessors.
@@ -10876,12 +10876,12 @@ Block prologue  chunk_base=0  path_chunk_base={}  succs=('steady','drain0'):
   copy  A.global{M_split0}+B.global{N_split0} -> A.shared{M_split0}[gen@0]+B.shared{N_split0}[gen@0]
         bufs=0,4 tok=('lds', ('A','B'), (0,))  deps[crossing-RAW:A+B:shared:copy@C_copy]
   Mark  region_increment {'unit':('A','B'), 'steps':1, 'from_region':0, 'to_region':1,
-                          'axis_steps': {'M_split': 1}}
+                          'axis_steps': {'Mo': 1}}
   copy  A.global{M_split1}+B.global{N_split1} -> A.shared{M_split1}[gen@0]+B.shared{N_split1}[gen@0]
         bufs=2,6 tok=('lds', ('A','B'), (0,))  deps[crossing-RAW:A+B:shared:copy@C_copy]
   Mark  fence {… 'kinds': ('RAW',), 'edges': 12}
   Mark  region_increment {'unit':('A','B'), 'steps':-1, 'from_region':1, 'to_region':0,
-                          'axis_steps': {'M_split': -1}}
+                          'axis_steps': {'Mo': -1}}
   Mark  gr_increment {'unit':('A','B'), 'chunks':1, 'to_chunk':1}
   Mark  swap {'hop':'copy', 'gen_from':0, 'gen_to':1, 'unit':('A','B'), 'steps':1}
   read  A.shared{K_inner0,M_inner0}[gen@0] -> A.register{K_inner0,M_inner0}[reg(g0,s0/W2)]
@@ -10903,13 +10903,13 @@ Read it as follows.
    goes to generation 0.
 2. **Three copies, two movements.** `MXSA+MXSB` moves once (the scales are unsplit); `A+B` moves twice,
    once per storage region, with a `region_increment` between them stepping the descriptor along
-   `M_split`. The **rewind** `steps: -1` after the second copy is what returns the descriptor to region
+   `Mo`. The **rewind** `steps: -1` after the second copy is what returns the descriptor to region
    0 for the next chunk. If you are debugging a split kernel that reads garbage on its second chunk,
    a missing rewind is the first thing this dump would show.
 3. **The `bufs=` ids are the map of LDS.** Twelve ids exist (0…11): 2 regions × 2 ring generations for
    each of A (0,1,2,3) and B (4,5,6,7), and 2 ring generations for each of MXSA (8,9) and MXSB
    (10,11). The prologue's copies write the even ones — generation 0 — and its reads read them back.
-4. **A read names `bufs=0,2`, not `bufs=0`.** A's read carries no `M_split` coordinate (the region is
+4. **A read names `bufs=0,2`, not `bufs=0`.** A's read carries no `Mo` coordinate (the region is
    the agent's), so the access may reach *either* region and must be ordered against both producers.
    That widening is `mem_tokens.py:152-160`, and this line is where you see it happen. Compare
    `MXSA`'s read: `bufs=8` alone, because MXSA is unsplit.
@@ -11006,7 +11006,7 @@ Three things to notice, all of them dump features rather than kernel features:
 
 | symptom in the dump | what it means |
 |---|---|
-| an `M_split` coordinate on an `A.shared → A.register` read, on a kernel whose preamble says A's region is the agent's | the read is coordinating a region the agent selects — the exact fault the agent-relative retraction documents |
+| an `Mo` coordinate on an `A.shared → A.register` read, on a kernel whose preamble says A's region is the agent's | the read is coordinating a region the agent selects — the exact fault the agent-relative retraction documents |
 | a `read` whose `bufs=` set does not intersect the `bufs=` of any preceding `copy` | the reader and the writer are on different storage; either the token assignment or the generation resolution is wrong |
 | a `copy` with a `rotation-WAR` dep placed **before** the reads it names | the placement violated the obligation the dep states; compare the Mark positions |
 | `MODEL-ONLY` on a block whose ops you are counting against a `.s` | not a defect — subtract them (§14.14) |
@@ -11072,7 +11072,7 @@ mxf8 split kernel through `build_gir`, then asserts, with a stated reason on eac
   agent-relative operand;
 - **a negation**: `"ONE agent's reads name ONE region" not in txt` — asserting the *retraction*, not
   just the presence of a replacement;
-- a structural consequence: no `read A.shared` line may contain `M_split`, because the agent selects
+- a structural consequence: no `read A.shared` line may contain `Mo`, because the agent selects
   the region and coordinating it is what mislabelled a wave's second tile;
 - `"2 storage regions"`, `"movement A+B"`, `"Φ fuse groups"`;
 - `"deps["` together with a real kind name, and `"bufs="` together with `"tok="`;
@@ -11660,7 +11660,7 @@ Background, from first principles. Two independent things can happen to an opera
 copy:
 
 * **Region split.** An operand's LDS tile may be cut into `n` storage-disjoint pieces (its
-  *regions*), enumerated by one or more *region modes* — `M_split` for A, `N_split` for B. Each
+  *regions*), enumerated by one or more *region modes* — `Mo` for A, `No` for B. Each
   region is separately addressable storage.
 * **Φ fusion.** Several op-classes' copies may be merged into one cooperative instruction with one
   completion event, because one aliased descriptor serves them all.
@@ -11964,7 +11964,7 @@ register `Ref` read
 A.register{K0, M_split0, M_inner0, N_split0, N_inner0}
 ```
 
-while the producing read named A's own presence, `{K_inner, M_split, M_inner}`, and nothing else. A
+while the producing read named A's own presence, `{Ki, Mo, Mi}`, and nothing else. A
 is *broadcast* over the N axes — one A fragment feeds every N position — so `N_split0, N_inner0` is
 not part of A's identity at all. The use named **a register location no definition ever writes**, for
 every broadcast operand, in every kernel. Symmetrically, B's Ref mentioned the M axes it is broadcast
@@ -13683,7 +13683,7 @@ everything).
 if the act's `axis_steps` names more than one region axis, raise. GIR carries a per-axis step
 vector, but the descriptor walks **one** axis per step and the flat `steps` scalar is only a byte
 displacement while a single axis is live. Emitting `|steps|` single-axis walks for a
-`(M_split −1, K_split +1)` grid step is what the old scalar path would silently have done. The
+`(Mo −1, Ko +1)` grid step is what the old scalar path would silently have done. The
 message notes that `TDMSplitA/B ∈ {0,1,2}` cannot currently produce this shape, so the refusal is a
 guard on a future parameter value rather than a live limitation.
 
@@ -17165,7 +17165,7 @@ worth naming here as *historical defect sites* rather than failure sites:
 
 - `_convert_mma` (`:429`) used to build every source `Tile` from the WMMA's full `(K, M, N)`
   coordinate, so a broadcast operand named a location no read ever wrote — B's `Ref` mentioned
-  `M_inner` even though B is broadcast over it. It was not a miscompile only because both real
+  `Mi` even though B is broadcast over it. It was not a miscompile only because both real
   consumers defended against it independently (`emit_plan._plan_mma` re-projects `inst.coord`
   itself; `short_path._free_coord` re-projected per operand). Nothing in the verifier constrained
   it: `_check_noiter` (`gir/verify.py:135`) forbids only `'iter'`. The fix projects each source onto

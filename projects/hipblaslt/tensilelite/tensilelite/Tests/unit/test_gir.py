@@ -660,7 +660,7 @@ def test_the_shallow_half_keeps_a_ring_digit_when_the_region_leads():
     assert g.split_unit_divisor(th, op) == 2
     slot = g.ring_slot(th, op, "g0", g.group_ring_depth(th, op, "g0", depths))
     assert slot is not None
-    assert "M_split" in {axis.name for axis in slot.free_axes()}
+    assert "Mo" in {axis.name for axis in slot.free_axes()}
 
 
 @pytest.mark.parametrize("wio", [1, 2])
