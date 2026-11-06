@@ -23528,19 +23528,25 @@ class KernelWriterAssembly(KernelWriter):
     # divisor remains on dim1. geo.splitDim captures this layout decision.
     # Moving the wave divisor to the free axis would change the LDS image
     # without a corresponding read-side region adjustment.
-    geo = self.tdmSplitGeometry(kernel, tP)
-    dim1Divisor = geo.factor            # kept for the emitted comments and the seg-interleave math
-    if geo.splitDim == 0:
-      tile0Emit, tile1Emit = sizeTile0 // geo.factor, sizeTile1 // numWaves
-    else:
-      tile0Emit, tile1Emit = sizeTile0, sizeTile1 // numWaves // geo.factor
     isSparseTrack: bool = (kernel["ProblemType"]["Sparse"] == 1 and tP["isA"]) or (kernel["ProblemType"]["Sparse"] == 2 and tP["isB"])
     isMetadata: bool = tP["isM"]
     isMetadataML1: bool = isMetadata and kernel["ProblemType"]["Sparse"] and kernel["ProblemType"]["MetadataLayout"]
     waveSepMetadata: bool = isMetadata and self.isTdmWaveSeparated(kernel)
     # issueLoad admits metadata on even waves; the grouping has to agree.
     assert not waveSepMetadata or 0 in tdmWavePartition(kernel, "Metadata")[1]
+    # The COOPERATING unit, not the wave count: metadata rides half the waves, so dividing the
+    # tile by `numWaves` hands each component half the rows it loads.
     numComp: int = tdmWaveComponents(kernel, "Metadata")[0] if waveSepMetadata else numWaves
+    # The split divisor follows the axis named by TDMSplitA/B; the wave
+    # divisor remains on dim1. geo.splitDim captures this layout decision.
+    # Moving the wave divisor to the free axis would change the LDS image
+    # without a corresponding read-side region adjustment.
+    geo = self.tdmSplitGeometry(kernel, tP)
+    dim1Divisor = geo.factor            # kept for the emitted comments and the seg-interleave math
+    if geo.splitDim == 0:
+      tile0Emit, tile1Emit = sizeTile0 // geo.factor, sizeTile1 // numComp
+    else:
+      tile0Emit, tile1Emit = sizeTile0, sizeTile1 // numComp // geo.factor
 
     isTdmIter = (not isMetadata
                  and kernel.get("_TDMIterateMode%s" % tc, False))
