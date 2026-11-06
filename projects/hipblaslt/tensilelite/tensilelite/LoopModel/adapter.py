@@ -654,10 +654,11 @@ def _validate_register_depths(theta, kernel):
             depths,
         )
         required = 1
+        # The loop order sets how many buffers are live at once whether or not the operand
+        # reloads its whole set; a ring that does not carry must hold that many either way.
         if value("VgprGroup", side) > 1 \
-                and geometry.reloads_whole_set(theta, operand) \
-                    and geometry.requested_read_ahead(theta, operand, depths) > 0 \
-                    and not geometry.vgpr_ring_carries(
+                and geometry.requested_read_ahead(theta, operand, depths) > 0 \
+                and not geometry.vgpr_ring_carries(
                         theta, operand, group, buffers):
             required = max(
                 required,
