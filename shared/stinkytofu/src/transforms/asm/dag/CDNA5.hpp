@@ -861,9 +861,15 @@ class CDNA5ReadyQueue : public ReadyQueue {
         auto pin = tensorLoadGapBarrier_.find(node->inst);
         if (pin != tensorLoadGapBarrier_.end()) {
             auto window = barrierWmmaThresholds_.find(pin->second);
-            if (window != barrierWmmaThresholds_.end() &&
-                wmmaIssuedCountThisRegion_ >= std::max(0, window->second - tensorLoadGapWmmas_))
-                return false;
+            if (window != barrierWmmaThresholds_.end()) {
+                int release = std::max(0, window->second - tensorLoadGapWmmas_);
+                // That gap is one window for every pinned load. Each load also has its own,
+                // the window of the barrier it issues behind, and holding past that collapses
+                // the stagger those barriers give the group onto a single release point.
+                auto own = tensorLoadPlannedWmma_.find(node->inst);
+                if (own != tensorLoadPlannedWmma_.end()) release = std::min(release, own->second);
+                if (wmmaIssuedCountThisRegion_ >= release) return false;
+            }
         }
         auto anchor = issuedEndClock_.find(node->tensorLoadDelayAnchorId);
         if (anchor == issuedEndClock_.end()) return true;
@@ -905,6 +911,9 @@ class CDNA5ReadyQueue : public ReadyQueue {
     // spacing is where a RAW-window hold on the load has to end (heldBackForTensorLoadDelay).
     std::unordered_map<const StinkyInstruction*, StinkyInstruction*> tensorLoadGapBarrier_;
     int tensorLoadGapWmmas_ = 0;
+    // Planned window of each tensor_load: the window of the barrier it issues behind
+    // (loadPlannedWindow). A hold may not carry a load past its own.
+    std::unordered_map<const StinkyInstruction*, int> tensorLoadPlannedWmma_;
     // Single-stage loop body (tensilelite: no HalfPLR), signalled by a short prefetch lead.
     bool singleStageLoop() const {
         const int lead = blockPrefetchLead_;
@@ -3939,6 +3948,7 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
     // so the barrier's planned WMMA window stands in for the load's. A prefetch whose load
     // or barrier is not in this region is left free.
     prefetchEarliestWmma_.clear();
+    tensorLoadPlannedWmma_.clear();
     barrierWaitWindows_.clear();
     for (const auto& [barrier, window] : barrierWmmaThresholds_)
         if (isBarrierWait(*barrier)) barrierWaitWindows_.push_back(window);
@@ -3962,7 +3972,10 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
                 auto th = barrierWmmaThresholds_.find(inst);
                 if (th != barrierWmmaThresholds_.end()) {
                     loadWindow = th->second;
-                    for (StinkyInstruction* tl : pendingLoads) loadPlannedWindow[tl] = loadWindow;
+                    for (StinkyInstruction* tl : pendingLoads) {
+                        loadPlannedWindow[tl] = loadWindow;
+                        tensorLoadPlannedWmma_[tl] = loadWindow;
+                    }
                     pendingLoads.clear();
                 }
             }
