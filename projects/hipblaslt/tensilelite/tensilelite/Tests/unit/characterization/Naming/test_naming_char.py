@@ -387,3 +387,27 @@ def test_loop_model_names_its_registers_knobs_and_factors(make_state):
         assert token not in off, (token, off)
     # A factor of 1 adds no axis, so it is not named even under the loop model.
     assert "_WFN" not in on and "_WFK" not in on, on
+
+
+@pytest.mark.parametrize("scalar, pair", [("PrefetchLocalRead", "PLR"),
+                                          ("ClusterLocalRead", "CLR")],
+                         ids=["plr", "clr"])
+def test_a_differing_per_operand_pair_replaces_its_scalar(make_state, scalar, pair):
+    """The pair says what the scalar cannot, so it stands in place of it, not beside it."""
+    same = N.getKernelNameMin(make_state(**{scalar: 1, scalar + "A": 1, scalar + "B": 1}), True)
+    differ = N.getKernelNameMin(make_state(**{scalar: 1, scalar + "A": 1, scalar + "B": 0}), True)
+
+    assert "_%s1_" % pair in same and "_%sA" % pair not in same, same
+    assert "_%sA1_%sB0_" % (pair, pair) in differ, differ
+    assert "_%s1_" % pair not in differ, differ
+
+
+def test_a_split_pair_the_bool_cannot_spell_is_named_per_operand(make_state):
+    """TDMSplit is a bool: it spells an equal 0/1 pair and nothing else."""
+    equal = N.getKernelNameMin(make_state(TDMSplit=False, TDMSplitA=0, TDMSplitB=0), True)
+    differ = N.getKernelNameMin(make_state(TDMSplit=False, TDMSplitA=1, TDMSplitB=0), True)
+    factor = N.getKernelNameMin(make_state(TDMSplit=False, TDMSplitA=2, TDMSplitB=2), True)
+
+    assert "_TDMS0_" in equal and "_TDMSA" not in equal, equal
+    assert "_TDMSA1_TDMSB0_" in differ and "_TDMS0_" not in differ, differ
+    assert "_TDMSA2_TDMSB2_" in factor and "_TDMS0_" not in factor, factor
