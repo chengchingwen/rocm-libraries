@@ -347,6 +347,28 @@ def _getName(state, requiredParameters: frozenset, splitGSU: bool, ignoreInterna
     if not state.get("PrefetchGL2SAddr", False):
       requiredParametersTemp.discard("PrefetchGL2SAddr")
 
+    # An equal pair says nothing the scalar does not, so it collapses onto it; a differing pair
+    # REPLACES the scalar, which could not have said it. Either way the name states it once.
+    for _scalar in ("PrefetchLocalRead", "ClusterLocalRead"):
+      _a, _b = state.get(_scalar + "A", -1), state.get(_scalar + "B", -1)
+      if _a == _b:
+        requiredParametersTemp.discard(_scalar + "A")
+        requiredParametersTemp.discard(_scalar + "B")
+      else:
+        requiredParametersTemp.update((_scalar + "A", _scalar + "B"))
+        requiredParametersTemp.discard(_scalar)
+
+    # Same rule for the split, whose scalar is the BOOL that only an equal 0/1 pair can spell;
+    # an equal pair of any other factor has no scalar spelling and keeps the pair.
+    _sa, _sb = int(state.get("TDMSplitA", 0) or 0), int(state.get("TDMSplitB", 0) or 0)
+    if _sa == _sb and _sa in (0, 1):
+      requiredParametersTemp.add("TDMSplit")
+      requiredParametersTemp.discard("TDMSplitA")
+      requiredParametersTemp.discard("TDMSplitB")
+    else:
+      requiredParametersTemp.update(("TDMSplitA", "TDMSplitB"))
+      requiredParametersTemp.discard("TDMSplit")
+
     # Registers calculates every value; names describe the final schedule.
     for _registerParam in ("VgprGroupA", "VgprGroupB", "VgprAllocA", "VgprAllocB"):
       if state.get("UseLoopModel", False):
