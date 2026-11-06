@@ -3366,7 +3366,9 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
                                             : std::max(1, config_.wmmaLatencyFallbackCycles);
                 const int tensorLoadDsLoadGapWmma =
                     (tensorLoadDsLoadGapCycles + wmmaLatency - 1) / wmmaLatency;
-                const int baseAfterEnd = afterGroup.baseThreshold;
+                // The after group ends where it promotes, so its own front-overlap push counts:
+                // the estimator end alone hides a push that carries it past the before group.
+                const int baseAfterEnd = std::max(afterGroup.baseThreshold, afterGroup.threshold);
                 const int baseBeforeBegin = beforeGroup.baseThreshold;
                 const int baseAfterBegin = std::max(0, baseAfterEnd - afterGroup.claimWindow);
                 const int baseBeforeEnd = baseBeforeBegin + beforeGroup.claimWindow;

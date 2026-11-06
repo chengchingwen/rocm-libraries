@@ -1181,6 +1181,58 @@ TEST_F(DAGSchedulerPassTest, OverlapGapStopsAfterAtParentWmmaAndPushesBefore) {
     EXPECT_LT(wmmasBefore(beforeSignal), 33) << scheduleOrder(*bb);
 }
 
+// Two after groups share a window, so the front-overlap push carries the later one (token 2)
+// past the before group's threshold (token 1). The windows that are claimed then overlap, and
+// the pair has to reconcile: reading the estimator end instead of the threshold that places the
+// group hides the push, leaves the pair unresolved, and the before barrier is scheduled behind
+// the pushed after barrier with its own ds_loads crushed into what is left of the region.
+TEST_F(DAGSchedulerPassTest, PushedAfterThresholdStillOverlapsBeforeGroup) {
+    bb->addSuccessor(bb);
+
+    for (int i = 0; i < 12; ++i)
+        createWmmaF32_16x16x16_bf16(/*destStart=*/1000 + i * 16, /*src0Start=*/3000 + i * 16);
+    for (int i = 0; i < 4; ++i)
+        createMovableDsLoad(/*destReg=*/100 + i * 8, /*addrReg=*/800 + i, /*ldsToken=*/0);
+    auto [afterSignalA, afterWaitA] = createMovableWorkgroupBarrier(bb, /*ldsToken=*/0);
+    (void)afterWaitA;
+    for (int i = 0; i < 10; ++i)
+        createMovableDsLoad(/*destReg=*/200 + i * 8, /*addrReg=*/840 + i, /*ldsToken=*/2);
+    auto [afterSignalB, afterWaitB] = createMovableWorkgroupBarrier(bb, /*ldsToken=*/2);
+    (void)afterWaitB;
+    auto [beforeSignal, beforeWait] = createMovableWorkgroupBarrier(bb, /*ldsToken=*/1);
+    (void)beforeWait;
+    for (int i = 0; i < 6; ++i)
+        createMovableDsLoad(/*destReg=*/300 + i * 8, /*addrReg=*/880 + i, /*ldsToken=*/1);
+    for (int i = 0; i < 12; ++i)
+        createWmmaF32_16x16x16_bf16(/*destStart=*/5000 + i * 16, /*src0Start=*/6000 + i * 16);
+    createWmmaF32_16x16x16_bf16(/*destStart=*/700, /*src0Start=*/300);
+    createSCmpWritingScc(bb, /*srcSgpr=*/90);
+
+    runPassWithUnrollGemm(/*dsSpread=*/false);
+
+    auto wmmasBefore = [&](const StinkyInstruction* target) {
+        int count = 0;
+        for (const IRBase& ir : *bb) {
+            const auto* inst = dyn_cast<StinkyInstruction>(&ir);
+            if (inst == nullptr) continue;
+            if (inst == target) break;
+            if (isMatrixInstruction(*inst)) ++count;
+        }
+        return count;
+    };
+
+    // Both pairs reconcile, so both after groups are gap-placed in front of the before group.
+    // On the estimator end the first pair reads overlap=0 and keeps its pushed threshold, which
+    // is the before group's own: 17 for both, and the ds_loads behind the before barrier lose
+    // the windows the threshold reserved for them.
+    const auto* overlaps = am.getCachedResult<Layer2BarrierOverlapAnalysis>();
+    ASSERT_NE(overlaps, nullptr);
+    EXPECT_TRUE(overlaps->contains(afterSignalA, beforeSignal));
+    EXPECT_LT(wmmasBefore(afterSignalA), wmmasBefore(beforeSignal)) << scheduleOrder(*bb);
+    EXPECT_LT(wmmasBefore(afterSignalB), wmmasBefore(beforeSignal)) << scheduleOrder(*bb);
+    EXPECT_EQ(wmmasBefore(beforeSignal), 17) << scheduleOrder(*bb);
+}
+
 // Same overlap as above, with DsSpread on. The after barrier lands on the parent WMMA, so the
 // stage anchor must not put the dropped drain back. A restored drain would be the 24th WMMA.
 TEST_F(DAGSchedulerPassTest, StageAnchorLeavesOverlapParentFloorInPlace) {
