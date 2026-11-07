@@ -2233,6 +2233,32 @@ CDNA5ReadyQueue::computeBarrierAfterThresholds(IRList::iterator regionStart,
         int dsLoadCount;
         int depThreshold;
         int maxParentWmmaIdx;
+        // A schedulable tensor_load issues behind this group. The overlap step below separates
+        // ds_load windows, which that load is not part of, so it may not carry the load along.
+        bool gatesTensorLoad;
+    };
+    // The region's own tensor_loads: one that is a scheduling boundary is not inside the region,
+    // so anything found here is a load the scheduler places, and the barrier it waits behind
+    // decides where it can go.
+    auto gatesTensorLoad = [&](const BarrierTokenGroup& group) {
+        std::unordered_set<StinkyInstruction*> groupBarriers(group.barriers.begin(),
+                                                             group.barriers.end());
+        bool passedGroup = false;
+        for (IRList::iterator it = regionStart; it != regionEnd; ++it) {
+            auto* inst = dyn_cast<StinkyInstruction>(it.getNodePtr());
+            if (inst == nullptr) continue;
+            if (groupBarriers.count(inst) != 0) {
+                passedGroup = true;
+                continue;
+            }
+            if (!passedGroup) continue;
+            if (isBarrier(*inst)) break;
+            if (!isTensorLoad(*inst)) continue;
+            for (const auto* regs : {&inst->getSrcRegs(), &inst->getDestRegs()})
+                for (const StinkyRegister& reg : *regs)
+                    if (isPseudoReg(reg) && group.tokens.count(reg.reg.idx) != 0) return true;
+        }
+        return false;
     };
 
     // Step 1a: collect all movable barriers with their PSEUDO src token sets,
@@ -2395,7 +2421,7 @@ CDNA5ReadyQueue::computeBarrierAfterThresholds(IRList::iterator regionStart,
         }
         overlapChecks.push_back({groupBarrier, group.barriers, afterThreshold, lastOverlap,
                                  wmmaWindowsNeeded, latencyWmmaBudget, matchingDsLoadCount,
-                                 depThreshold, maxParentWmmaIdx});
+                                 depThreshold, maxParentWmmaIdx, gatesTensorLoad(group)});
         PASS_DEBUG(std::cerr << "[CDNA5 computeBarrierAfterThresholds] barrier=" << groupBarrier
                              << " barrierGroupSize=" << group.barriers.size() << " afterThreshold="
                              << afterThreshold << " matchingDsLoadCount=" << matchingDsLoadCount
@@ -2454,9 +2480,14 @@ CDNA5ReadyQueue::computeBarrierAfterThresholds(IRList::iterator regionStart,
 
     for (size_t i = 0; i < n; ++i) {
         const BarrierAfterSummary& summary = overlapChecks[i];
+        // The separation above is between two groups' ds_load windows. A tensor_load waits
+        // behind its barrier, so pushing the barrier for a window it is not in moves the load
+        // too -- a cost this step does not weigh. Such a group keeps its own threshold; it can
+        // still push the groups it overlaps.
+        const int pushed = pushedStart[i] + summary.wmmaWindowsNeeded + frontOverlapBudget[i];
         const int adjustedAfterThreshold =
             std::min((int)wmmaIssueConfig.issuedCount,
-                     pushedStart[i] + summary.wmmaWindowsNeeded + frontOverlapBudget[i]);
+                     summary.gatesTensorLoad ? summary.afterThreshold : pushed);
 
         for (StinkyInstruction* barrier : summary.barriers) {
             barrierWmmaThresholds_[barrier] = adjustedAfterThreshold;
