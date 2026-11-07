@@ -1233,6 +1233,54 @@ TEST_F(DAGSchedulerPassTest, PushedAfterThresholdStillOverlapsBeforeGroup) {
     EXPECT_EQ(wmmasBefore(beforeSignal), 17) << scheduleOrder(*bb);
 }
 
+// The overlap step separates two after groups' ds_load windows. A tensor_load is not in those
+// windows but waits behind its barrier, so pushing that barrier carries the load with it. The
+// group that gates one keeps its own threshold; the group that does not is still pushed.
+TEST_F(DAGSchedulerPassTest, OverlapPushSkipsAnAfterGroupGatingATensorLoad) {
+    bb->addSuccessor(bb);
+
+    for (int i = 0; i < 30; ++i)
+        createWmmaF32_16x16x16_bf16(/*destStart=*/1000 + i * 16, /*src0Start=*/3000 + i * 16);
+    for (int i = 0; i < 4; ++i)
+        createMovableDsLoad(/*destReg=*/100 + i * 8, /*addrReg=*/800 + i, /*ldsToken=*/0);
+    auto [afterSignalA, afterWaitA] = createMovableWorkgroupBarrier(bb, /*ldsToken=*/0);
+    (void)afterWaitA;
+    StinkyInstruction* tensorLoad =
+        createMovableTensorLoad(bb, /*src0Reg=*/40, /*src1Reg=*/44, /*ldsToken=*/0);
+    for (int i = 0; i < 10; ++i)
+        createMovableDsLoad(/*destReg=*/200 + i * 8, /*addrReg=*/840 + i, /*ldsToken=*/2);
+    auto [afterSignalB, afterWaitB] = createMovableWorkgroupBarrier(bb, /*ldsToken=*/2);
+    (void)afterWaitB;
+    auto [beforeSignal, beforeWait] = createMovableWorkgroupBarrier(bb, /*ldsToken=*/1);
+    (void)beforeSignal;
+    (void)beforeWait;
+    for (int i = 0; i < 6; ++i)
+        createMovableDsLoad(/*destReg=*/300 + i * 8, /*addrReg=*/880 + i, /*ldsToken=*/1);
+    for (int i = 0; i < 30; ++i)
+        createWmmaF32_16x16x16_bf16(/*destStart=*/5000 + i * 16, /*src0Start=*/6000 + i * 16);
+    createWmmaF32_16x16x16_bf16(/*destStart=*/700, /*src0Start=*/300);
+    createSCmpWritingScc(bb, /*srcSgpr=*/90);
+
+    runPassWithUnrollGemm(/*dsSpread=*/false);
+
+    auto wmmasBefore = [&](const StinkyInstruction* target) {
+        int count = 0;
+        for (const IRBase& ir : *bb) {
+            const auto* inst = dyn_cast<StinkyInstruction>(&ir);
+            if (inst == nullptr) continue;
+            if (inst == target) break;
+            if (isMatrixInstruction(*inst)) ++count;
+        }
+        return count;
+    };
+    // Group A claims [8, 21) and group B [9, 40), so the step pushes A to 8 + 13 + 12 = 33.
+    // A gates the tensor_load, so it keeps 21 and the load issues behind it there; B gates none
+    // and is still pushed past A's end.
+    EXPECT_EQ(wmmasBefore(afterSignalA), 21) << scheduleOrder(*bb);
+    EXPECT_EQ(wmmasBefore(tensorLoad), 22) << scheduleOrder(*bb);
+    EXPECT_GT(wmmasBefore(afterSignalB), wmmasBefore(afterSignalA)) << scheduleOrder(*bb);
+}
+
 // Same overlap as above, with DsSpread on. The after barrier lands on the parent WMMA, so the
 // stage anchor must not put the dropped drain back. A restored drain would be the 24th WMMA.
 TEST_F(DAGSchedulerPassTest, StageAnchorLeavesOverlapParentFloorInPlace) {
