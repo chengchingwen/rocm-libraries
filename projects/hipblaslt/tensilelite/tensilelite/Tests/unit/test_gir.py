@@ -1075,3 +1075,35 @@ def test_gl2_prefetch_is_silent_when_the_preset_is_off():
     prog = build_gir(adapter.params_to_theta(kernel_to_params(dict(_BASE))))
     prog.params = dict(prog.params or {}, **{Gl2PrefetchRegions.PARAM: 0})
     assert Gl2PrefetchRegions().run(prog) == []
+
+
+# ---------------------------------------------------------------------------
+# A factor axis divides the prefetch unit, so the walk holds that many more units and the
+# operand can run ahead over more of them. The cap is built from the role extents, which
+# exclude the factor axes -- blind to the split unless it is carried, and a read-ahead the
+# shape supports is then refused.
+# ---------------------------------------------------------------------------
+def _b_read_ahead(wmma_factor_n, plr_b):
+    """B's read-ahead resolved on a KNMNM walk whose B tile 10 factorises by both 2 and 5."""
+    from tensilelite.Components.LoopModel import Registers
+    k = _kernel(_mxf8(), _mi("fp8", (8, 10), (2, 2)),
+                2, 1, loopOrder(2, 3, 0, 0), 0, 0, 4)
+    k.update(UseLoopModel=True, LoopIters=2, WmmaInnerOrder=2, WmmaOuterOrder=3,
+             WmmaFactorN=wmma_factor_n,
+             PrefetchLocalReadA=1, PrefetchLocalReadB=plr_b,
+             ClusterLocalRead=0, ClusterLocalReadA=1, ClusterLocalReadB=0,
+             VgprGroupB=1, VgprAllocB=5, SuppressNoLoadLoop=True)
+    Registers.calculate(k)
+    return k["PrefetchLocalReadB"]
+
+
+def test_read_ahead_cap_follows_the_factor_that_splits_the_unit():
+    # Factor 2 leaves a 5-tile unit and four of them.
+    assert _b_read_ahead(2, 4) == 4
+    with pytest.raises(RuntimeError, match="the most B can run ahead"):
+        _b_read_ahead(2, 5)
+    # Factor 5 cuts the unit to 2 tiles, so the same walk holds ten -- and 3 is reachable.
+    assert _b_read_ahead(5, 3) == 3
+    assert _b_read_ahead(5, 10) == 10
+    with pytest.raises(RuntimeError, match="the most B can run ahead"):
+        _b_read_ahead(5, 11)
