@@ -7979,8 +7979,11 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       # Without it the body holds one stage, and a lead below 8 tells stinkytofu to issue
       # the whole prefetch group in the tensor_load's window (temporary per-shape defaults).
       # stinkytofu drops the lead itself where a stage has under 64 WMMAs (counted in the asm).
+      # The loop model rejects HalfPLR and spells the same shape as VgprGroup/VgprAlloc, so the
+      # flag is always off there and the sentinel would take a body that does have the room.
+      # 25 is the low end of a flat plateau. TODO: re-measure it per shape.
       stinky_module_options["PrefetchLeadWmmas"] = \
-        4 if not kernel["HalfPLR"] else \
+        (25 if kernel.get("UseLoopModel") else 4) if not kernel["HalfPLR"] else \
         25 if kernel["ProblemType"]["DataTypeA"].numBytes() < 1 else 30
       if self.states.localReadSideOrder[0] == "B":
         stinky_module_options["DsReadOrder"] = 0  # Preserve selected B-then-A emission.
