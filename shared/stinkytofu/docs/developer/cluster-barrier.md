@@ -164,14 +164,7 @@ switch `cluster_barrier::kRule3CrossLoop` in
 `InsertClusterBarrierPass.hpp` (default **false**). See
 [`kRule3CrossLoop`](#krule3crossloop) below.
 
-### GIR frame RAW-window scheduling
-
-For GIR frame-pipeline cluster-barrier kernels, the DAG scheduler derives physical tensor RAW publication
-points from `GirFrameAnalysis` / `GirFrameHazardAnalysis`; the imported FrameMap contract is the
-source of truth. When two consecutive tensor RAW points are more than 200 modeled cycles apart,
-the tensor-load group bracketed by them is held until at least 200 real scheduler cycles after the
-first point. Other ready work fills the interval; the scheduler neither inserts idle instructions
-nor crosses either RAW point.
+### GIR frame RAW points and the Rule 3 signal
 
 The Rule 3 backward signal search treats `s_wait_tensorcnt` as a hard stop and settles after that
 RAW point's workgroup fence. Therefore no tensor-counter wait may occur between a Rule 3
