@@ -370,7 +370,10 @@ validParameters = { # we need to make sure this matches develop
     # where ArgType == 3 selects it at runtime. GSU is supported; with a
     # workgroup cluster it forces GlobalSplitUWorkGroupMappingRoundRobin on so the
     # cluster's peers share a K chunk. May remove these limitations in the future.
-    "PrefetchGL2": [0, 1, 2],
+    # The depth is how many iterations ahead the prefetch runs; the prologue primes that many
+    # chunks and the clamp stops it PGR + depth iterations before the end, so a deeper setting
+    # leaves more of a short K unprefetched.
+    "PrefetchGL2": [0, 1, 2, 3, 4],
     # Width of the PrefetchGL2 address increment sgpr (GL2PrefetchInc{A,B,...}).
     # False: 32-bit (1 sgpr). True: 64-bit (2 sgprs), for when the per-iteration
     # byte increment (unroll stride * DepthU * bpe, times the GSU chunk stride
