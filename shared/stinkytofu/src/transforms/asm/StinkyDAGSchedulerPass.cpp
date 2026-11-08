@@ -361,76 +361,6 @@ static void applyClusterBarrierSccRule(
     }
 }
 
-// GIR frame cluster lead. FrameMap owns RAW identity; GirFencePlacementPass's shared query turns
-// that exact frame analysis into the physical publication anchors the wait pass will later
-// materialize. Tensor loads emitted after a window are held back to `delayCycles` after its first
-// publication point. This is a placement rule on the load, not a dependency: it adds no DAG edge,
-// since the markers read other LDS slots than the load writes.
-static void applyClusterBarrierTensorLoadDelay(
-    DAGNodeList& dagNodes, const std::unordered_map<StinkyInstruction*, unsigned>& instToId,
-    std::vector<std::unordered_set<unsigned>>& dagGraph, const std::vector<int>& cumCycles,
-    const GirRawPlacementPlan& rawPlacements, int delayCycles) {
-    if (delayCycles <= 0 || rawPlacements.tensorMarkers.size() < 2) return;
-
-    std::vector<unsigned> markers;
-    for (const StinkyInstruction* marker : rawPlacements.tensorMarkers) {
-        auto found = instToId.find(const_cast<StinkyInstruction*>(marker));
-        if (found != instToId.end()) markers.push_back(found->second);
-    }
-    std::sort(markers.begin(), markers.end());
-    markers.erase(std::unique(markers.begin(), markers.end()), markers.end());
-    PASS_DEBUG({
-        std::cerr << "[DAG RAW tensor window] region markers:";
-        for (unsigned id : markers) std::cerr << " " << id;
-        std::cerr << " (function tensor markers=" << rawPlacements.tensorMarkers.size()
-                  << ", target=" << delayCycles << ")\n";
-    });
-
-    for (size_t m = 1; m < markers.size(); ++m) {
-        const unsigned firstId = markers[m - 1];
-        const unsigned secondId = markers[m];
-        if (firstId >= secondId || secondId >= cumCycles.size()) continue;
-        const int span = cumCycles[secondId] - cumCycles[firstId];
-        if (span <= delayCycles) {
-            PASS_DEBUG(std::cerr << "[DAG RAW tensor window] skip short window " << firstId
-                                 << " -> " << secondId << " span=" << span
-                                 << " target=" << delayCycles << "\n");
-            continue;
-        }
-
-        std::vector<unsigned> loads;
-        for (unsigned id = 0; id < dagNodes.size(); ++id) {
-            if (!isTensorLoad(*dagNodes[id].inst)) continue;
-            // A load emitted after the last RAW marker is intentionally pulled back into that
-            // final physical window. Earlier windows own loads textually between their bounds.
-            const bool finalWindow = m + 1 == markers.size();
-            if (id <= firstId || (!finalWindow && id >= secondId)) continue;
-            loads.push_back(id);
-        }
-        if (loads.empty()) continue;
-
-        // A load waits for the first RAW point to issue, so that point must not depend on any
-        // load; otherwise leave the whole group unchanged rather than splitting one frame-proven
-        // cluster group into partially delayed loads.
-        bool legal = true;
-        for (unsigned loadId : loads) legal &= !dag::hasPath(dagGraph, loadId, firstId);
-        if (!legal) {
-            PASS_DEBUG(std::cerr << "[DAG RAW tensor window] skip constrained window " << firstId
-                                 << " -> " << secondId << "\n");
-            continue;
-        }
-
-        for (unsigned loadId : loads) {
-            dagNodes[loadId].tensorLoadDelayAnchorId = firstId;
-            dagNodes[loadId].tensorLoadDelayCycles = delayCycles;
-            PASS_DEBUG(std::cerr << "[DAG RAW tensor window] hold tensor_load dagId=" << loadId
-                                 << " after RAW dagId=" << firstId << " until +" << delayCycles
-                                 << " cycles; window ends at RAW dagId=" << secondId
-                                 << " span=" << span << "\n");
-        }
-    }
-}
-
 // VGPR indices of one WMMA input family (A, B, MXSA, or MXSB) so a parent VALU
 // that touches any register of the family can boost every ds_load of that family.
 static void addVgprIdxs(const StinkyRegister& r, std::unordered_set<uint32_t>& out) {
@@ -503,8 +433,7 @@ static void scheduleRegionWithMovableSideEffects(
     std::vector<IRBase*>& scheduled, ReadyQueue& readyQueue,
     const std::unordered_map<StinkyInstruction*, unsigned>& wmmaIndex,
     const GirFrameHazardAnalysis::Result& girHazards, const GirFrameAnalysis::Result& girFrames,
-    const GirPlanFenceCoverage& girFenceCoverage, const GirRawPlacementPlan& rawPlacements,
-    int& fillerCount) {
+    const GirPlanFenceCoverage& girFenceCoverage, int& fillerCount) {
     if (regionStart == regionEnd) {
         return;  // Empty region, nothing to schedule.
     }
@@ -549,10 +478,6 @@ static void scheduleRegionWithMovableSideEffects(
 
     if (readyQueue.clusterBarrierEnabled())
         applyClusterBarrierSccRule(dagNodes, instToId, dagGraph, regionCycles);
-    applyClusterBarrierTensorLoadDelay(dagNodes, instToId, dagGraph, cumCycles, rawPlacements,
-                                       readyQueue.getPassContext()
-                                           .getPassFeatureConfig()
-                                           .dagFeatures.clusterBarrierTensorLoadDelayCycles);
 
     // Pre-scan: mark VALU/transcendental nodes that directly feed a matrix op.
     // CDNA5ReadyQueue holds each behind the WMMA two before its first consumer.
@@ -980,8 +905,7 @@ static void scheduleInDAG(BasicBlock& bb, ReadyQueue& readyQueue,
                           const std::unordered_map<StinkyInstruction*, unsigned>& wmmaIndex,
                           const GirFrameHazardAnalysis::Result& girHazards,
                           const GirFrameAnalysis::Result& girFrames,
-                          const GirPlanFenceCoverage& girFenceCoverage,
-                          const GirRawPlacementPlan& rawPlacements) {
+                          const GirPlanFenceCoverage& girFenceCoverage) {
     PASS_DEBUG(std::cerr << "*** Scheduling Instructions in DAG: ***\n");
 
     if (bb.empty()) return;
@@ -1008,8 +932,8 @@ static void scheduleInDAG(BasicBlock& bb, ReadyQueue& readyQueue,
             // Non-instruction IR (e.g. AsmDirective): treat as non-movable
             // side-effect boundary so its position is strictly preserved.
             scheduleRegionWithMovableSideEffects(regionStart, it, beginIt, scheduled, readyQueue,
-                                                 wmmaIndex, girHazards, girFrames, girFenceCoverage,
-                                                 rawPlacements, fillerCount);
+                                                 wmmaIndex, girHazards, girFrames,
+                                                 girFenceCoverage, fillerCount);
             scheduled.push_back(irNode);
             regionStart = std::next(it);
             continue;
@@ -1018,8 +942,8 @@ static void scheduleInDAG(BasicBlock& bb, ReadyQueue& readyQueue,
         StinkyInstruction& inst = *instPtr;
         if (hasSideEffect(inst)) {
             scheduleRegionWithMovableSideEffects(regionStart, it, beginIt, scheduled, readyQueue,
-                                                 wmmaIndex, girHazards, girFrames, girFenceCoverage,
-                                                 rawPlacements, fillerCount);
+                                                 wmmaIndex, girHazards, girFrames,
+                                                 girFenceCoverage, fillerCount);
 
             scheduled.push_back(&inst);
             readyQueue.onScheduled(inst);
@@ -1033,8 +957,8 @@ static void scheduleInDAG(BasicBlock& bb, ReadyQueue& readyQueue,
     }
     // Flush the last region if it has not been flushed yet.
     scheduleRegionWithMovableSideEffects(regionStart, endIt, beginIt, scheduled, readyQueue,
-                                         wmmaIndex, girHazards, girFrames, girFenceCoverage,
-                                         rawPlacements, fillerCount);
+                                         wmmaIndex, girHazards, girFrames,
+                                         girFenceCoverage, fillerCount);
 
     assert(scheduled.size() == bb.size() + static_cast<size_t>(fillerCount) &&
            "Scheduled instructions size must match original plus filler insts");
@@ -1180,12 +1104,6 @@ class StinkyDAGSchedulerPass : public StinkyInstPass {
         const GirFrameAnalysis::Result girFrames = AM.getResult<GirFrameAnalysis>(func);
         const GirFrameHazardAnalysis::Result girHazards =
             AM.getResult<GirFrameHazardAnalysis>(func);
-        const GirRawPlacementPlan rawPlacements =
-            passCtx.getPassFeatureConfig().dagFeatures.clusterBarrierTensorLoadDelayCycles > 0
-                ? computeGirRawPlacementPlan(
-                      func, girFrames, girHazards,
-                      passCtx.getPassFeatureConfig().dagFeatures.wmmaQueueDepth)
-                : GirRawPlacementPlan{};
         // Built once, on the incoming order: that is the order GirFencePlacementPass elected each
         // fence against, so it names the windows this schedule owes rather than the ones it makes.
         const GirPlanFenceCoverage girFenceCoverage =
@@ -1227,8 +1145,7 @@ class StinkyDAGSchedulerPass : public StinkyInstPass {
         auto scheduleBlock = [&](BasicBlock* bb, ReadyQueue& rq) {
             AsmIRBuilder builder(*bb, archId);
             collapseExecMaskedRegions(*bb, builder, wavefrontSize);
-            scheduleInDAG(*bb, rq, wmmaIndex, girHazards, girFrames, girFenceCoverage,
-                          rawPlacements);
+            scheduleInDAG(*bb, rq, wmmaIndex, girHazards, girFrames, girFenceCoverage);
             expandExecMaskedGroups(*bb);
             auto candidates = rq.takeLayer2BarrierOverlapCandidates();
             layer2BarrierOverlapCandidates.insert(layer2BarrierOverlapCandidates.end(),

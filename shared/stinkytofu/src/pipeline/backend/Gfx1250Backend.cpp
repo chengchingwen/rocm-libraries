@@ -219,8 +219,6 @@ bool buildGfx1250Pipeline(ModulePassManager& mpm, StinkyAsmModule& module, const
                 passFeatureConfig.dagFeatures.clusterBarrier = moduleOptions.ClusterBarrier;
                 passFeatureConfig.dagFeatures.girFramePipeline =
                     moduleOptions.EnableGirFramePipeline;
-                passFeatureConfig.dagFeatures.clusterBarrierTensorLoadDelayCycles =
-                    moduleOptions.EnableGirFramePipeline && moduleOptions.ClusterBarrier ? 200 : 0;
                 passFeatureConfig.dagFeatures.lockDsReadOrder = moduleOptions.LockDsReadOrder;
                 passFeatureConfig.dagFeatures.evenSpreadFillers = moduleOptions.EvenSpreadFillers;
                 passFeatureConfig.dagFeatures.dsSpread = moduleOptions.DsSpread;

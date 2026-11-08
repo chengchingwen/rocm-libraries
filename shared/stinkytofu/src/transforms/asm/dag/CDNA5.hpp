@@ -707,7 +707,6 @@ class CDNA5ReadyQueue : public ReadyQueue {
     int clock_ = 0;
     // End clock of each node issued in this region. GIR frame tensor-load delay nodes name a RAW
     // placement by DAG id and measure their not-before floor from this real issue timeline.
-    std::unordered_map<unsigned, int> issuedEndClock_;
 
     // PipeOps hazard lanes, one per rule (empty for Cycles rules). Per reg key: the
     // pipe-op ordinal at which a rule.isProducer instruction last touched that register.
@@ -850,38 +849,6 @@ class CDNA5ReadyQueue : public ReadyQueue {
         return clock_ < node->earliestClock;
     }
 
-    bool heldBackForTensorLoadDelay(const DAGNode* node) const {
-        if (node->tensorLoadDelayCycles <= 0 || node->tensorLoadDelayAnchorId == UINT_MAX)
-            return false;
-        // A load the exclusive rule pinned in front of a before group belongs in the gap that
-        // rule opened: the gap is the tensor-load spacing, so the load is due that many windows
-        // in front of the barrier. The hold is sized in pre-schedule cycles, and left alone it
-        // would carry the load to the far end of the gap and the barrier -- with every ds_load
-        // behind it -- past the window the thresholds planned.
-        auto pin = tensorLoadGapBarrier_.find(node->inst);
-        if (pin != tensorLoadGapBarrier_.end()) {
-            auto window = barrierWmmaThresholds_.find(pin->second);
-            if (window != barrierWmmaThresholds_.end()) {
-                int release = std::max(0, window->second - tensorLoadGapWmmas_);
-                // That gap is one window for every pinned load. Each load also has its own,
-                // the window of the barrier it issues behind, and holding past that collapses
-                // the stagger those barriers give the group onto a single release point.
-                auto own = tensorLoadPlannedWmma_.find(node->inst);
-                if (own != tensorLoadPlannedWmma_.end()) release = std::min(release, own->second);
-                if (wmmaIssuedCountThisRegion_ >= release) return false;
-            }
-        }
-        auto anchor = issuedEndClock_.find(node->tensorLoadDelayAnchorId);
-        if (anchor == issuedEndClock_.end()) return true;
-        return clock_ < anchor->second + node->tensorLoadDelayCycles;
-    }
-
-    DAGNode* firstEligibleGlobalRead() const {
-        for (DAGNode* node : globalReadQueue)
-            if (!heldBackForTensorLoadDelay(node)) return node;
-        return nullptr;
-    }
-
     void noteSccChainIssue(DAGNode* node);
 
     std::map<int, int> crossBBDsResiduals_;
@@ -906,14 +873,6 @@ class CDNA5ReadyQueue : public ReadyQueue {
     int blockPrefetchLead_ = 0;
     // Earliest WMMA count at which each prefetch may issue (blockPrefetchLead_).
     std::unordered_map<const StinkyInstruction*, int> prefetchEarliestWmma_;
-    // The before-group barrier the exclusive after/before rule pinned each tensor_load in front
-    // of, and the spacing that rule left in front of it. The barrier's planned window less that
-    // spacing is where a RAW-window hold on the load has to end (heldBackForTensorLoadDelay).
-    std::unordered_map<const StinkyInstruction*, StinkyInstruction*> tensorLoadGapBarrier_;
-    int tensorLoadGapWmmas_ = 0;
-    // Planned window of each tensor_load: the window of the barrier it issues behind
-    // (loadPlannedWindow). A hold may not carry a load past its own.
-    std::unordered_map<const StinkyInstruction*, int> tensorLoadPlannedWmma_;
     // Single-stage loop body (tensilelite: no HalfPLR), signalled by a short prefetch lead.
     bool singleStageLoop() const {
         const int lead = blockPrefetchLead_;
@@ -1334,18 +1293,7 @@ DAGNode* CDNA5ReadyQueue::popNonWmma(DAGNode* node, int pickKind) {
     // (A) RAW: stamp this producer's dest data-ready latency (e.g. ds_load).
     // (B) elapse: record the timeline touch for all operands (dst + src).
     touchOperands(*node->inst);
-    const int issueClock = clock_;
     updateWMMAStatus(node);
-    if (node->tensorLoadDelayCycles > 0) {
-        auto anchor = issuedEndClock_.find(node->tensorLoadDelayAnchorId);
-        PASS_DEBUG(std::cerr << "[CDNA5 RAW tensor delay] issue dagId=" << node->id
-                             << " clock=" << issueClock
-                             << " anchor=" << node->tensorLoadDelayAnchorId << " anchorClock="
-                             << (anchor == issuedEndClock_.end() ? -1 : anchor->second)
-                             << " realized="
-                             << (anchor == issuedEndClock_.end() ? -1 : issueClock - anchor->second)
-                             << " target=" << node->tensorLoadDelayCycles << "\n");
-    }
     stampDataReady(*node->inst);
     // Advance the tracked MSB bank; ops with no opinion (-1) leave it unchanged.
     if (node->requiredMsb != -1) currentMsb_ = node->requiredMsb;
@@ -1749,16 +1697,10 @@ bool CDNA5ReadyQueue::findSmallestPickableNonWmma(DAGNode* pickedDS, DAGNode** o
     // behind the next WMMA and its barrier.
     if (!globalReadQueue.empty() && !globalReadQueueFull() &&
         (globalReadCounter < globalReadPerWMMA || otherQueue.empty() || fillQuotaMet())) {
-        // A tensor_load whose source is still inside a live hazard-gate window defers behind
-        // free work: `firstEligibleGlobalRead` skips it rather than stalling the pick on it.
-        // It stays eligible once nothing else can go, paying the remaining wait before issue.
-        // The RANK is the scoreboard's now -- `getHazardWait` went with the s_wait_alu filler
-        // placement -- so an eligible load competes at 0 like any other free candidate.
-        DAGNode* gr = firstEligibleGlobalRead();
-        if (gr != nullptr) {
-            consider(gr, kGlobalRead, 0);
-            memWorkFitsWindow_ = true;
-        }
+        // The RANK is the scoreboard's -- `getHazardWait` went with the s_wait_alu filler
+        // placement -- so a load competes at 0 like any other free candidate.
+        consider(globalReadQueue.top(), kGlobalRead, 0);
+        memWorkFitsWindow_ = true;
     }
     // SALU/other allows hidden stalls (see pickFreeBest); VALU stays
     // RAW-free-only.
@@ -1831,7 +1773,7 @@ bool CDNA5ReadyQueue::findOldestFallbackNonWmma(DAGNode* pickedDS, DAGNode** out
             kind = candKind;
     };
 
-    if (!globalReadQueue.empty()) consider(firstEligibleGlobalRead(), kGlobalRead);
+    if (!globalReadQueue.empty()) consider(globalReadQueue.top(), kGlobalRead);
     consider(pickedDS, kLocalRead);
     // Held work (prefetch lead, strict-wait hold) is skipped while anything else can go;
     // it is still taken last, so the fallback always makes progress.
@@ -2744,7 +2686,6 @@ DAGNode* CDNA5ReadyQueue::pickOne() {
                   << (lastPickedNode_ ? std::to_string(lastPickedNode_->id) : std::string("none"))
                   << "\n");
     auto rememberPick = [this](DAGNode* node) {
-        if (node != nullptr) issuedEndClock_[node->id] = clock_;
         lastPickedNode_ = node;
         noteSccChainIssue(node);
         noteBarrierPairIssue(node);
@@ -3180,7 +3121,6 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
     // new region starts with all regs "very old" (no spurious deferrals from a
     // prior region).
     regLastTouch_.clear();
-    issuedEndClock_.clear();
     // pipeOpGates_ NOT cleared here — they persist across regions (cleared per-BB). A later
     // WMMA region still needs them, and a WMMA-free region defers a gated ds_load to its end.
     clock_ = 0;
@@ -3311,8 +3251,6 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
     barrierDsLoadCounts_.clear();
     barrierDrainWmmas_.clear();
     barrierDrainDropped_.clear();
-    tensorLoadGapBarrier_.clear();
-    tensorLoadGapWmmas_ = 0;
     if (hasWMMAInRegion_) {
         // Layer 1/3 (base merge):
         // Build one threshold map from two independent estimators:
@@ -3625,13 +3563,6 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
                     for (StinkyInstruction* tensorLoad : afterGroup.descendantLoads) {
                         for (StinkyInstruction* barrierBefore : beforeGroup.barriers) {
                             requireOrdering(tensorLoad, barrierBefore);
-                        }
-                        // The edge above makes the load the barrier's predecessor, so the load now
-                        // owes that barrier its window (heldBackForTensorLoadDelay). The first pin
-                        // stands, as the rest of this rule is written for one before group.
-                        if (!beforeGroup.barriers.empty()) {
-                            tensorLoadGapBarrier_.emplace(tensorLoad, beforeGroup.anchor);
-                            tensorLoadGapWmmas_ = tensorLoadDsLoadGapWmma;
                         }
                         for (StinkyInstruction* dsLoad : beforeGroup.descendantLoads) {
                             requireOrdering(tensorLoad, dsLoad);
@@ -3979,7 +3910,6 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
     // so the barrier's planned WMMA window stands in for the load's. A prefetch whose load
     // or barrier is not in this region is left free.
     prefetchEarliestWmma_.clear();
-    tensorLoadPlannedWmma_.clear();
     barrierWaitWindows_.clear();
     for (const auto& [barrier, window] : barrierWmmaThresholds_)
         if (isBarrierWait(*barrier)) barrierWaitWindows_.push_back(window);
@@ -4003,10 +3933,7 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
                 auto th = barrierWmmaThresholds_.find(inst);
                 if (th != barrierWmmaThresholds_.end()) {
                     loadWindow = th->second;
-                    for (StinkyInstruction* tl : pendingLoads) {
-                        loadPlannedWindow[tl] = loadWindow;
-                        tensorLoadPlannedWmma_[tl] = loadWindow;
-                    }
+                    for (StinkyInstruction* tl : pendingLoads) loadPlannedWindow[tl] = loadWindow;
                     pendingLoads.clear();
                 }
             }
