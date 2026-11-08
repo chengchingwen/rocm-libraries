@@ -117,7 +117,10 @@ def calculate(kernel):
          if role_extents[_role(name)] > 1),
         outer_role,
     )
-    cap = max(1, role_extents[cap_role] * vg)
+    # A factor axis is not in `role_modes`, so the role extents do not see it -- but it divides
+    # the unit, and a smaller unit is more of them to run ahead over. The cap carries it, as the
+    # unit and the rotation already do.
+    cap = max(1, role_extents[cap_role] * split_unit * vg)
     plr_name = "PrefetchLocalRead" + side
     plr = value(plr_name)
     if plr == -1:
