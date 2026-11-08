@@ -3939,17 +3939,38 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
             }
             if (isGlobalPrefetch(*inst) && loadWindow >= 0) byLoad[loadWindow].push_back(inst);
         }
+        // The windows every tensor_load of this region is planned at, newest first. A lead walks
+        // its group back from its OWN load, which with one load per movement can carry it onto
+        // another movement's -- two memory issues one window apart, down the same path. The
+        // group is pushed clear of those, never later: the pin is a floor, so moving it earlier
+        // only widens the window the load may issue in.
+        std::vector<int> otherLoadWindows;
+        for (const auto& [load, planned] : loadPlannedWindow) {
+            (void)load;
+            otherLoadWindows.push_back(planned);
+        }
+        std::sort(otherLoadWindows.begin(), otherLoadWindows.end(), std::greater<int>());
+        const int wmmaLatency = wmmaIssueConfig.latency > 0
+                                    ? static_cast<int>(wmmaIssueConfig.latency)
+                                    : std::max(1, config_.wmmaLatencyFallbackCycles);
+        // Same spacing the exclusive rule keeps between a tensor_load and the ds_loads behind it.
+        const int loadGap = (tensorLoadDsLoadGapCycles() + wmmaLatency - 1) / wmmaLatency;
         for (auto& [window, prefetches] : byLoad) {
             std::reverse(prefetches.begin(), prefetches.end());  // back to original order
             const int n = static_cast<int>(prefetches.size());
             for (int k = 0; k < n; ++k) {
                 // A single-stage loop, or a stage too short for a lead, puts the whole group in the
                 // load's window.
-                prefetchEarliestWmma_[prefetches[k]] =
-                    singleStageLoop() || lead <= 0 ? std::max(0, window)
-                                                   : std::max(0, window - lead + k * lead / n);
+                int earliest = singleStageLoop() || lead <= 0
+                                   ? std::max(0, window)
+                                   : std::max(0, window - lead + k * lead / n);
+                for (int planned : otherLoadWindows)
+                    if (planned != window && earliest > planned - loadGap &&
+                        earliest < planned + loadGap)
+                        earliest = std::max(0, planned - loadGap);
+                prefetchEarliestWmma_[prefetches[k]] = earliest;
                 PASS_DEBUG(std::cerr << "[CDNA5 prefetchLead] load window=" << window << " #" << k
-                                     << " earliest=" << prefetchEarliestWmma_[prefetches[k]]
+                                     << " earliest=" << earliest << " loadGap=" << loadGap
                                      << "\n");
             }
         }

@@ -1309,6 +1309,63 @@ TEST_F(DAGSchedulerPassTest, OverlapPushSkipsAnAfterGroupGatingATensorLoad) {
     EXPECT_GT(wmmasBefore(afterSignalB), wmmasBefore(afterSignalA)) << scheduleOrder(*bb);
 }
 
+// A lead walks a prefetch back from its OWN tensor_load. With one load per movement the loads sit
+// at different windows, so a long enough lead carries the group onto another movement's load --
+// two memory issues a window apart. The pin is pushed clear of the loads it does not belong to.
+TEST_F(DAGSchedulerPassTest, PrefetchLeadKeepsClearOfAnotherMovementsTensorLoad) {
+    bb->addSuccessor(bb);
+
+    for (int i = 0; i < 30; ++i)
+        createWmmaF32_16x16x16_bf16(/*destStart=*/1000 + i * 16, /*src0Start=*/3000 + i * 16);
+    for (int i = 0; i < 4; ++i)
+        createMovableDsLoad(/*destReg=*/100 + i * 8, /*addrReg=*/800 + i, /*ldsToken=*/0);
+    auto [signalA, waitA] = createMovableWorkgroupBarrier(bb, /*ldsToken=*/0);
+    (void)signalA;
+    (void)waitA;
+    StinkyInstruction* loadA =
+        createMovableTensorLoad(bb, /*src0Reg=*/40, /*src1Reg=*/44, /*ldsToken=*/0);
+    // After loadA, so the group it joins is loadB's and the lead walks it back across loadA.
+    StinkyInstruction* prefetch = createGlobalPrefetchB8(bb, /*vaddrReg=*/300, /*saddrReg=*/60);
+    for (int i = 0; i < 10; ++i)
+        createMovableDsLoad(/*destReg=*/200 + i * 8, /*addrReg=*/840 + i, /*ldsToken=*/2);
+    auto [signalB, waitB] = createMovableWorkgroupBarrier(bb, /*ldsToken=*/2);
+    (void)signalB;
+    (void)waitB;
+    StinkyInstruction* loadB =
+        createMovableTensorLoad(bb, /*src0Reg=*/48, /*src1Reg=*/52, /*ldsToken=*/2);
+    for (int i = 0; i < 30; ++i)
+        createWmmaF32_16x16x16_bf16(/*destStart=*/5000 + i * 16, /*src0Start=*/6000 + i * 16);
+    createSCmpWritingScc(bb, /*srcSgpr=*/90);
+
+    PassContext ctx;
+    ctx.setGemmTileConfig(config);
+    PassFeatureConfig pfc;
+    pfc.loopConfig.unrollGemm = true;
+    pfc.dagFeatures.distributeGlobalRead = true;
+    pfc.dagFeatures.prefetchLeadWmmas = 20;
+    pfc.dagFeatures.prefetchLeadMinStageWmmas = 0;
+    ctx.setPassFeatureConfig(pfc);
+    pass->run(*func, ctx, am);
+
+    auto wmmasBefore = [&](const StinkyInstruction* target) {
+        int count = 0;
+        for (const IRBase& ir : *bb) {
+            const auto* inst = dyn_cast<StinkyInstruction>(&ir);
+            if (inst == nullptr) continue;
+            if (inst == target) break;
+            if (isMatrixInstruction(*inst)) ++count;
+        }
+        return count;
+    };
+    const int pf = wmmasBefore(prefetch);
+    const int a = wmmasBefore(loadA);
+    const int b = wmmasBefore(loadB);
+    // Its own load is loadB; loadA belongs to the other movement and the lead must not land on it.
+    EXPECT_LT(pf, b) << scheduleOrder(*bb);
+    EXPECT_LE(pf, a - 2) << "prefetch " << pf << " sits on tensor_load " << a << "\n"
+                         << scheduleOrder(*bb);
+}
+
 // Same overlap as above, with DsSpread on. The after barrier lands on the parent WMMA, so the
 // stage anchor must not put the dropped drain back. A restored drain would be the 24th WMMA.
 TEST_F(DAGSchedulerPassTest, StageAnchorLeavesOverlapParentFloorInPlace) {
