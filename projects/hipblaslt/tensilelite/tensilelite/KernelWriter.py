@@ -6464,8 +6464,12 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       module.add(SCBranchSCC1(labelName=skipGL2Label.getLabelName(), comment=""))
       module.add(self.gl2PrefetchSkipPGR(kernel, tensorParametersA, tensorParametersB))
       module.add(self.gl2PrefetchIssueLoad(kernel, tensorParametersA, tensorParametersB))
-      if kernel["PrefetchGL2"] == 2:
-        module.add(SCmpLeU32(src0=loopCounter, src1=hex(kernel["PrefetchGlobalRead"]+1), comment="counterL<=PGR+1"))
+      # The prefetch runs PrefetchGL2 iterations ahead, so the prologue primes that many chunks:
+      # one issue, then an advance-and-issue per further depth. Each is guarded on its own
+      # counter, so a loop shorter than the depth just takes fewer primes.
+      for gl2Prime in range(1, kernel["PrefetchGL2"]):
+        module.add(SCmpLeU32(src0=loopCounter, src1=hex(kernel["PrefetchGlobalRead"]+gl2Prime), \
+          comment="counterL<=PGR+%u"%gl2Prime))
         module.add(SCBranchSCC1(labelName=skipGL2Label.getLabelName(), comment=""))
         module.add(self.gl2PrefetchIncrementAddr(kernel, tensorParametersA, tensorParametersB))
         module.add(self.gl2PrefetchIssueLoad(kernel, tensorParametersA, tensorParametersB))
