@@ -19,6 +19,7 @@ from .gir_tag import gir_tag
 from .leaves import LeafEmitters
 from .loopir_to_gir import steady_chain
 from ..Components.TDMFuse import tdmFusedGroups, tdmSetOwner
+from ..Common.MxScaleLayout import mxIssueTpList
 from rocisa.instruction import GirActionKind
 
 
@@ -120,6 +121,16 @@ class GirToRocisa:
         in_loop = phase in steady_chain(prog)
         self._maskedCopy = self._maskedInc = not in_loop
 
+        # A gl2_prefetch mark warms its own movement's fetch, so each emits only that movement's
+        # tensors. A tensor no movement names -- the sparse metadata descriptor -- would then be
+        # warmed by nobody, so the block's first mark carries the remainder too.
+        _gl2Claimed = {tc for a in acts if a.kind == "gl2_prefetch"
+                       for tc in (a.at.get("unit") or ())}
+        _gl2Rest = {tp["tensorChar"] for tp in
+                    mxIssueTpList(self.kernel, self._tp["A"], self._tp["B"], includeMetadata=True)
+                    } - _gl2Claimed if _gl2Claimed else set()
+        _gl2Seen = False
+
         for _i, act in enumerate(acts):
             # Every tag this act produces quotes the line `render_gir` prints for the node.
             self._actLine = inst_line(act.source) if getattr(act, "source", None) else act.kind
@@ -168,13 +179,23 @@ class GirToRocisa:
                 self._tag_act(out, phase, act)
                 self._emit_swap(out, at["hop"], who, tpByOperand, internalPointerSwap)
             elif kind == "gl2_prefetch":
-                #: GIR chose the POINT; the instructions are the scaffold's own, unchanged.
+                #: GIR chose the POINT and the MOVEMENT; the instructions are the scaffold's own.
                 # Increment BEFORE issue -- the pair is ordered internally (the clamp zeroes
-                _gl2tag = "gl2 depth=%s (cache warm, no consumer)" % at.get("depth")
-                self._append_tag(self.writer.codes.gl2PrefetchIncrement, _gl2tag + " inc")
-                self._append_tag(self.writer.codes.gl2Prefetch, _gl2tag + " issue")
-                out.add(self.writer.codes.gl2PrefetchIncrement)
-                out.add(self.writer.codes.gl2Prefetch)
+                _unit = tuple(at.get("unit") or ())
+                _tcs = None
+                if _unit:
+                    _tcs = set(_unit) | (_gl2Rest if not _gl2Seen else set())
+                _gl2Seen = True
+                _gl2tag = "gl2 %s depth=%s (cache warm, no consumer)" % (
+                    self._who(_unit) if _unit else "all", at.get("depth"))
+                _inc = self.writer.gl2PrefetchIncrementFor(
+                    self.kernel, self._tp["A"], self._tp["B"], _tcs)
+                _issue = self.writer.gl2PrefetchIssueLoad(
+                    self.kernel, self._tp["A"], self._tp["B"], _tcs)
+                self._append_tag(_inc, _gl2tag + " inc")
+                self._append_tag(_issue, _gl2tag + " issue")
+                out.add(_inc)
+                out.add(_issue)
             elif kind == "gr_inc":
                 self._tag_act(out, phase, act)
                 self._emit_gr_inc(out, at["unit"], tpByOperand, at.get("chunks", 1),

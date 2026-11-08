@@ -28,7 +28,9 @@ _MARK_SCHEMA = {
     "region_increment": ("unit", "steps", "from_region", "to_region"),
     # A member that does not move on this step: its descriptor is nulled (count=0) and restored.
     "descriptor_enable": ("unit", "member", "enabled"),
-    "gl2_prefetch":   ("depth", "block"),
+    # `unit` is the movement whose fetch this warms -- empty when the block has no global read
+    # and the mark is unowned.
+    "gl2_prefetch":   ("depth", "block", "unit"),
     # The chunk a movement's address must hold HERE, so an advance serving a conditionally
     # executed successor is established on the path both arms take.
     "chunk_pin":      ("unit", "chunk"),

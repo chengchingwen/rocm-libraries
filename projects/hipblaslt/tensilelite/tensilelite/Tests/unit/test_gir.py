@@ -1022,3 +1022,56 @@ def test_lds_read_folds_on_the_read_stride(_gp_gfx1250, gfx1250_iim, assembler):
     assert stride == off["readStrideBytesB"]
     # B-rotate allocates exactly two B local-read addresses, so the fold may not reach a third.
     assert stride // 65536 <= 1
+
+
+# ---------------------------------------------------------------------------
+# GL2 prefetch: one warm-up per MOVEMENT, each ahead of the fetch it warms.
+# One mark for the whole block puts every operand's prefetch in front of whichever fetch comes
+# first, and the scheduler -- which pairs a prefetch with the next fetch after it -- anchors
+# them all there, however far apart the fetches end up.
+# ---------------------------------------------------------------------------
+def _gl2_fetches(prog, block):
+    from tensilelite.Lowering.gir.nodes import Move, copy_unit
+    from tensilelite.Lowering.gir.analyses.region_increment import _canonical_unit
+    out = {}
+    for inst in block.body:
+        if not isinstance(inst, Move):
+            continue
+        if not any(r.tile.space == "global" for r in inst.srcs):
+            continue
+        members, _refs = copy_unit(inst)
+        if members is None:
+            continue
+        out.setdefault(_canonical_unit(prog, members), inst)
+    return out
+
+
+def test_gl2_prefetch_marks_one_per_movement_before_its_own_fetch():
+    from tensilelite.Lowering.gir.analyses.gl2_prefetch import Gl2PrefetchRegions
+
+    prog = build_gir(adapter.params_to_theta(kernel_to_params(dict(_BASE))))
+    prog.params = dict(prog.params or {}, **{Gl2PrefetchRegions.PARAM: 2})
+    pending = Gl2PrefetchRegions().run(prog)
+    assert pending, "GL2 on must produce marks"
+
+    seen_split = False
+    for name, block in prog.blocks.items():
+        if not name.startswith("steady"):
+            continue
+        fetches = _gl2_fetches(prog, block)
+        marks = [p for p in pending if p.mark.at["block"] == name]
+        assert len(marks) == len(fetches), name
+        assert {p.mark.at["unit"] for p in marks} == set(fetches), name
+        for p in marks:
+            # The window ENDS at this movement's own fetch, not the block's first.
+            assert p.region.before is fetches[p.mark.at["unit"]], name
+        seen_split |= len(fetches) > 1
+    assert seen_split, "config must have more than one movement for this to mean anything"
+
+
+def test_gl2_prefetch_is_silent_when_the_preset_is_off():
+    from tensilelite.Lowering.gir.analyses.gl2_prefetch import Gl2PrefetchRegions
+
+    prog = build_gir(adapter.params_to_theta(kernel_to_params(dict(_BASE))))
+    prog.params = dict(prog.params or {}, **{Gl2PrefetchRegions.PARAM: 0})
+    assert Gl2PrefetchRegions().run(prog) == []
