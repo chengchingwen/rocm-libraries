@@ -4816,12 +4816,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
     self.codes.gl2PrefetchIncrement = Module()
     self.codes.gl2Prefetch = Module()
     if kernel["PrefetchGL2"]:
-      loopCounter = self.loopCounter(kernel, self.states.unrollIdx)
-      self.codes.gl2PrefetchIncrement = Module()
-      self.codes.gl2PrefetchIncrement.add(SCmpLeU32(loopCounter, kernel["PrefetchGlobalRead"] + kernel["PrefetchGL2"], \
-        comment="counterL<=PGR+GL2"))
-      self.codes.gl2PrefetchIncrement.add(self.gl2PrefetchClearIncrement(kernel, tensorParametersA, tensorParametersB))
-      self.codes.gl2PrefetchIncrement.add(self.gl2PrefetchIncrementAddr(kernel, tensorParametersA, tensorParametersB))
+      self.codes.gl2PrefetchIncrement = self.gl2PrefetchIncrementFor(kernel, tensorParametersA, tensorParametersB)
       self.codes.gl2Prefetch = Module()
       self.codes.gl2Prefetch.add(self.gl2PrefetchIssueLoad(kernel, tensorParametersA, tensorParametersB))
       
@@ -13200,16 +13195,30 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
   def gl2PrefetchCalcAddr(self, kernel, tPA, tPB) -> Module:
     return ""
   
+  def gl2PrefetchIncrementFor(self, kernel, tPA, tPB, tcs=None) -> Module:
+    """The GL2 prefetch address advance for `tcs` (None = every tensor), clamp included.
+
+    The clamp re-reads the same loop counter and only zeroes increments, so a per-unit caller
+    running it once per unit lands on the same state a single whole-tensor call would.
+    """
+    mod = Module()
+    loopCounter = self.loopCounter(kernel, self.states.unrollIdx)
+    mod.add(SCmpLeU32(loopCounter, kernel["PrefetchGlobalRead"] + kernel["PrefetchGL2"], \
+      comment="counterL<=PGR+GL2"))
+    mod.add(self.gl2PrefetchClearIncrement(kernel, tPA, tPB, tcs))
+    mod.add(self.gl2PrefetchIncrementAddr(kernel, tPA, tPB, tcs))
+    return mod
+
   @abc.abstractmethod
-  def gl2PrefetchIssueLoad(self, kernel, tPA, tPB) -> Module:
-    return ""
-  
-  @abc.abstractmethod
-  def gl2PrefetchClearIncrement(self, kernel, tPA, tPB) -> Module:
+  def gl2PrefetchIssueLoad(self, kernel, tPA, tPB, tcs=None) -> Module:
     return ""
 
   @abc.abstractmethod
-  def gl2PrefetchIncrementAddr(self, kernel, tPA, tPB) -> Module:
+  def gl2PrefetchClearIncrement(self, kernel, tPA, tPB, tcs=None) -> Module:
+    return ""
+
+  @abc.abstractmethod
+  def gl2PrefetchIncrementAddr(self, kernel, tPA, tPB, tcs=None) -> Module:
     return ""
   
   @abc.abstractmethod

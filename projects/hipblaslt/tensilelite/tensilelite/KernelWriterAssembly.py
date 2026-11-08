@@ -26344,26 +26344,32 @@ class KernelWriterAssembly(KernelWriter):
         mod.add(comp.calculateStartAddr(self, kernel, tp, gsuIterSgpr))
     return mod
   
-  def gl2PrefetchIssueLoad(self, kernel, tPA, tPB) -> Module:
+  def gl2PrefetchIssueLoad(self, kernel, tPA, tPB, tcs=None) -> Module:
     mod = Module("GL2 Prefetch Issue Load")
     mod.addComment("GL2 Prefetch Issue Load")
     comp = GL2PrefetchLoad.find(self)
     for tp in self.gl2PrefetchTpList(kernel, tPA, tPB):
+      if tcs is not None and tp["tensorChar"] not in tcs:
+        continue
       mod.add(comp.issueLoad(self, kernel, tp))
     return mod
-  
-  def gl2PrefetchClearIncrement(self, kernel, tPA, tPB) -> Module:
+
+  def gl2PrefetchClearIncrement(self, kernel, tPA, tPB, tcs=None) -> Module:
     mod = Module("GL2 Prefetch Clear Increment")
     comp = GL2PrefetchLoad.find(self)
     for tp in self.gl2PrefetchTpList(kernel, tPA, tPB):
+      if tcs is not None and tp["tensorChar"] not in tcs:
+        continue
       mod.add(comp.clearIncrement(self, kernel, tp))
     return mod
 
-  def gl2PrefetchIncrementAddr(self, kernel, tPA, tPB) -> Module:
+  def gl2PrefetchIncrementAddr(self, kernel, tPA, tPB, tcs=None) -> Module:
     mod = Module("GL2 Prefetch Increment Address")
     mod.addComment("GL2 Prefetch Increment Address")
     comp = GL2PrefetchLoad.find(self)
     for tp in self.gl2PrefetchTpList(kernel, tPA, tPB):
+      if tcs is not None and tp["tensorChar"] not in tcs:
+        continue
       mod.add(comp.incrementAddr(self, kernel, tp))
     return mod
   
