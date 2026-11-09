@@ -910,6 +910,43 @@ TEST(GirFrameAnalysisTest, TensorIssueKeepsWarBarriersSeparate) {
     EXPECT_EQ(signals, 2);
 }
 
+TEST(GirFrameAnalysisTest, HazardBecomesAnOrdinaryDagEdge) {
+    Function function("dag");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    BasicBlock* block = function.createBasicBlock("entry");
+    StinkyInstruction* copy = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
+    StinkyInstruction* read = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
+
+    dag::RegionDAG graph = dag::buildRegisterDependencyDAG({copy, read});
+    GirFrameHazardAnalysis::Result hazards;
+    hazards.hazards.push_back({GirHazardKind::RAW, copy, read, block, block, 0, 1, GirFrame{},
+                               GirFrame{}, 0, false, 0, 1});
+    dag::addGirFrameHazardEdges(graph, hazards, GirPlanFenceCoverage{});
+
+    ASSERT_TRUE(graph.graph[0].contains(1));
+    EXPECT_EQ(graph.nodes[0].inDegree, 0u);
+    EXPECT_EQ(graph.nodes[1].inDegree, 1u);
+}
+
+TEST(GirFrameAnalysisTest, PhysicalSplitFenceSignalAlwaysPrecedesWait) {
+    Function function("physical_split_fence");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    BasicBlock* block = function.createBasicBlock("entry");
+    AsmIRBuilder builder(*block, GfxArchID::Gfx1250);
+    StinkyInstruction* signal =
+        builder.create(getMCIDByUOp(GFX::s_barrier_signal, GfxArchID::Gfx1250));
+    signal->addSrcReg(StinkyRegister(-1));
+    StinkyInstruction* filler = createVAddInBlock(block, GfxArchID::Gfx1250, 40, 41, 42);
+    StinkyInstruction* wait = builder.create(getMCIDByUOp(GFX::s_barrier_wait, GfxArchID::Gfx1250));
+    wait->addSrcReg(StinkyRegister(-1));
+
+    dag::RegionDAG graph = dag::buildRegisterDependencyDAG({signal, filler, wait});
+    dag::addGirFrameHazardEdges(graph, GirFrameHazardAnalysis::Result{}, GirPlanFenceCoverage{});
+
+    ASSERT_TRUE(graph.graph[0].contains(2));
+    EXPECT_EQ(graph.nodes[2].inDegree, 1u);
+}
+
 TEST(GirFrameAnalysisTest, FrameSchedulingDoesNotMaterializeLegacyMemoryTokenRegisters) {
     Function function("frame_without_tokens");
     setFunctionArch(function, GfxArchID::Gfx1250);
@@ -1130,6 +1167,90 @@ TEST(GirFrameAnalysisTest, SameTripRingAliasWarDrainsBeforeOverwrite) {
     const auto* wait = beforeCopy->getModifier<SWaitCntData>();
     ASSERT_NE(wait, nullptr);
     EXPECT_EQ(wait->dlcnt, 0);
+}
+
+TEST(GirFrameAnalysisTest, CrossAgentRingAliasWarDrainsBeforeBarrier) {
+    Function function("multi_wave_ring_alias_war");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* loop = function.createBasicBlock("loop");
+    function.addEdge(loop, loop);
+
+    StinkyInstruction* read = createDsReadB128InBlock(loop, GfxArchID::Gfx1250, 0, 20);
+    read->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Ds, {GirAccessData{false, 0, 2, 0, 0, -1, true}}});
+    createVAddInBlock(loop, GfxArchID::Gfx1250, 40, 41, 42);
+    StinkyInstruction* copy = createTensorLoadInBlock(loop, GfxArchID::Gfx1250, 0, 8);
+    copy->addModifier<GirActionData>(
+        GirActionData{1, 1, GirActionKind::Tensor, {GirAccessData{true, 0, 2, 0, 2, -1, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kRingTwoContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    const auto& hazards = analyses.getResult<GirFrameHazardAnalysis>(function);
+    auto war = std::find_if(
+        hazards.hazards.begin(), hazards.hazards.end(), [&](const GirFrameHazard& hazard) {
+            return hazard.kind == GirHazardKind::WAR && hazard.producer == read &&
+                   hazard.consumer == copy && hazard.gap == 0 && hazard.crossAgent;
+        });
+    ASSERT_NE(war, hazards.hazards.end());
+
+    createGirFencePlacementPass()->run(function, context, analyses);
+    createStinkyBuildImplicitDependencyPass()->run(function, context, analyses);
+    createStinkyDAGSchedulerPass()->run(function, context, analyses);
+    createGirWaitCntInsertionPass()->run(function, context, analyses);
+
+    std::vector<StinkyInstruction*> instructions;
+    for (IRBase& node : *loop)
+        if (auto* inst = dyn_cast<StinkyInstruction>(&node)) instructions.push_back(inst);
+
+    bool allWarSignalsDrained = true;
+    bool allWarPairsTokenized = true;
+    int warSignals = 0;
+    size_t pendingSignal = instructions.size();
+    for (size_t i = 0; i < instructions.size(); ++i) {
+        if (isBarrierSignal(*instructions[i]) && isSplitBarrierAllWave(*instructions[i])) {
+            pendingSignal = i;
+            continue;
+        }
+        if (!isBarrierWait(*instructions[i]) || !isSplitBarrierAllWave(*instructions[i]) ||
+            pendingSignal == instructions.size()) {
+            if (isBarrier(*instructions[i])) pendingSignal = instructions.size();
+            continue;
+        }
+        const size_t signalIndex = pendingSignal;
+        pendingSignal = instructions.size();
+        const auto* stamp = instructions[i]->getModifier<CommentData>();
+        if (!stamp || stamp->comment.find("WAR") == std::string::npos) continue;
+        const auto* signalTokens = instructions[signalIndex]->getModifier<MemTokenData>();
+        const auto* waitTokens = instructions[i]->getModifier<MemTokenData>();
+        allWarPairsTokenized &= signalTokens && waitTokens && !signalTokens->tokens.empty() &&
+                                signalTokens->tokens == waitTokens->tokens;
+        if (signalTokens && waitTokens) {
+            const auto hasLdsToken = [](const std::vector<StinkyRegister>& registers, int token) {
+                return std::any_of(registers.begin(), registers.end(), [&](const auto& reg) {
+                    return reg.isRegister() && reg.reg.type == RegType::LDS &&
+                           reg.reg.idx == static_cast<uint32_t>(token);
+                });
+            };
+            for (int token : signalTokens->tokens) {
+                allWarPairsTokenized &= hasLdsToken(instructions[signalIndex]->getSrcRegs(), token);
+                allWarPairsTokenized &=
+                    hasLdsToken(instructions[signalIndex]->getDestRegs(), token);
+                allWarPairsTokenized &= hasLdsToken(instructions[i]->getSrcRegs(), token);
+                allWarPairsTokenized &= hasLdsToken(instructions[i]->getDestRegs(), token);
+            }
+        }
+        const auto* wait =
+            signalIndex > 0 ? instructions[signalIndex - 1]->getModifier<SWaitCntData>() : nullptr;
+        allWarSignalsDrained &= wait && wait->dlcnt == 0;
+        ++warSignals;
+    }
+    EXPECT_GT(warSignals, 0);
+    EXPECT_TRUE(allWarPairsTokenized);
+    EXPECT_TRUE(allWarSignalsDrained);
 }
 
 // The read is late in one trip and the overwriting copy is at the next trip's head. The enclosing
