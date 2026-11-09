@@ -30,8 +30,8 @@ struct StinkyInstruction;
 
 inline constexpr const char* kGirFrameContractKey = "gir.frame_contract";
 
-//: Identifies the blob; NOT a version. The producer (Tensile's `gir/frame_contract.py`) and this
-//: parser ship together, so a mismatch is a build error rather than something to negotiate.
+//: Identifies the blob; NOT a version. The frontend that writes a contract and this parser ship
+//: together, so a mismatch is a build error rather than something to negotiate.
 inline constexpr const char* kGirFrameContractMarker = "gir-frame-contract";
 
 enum class GirHazardKind : uint8_t { RAW, WAR, WAW };
