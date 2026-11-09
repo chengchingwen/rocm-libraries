@@ -37,9 +37,8 @@ flowchart TD
   region --> fence["GirFencePlacementPass"]
   fence --> dep["StinkyBuildImplicitDependencyPass (barrier memory tokens)"]
   dep --> sched["StinkyDAGSchedulerPass + StinkyMergeBarrierPass"]
-  sched --> swait["StinkyWaitCntInsertionPass (register/token dataflow)"]
-  swait --> gwait["GirWaitCntInsertionPass (storage/frame dataflow)"]
-  gwait --> later["cluster barriers and later passes"]
+  sched --> swait["StinkyWaitCntInsertionPass: register/token dataflow, then insertGirFrameWaits (storage/frame dataflow)"]
+  swait --> later["cluster barriers and later passes"]
 ```
 
 `GirFrameContractImportPass` runs before ST region scheduling and only moves
@@ -48,9 +47,9 @@ fails loudly if the pipeline is enabled with no contract or with no instruction
 carrying an action tag. See
 [How the contract reaches a function](gir-frame-contract.md#how-the-contract-reaches-a-function).
 
-Fence placement runs before both wait passes. The generic wait pass then emits
-register def-use waits, and the GIR wait pass runs last. The ordering invariants
-are:
+Fence placement runs before wait insertion. `StinkyWaitCntInsertionPass` then
+emits register def-use waits and, with `girFrameWaits`, adds the GIR waits last
+in the same pass. The ordering invariants are:
 
 1. a fence must exist before its residual can be measured;
 2. generic waits change the DS and tensor FIFO ranks; and
@@ -501,8 +500,10 @@ must carry both slots because it is the first to answer for either.
 
 ## GirWaitCntInsertionPass
 
-Derives every wait from the frame graph. The pass itself is thin: it calls
-`buildGirFrameWaitPlan` and emits the result.
+Derives every wait from the frame graph. `insertGirFrameWaits` is thin: it calls
+`buildGirFrameWaitPlan` and emits the result. The gfx1250 pipeline runs it as the
+last step of `StinkyWaitCntInsertionPass` (`WaitCntInsertionOptions::girFrameWaits`);
+`GirWaitCntInsertionPass` is the same step as a stand-alone pass for `stinkytofu-opt`.
 
 ### Counters
 

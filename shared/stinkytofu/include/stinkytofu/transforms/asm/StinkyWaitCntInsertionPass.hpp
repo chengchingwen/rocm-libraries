@@ -43,6 +43,14 @@ struct WaitCntInsertionOptions {
     /// Skip the s_wait_tensorcnt arm only; every other counter is still inserted.
     /// For a producer that owns its tensorcnt waits already and wants the rest.
     bool disableTensorcntInsertion = false;
+
+    /// After the generic waits, add the frame-contract dscnt/tensorcnt waits
+    /// (`insertGirFrameWaits`). Their ranks credit the generic waits already in the stream.
+    bool girFrameWaits = false;
+
+    /// Afterwards, drop dscnt waits the scheduled ds proximity already covers
+    /// (RemoveDscntPass). Not combined with `girFrameWaits`: a frame wait is a hazard fence.
+    bool pruneDscnt = false;
 };
 
 /**
