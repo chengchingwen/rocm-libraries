@@ -21,7 +21,7 @@ gen 400  ring=4 entry=0
 }
 
 #
-# The shape mab.yaml's steady loop actually has: ONE tensor_load_to_lds moves B, MXSA and MXSB
+# The shape a scaled-mx steady loop actually has: ONE tensor_load_to_lds moves B, MXSA and MXSB
 # together (a fused copy group), so a single instruction carries three accesses on three rings.
 # A reader of any member must wait on that one copy, and a reader of an operand the group does
 # NOT carry must not.
@@ -86,8 +86,8 @@ st.func @gir_frame_waitcnt_guarded_prologue_join() {
 # `s_wait_tensorcnt 2`, not a drain to 0.  A model that could not rank the copies would emit 0
 # here and serialize the pipeline -- which is what the number is protecting.
 #
-# `s_wait_tensorcnt 2` is a value the shipping mxf8 shapes really emit (mab.yaml's steady loop
-# waits at tensorcnt 2, 3 and 5).
+# `s_wait_tensorcnt 2` is a value real scaled-mx shapes emit; their steady loops wait at
+# tensorcnt 2, 3 and 5.
 #
 # CHECK-LABEL: @gir_frame_waitcnt_inflight_depth
 # CHECK: tensor_load_to_lds
