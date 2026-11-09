@@ -20,13 +20,11 @@ rotation and control-flow facts while instruction modifiers supply the accesses.
 | `GirFencePlacementPass` | `src/transforms/asm/GirFencePlacementPass.cpp` |
 | Fence discharge record (`GirFenceCoverage`) | `include/stinkytofu/analysis/asm/GirFrameAnalysis.hpp` |
 | Barrier memory tokens | `src/transforms/asm/StinkyBuildImplicitDependencyPass.cpp` |
-| Generic register waits | `src/transforms/asm/StinkyWaitCntInsertionPass.cpp` |
-| `GirWaitCntInsertionPass` | `src/transforms/asm/GirWaitCntInsertionPass.cpp` |
+| Generic register waits and `insertGirFrameWaits` | `src/transforms/asm/StinkyWaitCntInsertionPass.cpp` |
 | Counter flow (the wait solver) | `src/transforms/asm/waitcnt/GirFrameCounterFlow.cpp` |
 
 ```cpp
 STINKYTOFU_EXPORT std::unique_ptr<Pass> createGirFencePlacementPass();
-STINKYTOFU_EXPORT std::unique_ptr<Pass> createGirWaitCntInsertionPass();
 ```
 
 ## Pipeline Position
@@ -86,7 +84,7 @@ contract means no work, not a fallback.
 ### Debugging
 
 The counter-flow traces are `PASS_DEBUG` under
-`DEBUG_TYPE "GirWaitCntInsertionPass"`, so they are enabled by adding that name
+`DEBUG_TYPE "GirFrameWaits"`, so they are enabled by adding that name
 to `PassManagerDebugConfig::addDebugOnly`. For each accepted hazard the trace
 reports counter, kind, cross-agent flag, gap, producer, consumer and chosen
 anchor; then for each emitted anchor, the wait it settled on and the producers
@@ -498,12 +496,12 @@ must carry both slots because it is the first to answer for either.
 
 ---
 
-## GirWaitCntInsertionPass
+## insertGirFrameWaits
 
-Derives every wait from the frame graph. `insertGirFrameWaits` is thin: it calls
-`buildGirFrameWaitPlan` and emits the result. The gfx1250 pipeline runs it as the
-last step of `StinkyWaitCntInsertionPass` (`WaitCntInsertionOptions::girFrameWaits`);
-`GirWaitCntInsertionPass` is the same step as a stand-alone pass for `stinkytofu-opt`.
+Derives every wait from the frame graph. It calls `buildGirFrameWaitPlan` and
+emits the result. It is not a pass of its own: the gfx1250 pipeline runs it as
+the last step of `StinkyWaitCntInsertionPass` (`WaitCntInsertionOptions::girFrameWaits`),
+and `stinkytofu-opt` reaches it with `--StinkyWaitCntInsertionPass=girFrameWaits`.
 
 ### Counters
 
@@ -647,9 +645,8 @@ additional storage ordering still required. Consequently:
 - a GIR WAR need not be zero: if newer DS issues may remain in flight, a graded
   `dscnt N` retires only the aliased reader; and
 - absence of a finite `counter=ds` `[gir-wait]` record means the GIR pass emitted
-  no DS wait at that anchor. Compare pass dumps immediately after
-  `StinkyWaitCntInsertionPass` and `GirWaitCntInsertionPass` for definitive
-  attribution.
+  no DS wait at that anchor. Compare pass dumps with and without
+  `girFrameWaits` for definitive attribution.
 
 ## Related documents
 

@@ -1,6 +1,6 @@
-# RUN: %stinkytofu-opt --arch gfx1250 %s --GirWaitCntInsertionPass --print-output
+# RUN: %stinkytofu-opt --arch gfx1250 %s --StinkyWaitCntInsertionPass=girFrameWaits --print-output
 #
-# Every GirWaitCntInsertionPass fixture in one file: the contract is MODULE scope, so one
+# Every girFrameWaits fixture in one file: the contract is MODULE scope, so one
 # block serves every function and the ids are offset by 100 per function to keep them
 # distinct.
 
@@ -106,7 +106,7 @@ st.func @gir_frame_waitcnt_inflight_depth() {
 }
 
 #
-# GirWaitCntInsertionPass over a real pipelined loop: a ring-2 generation that ADVANCES once per
+# girFrameWaits over a real pipelined loop: a ring-2 generation that ADVANCES once per
 # trip.  The loop's read is one generation behind its copy (`gdelta=1`), so it consumes the buffer
 # the PREVIOUS trip landed -- the wait it needs is on a copy that crossed the back edge, which is
 # the case a straight-line body cannot express.

@@ -1,4 +1,4 @@
-# RUN: %stinkytofu-opt --arch gfx1250 %s --NumWaves=2 --GirFencePlacementPass --StinkyBuildImplicitDependencyPass --StinkyWaitCntInsertionPass --GirWaitCntInsertionPass --print-output
+# RUN: %stinkytofu-opt --arch gfx1250 %s --NumWaves=2 --GirFencePlacementPass --StinkyBuildImplicitDependencyPass --StinkyWaitCntInsertionPass=girFrameWaits --print-output
 #
 # Memory tokens alone cannot grade an LDS WAR; the frame graph can. Both are shown here.
 #

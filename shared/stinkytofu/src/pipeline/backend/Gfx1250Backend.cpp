@@ -121,7 +121,7 @@ void addGfx1250RegionPasses(PassManager& pm, const StinkyAsmModule& module, OptL
     // Materialize GIR fences before dependency construction. The implicit-dependency pass derives
     // each fence's LDS tokens from the frame graph, making the fence a movable scheduler node
     // constrained by the producer -> fence -> consumer token chain. Counter waits are deliberately
-    // deferred until after scheduling, where GirWaitCntInsertionPass verifies every exact hazard
+    // deferred until after scheduling, where insertGirFrameWaits verifies every exact hazard
     // path is still fenced, recomputes the FIFO ranks, and materializes the waits.
     if (shouldInsertGirFrameWaits(module, enableWaitCnt)) pm.addPass(createGirFencePlacementPass());
 

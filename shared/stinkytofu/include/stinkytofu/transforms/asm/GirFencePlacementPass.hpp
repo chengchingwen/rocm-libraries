@@ -32,7 +32,7 @@ computeGirRawPlacementPlan(Function& function, const GirFrameAnalysis::Result& f
 
 /// Materializes barrier-only GIR fences before scheduling. Each fence is placed inside its
 /// admissible window at the slot with the deepest pre-schedule counter residual; implicit
-/// dependency construction then adds its frame-derived LDS tokens. GirWaitCntInsertionPass
+/// dependency construction then adds its frame-derived LDS tokens. `insertGirFrameWaits`
 /// verifies the scheduled fence coverage and emits the final waits later.
 STINKYTOFU_EXPORT std::unique_ptr<Pass> createGirFencePlacementPass();
 

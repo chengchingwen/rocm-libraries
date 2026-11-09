@@ -32,9 +32,9 @@
 #include "stinkytofu/support/ErrorHandling.hpp"
 #include "stinkytofu/transforms/asm/waitcnt/WaitDataflow.hpp"
 
-// `StinkyTofuDebugPass: "GirWaitCntInsertionPass"` traces every hazard the counter flow accepted
+// `StinkyTofuDebugPass: "GirFrameWaits"` traces every hazard the counter flow accepted
 // and the wait each anchor ended on.
-#define DEBUG_TYPE "GirWaitCntInsertionPass"
+#define DEBUG_TYPE "GirFrameWaits"
 
 namespace stinkytofu::waitcnt {
 

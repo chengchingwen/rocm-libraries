@@ -28,7 +28,10 @@
 #include "stinkytofu/Export.hpp"
 
 namespace stinkytofu {
+class AnalysisManager;
+class Function;
 class Pass;
+class PassContext;
 
 struct WaitCntInsertionOptions {
     /// Disabled by default: CK_Tensor dataflow freezes after the first solver
@@ -64,5 +67,11 @@ struct WaitCntInsertionOptions {
  */
 STINKYTOFU_EXPORT std::unique_ptr<Pass> createStinkyWaitCntInsertionPass(
     WaitCntInsertionOptions options = {});
+
+/// Inserts dscnt/tensorcnt waits for frame hazards reconstructed on the scheduled ST CFG
+/// (`WaitCntInsertionOptions::girFrameWaits`). Must run after the generic waits so its ranks
+/// credit them. Returns true if it emitted any.
+STINKYTOFU_EXPORT bool insertGirFrameWaits(Function& function, PassContext& passCtx,
+                                           AnalysisManager& AM);
 
 }  // namespace stinkytofu

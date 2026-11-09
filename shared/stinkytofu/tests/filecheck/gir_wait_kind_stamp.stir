@@ -1,6 +1,6 @@
-# RUN: %stinkytofu-opt --arch gfx1250 %s --NumWaves=2 --GirFencePlacementPass --StinkyBuildImplicitDependencyPass --GirWaitCntInsertionPass --emit-asm --preserve-comments
+# RUN: %stinkytofu-opt --arch gfx1250 %s --NumWaves=2 --GirFencePlacementPass --StinkyBuildImplicitDependencyPass --StinkyWaitCntInsertionPass=girFrameWaits,disableTensorcntInsertion --emit-asm --preserve-comments
 #
-# Every wait GirWaitCntInsertionPass emits names the hazard kind that required it, so a GIR wait
+# Every wait girFrameWaits emits names the hazard kind that required it, so a GIR wait
 # is distinguishable from a generic register wait in the assembly. The kind is carried from the
 # hazard through the counter flow, not inferred from the counter: a RAW whose producer is a
 # ds_write takes the DS counter, so `dscnt => WAR` is not a sound rule on its own.
