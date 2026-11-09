@@ -3970,8 +3970,7 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
                         earliest = std::max(0, planned - loadGap);
                 prefetchEarliestWmma_[prefetches[k]] = earliest;
                 PASS_DEBUG(std::cerr << "[CDNA5 prefetchLead] load window=" << window << " #" << k
-                                     << " earliest=" << earliest << " loadGap=" << loadGap
-                                     << "\n");
+                                     << " earliest=" << earliest << " loadGap=" << loadGap << "\n");
             }
         }
     }

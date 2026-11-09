@@ -564,7 +564,3 @@ TEST(DrainLatencyAfterIssueOffsets, UniformCreditSpacingWhenSpreadIsOff) {
     EXPECT_EQ(drainLatencyAfterIssueOffsets(116, 56, 16, 16, 160), 116);
     EXPECT_EQ(drainLatencyAfterIssueOffsets(117, 56, 17, 16, 0), 117);
 }
-
-
-
-
