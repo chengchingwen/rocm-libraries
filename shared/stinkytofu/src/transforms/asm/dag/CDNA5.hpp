@@ -705,8 +705,6 @@ class CDNA5ReadyQueue : public ReadyQueue {
     // Per-region; reset each region.
     std::map<int, int> regLastTouch_;
     int clock_ = 0;
-    // End clock of each node issued in this region. GIR frame tensor-load delay nodes name a RAW
-    // placement by DAG id and measure their not-before floor from this real issue timeline.
 
     // PipeOps hazard lanes, one per rule (empty for Cycles rules). Per reg key: the
     // pipe-op ordinal at which a rule.isProducer instruction last touched that register.
