@@ -20,6 +20,8 @@
 //      with tail-drain-aware entry state so later anchors stay correct.
 //   5. emitWaits() materialises the plan as s_wait_* IR nodes.
 //   6. removePHIs() strips the PHI pseudo-instructions.
+//   7. Optionally, the frame-contract dscnt/tensorcnt waits, or the
+//      ds-proximity dscnt pruning of a scheduled loop.
 
 #include "stinkytofu/transforms/asm/StinkyWaitCntInsertionPass.hpp"
 
@@ -33,6 +35,8 @@
 #include "stinkytofu/hardware/ArchHelper.hpp"
 #include "stinkytofu/ir/asm/StinkyAsmIR.hpp"
 #include "stinkytofu/transforms/asm/BuildDefUseChain.hpp"
+#include "stinkytofu/transforms/asm/GirWaitCntInsertionPass.hpp"
+#include "stinkytofu/transforms/asm/RemoveDscntPass.hpp"
 #include "stinkytofu/transforms/asm/waitcnt/ShallowPredPromotion.hpp"
 #include "stinkytofu/transforms/asm/waitcnt/WaitDataflow.hpp"
 #include "stinkytofu/transforms/asm/waitcnt/WaitPlan.hpp"
@@ -92,6 +96,15 @@ class StinkyWaitCntInsertionPass : public StinkyInstPass {
 
         emitWaits(func, passCtx, arch, plan);
         removePHIs(passCtx, rpo);
+
+        if (options.girFrameWaits) {
+            AM.invalidate(func, preserveCFGAnalyses());
+            insertGirFrameWaits(func, passCtx, AM);
+        }
+        if (options.pruneDscnt) {
+            AM.invalidate(func, preserveCFGAnalyses());
+            return createRemoveDscntPass()->run(func, passCtx, AM);
+        }
         return preserveCFGAnalyses();
     }
 

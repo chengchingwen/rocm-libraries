@@ -103,28 +103,8 @@ class GirWaitCntInsertionPass final : public StinkyInstPass {
     }
 
     PreservedAnalyses run(Function& function, PassContext& passCtx, AnalysisManager& AM) override {
-        const auto& frames = AM.getResult<GirFrameAnalysis>(function);
-        const auto& hazards = AM.getResult<GirFrameHazardAnalysis>(function);
-        if (frames.empty() || hazards.empty()) return PreservedAnalyses::all();
-
-        const auto covers = [&passCtx](const BasicBlock& block) {
-            return passCtx.shouldProcessBasicBlock(const_cast<BasicBlock&>(block));
-        };
-        GirWaitKinds kinds;
-        WaitInsertionPlan plan =
-            buildGirFrameWaitPlan(function, frames, hazards, covers, {}, &kinds);
-        if (plan.anchorWaits.empty() && plan.tailDrains.empty()) return PreservedAnalyses::all();
-
-        // Generic register waits are emitted first so GIR ranks can credit them. A stronger GIR
-        // drain can in turn make a later generic wait stale; reconcile that one-way effect against
-        // the complete virtual plan before materialising the GIR waits.
-        removeObservedDsWaitsRedundantWithPlan(function, plan, covers);
-
-        const GfxArchID arch =
-            getGfxArchID(passCtx.getGemmTileConfig().arch[0], passCtx.getGemmTileConfig().arch[1],
-                         passCtx.getGemmTileConfig().arch[2]);
-        emitPlan(function, passCtx, arch, plan, kinds);
-        return preserveCFGAnalyses();
+        return insertGirFrameWaits(function, passCtx, AM) ? preserveCFGAnalyses()
+                                                          : PreservedAnalyses::all();
     }
 };
 
@@ -132,6 +112,30 @@ char GirWaitCntInsertionPass::ID = 0;
 }  // namespace
 
 namespace stinkytofu {
+bool insertGirFrameWaits(Function& function, PassContext& passCtx, AnalysisManager& AM) {
+    const auto& frames = AM.getResult<GirFrameAnalysis>(function);
+    const auto& hazards = AM.getResult<GirFrameHazardAnalysis>(function);
+    if (frames.empty() || hazards.empty()) return false;
+
+    const auto covers = [&passCtx](const BasicBlock& block) {
+        return passCtx.shouldProcessBasicBlock(const_cast<BasicBlock&>(block));
+    };
+    GirWaitKinds kinds;
+    WaitInsertionPlan plan = buildGirFrameWaitPlan(function, frames, hazards, covers, {}, &kinds);
+    if (plan.anchorWaits.empty() && plan.tailDrains.empty()) return false;
+
+    // Generic register waits are emitted first so GIR ranks can credit them. A stronger GIR
+    // drain can in turn make a later generic wait stale; reconcile that one-way effect against
+    // the complete virtual plan before materialising the GIR waits.
+    removeObservedDsWaitsRedundantWithPlan(function, plan, covers);
+
+    const GfxArchID arch =
+        getGfxArchID(passCtx.getGemmTileConfig().arch[0], passCtx.getGemmTileConfig().arch[1],
+                     passCtx.getGemmTileConfig().arch[2]);
+    emitPlan(function, passCtx, arch, plan, kinds);
+    return true;
+}
+
 std::unique_ptr<Pass> createGirWaitCntInsertionPass() {
     return std::make_unique<GirWaitCntInsertionPass>();
 }

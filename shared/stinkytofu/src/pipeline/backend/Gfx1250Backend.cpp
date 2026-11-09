@@ -49,7 +49,6 @@
 #include "stinkytofu/transforms/asm/Gfx1250XnackHazardPass.hpp"
 #include "stinkytofu/transforms/asm/GirFencePlacementPass.hpp"
 #include "stinkytofu/transforms/asm/GirFrameContractImportPass.hpp"
-#include "stinkytofu/transforms/asm/GirWaitCntInsertionPass.hpp"
 #include "stinkytofu/transforms/asm/InsertClusterBarrierPass.hpp"
 #include "stinkytofu/transforms/asm/InsertCoexecHazardPass.hpp"
 #include "stinkytofu/transforms/asm/InsertDelayAluPass.hpp"
@@ -61,7 +60,6 @@
 #include "stinkytofu/transforms/asm/PrefetchBridgeSubstitutionPass.hpp"
 #include "stinkytofu/transforms/asm/RegionClonePass.hpp"
 #include "stinkytofu/transforms/asm/RemoveDelayAluPass.hpp"
-#include "stinkytofu/transforms/asm/RemoveDscntPass.hpp"
 #include "stinkytofu/transforms/asm/RemoveInstructionPass.hpp"
 #include "stinkytofu/transforms/asm/RemoveWaitAluPass.hpp"
 #include "stinkytofu/transforms/asm/SetMatrixReusePass.hpp"
@@ -259,13 +257,9 @@ bool buildGfx1250Pipeline(ModulePassManager& mpm, StinkyAsmModule& module, const
                 // A deep WMMA queue issues WMMAs back-to-back: one wait before the first.
                 waitCntOptions.mergeWaitsInWmmaRuns = moduleOptions.WmmaQueueCoverCycles != 0;
                 waitCntOptions.disableTensorcntInsertion = moduleOptions.DisableTensorcntInsertion;
+                waitCntOptions.girFrameWaits = useGirFrameWaits;
+                waitCntOptions.pruneDscnt = runScheduler && !moduleOptions.EnableGirFramePipeline;
                 innerPM.addPass(createStinkyWaitCntInsertionPass(waitCntOptions));
-                // Generic register waits change FIFO ranks. GIR storage waits must run afterwards
-                // so their graded dscnt/tensorcnt values credit the final wait stream rather than
-                // becoming stale when generic insertion adds an earlier, stricter wait.
-                if (useGirFrameWaits) innerPM.addPass(createGirWaitCntInsertionPass());
-                if (runScheduler && !moduleOptions.EnableGirFramePipeline)
-                    innerPM.addPass(createRemoveDscntPass());
             }
 
             pm.addPass(createKernelToRegionsPassAdaptor(

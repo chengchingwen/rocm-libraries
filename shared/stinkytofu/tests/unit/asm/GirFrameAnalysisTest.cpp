@@ -14,6 +14,7 @@
 #include "stinkytofu/transforms/asm/GirWaitCntInsertionPass.hpp"
 #include "stinkytofu/transforms/asm/StinkyBuildImplicitDependencyPass.hpp"
 #include "stinkytofu/transforms/asm/StinkyDAGSchedulerPass.hpp"
+#include "stinkytofu/transforms/asm/StinkyWaitCntInsertionPass.hpp"
 #include "transforms/asm/dag/RegionDAG.hpp"
 
 using namespace stinkytofu;
@@ -1127,6 +1128,47 @@ TEST(GirFrameAnalysisTest, FrameWaitReconcilesGenericDscntStream) {
         waits.push_back(inst->getSrcRegs().front().getLiteralInt());
     }
     EXPECT_EQ(waits, (std::vector<int>{0, 1}));
+}
+
+/// Every wait the region emits, in order, as (opcode, count).
+std::vector<std::pair<unsigned, int>> warWaitStream(bool merged) {
+    Function function(merged ? "war_merged_wait_pass" : "war_separate_wait_passes");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    BasicBlock* block = function.createBasicBlock("entry");
+    StinkyInstruction* read = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
+    read->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
+    StinkyInstruction* copy = createTensorLoadInBlock(block, GfxArchID::Gfx1250, 0, 8);
+    copy->addModifier<GirActionData>(
+        GirActionData{1, 1, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, false}}});
+    createDsReadB128InBlock(block, GfxArchID::Gfx1250, 32, 20);
+    function.setStringMetaData(kGirFrameContractKey, kWarContract);
+
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    WaitCntInsertionOptions options;
+    options.disableTensorcntInsertion = true;
+    options.girFrameWaits = merged;
+    analyses.invalidate(
+        function, createStinkyWaitCntInsertionPass(options)->run(function, context, analyses));
+    if (!merged) createGirWaitCntInsertionPass()->run(function, context, analyses);
+
+    std::vector<std::pair<unsigned, int>> waits;
+    for (IRBase& node : *block) {
+        auto* inst = dyn_cast<StinkyInstruction>(&node);
+        if (!inst || inst->getSrcRegs().empty()) continue;
+        if (!isWaitCnt(*inst) && !inst->is(InstFlag::IF_WaitTensorCnt)) continue;
+        waits.emplace_back(inst->getUnifiedOpcode(), inst->getSrcRegs().front().getLiteralInt());
+    }
+    return waits;
+}
+
+TEST(GirFrameAnalysisTest, MergedWaitPassMatchesGenericThenFramePasses) {
+    const auto merged = warWaitStream(/*merged=*/true);
+    EXPECT_FALSE(merged.empty());
+    EXPECT_EQ(merged, warWaitStream(/*merged=*/false));
 }
 
 TEST(GirFrameAnalysisTest, SameTripRingAliasWarDrainsBeforeOverwrite) {
