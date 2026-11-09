@@ -541,7 +541,7 @@ The checked-in wait-count fixture uses:
 
 ```text
 stinkytofu-opt --arch gfx1250 example.stir \
-  --GirWaitCntInsertionPass --print-output
+  --StinkyWaitCntInsertionPass=girFrameWaits --print-output
 ```
 
 Verify all of the following:
@@ -687,7 +687,7 @@ decisions:
    endpoints are in one scheduling region. It also keeps the pieces of an
    existing GIR fence in order.
 4. `GirFencePlacementPass` places workgroup barriers for cross-agent hazards.
-5. `GirWaitCntInsertionPass` derives graded tensor and DS waits from the same
+5. `insertGirFrameWaits` (inside `StinkyWaitCntInsertionPass`) derives graded tensor and DS waits from the same
    frame spans.
 
 This separation is important when debugging output:

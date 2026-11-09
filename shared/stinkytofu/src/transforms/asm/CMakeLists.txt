@@ -31,7 +31,6 @@ target_sources(stinkytofu_objs PRIVATE
     SetMatrixReusePass.cpp
     StinkyWaitCntInsertionPass.cpp
     GirFencePlacementPass.cpp
-    GirWaitCntInsertionPass.cpp
     Gfx1250XnackHazardPass.cpp
     waitcnt/WaitDataflow.cpp
     waitcnt/GirFrameCounterFlow.cpp
