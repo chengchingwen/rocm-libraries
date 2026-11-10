@@ -432,7 +432,10 @@ def register_unit_modes(theta, operand):
         positions = _ring_period(theta, operand)
     finally:
         setattr(theta, "_register_unit_guard", False)
-    if positions <= buffers:
+    # AND THE RING MUST LAND ON THE SAME PHASE EVERY TRIP.  An uneven period rotates the ring
+    # across the trip copies, which separates the collision on its own; an even one starts each
+    # trip where the last began, so the two values share that register forever.
+    if positions <= buffers or positions % buffers != 0:
         return unit
     return original
 
