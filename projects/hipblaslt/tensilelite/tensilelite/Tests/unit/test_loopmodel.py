@@ -3731,7 +3731,7 @@ def test_adapter_rejects_calculated_ring_smaller_than_required_depth():
     kernel = _f8_split_register_kernel(va_b=1)
     Order.calculate(kernel)
     Registers.calculate(kernel)
-    with pytest.raises(RuntimeError, match="VgprAllocB=1.*smaller.*rotation"):
+    with pytest.raises(RuntimeError, match="VgprAllocB=1 cannot hold"):
         adapter.params_to_theta(kernel)
 
 

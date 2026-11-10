@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from ..analysis import AnalysisManager
 from ..verify import verify_gir
+from ..verify_dataflow import check_register_dataflow
 from .scaffold_shape import ScaffoldShapePass
 from .entrance_frames import EntranceFramePhisPass
 from .hoist_copies import HoistCopiesPass
@@ -54,4 +55,6 @@ def run_pipeline(prog, passes=None, verify=True):
             am.invalidate()
     if verify:
         verify_gir(prog)
+    # Unconditional: a wmma reading another source is a wrong answer, not a diagnostic.
+    check_register_dataflow(prog, raise_wrong_source=True)
     return prog
