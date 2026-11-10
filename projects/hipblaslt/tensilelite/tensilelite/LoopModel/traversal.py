@@ -417,17 +417,21 @@ def register_unit_modes(theta, operand):
     # extent of its own separates the region's values already.
     if product(extent for _name, extent in unit) > 1:
         return unit
-    # AND THE RING MUST BE UNABLE TO SEPARATE THEM.  Spelled out rather than asking `ring_axes`,
-    # which would ask back.  When the ring has a slot per position it already distinguishes
-    # them and nothing needs to move.
-    held = {name for name, _extent in unit}
-    positions = product(extent for name, extent in theta.geometry(operand).varying
-                        if name not in held)
+    # AND THE RING MUST BE UNABLE TO SEPARATE THEM.  Asked of the ORIGINAL geometry: the guard
+    # keeps the nested `ring_axes` on the un-widened unit, so this decides whether to widen
+    # instead of reading back a ring that has already been widened.
     try:
         buffers = max(1, int(operand.fragment.ring_depths.get(
             operand.fragment.groups()[0], 1)))
     except Exception:
         return unit
+    if getattr(theta, "_register_unit_guard", False):
+        return unit
+    setattr(theta, "_register_unit_guard", True)
+    try:
+        positions = _ring_period(theta, operand)
+    finally:
+        setattr(theta, "_register_unit_guard", False)
     if positions <= buffers:
         return unit
     return original
