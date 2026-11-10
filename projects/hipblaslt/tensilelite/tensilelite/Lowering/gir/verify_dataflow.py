@@ -72,7 +72,7 @@ class _RegFile:
         return _RegFile(self.slots)
 
 
-def _walk(prog, phase, regs, viol, acts=None):
+def _walk(prog, phase, regs, viol, acts=None, raise_wrong_source=False):
     """Walk one block's plan, updating `regs` and appending violations."""
     for i, act in enumerate(plan_block(prog, phase) if acts is None else acts):
         at = act.at
@@ -123,7 +123,7 @@ def _walk(prog, phase, regs, viol, acts=None):
                 for n in cand:
                     held, consumed, defining_event = regs.slots[n]
                     if need not in held:
-                        viol.append(
+                        wrong = (
                             "WRONG SOURCE\n"
                             "    consumer: %s\n"
                             "    last fill: %s\n"
@@ -131,6 +131,12 @@ def _walk(prog, phase, regs, viol, acts=None):
                             "source(s) %s but needs (tile=%s,k=%s)."
                             % (_event(phase, i, act), defining_event, at["idx0"], at["idx1"],
                                at["u"], op, n, sorted(held), logical_index, u))
+                        if raise_wrong_source:
+                            raise RuntimeError(
+                                wrong + "\n    Either VgprAlloc%s is below the ring this loop "
+                                "order needs, or the refill was placed wrongly -- the plan "
+                                "cannot tell which." % op)
+                        viol.append(wrong)
                     else:
                         consumed = consumed | {need}
                     regs.slots[n] = (held, frozenset(consumed), defining_event)
@@ -181,13 +187,18 @@ def loop_chain_blocks(prog, loop="steady"):
         cur = nxt
 
 
-def check_register_dataflow(prog, entry="prologue", loop="steady", plans=None) -> list:
-    """USE-BEFORE-DEF / OVERWRITE-BEFORE-USE / WRONG-SOURCE over the pipelined shape."""
+def check_register_dataflow(prog, entry="prologue", loop="steady", plans=None,
+                            raise_wrong_source=False) -> list:
+    """USE-BEFORE-DEF / OVERWRITE-BEFORE-USE / WRONG-SOURCE over the pipelined shape.
+
+    `raise_wrong_source` stops at the first WRONG SOURCE instead of collecting: a wmma reading
+    another source is a wrong answer, so the build path refuses rather than reports.
+    """
     viol, regs = [], _RegFile()
     blocks = list(prog.blocks)
     get = (lambda ph: None) if plans is None else (lambda ph: plans.get(ph))
     for lab in prologue_blocks(prog, entry, loop):
-        _walk(prog, lab, regs, viol, get(lab))
+        _walk(prog, lab, regs, viol, get(lab), raise_wrong_source)
     if loop not in blocks:
         return viol
     # THE LOOP BODY IS THE WHOLE CHAIN, not just the header.  Replaying only `steady` models
@@ -195,10 +206,10 @@ def check_register_dataflow(prog, entry="prologue", loop="steady", plans=None) -
     # for a ring that closes over several copies (HalfPLR's three halves) is every register.
     chain = loop_chain_blocks(prog, loop)
     for lab in chain:
-        _walk(prog, lab, regs, viol, get(lab))
+        _walk(prog, lab, regs, viol, get(lab), raise_wrong_source)
     n_after_first = len(viol)
     for lab in chain:
-        _walk(prog, lab, regs, viol, get(lab))
+        _walk(prog, lab, regs, viol, get(lab), raise_wrong_source)
     # A violation seen ONLY on the second pass is loop-carried; label it so the reader is not
     # hunting for it in a straight-line reading of the block.
     for j in range(n_after_first, len(viol)):
@@ -217,7 +228,7 @@ def check_register_dataflow(prog, entry="prologue", loop="steady", plans=None) -
         if label in path or label not in blocks or label in seen_exit_blocks:
             continue
         seen_exit_blocks.add(label)
-        _walk(prog, label, state, viol, get(label))
+        _walk(prog, label, state, viol, get(label), raise_wrong_source)
         for target in succ.get(label, ()):
             if target != loop:
                 work.append((target, state.clone(), path + (label,)))

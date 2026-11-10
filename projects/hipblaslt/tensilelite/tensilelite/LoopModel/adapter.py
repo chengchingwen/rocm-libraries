@@ -634,8 +634,6 @@ def _validate_register_depths(theta, kernel):
                 % (base, side))
         return int(result)
 
-    from .schedule import BufferDepths
-    depths = BufferDepths(theta, include_shared=False)
     for operand in theta.operands:
         if not (operand.movements and operand.fragment):
             continue
@@ -645,51 +643,17 @@ def _validate_register_depths(theta, kernel):
         if side is None:
             continue
         allocated = value("VgprAlloc", side)
-        cluster = value("ClusterLocalRead", side)
-        group = operand.fragment.groups()[0]
-        buffers = geometry.group_ring_depth(
-            theta,
-            operand,
-            group,
-            depths,
-        )
-        required = 1
-        # The loop order sets how many buffers are live at once whether or not the operand
-        # reloads its whole set; a ring that does not carry must hold that many either way.
-        if value("VgprGroup", side) > 1 \
-                and geometry.requested_read_ahead(theta, operand, depths) > 0 \
-                and not geometry.vgpr_ring_carries(
-                        theta, operand, group, buffers):
-            required = max(
-                required,
-                geometry._ring_period(theta, operand),
-                geometry.group_reuse_floor(
-                    theta,
-                    operand,
-                    group,
-                    charge_lead=False,
-                    lead=0,
-                ),
-            )
-        if cluster and geometry.reloads_whole_set(theta, operand):
-            required = max(required, geometry._ring_period(theta, operand))
-        elif cluster and not geometry.vgpr_ring_carries(
-                theta, operand, group, buffers):
-            required = max(
-                required,
-                geometry.group_reuse_floor(
-                    theta,
-                    operand,
-                    group,
-                    charge_lead=False,
-                    lead=0,
-                ),
-            )
+        # One buffer holds one group's prefetch unit, so PLR units in flight need PLR buffers --
+        # capped by the ring, which is every unit the operand has to prefetch. This is the
+        # degenerate-prefetch refusal, NOT a correctness floor: the plan's WRONG SOURCE check owns
+        # whether a ring is too small to be correct. VgprGroup sizes the buffer, not the count.
+        required = min(value("PrefetchLocalRead", side),
+                       geometry._ring_period(theta, operand))
         if allocated < required:
             raise RuntimeError(
-                "VgprAlloc%s=%d is smaller than %s's required "
-                "rotation-unit depth %d"
-                % (side, allocated, operand.name, required))
+                "VgprAlloc%s=%d cannot hold the %d prefetch unit(s) PrefetchLocalRead%s asks "
+                "for, so %s's read-ahead would be shortened to %d"
+                % (side, allocated, required, side, operand.name, allocated))
 
 
 def params_to_theta(p: dict, *, validate_register_depths=True) -> Theta:

@@ -517,22 +517,59 @@ def test_all_inner_forced_clr1_retains_a_large_enough_explicit_va():
 
     k["VgprAllocA"] = 1
     k["ClusterLocalReadA"] = 1
-    with pytest.raises(RuntimeError, match="smaller.*rotation"):
+    with pytest.raises(RuntimeError, match="VgprAllocA=1 cannot hold"):
         adapter.params_to_theta(kernel_to_params(k))
 
 
-def test_forced_all_inner_rejects_explicit_va_below_required_rotation():
-    """Registers owns the floor; adapter rejects an explicit smaller allocation."""
+@pytest.mark.parametrize("clr", [0, 1])
+def test_forced_all_inner_floor_is_the_loop_order_not_cluster_local_read(clr):
+    """The floor is PLR buffers either way: ClusterLocalRead never sets it."""
 
-    k = _kernel(_mxf8(), _mi("fp8", (2, 2), (1, 1)),
-                2, 2, loopOrder(5, 0, 1, 0), 1, 0, 2)
-    k.update(WmmaInnerOrder=5, WmmaOuterOrder=0,
-             ClusterLocalRead=0, ClusterLocalReadA=1, ClusterLocalReadB=0,
-             VgprGroupA=2, VgprAllocA=3,
-             VgprGroupB=-1, VgprAllocB=-1,
-             SuppressNoLoadLoop=True, SourceSwap=False)
-    with pytest.raises(RuntimeError, match="VgprAllocA=3.*smaller"):
-        adapter.params_to_theta(kernel_to_params(k))
+    def shape(va):
+        k = _kernel(_mxf8(), _mi("fp8", (2, 2), (1, 1)),
+                    2, 2, loopOrder(5, 0, 1, 0), 1, 0, 2)
+        k.update(WmmaInnerOrder=5, WmmaOuterOrder=0,
+                 ClusterLocalRead=0, ClusterLocalReadA=clr, ClusterLocalReadB=0,
+                 VgprGroupA=2, VgprAllocA=va,
+                 VgprGroupB=-1, VgprAllocB=-1,
+                 SuppressNoLoadLoop=True, SourceSwap=False)
+        return kernel_to_params(k)
+
+    with pytest.raises(RuntimeError, match="VgprAllocA=1 cannot hold"):
+        adapter.params_to_theta(shape(1))
+    assert adapter.params_to_theta(shape(2)).op("A").fragment.ring_depths == {"g0": 2}
+
+
+def test_vgpr_group_does_not_charge_the_undivided_rotation_depth():
+    """VG subdivides the unit, so its depth is the reuse floor, not the ring period."""
+    from tensilelite.LoopModel import traversal as geometry
+    from tensilelite.LoopModel.schedule import BufferDepths
+
+    def shape(vg, va):
+        k = _kernel(_mxf8(), _mi("fp8", (8, 10), (2, 2)),
+                    2, 1, loopOrder(2, 3, 0, 0), 0, 0, 8)
+        k.update(LoopIters=2, WmmaInnerOrder=2, WmmaOuterOrder=3,
+                 PrefetchLocalReadA=2, PrefetchLocalReadB=1,
+                 ClusterLocalRead=0, ClusterLocalReadA=0, ClusterLocalReadB=0,
+                 VgprGroupA=1, VgprAllocA=3, VgprGroupB=vg, VgprAllocB=va,
+                 VectorWidthA=8, VectorWidthB=1, SuppressNoLoadLoop=True)
+        return k
+
+    def measure(vg):
+        theta = adapter.params_to_theta(shape(vg, 2), validate_register_depths=False)
+        depths = BufferDepths(theta, include_shared=False)
+        operand = theta.op("B")
+        group = operand.fragment.groups()[0]
+        return (geometry._ring_period(theta, operand),
+                geometry.group_reuse_floor(
+                    theta, operand, group, charge_lead=False, lead=0))
+
+    # Five tiles a slot at VG=2: the period doubles, the floor does not.
+    assert measure(1) == (2, 1)
+    assert measure(2) == (4, 1)
+
+    adapter.params_to_theta(shape(1, 2), validate_register_depths=True)
+    adapter.params_to_theta(shape(2, 2), validate_register_depths=True)
 
 
 def test_f8maf2_clra_allocates_the_complete_resident_set():

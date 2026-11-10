@@ -298,16 +298,17 @@ def _rotation_block_digits(theta, operand):
     region_axes = getattr(operand, "factor_axes", ()) or ()
     movement = operand.trajectory.shared_read
     coverage = getattr(movement, "coverage", None) if movement is not None else None
-    modes = prefetch_unit_modes(theta, operand)
+    modes = register_unit_modes(theta, operand)
     if coverage is not None:
         ring = {name for name, _extent in ring_axes(
             theta, operand, operand.fragment.groups()[0])}
         modes = [(name, extent) for name, extent in theta.geometry(operand).varying
                  if name not in ring]
+    kept = {name for name, _extent in register_unit_modes(theta, operand)}
     digits = [
         (name, group_extent if name == grouping else extent, 1, name == grouping)
         for name, extent in modes
-        if name not in region_axes
+        if name not in region_axes or name in kept
     ]
     # VG MOVED THE AXIS'S TOP FACTOR INTO THE SLOT, so the block keeps only what is left of it
     # and wraps there -- the same digit in two places would address past the allocation.
@@ -397,9 +398,44 @@ def _covered_positions(theta, operand, modes, grouped=False) -> int:
     return max(1, total)
 
 
+def register_unit_modes(theta, operand):
+    """The unit modes the REGISTER file indexes -- the region included when it must be.
+
+    A region is normally stripped from the prefetch unit because it displaces an ADDRESS.  The
+    register file is not region-displaced, so when the ring has more positions than buffers the
+    region has nowhere left to live and two of its values land on one register.  Keep it in the
+    unit index for exactly those operands; everyone else is unchanged.
+    """
+    unit = prefetch_unit_modes(theta, operand)
+    regions = set(getattr(operand, "factor_axes", ()) or ())
+    if not regions or not operand.fragment:
+        return unit
+    original = list(theta.geometry(operand).original_prefetch)
+    if not any(name in regions for name, _extent in original):
+        return unit
+    # DEGENERATE UNIT: the split left nothing behind to index with.  A unit that still has an
+    # extent of its own separates the region's values already.
+    if product(extent for _name, extent in unit) > 1:
+        return unit
+    # AND THE RING MUST BE UNABLE TO SEPARATE THEM.  Spelled out rather than asking `ring_axes`,
+    # which would ask back.  When the ring has a slot per position it already distinguishes
+    # them and nothing needs to move.
+    held = {name for name, _extent in unit}
+    positions = product(extent for name, extent in theta.geometry(operand).varying
+                        if name not in held)
+    try:
+        buffers = max(1, int(operand.fragment.ring_depths.get(
+            operand.fragment.groups()[0], 1)))
+    except Exception:
+        return unit
+    if positions <= buffers:
+        return unit
+    return original
+
+
 def group_prefetch_unit_positions(theta, operand) -> int:
     """Read-order positions in one grouped prefetch unit."""
-    return _covered_positions(theta, operand, prefetch_unit_modes(theta, operand), grouped=True)
+    return _covered_positions(theta, operand, register_unit_modes(theta, operand), grouped=True)
 
 
 def rotation_unit_tiles(theta, operand) -> int:
@@ -980,7 +1016,9 @@ def ring_axes(theta, operand, group):
     hop = operand.trajectory.shared_read
     if hop is not None and hop.coverage is not None:
         return list(geometry.summation_modes)
-    unit = {name for name, _extent in geometry.prefetch_unit}
+    # THE SAME UNIT THE REGISTER FILE INDEXES.  A region kept in the unit must not also be a
+    # ring digit, or it moves the buffer AND the unit index and addresses itself twice.
+    unit = {name for name, _extent in register_unit_modes(theta, operand)}
     return [(name, extent) for name, extent in geometry.varying if name not in unit]
 
 
