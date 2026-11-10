@@ -2554,7 +2554,7 @@
         1,
         2,
       ]),
-      'len': 3,
+      'len': 5,
       'type': 'list',
     }),
     'PrefetchGL2Inc64Bit': dict({
