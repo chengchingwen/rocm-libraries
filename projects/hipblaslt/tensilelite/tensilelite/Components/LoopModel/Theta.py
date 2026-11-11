@@ -106,14 +106,14 @@ def loopModelTarget(writer, kernel):
   """Target facts θ cannot see -- the domain its fields are chosen from.
 
     ReadVectorElems    elements one instruction moves per lane, per operand.
-    ReadPhi / ReadRho  the carrier group as the two numbers naming it: Φ, the movement instances
-                       one cooperative instruction merges, and ρ, the sub-agent span they are
-                       distributed over.  θ derives the carrier/slot map from them.
+    ReadInstances      tiles one cooperative instruction merges, per operand.
+    ReadAgentGroup     sub-agents those merged tiles are distributed over, per operand.
+                       θ derives the carrier/slot map from the two.
 
   Every input is read at the FIRST θ build, `loopModelRegBuffers` from `_initKernel`, so it comes
   from the Solution or from pure geometry rather than from later `writer.states` fields.
   """
-  elems, phi, rho = {}, {}, {}
+  elems, instances, agentGroup = {}, {}, {}
   pt = kernel["ProblemType"]
   for tc, tile01, mx in (("MXSA", 0, "MXBlockA"), ("MXSB", 1, "MXBlockB")):
     if not int(pt.get(mx, 0) or 0):
@@ -134,6 +134,7 @@ def loopModelTarget(writer, kernel):
     if span:
       tiles *= 2
     partner = 2 if span else 0
-    phi[tc] = int(tiles)
-    rho[tc] = int(partner)
-  return {"ReadVectorElems": elems, "ReadPhi": phi, "ReadRho": rho}
+    instances[tc] = int(tiles)
+    agentGroup[tc] = int(partner)
+  return {"ReadVectorElems": elems, "ReadInstances": instances,
+          "ReadAgentGroup": agentGroup}

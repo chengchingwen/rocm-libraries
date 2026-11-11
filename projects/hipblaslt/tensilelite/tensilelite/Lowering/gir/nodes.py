@@ -423,7 +423,7 @@ def copy_unit(inst):
     """`(members, refs)` for a global->shared copy Move, or `(None, None)` if `inst` is not one.
 
     `members` is the tuple of operand names the movement carries -- `('A',)` unfused, `('A','B')`
-    for the Phi-fused AB group multi-wave TDM realizes as one aliased descriptor.
+    for the fused AB group multi-wave TDM realizes as one aliased descriptor.
     """
     if not isinstance(inst, Move):
         return (None, None)
@@ -434,7 +434,7 @@ def copy_unit(inst):
     if len(states) > 1:
         raise RuntimeError(
             "GIR: fused copy movement %s names %d shared destinations whose pointers rotate "
-            "DIFFERENTLY %s -- a Phi group is one cooperative instruction, so its members must "
+            "DIFFERENTLY %s -- a fused group is one cooperative instruction, so its members must "
             "share a ring depth and an offset for one register to serve them all. Differing "
             "rotation needs separate pointers, which the swap/increment analyses cannot express "
             "as a single def."
@@ -443,7 +443,7 @@ def copy_unit(inst):
 
 
 def descriptor_unit(prog, members):
-    """The DESCRIPTOR a copy movement issues on: the Phi group it belongs to, not the members it
+    """The DESCRIPTOR a copy movement issues on: the fused group it belongs to, not the members it
  happens to carry.  An asymmetric split gives region 0 the whole group and region 1 only the split
  member, and every pointer fact -- the region walk, the buffer swap -- belongs to the ONE physical
  descriptor both of them use."""

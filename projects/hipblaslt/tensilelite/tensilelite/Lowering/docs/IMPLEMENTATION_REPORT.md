@@ -10455,7 +10455,7 @@ schedule object can see. A caller with no target facts gets an empty quantum and
 one-tile-per-instruction form. **That includes every unit test** — but NOT the
 `OutputLoopIR` dump, which builds no program at all: `Run.py:255` hands `gir_text` the writer's own
 cached Program (`loopModelGirProgramCached()`), whose θ was built with `_loopModelTarget`'s
-`ReadQuantum` map. So in practice `<spans …>` appears whenever the caller's target resolves a fold —
+`ReadCoverage` map. So in practice `<spans …>` appears whenever the caller's target resolves a fold —
 which the writer does, and therefore the dump does too. Concretely, feeding a two-tile scale load in by hand produces:
 
 ```
@@ -10467,9 +10467,9 @@ which the writer does, and therefore the dump does too. Concretely, feeding a tw
 
 and the same kernel without the map produces neither line. **That is a real gap in the shipping
 debug artifact**: the configuration where the span matters most is the one the dump cannot show,
-because the dump does not have the writer's resolved fold. Threading the writer's `ReadQuantum` into
+because the dump does not have the writer's resolved fold. Threading the writer's `ReadCoverage` into
 `gir_text`'s program build — or, better, having the writer hand `gir_text` the *same* program it
-emitted from, quantum included — would close it. It is listed again in §14.16.
+emitted from, coverage included — would close it. It is listed again in §14.16.
 
 #### 14.9 The instruction lines
 
@@ -11021,10 +11021,10 @@ one.
    moves 8 render identically. This is the most likely candidate for the *next* "two configurations
    produce the same dump" surprise, and it is a two-token addition to `_ref_str`.
 2. **`Ref.covers` is present in the code but effectively absent from the shipping artifact.** As §14.8
-   documents, the movement quantum is supplied from outside layer 1, and the `OutputLoopIR` path
+   documents, the movement coverage is supplied from outside layer 1, and the `OutputLoopIR` path
    builds its program without the writer's resolved fold — so `<spans …>` and the absorbed-axes header
-   appear only when a caller passes a `ReadQuantum` map in by hand. The *emitted* kernel does use a
-   quantum; the *dumped* one does not. Until that is threaded through, a wide read and a narrow read
+   appear only when a caller passes a `ReadCoverage` map in by hand. The *emitted* kernel does use a
+   coverage; the *dumped* one does not. Until that is threaded through, a wide read and a narrow read
    look the same in any real dump. This is the most consequential gap on the list.
 3. **`meta['read_quantum']` itself.** Even where the quantum exists, only the derived `quantum_axes`
    summary is printed; the `QuantumMap` that decides *which* tile rides which instruction and into
@@ -11143,9 +11143,9 @@ or a generator handed to `"\n".join` would help marginally. It is not a real cas
    protection against the *next* node type.
 3. **Print `Ref.size_regs`/`size_bytes`** in `_ref_str`, guarded on non-zero. Two configurations that
    move different amounts of data currently render identically.
-4. **Thread the writer's `ReadQuantum` into the `OutputLoopIR` program**, so `<spans …>` appears in
+4. **Thread the writer's `ReadCoverage` into the `OutputLoopIR` program**, so `<spans …>` appears in
    the artifact people actually read. Better still: have `KernelWriter` hand `gir_text` the identical
-   `Program` it emitted from, quantum and all — which is already the *stated* contract of
+   `Program` it emitted from, coverage and all — which is already the *stated* contract of
    `gir_text` ("takes the Program, never a kernel") and is only half-true today because the program
    the writer caches is built from a quantum-free parameter path on some entries.
 5. **Make the three `gen` spellings consistent** — put the `#` on the phi and xfer lines (`:334`,

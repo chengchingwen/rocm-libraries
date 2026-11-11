@@ -306,10 +306,14 @@ def tdmPairedSwapMask(ks, tc):
     mask, unfused they are two sets and need two -- one mask for both would swap the second
     set's descriptor by the first's stride. The leading owner keeps the unsuffixed name, so a
     fused kernel is unchanged.
+
+    The name comes from the SET's owner, not from `tc`: a scale riding a data tensor's set
+    shares that set's one descriptor, so it must name that set's one mask.
     """
-    base = "PairedTDMScaleSwap" if tc.startswith("MXS") else "PairedTDMSwap"
-    owners = tdmPairedSwapOwners(ks, tc.startswith("MXS"))
     owner = tdmSetOwner(ks, tc)
+    scales = owner.startswith("MXS")
+    base = "PairedTDMScaleSwap" if scales else "PairedTDMSwap"
+    owners = tdmPairedSwapOwners(ks, scales)
     return base if (not owners or owner == owners[0]) else base + owner
 
 

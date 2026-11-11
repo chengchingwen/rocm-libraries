@@ -160,7 +160,7 @@ class GirToRocisa:
                 # `tile` is the WITHIN-REGION index and `tile_flat` the register index; they differ
                 # only for a region-split operand, and passing one for both is the defect.
                 self._tag_act(out, phase, act)
-                _qd = cplan.decision(_i)
+                _merge = cplan.decision(_i)
                 out.add(w.emitLdsReadTile(self.kernel, self._tp[tc], self._ctxRd[tc],
                                           tileIdx=at["tile"], kIdx=at["k"],
                                           bufferIdx=at["reg_buf"],
@@ -170,10 +170,10 @@ class GirToRocisa:
                                           regBase=self._reg_base(tc, at.get("group"),
                                                                  at.get("reg_buf")),
                                           kFlat=at.get("k_flat", at["k"]),
-                                          quantum=_qd, gen=at.get("gen"),
+                                          merge=_merge, gen=at.get("gen"),
                                           girComment=self._actLine))
             elif kind == "swap":
-                # A read swap names an operand, a copy swap names the Phi movement -- see
+                # A read swap names an operand, a copy swap names the fused movement -- see
                 # `gir/refs.copy_unit` and the act table in `gir/emit_plan`.
                 who = at["operand"] if at["hop"] == "ds_load" else at["unit"]
                 self._tag_act(out, phase, act)
@@ -270,7 +270,7 @@ class GirToRocisa:
 
     @staticmethod
     def _who(unit):
-        """The act's subject for a comment: `A` for an operand, `A+B` for a fused Phi movement.
+        """The act's subject for a comment: `A` for an operand, `A+B` for a fused movement.
 
         A fused movement's tag must NAME both members -- the whole point of the tag is that a reader
         of the `.s` can tell which acts GIR emitted and what each covers, and "copy A" over an
@@ -297,7 +297,7 @@ class GirToRocisa:
             phase, inst_line(node) if node is not None else act.kind)))
 
     def _fused_tp(self, unit, tpByOperand, what):
-        """`(tP_even, tP_odd)` for a Phi-fused movement, after checking the scaffold can realize it.
+        """`(tP_even, tP_odd)` for a fused movement, after checking the scaffold can realize it.
 
         The scaffold's fused form is ONE aliased descriptor: `tdm{tcA}Group0` serves both operands,
         each wave's copy of those SGPRs addressing its own, and wave parity selecting which
@@ -359,7 +359,7 @@ class GirToRocisa:
 
     def _emit_gr_inc(self, out, unit, tpByOperand, chunks=1, to_chunk=None,
                      phase=None):
-        """Realize ONE global-read increment for a Phi movement, via `writer.tdmIncrementGir`
+        """Realize ONE global-read increment for a fused movement, via `writer.tdmIncrementGir`
         (s_add tdm+=inc, with the StaggerU WrapU cselect).  GIR OWNS the placement (a gr_increment
         Mark from the dataflow); the magnitude is L3's.
 

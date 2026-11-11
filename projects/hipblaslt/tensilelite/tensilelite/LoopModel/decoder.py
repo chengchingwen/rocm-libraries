@@ -668,25 +668,15 @@ class _Decoder:
         return Effect(tile)
 
     def _read_tiles(self, descriptor):
+        """The tiles ONE read of `descriptor` fills -- theta's merge, as the expression it is."""
         tile = self._tile(descriptor)
         movement = descriptor.trajectory.fragment_fill
-        factors = (
-            geometry.coverage_factors(
-                self.theta,
-                descriptor,
-                movement.coverage,
-            )
-            if movement is not None and movement.coverage is not None
-            else {}
-        )
-        choices = []
-        for axis, expression in zip(tile.operand.axes, tile.indices):
-            extent = max(1, int(factors.get(axis.name, 1) or 1))
-            base = expression - expression % extent
-            choices.append(tuple(base + offset for offset in range(extent)))
+        coverage = movement.coverage if movement is not None else None
         return tuple(
-            tile.operand[tuple(indices)]
-            for indices in itertools.product(*choices)
+            tile.operand[indices]
+            for indices in geometry.coverage_tile_group(
+                self.theta, descriptor, coverage, tile
+            )
         )
 
     def _movement(self, descriptor, movement):
@@ -1025,8 +1015,21 @@ class _Decoder:
         )
         return tuple(dict(values).items())
 
-    def _guard_read(self, node, guard_axes, values):
+    def _read_coverage_guard(self, descriptor):
+        """The leader condition the per-axis factors could not state, or None."""
+        movement = descriptor.trajectory.fragment_fill
+        coverage = movement.coverage if movement is not None else None
+        named = 1
+        for factor in geometry.coverage_factors(self.theta, descriptor, coverage).values():
+            named *= int(factor)
+        return geometry.coverage_leader_expr(
+            self.theta, descriptor, coverage, self.axis_by_name, named
+        )
+
+    def _guard_read(self, node, guard_axes, values, leader=None):
         body = (node,)
+        if leader is not None:
+            body = (Cond(leader == 0, body, ()),)
         for name, step in reversed(guard_axes):
             axis = self.axis_by_name[name]
             expression = axis % step if step > 1 else axis
@@ -1069,6 +1072,7 @@ class _Decoder:
         groups = self.operation_groups.get(operation._identity)
         advance, span, position, _replacements = self._read_retiming(operation)
         guard_axes = self._read_guard_axes(descriptor, depth)
+        leader = self._read_coverage_guard(descriptor)
         invariant = {name for name, step in guard_axes if step == 0}
         reload_cycle = self._reload_cycle(descriptor, groups)
         remainder = advance % reload_cycle if advance else 0
@@ -1098,8 +1102,8 @@ class _Decoder:
             return (
                 Cond(
                     nowrap,
-                    (self._guard_read(operation, guard_axes, {}),),
-                    (self._guard_read(operation, guard_axes, late_values),),
+                    (self._guard_read(operation, guard_axes, {}, leader),),
+                    (self._guard_read(operation, guard_axes, late_values, leader),),
                 ),
                 True,
             )
@@ -1110,7 +1114,7 @@ class _Decoder:
                 descriptor, groups, advance, invariant
             )
         return (
-            self._guard_read(operation, guard_axes, anchor),
+            self._guard_read(operation, guard_axes, anchor, leader),
             bool(advance),
         )
 
@@ -1128,6 +1132,7 @@ class _Decoder:
         if depth is None:
             return operation
         guard_axes = self._read_guard_axes(descriptor, depth)
+        leader = self._read_coverage_guard(descriptor)
         invariant = {name for name, step in guard_axes if step == 0}
         anchor = self._read_anchor(
             descriptor,
@@ -1135,7 +1140,7 @@ class _Decoder:
             advance,
             invariant,
         )
-        node = self._guard_read(operation, guard_axes, anchor)
+        node = self._guard_read(operation, guard_axes, anchor, leader)
         return Cond(
             position + advance < span,
             (node,),
@@ -1364,6 +1369,18 @@ class _Decoder:
                     )
                     for name in axis_names
                 )
+                # The per-axis divisors only name the merge while a group lines up with one
+                # axis; the expression answers whatever digits the nest is cut into.
+                merged = geometry.coverage_carrier_of(
+                    self.theta, descriptor, hop_coverage, coordinate
+                )
+                if merged is not None:
+                    carrier = tuple(
+                        (name, value) for name, value in carrier
+                        if name not in dict(
+                            geometry.coverage_candidate_axes(self.theta, descriptor)
+                        )
+                    ) + (("<merge>", merged),)
                 if carrier in seen_carriers:
                     continue
                 seen_carriers.add(carrier)

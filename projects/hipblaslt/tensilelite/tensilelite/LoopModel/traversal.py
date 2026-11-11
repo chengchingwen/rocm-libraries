@@ -79,7 +79,7 @@ def broadcast_axes(theta, operand) -> set:
     return set(theta.geometry(operand).broadcast)
 
 
-def _coverage_candidate_axes(theta, operand):
+def coverage_candidate_axes(theta, operand):
     bcast = broadcast_axes(theta, operand)
     summation = {axis.name for axis in summation_axes(theta)}
     return [
@@ -108,7 +108,7 @@ def derive_transfer_coverage(movement):
 def coverage_factors(theta, operand, coverage) -> dict:
     if coverage is None:
         return {}
-    axes = _coverage_candidate_axes(theta, operand)
+    axes = coverage_candidate_axes(theta, operand)
     stride, total = {}, 1
     for name, extents in reversed(axes):
         stride[name] = total
@@ -131,9 +131,81 @@ def coverage_factors(theta, operand, coverage) -> dict:
     return out
 
 
+def coverage_tile_group(theta, operand, coverage, tile) -> tuple:
+    """The index tuples of the tiles ONE instruction of a per-lane hop fills.
+
+    The merge groups tiles by CARRIER, an expression on the flat tile index, so it answers
+    whatever digits the nest is cut into; per axis it answers only while a group lines up
+    with one.
+    """
+    axes = coverage_candidate_axes(theta, operand)
+    positions = {axis.name: index for index, axis in enumerate(tile.operand.axes)}
+    if coverage is None or not axes or any(name not in positions for name, _e in axes):
+        return (tuple(tile.indices),)
+    stride, total = {}, 1
+    for name, extent in reversed(axes):
+        stride[name] = total
+        total *= extent
+    merged = len(coverage.group(0, total))
+    if merged <= 1:
+        return (tuple(tile.indices),)
+    flat = None
+    for name, _extent in axes:
+        term = stride[name] * tile.indices[positions[name]]
+        flat = term if flat is None else flat + term
+    base = flat - flat % merged
+    group = []
+    for offset in range(merged):
+        member = base + offset
+        indices = list(tile.indices)
+        for name, extent in axes:
+            indices[positions[name]] = (member // stride[name]) % extent
+        group.append(tuple(indices))
+    return tuple(group)
+
+
+def coverage_leader_expr(theta, operand, coverage, axis_by_name, named=1):
+    """`flat % merged` -- zero exactly at the tile that ISSUES its carrier group's instruction.
+
+    `named` is how much of the merge the per-axis factors already state; when they state all of
+    it their own `axis % factor` guards are the same condition and this returns None.
+    """
+    axes = coverage_candidate_axes(theta, operand)
+    if coverage is None or not axes or any(name not in axis_by_name for name, _e in axes):
+        return None
+    stride, total = {}, 1
+    for name, extent in reversed(axes):
+        stride[name] = total
+        total *= extent
+    merged = len(coverage.group(0, total))
+    if merged <= 1 or int(named) >= merged:
+        return None
+    flat = None
+    for name, _extent in axes:
+        term = stride[name] * axis_by_name[name]
+        flat = term if flat is None else flat + term
+    return flat % merged
+
+
+def coverage_carrier_of(theta, operand, coverage, coordinate):
+    """The carrier group of `coordinate`, or None when theta supplied no merge.
+
+    `coverage_leader_expr`'s expression, evaluated.
+    """
+    axes = coverage_candidate_axes(theta, operand)
+    if coverage is None or not axes:
+        return None
+    stride, total = {}, 1
+    for name, extent in reversed(axes):
+        stride[name] = total
+        total *= extent
+    flat = sum(stride[name] * int(coordinate.get(name, 0)) for name, _e in axes)
+    return coverage.carrier_of(flat % max(1, total))
+
+
 def coverage_axes(theta, operand, coverage) -> set:
     """The intra-iteration axes ONE instruction of a per-lane hop spans whole."""
-    extents = dict(_coverage_candidate_axes(theta, operand))
+    extents = dict(coverage_candidate_axes(theta, operand))
     return {name for name, factor in coverage_factors(theta, operand, coverage).items()
             if factor >= extents.get(name, 0)}
 
@@ -150,7 +222,7 @@ def transfer_broadcast(theta, operand, hop) -> set:
 def transfer_coverage(theta, operand, hop) -> dict:
     if hop is None or getattr(hop, "is_bulk", False):
         return {}
-    extents = dict(_coverage_candidate_axes(theta, operand))
+    extents = dict(coverage_candidate_axes(theta, operand))
     return {name: factor
             for name, factor in coverage_factors(theta, operand, hop.coverage).items()
             if 1 < factor < extents.get(name, 0)}
@@ -1310,13 +1382,18 @@ class _RingWalk:
     ring: tuple
     buffers: int
 
-    def register_of(self, coord):
-        """Which register this coordinate lives in: its fan position plus its ring slot."""
+    def register_of(self, coord, trip=0):
+        """Which register this coordinate lives in: its fan position plus its ring slot.
+
+        `trip` turns the ring by whole trips, which is what the COPIED steady body does when the
+        ring does not divide the walk; a dividing ring turns by zero and is unchanged.
+        """
         slot, place = 0, 1
         for name, extent in reversed(self.ring):
             slot += coord.get(name, 0) * place
             place *= extent
-        return (tuple(coord.get(name, 0) for name in self.fan_axes), slot % max(1, self.buffers))
+        return (tuple(coord.get(name, 0) for name in self.fan_axes),
+                (slot + trip * place) % max(1, self.buffers))
 
     def position(self, coord):
         return sum(self.varying_strides[name] * coord[name] for name in self.varying)
@@ -1380,7 +1457,7 @@ def _build_register_timeline(
         pinned = tuple(coord[name] for name in walk.pinned_axes)
         reload_position = walk.reload_position(coord)
         read = (
-            (walk.register_of(coord), reload_position, pinned)
+            (coord, reload_position, pinned)
             if group_index(theta, operand, coord) == group_number
             else None
         )
@@ -1395,7 +1472,7 @@ def _build_register_timeline(
                 reached = reload_position + distance
                 target = walk.advanced(coord, reached)
                 if group_index(theta, operand, target) == group_number:
-                    load = walk.register_of(target), reached, pinned
+                    load = target, reached, pinned
         static_steps.append((index, read, load))
 
     events = {}
@@ -1404,19 +1481,21 @@ def _build_register_timeline(
         for index, read, load in static_steps:
             time = trip * per_trip + index
             if read is not None:
-                register, position, pinned = read
-                events.setdefault(register, []).append(Event(
+                coord, position, pinned = read
+                events.setdefault(walk.register_of(coord, trip), []).append(Event(
                     time,
                     False,
                     Generation(trip, position, pinned),
                 ))
             if load is not None:
-                register, reached, pinned = load
-                events.setdefault(register, []).append(Event(
+                target, reached, pinned = load
+                # The register the TARGET generation will read, so the phase is its trip.
+                reached_trip = trip + reached // reload_span
+                events.setdefault(walk.register_of(target, reached_trip), []).append(Event(
                     time,
                     True,
                     Generation(
-                        trip + reached // reload_span,
+                        reached_trip,
                         reached % reload_span,
                         pinned,
                     ),
@@ -1525,6 +1604,12 @@ def reload_anchor(theta, operand, group, buffers, distance):
     return {None: at}
 
 
+def ring_turns(theta, operand, group, buffers) -> int:
+    """Trips before this one ring is back where it started -- `ring_trip_copies` per group."""
+    period = max(1, ring_positions(theta, operand, group, buffers))
+    return max(1, int(buffers) // gcd(int(buffers), period))
+
+
 def reload_positions(theta, operand, group, buffers, distance):
     """Where each reload must sit so it follows the last read of the value it overwrites.
 
@@ -1534,12 +1619,15 @@ def reload_positions(theta, operand, group, buffers, distance):
     if timeline is None:
         return {}
     steps, steps_per_trip = timeline.steps, timeline.steps_per_trip
+    # A ring that does not divide the walk closes after `ring_turns` trips, which is what the
+    # steady body is COPIED for; a dividing ring closes in one and keeps the old 2-trip horizon.
+    horizon = min(TRIPS_WALKED, ring_turns(theta, operand, group, buffers) + 1) * steps_per_trip
 
     after = {}
     for register, conflicts in _overwrites_live_register(timeline).items():
         for _load_time, still_read in conflicts:
             last_read = still_read[-1]
-            if last_read >= 2 * steps_per_trip:
+            if last_read >= horizon:
                 return None
             after[register] = dict(steps[last_read % steps_per_trip])
 
