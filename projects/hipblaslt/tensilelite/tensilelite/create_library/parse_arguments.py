@@ -210,9 +210,9 @@ def parseArguments(input: Optional[List[str]] = None) -> Dict[str, Any]:
         help="Apply edited GIR schedule YAML files from DIR to true-SIA0 kernels",
     )
     argParser.add_argument(
-        "--no-loopmodel-ir-verify",
+        "--loopmodel-ir-verify",
         dest="LoopModelIRVerify",
-        action="store_false",
+        action="store_true",
         default=None,   # unpassed leaves the globalParameters default alone
         help="Skip LoopIR/GIR verification for output-parity codegen sweeps",
     )

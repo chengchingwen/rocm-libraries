@@ -167,7 +167,7 @@ def test_invalid_code_object_version_exits(monkeypatch):
         _run(monkeypatch, ["--code-object-version", "9"])
 
 
-def test_no_loopmodel_ir_verify_only_speaks_when_passed(monkeypatch):
-    """Unpassed, the flag leaves the globalParameters default alone; passed, it turns it off."""
+def test_loopmodel_ir_verify_only_speaks_when_passed(monkeypatch):
+    """Unpassed, the flag leaves the globalParameters default alone; passed, it turns it on."""
     assert "LoopModelIRVerify" not in _run(monkeypatch)
-    assert _run(monkeypatch, ["--no-loopmodel-ir-verify"])["LoopModelIRVerify"] is False
+    assert _run(monkeypatch, ["--loopmodel-ir-verify"])["LoopModelIRVerify"] is True
