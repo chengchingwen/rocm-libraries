@@ -24178,7 +24178,7 @@ class KernelWriterAssembly(KernelWriter):
                                   waveOffsetSgprIdx, tmpPadSgprIdx))
       mod.add(comp.setLdsAddr(descSgprName(0), sgpr(waveOffsetSgprIdx)))
       if (kernel.get("LDSSegInterleaveOffsets") or {}).get("pairedBuffers"):
-        # Each descriptor set has one per-wave mask; scales own a separate set.
+        # Each descriptor set has one mask, written by whichever wave programs this member.
         swapMask = tdmPairedSwapMask(kernel, tc)
         mod.add(SAddU32(sgpr(swapMask), sgpr(waveOffsetSgprIdx),
                          kernel["LDSSegInterleaveOffsets"]["bufferStride" + tc], "Paired TDM buffer base"))

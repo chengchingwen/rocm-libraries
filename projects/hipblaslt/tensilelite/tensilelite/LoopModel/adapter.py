@@ -73,7 +73,7 @@ DEFAULTS = {
     "LDSBufferA": -1, "LDSBufferB": -1,
     "LDSBufferMXSA": -1, "LDSBufferMXSB": -1,
     "ReadVectorElems": {},
-    "ReadQuantum": {},
+    "ReadCoverage": {},
     "PerRegionCompletion": False,
 }
 
@@ -194,17 +194,17 @@ def _build_ord(fanM, fanN, kernel, substeps, splits):
 
 
 def _read_movements(kernel):
-    """The per-hop payload the target supplies: vector widths, the movement coverage, Phi."""
+    """The per-hop payload the target supplies: vector widths, coverage, merge and span."""
     # --- hops (per-hop delta = retime) ------------------------------------------------
     grvwA, grvwB = kernel["GlobalReadVectorWidthA"], kernel["GlobalReadVectorWidthB"]
     lrvw = kernel["LocalReadVectorWidth"]
 
     read_elements = dict(kernel.get("ReadVectorElems", {}) or {})
 
-    read_coverage = dict(kernel.get("ReadQuantum", {}) or {})
+    read_coverage = dict(kernel.get("ReadCoverage", {}) or {})
 
-    instances_per_instruction = dict(kernel.get("ReadPhi", {}) or {})
-    agent_group_sizes = dict(kernel.get("ReadRho", {}) or {})
+    instances_per_instruction = dict(kernel.get("ReadInstances", {}) or {})
+    agent_group_sizes = dict(kernel.get("ReadAgentGroup", {}) or {})
 
     return MovementInputs(grvwA, grvwB, lrvw, read_elements,
                           instances_per_instruction, read_coverage, agent_group_sizes)
@@ -369,7 +369,7 @@ def _fuse_view(hasMXA, hasMXB, kernel):
 
 
 def _build_fuse(hasMXA, hasMXB, kernel, operands):
-    """The Phi fusion pattern: which operands ride each movement, in issue order.
+    """The fusion pattern: which operands ride each movement, in issue order.
 
     A tuple with one member is a solo movement, which only a tensor ALREADY seated needs stating
     -- it is a later step of its set's walk.  A lone newcomer is simply unfused and carries none.
@@ -765,15 +765,15 @@ def _movement_params(kernel, target):
         "MXBlockB": int(kernel["ProblemType"].get("MXBlockB", 0) or 0),
         "LoopOrder": kernel["LoopOrder"],
         "ReadVectorElems": _read_vector_elems(kernel, target),
-        "ReadQuantum": _read_coverage(kernel, target),
+        "ReadCoverage": _read_coverage(kernel, target),
         # The MX half-wave fold is DERIVED from the kernel, not only supplied by a target: one
-        # ds_load carries blocks 2g and 2g+1 across the two half-waves (a Phi over a rho span).
-        "ReadPhi": dict({tc: f[0] for tc in ("MXSA", "MXSB")
+        # ds_load carries blocks 2g and 2g+1 across the two half-waves, over a sub-agent span.
+        "ReadInstances": dict({tc: f[0] for tc in ("MXSA", "MXSB")
                          for f in (_mxs_fold(kernel, tc),) if f[0] > 1},
-                        **((target or {}).get("ReadPhi", {}) or {})),
-        "ReadRho": dict({tc: f[1] for tc in ("MXSA", "MXSB")
+                        **((target or {}).get("ReadInstances", {}) or {})),
+        "ReadAgentGroup": dict({tc: f[1] for tc in ("MXSA", "MXSB")
                          for f in (_mxs_fold(kernel, tc),) if f[1] > 1},
-                        **((target or {}).get("ReadRho", {}) or {})),
+                        **((target or {}).get("ReadAgentGroup", {}) or {})),
     }
 
 
@@ -795,8 +795,8 @@ def kernel_to_params(kernel, target=None) -> dict:
 
 
 def _mxs_fold(kernel, tc):
-    """The MX scale read fold as `(phi, rho)` -- how many tiles one ds_read carries, and over how
-    many sub-agents.
+    """The MX scale read fold as `(merged, agents)` -- how many tiles one ds_read carries, and
+    over how many sub-agents.
 
     TWO folds compose.  CONTIGUOUS: one wide ds_read covers `VectorWidth{tc}` adjacent tiles, whose
     scales are contiguous in LDS (`tilePerRead` in `leaves.buildMxScaleReadContext`).  DISTRIBUTED:
@@ -804,16 +804,16 @@ def _mxs_fold(kernel, tc):
     """
     contiguous = max(1, int(kernel.get("VectorWidth%s" % tc, 1) or 1))
     distributed = _mxs_tile_span(kernel, tc)
-    phi = contiguous * distributed
-    return (phi, distributed if distributed > 1 else 0)
+    merged = contiguous * distributed
+    return (merged, distributed if distributed > 1 else 0)
 
 
 def _mxs_tile_span(kernel, tc) -> int:
     """The MX scale half-wave fold: `2` when one ds_load carries two scale blocks, else 1.
 
     theta's own form of `LocalRead.getMxsTileSpanInfo`.  One instruction holds block `2g` on the
-    lower half-wave and `2g+1` on the upper, so it is a DISTRIBUTED carrier group -- Phi over a
-    rho sub-agent span -- and modelling it here is what lets GIR carry one Move per instruction.
+    lower half-wave and `2g+1` on the upper, so it is a DISTRIBUTED carrier group -- merged tiles
+    over a sub-agent span -- and modelling it here lets GIR carry one Move per instruction.
     """
     tile01 = 0 if tc.endswith("A") else 1
     pt = kernel.get("ProblemType", {}) or {}
@@ -836,7 +836,7 @@ def _mxs_tile_span(kernel, tc) -> int:
 
 
 def _read_coverage(kernel, target) -> dict:
-    return dict((target or {}).get("ReadQuantum", {}) or {})
+    return dict((target or {}).get("ReadCoverage", {}) or {})
 
 
 def _read_vector_elems(kernel, target) -> dict:

@@ -69,11 +69,24 @@ def preloaded_tiles(theta, operand, prefetch_steps, depths=None, plans=None):
         return []
     coords = _all_varying_coords(theta, operand, varying)
     read = operand.trajectory.fragment_fill
-    factors = geometry.coverage_factors(theta, operand, getattr(read, "coverage", None)) \
-        if read is not None else {}
-    leaders = [coord for coord in coords
-               if all(int(coord.get(axis, 0)) % max(1, int(factor)) == 0
-                      for axis, factor in factors.items())]
+    coverage = getattr(read, "coverage", None) if read is not None else None
+    factors = geometry.coverage_factors(theta, operand, coverage)
+    # One coordinate per carrier GROUP: the per-axis factors name it only while it lines up
+    # with one axis, the carrier always does.
+    merged = {name for name, _extent in geometry.coverage_candidate_axes(theta, operand)}
+    leaders, seen = [], set()
+    for coord in coords:
+        if not all(int(coord.get(axis, 0)) % max(1, int(factor)) == 0
+                   for axis, factor in factors.items()):
+            continue
+        carrier = geometry.coverage_carrier_of(theta, operand, coverage, coord)
+        if carrier is not None:
+            key = (carrier,) + tuple(sorted(
+                (name, int(value)) for name, value in coord.items() if name not in merged))
+            if key in seen:
+                continue
+            seen.add(key)
+        leaders.append(coord)
     count = steps * geometry.group_prefetch_unit_positions(theta, operand)
     return leaders[:min(len(leaders), count)]
 

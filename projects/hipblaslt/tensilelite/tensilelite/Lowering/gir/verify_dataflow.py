@@ -280,7 +280,7 @@ def check_source_coverage(prog, phase="steady", acts=None) -> list:
     got = {}
     for act in acts:
         if act.kind in FILL_OPS:
-            # EXACTLY ONCE is per COORDINATE, not per act.  A Phi-folded read is one act
+            # EXACTLY ONCE is per COORDINATE, not per act.  A merged read is one act
             # delivering `q` source coordinates, so counting acts would report the `q-1`
             got.setdefault(act.at["tc"], []).extend(_read_fills(act.at))
     for op in sorted(want):

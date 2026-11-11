@@ -169,8 +169,8 @@ def test_folded_mxsb_refill_follows_its_last_broadcast_consumer(
     )
     target = {
         "ReadVectorElems": {"MXSA": 16, "MXSB": 16},
-        "ReadPhi": {"MXSA": 2, "MXSB": 2},
-        "ReadRho": {"MXSA": 0, "MXSB": 0},
+        "ReadInstances": {"MXSA": 2, "MXSB": 2},
+        "ReadAgentGroup": {"MXSA": 0, "MXSB": 0},
     }
     theta = adapter.params_to_theta(
         adapter.kernel_to_params(calculate_registers(k), target),
@@ -203,8 +203,8 @@ def _grouped_mxsb_theta():
     k = calculate_registers(k)
     target = {
         "ReadVectorElems": {"MXSA": 4, "MXSB": 16},
-        "ReadPhi": {"MXSA": 1, "MXSB": 4},
-        "ReadRho": {"MXSA": 0, "MXSB": 0},
+        "ReadInstances": {"MXSA": 1, "MXSB": 4},
+        "ReadAgentGroup": {"MXSA": 0, "MXSB": 0},
     }
     return adapter.params_to_theta(
         _kernel_to_params(k, target=target),

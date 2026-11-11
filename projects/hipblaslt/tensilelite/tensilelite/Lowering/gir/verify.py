@@ -20,7 +20,7 @@ from .analyses.region_increment import walk_violations
 _MARK_SCHEMA = {
     "phase_boundary": ("phase",),
     # A swap additionally names the pointer, but WHICH name depends on the hop: a read swap moves
-    # an operand's LocalReadAddr (`operand`), a copy swap moves a Phi movement's descriptor
+    # an operand's LocalReadAddr (`operand`), a copy swap moves a fused movement's descriptor
     "swap":           ("hop", "gen_from", "gen_to"),
     "gr_increment":   ("unit",),
     # A region_increment moves the TDM descriptor between STORAGE REGIONS of one split tile.
@@ -302,7 +302,7 @@ def _check_marks(prog):
                 raise RuntimeError(
                     f"G-MARK: Mark('swap', hop={inst.at.get('hop')!r}) in {blk.label} must name "
                     f"its pointer with '{key}' (a read swap names an operand, a copy swap names "
-                    f"the Phi movement's member tuple); got fields {sorted(have)}")
+                    f"the fused movement's member tuple); got fields {sorted(have)}")
 
 
 def verify_gir(prog, expect_steady_loops="one"):
@@ -388,7 +388,7 @@ def check_block_scope_covered(prog, am):
                 if scope != "block":
                     continue
                 # `dep` is a ledger Endpoint; `.op` is the operand name, or the group tuple when
-                # a Phi-fused movement names several operands at once.
+                # a fused movement names several operands at once.
                 op = getattr(dep, "op", dep)
                 for m in (op if isinstance(op, tuple) else (op,)):
                     claimed.setdefault(m, (name, i, kind))

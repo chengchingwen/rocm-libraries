@@ -572,7 +572,7 @@ class LeafEmitters:
                         girComment=None,
                         region: int = 0, regTileIdx: int = None, regUnitIdx: int = None,
                         regBase: int = None, kFlat: int = None,
-                        quantum=None, gen: int = None) -> Module:
+                        merge=None, gen: int = None) -> Module:
         """Emit the ds_read(s) for ONE operand M/N-tile `tileIdx` at K-substep `kIdx`.
  `memToken` -- the LDS memory-token id(s) this read CONSUMES, from GIR. Passed down
  verbatim; `None` leaves the scaffold's own derivation in place.
@@ -584,10 +584,10 @@ class LeafEmitters:
         self._checkRegBuffer(tc, bufferIdx, "ds_read dest")
         imod = Module("ldsread %s tile %u k %u buf %u" % (tc, tileIdx, kIdx, bufferIdx))
 
-        if quantum is not None:
-            if not quantum.emit:
+        if merge is not None:
+            if not merge.emit:
                 return imod
-            regSlot = quantum.reg_slot
+            regSlot = merge.reg_slot
         else:
             # MANY ACTS, ONE INSTRUCTION -- the group-leader rule.  When one ds_read covers
             # `tilePerRead` tiles (the MX scales of adjacent tiles are contiguous in LDS), the act
@@ -640,7 +640,7 @@ class LeafEmitters:
             # instruction-width groups and therefore scale by `wtRegStride`.
             if regUnitIdx is not None:
                 regSlot = regUnitIdx
-            scalar_unit = quantum is not None and tc.startswith("MXS") and regUnitIdx is not None
+            scalar_unit = merge is not None and tc.startswith("MXS") and regUnitIdx is not None
             # THE STEP MUST COVER THE READ.  One ds_read carries `tilePerRead` tiles' scales, so
             # stepping by a single tile's width overlaps the previous read and loses it.
             regOff = ((regSlot * ctx.unitRegStride * max(1, ctx.tilePerRead) if scalar_unit else

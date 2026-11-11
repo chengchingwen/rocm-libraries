@@ -66,15 +66,23 @@ def _plan_read(prog, inst, dst_reg, red, free, order, ext, actions):
         # AND THE ABSOLUTE REDUCTION INDEX, which `k` is not once a region carries part of it.
         k_flat = _project(coord, set(red), order, ext)
         reg_buf = dst_reg.slot if dst_reg.slot is not None else 0
+        # EVERY register dst of this ONE instruction: a group straddling two digits cannot be
+        # stated as `covers` on a single Ref, so the merge arrives as several.
+        dsts = [r for r in inst.dsts
+                if r.tile.space == "register" and r.tile.operand == operand]
         fills = tuple(
             (_project(cd, freeset - rmodes, order, ext),
              _project(cd, rmodes, order, ext) if rmodes else 0,
              _project(cd, freeset, order, ext),
              _project(cd, set(red) - rmodes, order, ext),
              _project(cd, set(red), order, ext))
+            for ref in (dsts or [dst_reg])
             for cd in ({ax: (int(v) if v is not None else 0) for ax, v in c}
-                       for c in covered_coords(dst_reg)))
-        unit_indexes = tuple(dst_reg.unit_indexes or (dst_reg.unit_index,))
+                       for c in covered_coords(ref)))
+        unit_indexes = tuple(
+            index
+            for ref in (dsts or [dst_reg])
+            for index in (ref.unit_indexes or (ref.unit_index,) * len(covered_coords(ref))))
         actions.append(EmitAction(inst.op or "ds_load", {
             "tc": operand, "tile": tile, "k": k, "k_flat": k_flat, "reg_buf": reg_buf,
             # `regions` is THIS OP-CLASS's count, not its movement's: under Phi the movement is keyed

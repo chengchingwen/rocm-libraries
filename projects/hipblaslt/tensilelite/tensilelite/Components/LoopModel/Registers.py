@@ -177,8 +177,8 @@ def calculate(kernel):
         if split_unit > 1 or vg > 1:
           va = plr + 1
         else:
-          read_phi = kernel.get("ReadPhi") or {}
-          folded = int(read_phi.get(side, 1) or 1) > 1
+          read_instances = kernel.get("ReadInstances") or {}
+          folded = int(read_instances.get(side, 1) or 1) > 1
           broadcast_role = "N" if side == "A" else "M"
           positions_by_name = {
               name: index for index, (name, _extent) in enumerate(walked)

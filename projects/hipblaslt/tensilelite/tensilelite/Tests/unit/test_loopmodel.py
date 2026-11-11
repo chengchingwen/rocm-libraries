@@ -850,7 +850,7 @@ def _quantum_violations(order, split):
     q = {"MXSA": _two_tile_fold(), "MXSB": _two_tile_fold()}
     prog = build_gir(adapter.params_to_theta(
         adapter.kernel_to_params(_mxf8_kernel(order, split),
-                                 target={"ReadQuantum": q})))
+                                 target={"ReadCoverage": q})))
     out = []
     for name in prog.blocks:                       # `blocks` is keyed BY NAME; iterating gives keys
         acts = plan_block(prog, name)
@@ -901,7 +901,7 @@ def test_absorbing_the_spanned_axis_removes_the_straddle_on_the_shipping_path():
     from tensilelite.LoopModel import adapter
     from tensilelite.Lowering.gir.emit_plan import plan_block
     target = {"ReadVectorElems": {"MXSA": 8, "MXSB": 8},
-              "ReadQuantum": {"MXSA": _two_tile_fold(), "MXSB": _two_tile_fold()}}
+              "ReadCoverage": {"MXSA": _two_tile_fold(), "MXSB": _two_tile_fold()}}
     for order in ("KMN", "KMKNMN", "KMNKMN", "KMNMNK"):
         for split in (1, 2):
             k = _mxf8_kernel(order, split)
@@ -963,7 +963,7 @@ def _rho_sweep_configs():
             continue
         p = dict(base)
         p.update(LoopOrder=o, TDMSplit=s, NumWaves=w,
-                 TDMSplitWaveRegions=wr, ReadPhi=ph, ReadRho=rh)
+                 TDMSplitWaveRegions=wr, ReadInstances=ph, ReadAgentGroup=rh)
         out.append((p, f"{o} split={s} waves={w} wr={wr} phi={ph} rho={rh}"))
     return out
 
@@ -988,7 +988,7 @@ def test_subwave_distribution_is_not_a_synchronization_scope():
     cfgs = _rho_sweep_configs()
     checked = 0
     for params, label in cfgs:
-        if not params.get("ReadRho"):
+        if not params.get("ReadAgentGroup"):
             continue
         try:
             th = adapter.params_to_theta(params)
@@ -1022,7 +1022,7 @@ def _expected_agent_facts(params):
         relative.update(("A", "MXSA"))
     if waveB < bMT:
         relative.update(("B", "MXSB"))
-    spans = {n: int(v or 0) for n, v in (params.get("ReadRho", {}) or {}).items() if int(v or 0) > 1}
+    spans = {n: int(v or 0) for n, v in (params.get("ReadAgentGroup", {}) or {}).items() if int(v or 0) > 1}
     return relative, spans
 
 
@@ -1066,7 +1066,7 @@ def test_agent_assignment_deduplicates_subwave_coverage_without_absorbing_split_
     th = adapter.params_to_theta({"MIWaveTile": [2, 2],
                                   "TDMSplit": [2, 2, 1, 1], "NumWaves": 4,
                                   "TDMSplitWaveRegions": [1, 1],
-                                  "ReadRho": {"A": 2, "MXSA": 2}})
+                                  "ReadAgentGroup": {"A": 2, "MXSA": 2}})
     axes = [r.axis for r in th.agent_assignment.axis_assignments if r.role == "read"]
     assert len(axes) == len(set(axes)), "axis assigned twice: %r" % (axes,)
     assert "Mo" not in axes and "No" not in axes, \
@@ -1121,7 +1121,7 @@ def test_read_assignment_queries_exclude_copy_entries():
 def test_subwave_assignment_and_wave_relative_regions_are_independent():
     th = adapter.params_to_theta({"MIWaveTile": [2, 2],
                                   "TDMSplit": [2, 2, 1, 1], "NumWaves": 4,
-                                  "TDMSplitWaveRegions": [1, 1], "ReadRho": {"A": 2}})
+                                  "TDMSplitWaveRegions": [1, 1], "ReadAgentGroup": {"A": 2}})
     a = th.op("A")
     read = a.trajectory.fragment_fill
     assert read.agent_group_size == \
@@ -2954,8 +2954,8 @@ def test_target_coverage_inplace_read_order_lowers_to_valid_gir(
         "MXBlockB": 32,
         "TDMFuse": 0,
         "ReadVectorElems": {"MXSA": 8, "MXSB": 8},
-        "ReadPhi": {"MXSA": 2, "MXSB": 2},
-        "ReadRho": {"MXSA": 0, "MXSB": 0},
+        "ReadInstances": {"MXSA": 2, "MXSB": 2},
+        "ReadAgentGroup": {"MXSA": 0, "MXSB": 0},
     }
     if split is not None:
         params.update({
@@ -2985,8 +2985,8 @@ def test_fused_mixed_coverage_drain_order_lowers_to_valid_gir():
         "TDMSplit": (2, 2, 1, 1),
         "TDMSplitWaveRegions": (2, 2),
         "ReadVectorElems": {"MXSA": 4, "MXSB": 4},
-        "ReadPhi": {"MXSA": 2, "MXSB": 2},
-        "ReadRho": {"MXSA": 2, "MXSB": 2},
+        "ReadInstances": {"MXSA": 2, "MXSB": 2},
+        "ReadAgentGroup": {"MXSA": 2, "MXSB": 2},
     }
     theta = adapter.params_to_theta(params)
     _decoded, actual = _lower_theta(theta)

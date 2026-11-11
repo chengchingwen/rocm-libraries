@@ -10852,11 +10852,13 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
     if (kernel.get("LDSSegInterleaveOffsets") or {}).get("pairedBuffers"):
       # One mask per live descriptor SET: fused A|B alias onto one set and share it, unfused
       # own a set each and need one apiece. Scales own their sets the same way.
-      for _owner in tdmPairedSwapOwners(kernel) or ["A"]:
-        self.defineSgpr(tdmPairedSwapMask(kernel, _owner), 1)
+      _owners = list(tdmPairedSwapOwners(kernel) or ["A"])
       if kernel["ProblemType"]["MXBlockA"] or kernel["ProblemType"]["MXBlockB"]:
-        for _owner in tdmPairedSwapOwners(kernel, True) or ["MXSA"]:
-          self.defineSgpr(tdmPairedSwapMask(kernel, _owner), 1)
+        _owners += tdmPairedSwapOwners(kernel, True) or ["MXSA"]
+      # A scale riding a data tensor's set names that set's owner, so the lists overlap;
+      # defining the name twice orphans the first SGPR and overflows the pool.
+      for _mask in dict.fromkeys(tdmPairedSwapMask(kernel, _owner) for _owner in _owners):
+        self.defineSgpr(_mask, 1)
 
     # PostLoopStoreInNll: persistent "this tile fuses the store" predicate, precomputed
     # per-tile before the main loop (see computePostLoopFusedStore). It ANDs every
