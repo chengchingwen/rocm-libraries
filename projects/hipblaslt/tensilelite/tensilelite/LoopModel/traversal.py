@@ -849,8 +849,20 @@ class MmaShape:
         return self.m_tiles * self.n_tiles * self.k_tiles
 
 
+def group_register_slots(theta, operand) -> int:
+    """PHYSICAL registers one ``(group, ring slot)`` occupies.
+
+    A sub-agent SHARES the register rather than getting one of its own: the MX half-wave
+    partner is block 2g+1 of the SAME VGPR, reached by the `matrix_*_scale:N` selector. It
+    buys read-order positions, which `group_register_positions` counts and this does not.
+    """
+    positions = group_register_positions(theta, operand)
+    agents = max(1, int(getattr(operand.fragment, "agent_group_size", 0) or 1))
+    return max(1, positions // agents)
+
+
 def group_register_positions(theta, operand) -> int:
-    """Physical register positions in one ``(group, ring slot)``: exactly one PU."""
+    """Read-order register positions in one ``(group, ring slot)``: exactly one PU."""
     hop = operand.trajectory.shared_read
     if hop is not None and hop.coverage is not None:
         ring = {name for name, _extent in ring_axes(
@@ -876,7 +888,7 @@ def operand_footprint_regs(theta, operand, depths) -> int:
     """Logical VGPR footprint if register groups are packed independently."""
     if operand.is_output:
         return max(1, free_tiles(theta, operand) * frag_regs(theta, operand))
-    positions = group_register_positions(theta, operand)
+    positions = group_register_slots(theta, operand)
     total = sum(group_ring_depth(theta, operand, group, depths) * positions
                 for group in operand.fragment.groups())
     return max(1, total) * frag_regs(theta, operand)
@@ -924,7 +936,7 @@ def register_layout(theta, depths) -> dict:
             continue
         offset, slots = 0, {}
         fragment_regs = frag_regs(theta, operand)
-        unit_regs = group_register_positions(theta, operand) * fragment_regs
+        unit_regs = group_register_slots(theta, operand) * fragment_regs
         for group_index, group in enumerate(operand.fragment.groups()):
             for slot in range(group_ring_depth(theta, operand, group, depths)):
                 slots[(group_index, slot)] = offset

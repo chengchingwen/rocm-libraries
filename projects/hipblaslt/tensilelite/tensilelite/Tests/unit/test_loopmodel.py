@@ -3567,8 +3567,10 @@ def test_mab3_distributed_mxsb_uses_covered_unit_and_reduction_ring():
         "ProblemType": {"Sparse": 0, "MXBlockA": 32, "MXBlockB": 32},
     }
 
+    # TileSpan folds the half-wave partner into the SAME register, so one ring slot is
+    # MIWaveTileB/VectorWidthMXSB/2 = 2 registers over 2 slots -- not 2 doubled by the agent.
     alloc = _valu_alloc(kernel, "MXSB", None)
-    assert (alloc.perBuffer, alloc.va, alloc.total) == (2, 4, 8)
+    assert (alloc.perBuffer, alloc.va, alloc.total) == (2, 2, 4)
 
 
 def _f8_split_register_kernel(va_b=3):
