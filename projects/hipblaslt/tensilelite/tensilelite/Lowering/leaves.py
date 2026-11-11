@@ -116,6 +116,13 @@ class LdsReadTileContext:
     segRowShape: int = 0
     segCompCols: int = 0
     segWriteStrideBytes: int = 0
+    # The 64K read windows this operand reserved a local-read address for, None = one per window.
+    addressWindows: tuple = None
+
+
+def _readAddressWindows(kernel, tc):
+    """The reserved 64K read windows for `tc`, as `_lraFanOut` allocated their registers."""
+    return (kernel.get("LDSSegInterleaveOffsets") or {}).get("readAddressWindows" + tc)
 
 
 def _abbrevToInstType(abbrev: str):
@@ -405,6 +412,7 @@ class LeafEmitters:
         tileSpanVW = int(span["vectorWidth"]) if span else 0
 
         return LdsReadTileContext(
+            addressWindows=_readAddressWindows(kernel, tc),
             tc=tc, tile01=tile01, LocalReadX=instruction.getInst(), blockWidth=blockWidth,
             bpeDS=tP["bpeDS"], LdsPad=kernel["LdsPad%s" % tc],
             ldsBlockSizePerPad=kernel["LdsBlockSizePerPad%s" % tc],
@@ -542,6 +550,7 @@ class LeafEmitters:
         return LdsReadTileContext(
             segRowShape=segRowShape, segCompCols=segCompCols,
             segWriteStrideBytes=segWriteStrideBytes,
+            addressWindows=_readAddressWindows(kernel, tc),
             tc=tc, tile01=tile01, LocalReadX=LocalReadX, blockWidth=blockWidth,
             bpeDS=tP["bpeDS"], LdsPad=LdsPad, ldsBlockSizePerPad=kernel["LdsBlockSizePerPad%s" % tc],
             padBytes=kernel["LdsPad%s" % tc], UnrollStride=UnrollStride,
@@ -632,8 +641,13 @@ class LeafEmitters:
         # loop is the same for bf16's two reads and fp8's four; `unrollElems` is a displacement
         for unrollElems, fragReg in ctx.fragments:
             raw = base + int(unrollElems * ctx.UnrollStride * ctx.bpeDS)
-            off_split, srcAddr = comp.cal_offset_srcAddr(ctx.maxLDSConstOffset, tc,
-                                                         _pad(raw) + regionOff)
+            ldsOff = _pad(raw) + regionOff
+            off_split, srcAddr = comp.cal_offset_srcAddr(ctx.maxLDSConstOffset, tc, ldsOff)
+            if ctx.addressWindows is not None:
+                # A reserved-window layout skips unreachable windows, so the register is that
+                # window's POSITION in the list -- the order `_lraFanOut` allocated them in.
+                srcAddr = vgpr("LocalReadAddr%s+%u"
+                               % (tc, ctx.addressWindows.index(ldsOff // ctx.maxLDSConstOffset)))
             ds = DSModifiers(na=1, offset=off_split)
             # THE REGISTER BASE IS THE GROUP'S, not the tile's, when a read covers several tiles.
             # MXS unit indices name scalar lanes; its write starts at that lane. Other reads index
