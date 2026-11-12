@@ -80,21 +80,28 @@ def _walk(prog, phase, regs, viol, acts=None, raise_wrong_source=False):
             fills = tuple(_read_fills(at))
             units = tuple(at.get("unit_indexes") or
                           (at.get("unit_index", at.get("tile_flat", at["tile"])),))
+            # A STRADDLING FOLD LANDS ONE INSTRUCTION'S MEMBERS IN DIFFERENT RING SLOTS, so the
+            # destination is `reg_bufs` per member; `reg_buf` is only the act's leading slot.
+            bufs = tuple(at.get("reg_bufs") or ())
             if len(units) == len(fills):
                 by_unit = {}
-                for unit, fill in zip(units, fills):
-                    by_unit.setdefault(unit, set()).add(fill)
-                writes = tuple((unit, frozenset(sources))
-                               for unit, sources in by_unit.items())
+                for index, (unit, fill) in enumerate(zip(units, fills)):
+                    buf = bufs[index] if index < len(bufs) else at["reg_buf"]
+                    by_unit.setdefault((buf, unit), set()).add(fill)
+                writes = tuple((where, frozenset(sources))
+                               for where, sources in by_unit.items())
             else:
-                writes = ((units[0], frozenset(fills)),)
-            for unit, sources in writes:
-                name = (at["tc"], at.get("group"), at["reg_buf"], unit)
+                writes = (((at["reg_buf"], units[0]), frozenset(fills)),)
+            for (buf, unit), sources in writes:
+                name = (at["tc"], at.get("group"), buf, unit)
                 prev = regs.slots.get(name)
                 unread = frozenset() if prev is None else prev[0] - prev[1]
                 if unread and (prev[0] != sources or at.get("advance")):
+                    # Same values back into the same unit is a REDUNDANT RELOAD, not a lost
+                    # value -- name it separately so it is not read as a wrong answer.
                     viol.append(
-                        "OVERWRITE-BEFORE-USE\n"
+                        ("REDUNDANT-RELOAD" if prev[0] == sources else "OVERWRITE-BEFORE-USE")
+                        + "\n"
                         "    refill: %s\n"
                         "    prior fill: %s\n"
                         "    register unit %s still has unconsumed value(s) %s and is refilled "

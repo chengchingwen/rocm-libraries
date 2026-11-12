@@ -40,6 +40,19 @@ def allocated_valu_offset(span, linear):
     return linear % int(span) if span and int(span) > 0 else linear
 
 
+def _slot_offset(index, shape):
+    """A merged read's register inside its OWN slot, from the index over the whole tile walk.
+
+    The slot names the carrier; only what is left of the walk inside that carrier may be added to
+    its base.  A slot that holds every carrier folds nothing, which is where `shape` is None.
+    """
+    if not shape:
+        return int(index)
+    units, unit_regs = max(1, int(shape[0])), max(1, int(shape[1]))
+    carrier, within = divmod(int(index), unit_regs)
+    return (carrier % units) * unit_regs + within
+
+
 def allocated_valu_symbol(tc, span, per_block, inner_unroll, linear):
     """Spell a physical layout address through its allocated ``Valu*_X*_I*`` ring."""
     physical = allocated_valu_offset(span, linear)
@@ -256,7 +269,8 @@ class LeafEmitters:
                      unitA: int = None, unitB: int = None,
                      unitMXA: int = None, unitMXB: int = None,
                      baseA: int = None, baseB: int = None,
-                     baseMXA: int = None, baseMXB: int = None) -> Module:
+                     baseMXA: int = None, baseMXB: int = None,
+                     slotMXA=None, slotMXB=None) -> Module:
         """Emit the SINGLE WMMA instruction for tile (idx0, idx1) at kiter substep `u`."""
         w = self.writer
         # register generation m = u % W, W = the GIR register ring width (reg_depth).  PLR0 has
@@ -322,7 +336,7 @@ class LeafEmitters:
             mA_idx, selA = w.mxsTileSpanScaleSel(kernel, tPA["MX"], idxA)
             self._checkRegBuffer(tPA["MX"]["tensorChar"], mMXA, "wmma scale source A")
             if baseMXA is not None:
-                offset = mA_idx if unitMXA is None else unitMXA
+                offset = _slot_offset(mA_idx, slotMXA) if unitMXA is None else unitMXA
                 mxaStr = vgpr(self._valuSymbol(
                     kernel, tPA["MX"]["tensorChar"],
                     baseMXA + offset * ctx.vgprPerInputMXSA), ctx.vgprPerInputMXSA)
@@ -334,7 +348,7 @@ class LeafEmitters:
             mB_idx, selB = w.mxsTileSpanScaleSel(kernel, tPB["MX"], idxB)
             self._checkRegBuffer(tPB["MX"]["tensorChar"], mMXB, "wmma scale source B")
             if baseMXB is not None:
-                offset = mB_idx if unitMXB is None else unitMXB
+                offset = _slot_offset(mB_idx, slotMXB) if unitMXB is None else unitMXB
                 mxbStr = vgpr(self._valuSymbol(
                     kernel, tPB["MX"]["tensorChar"],
                     baseMXB + offset * ctx.vgprPerInputMXSB), ctx.vgprPerInputMXSB)

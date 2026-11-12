@@ -154,6 +154,8 @@ class GirToRocisa:
                                            "MXSA", at.get("groupMXA"), at.get("bufMXA")),
                                        baseMXB=self._reg_base(
                                            "MXSB", at.get("groupMXB"), at.get("bufMXB")),
+                                       slotMXA=self._slot_shape("MXSA"),
+                                       slotMXB=self._slot_shape("MXSB"),
                                        girComment=self._actLine))
             elif kind in FILL_OPS:
                 tc = at["tc"]
@@ -267,6 +269,13 @@ class GirToRocisa:
         if operand not in self._regLayout or group is None or slot is None:
             return None
         return self._regLayout[operand]["slots"].get((int(group), int(slot)))
+
+    def _slot_shape(self, operand):
+        """`(carriers a slot holds, registers one carrier is)`, or None when a slot is the walk."""
+        entry = self._regLayout.get(operand) or {}
+        if "units" not in entry:
+            return None
+        return int(entry["units"]), int(entry["unit_regs"])
 
     @staticmethod
     def _who(unit):

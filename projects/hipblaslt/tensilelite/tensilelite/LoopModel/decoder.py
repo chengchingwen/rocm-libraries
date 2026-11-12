@@ -473,6 +473,18 @@ class DecodedSchedule:
     profile: ThetaTargetProfile
 
 
+
+
+
+def _coverage_anchor(guard_axes, anchor, advance):
+    """Where in its own coverage group a read fires: the leader, or the LAST member."""
+    if not advance:
+        return anchor
+    return {**{name: step - 1 for name, step in guard_axes
+               if step > 1 and name not in anchor},
+            **anchor}
+
+
 class _Decoder:
     def __init__(self, theta):
         self.theta = theta
@@ -1102,7 +1114,16 @@ class _Decoder:
             return (
                 Cond(
                     nowrap,
-                    (self._guard_read(operation, guard_axes, {}, leader),),
+                    (Cond(
+                        position + advance < span,
+                        # The SHORT arm collapses this to its THEN body, which is the warm-up
+                        # it needs: no earlier generation exists there, so the group's leader
+                        # must write before the first member is read.
+                        (self._guard_read(operation, guard_axes, {}, leader),),
+                        (self._guard_read(
+                            operation, guard_axes,
+                            _coverage_anchor(guard_axes, {}, advance), leader),),
+                    ),),
                     (self._guard_read(operation, guard_axes, late_values, leader),),
                 ),
                 True,
@@ -1113,8 +1134,18 @@ class _Decoder:
             anchor = self._read_anchor(
                 descriptor, groups, advance, invariant
             )
+        late = _coverage_anchor(guard_axes, anchor, advance)
+        if late == anchor:
+            return (
+                self._guard_read(operation, guard_axes, anchor, leader),
+                bool(advance),
+            )
         return (
-            self._guard_read(operation, guard_axes, anchor, leader),
+            Cond(
+                position + advance < span,
+                (self._guard_read(operation, guard_axes, anchor, leader),),
+                (self._guard_read(operation, guard_axes, late, leader),),
+            ),
             bool(advance),
         )
 
@@ -1915,14 +1946,46 @@ class _Decoder:
                     resident[key] = value
                 reads.append((index, tuple(definitions)))
 
-        if not any(
-            min(positions) < read_index < max(positions)
+        # A VALUE CARRIED INTO THE BLOCK is already live when the block starts, so no read here
+        # defines it and the WAR edge against its users is not found by comparing a read with
+        # the value it replaces.  Its users must still precede that key's first refill.
+        first_read, defined = {}, defaultdict(set)
+        for read_index, definitions in reads:
+            for key, value, _ordinal, _old_value in definitions:
+                first_read.setdefault(key, read_index)
+                defined[key].add(value)
+        carried = [
+            (user, first_read[key])
+            for key, values in users.items() if key in first_read
+            for value, positions in values.items() if value not in defined[key]
+            for user in positions if user > first_read[key]
+        ]
+
+        # A REFILL OVERWRITES THE WHOLE REGISTER, so what it may not land between is the first
+        # and last user of the KEY.  Asking per value lets a folded read -- one fill delivering
+        # several tiles -- slip between two of its own tiles, each of which brackets it on only
+        # one side.
+        span_of = {key: [min(flat), max(flat)]
+                   for key, values in users.items()
+                   for flat in [[position for positions in values.values()
+                                 for position in positions]]
+                   if flat}
+        if not carried and not any(
+            span[0] < read_index < span[1]
             for read_index, definitions in reads
             for key, _value, _ordinal, _old_value in definitions
-            for positions in users[key].values()
-            if positions
+            for span in [span_of.get(key)]
+            if span
         ):
             return None
+
+        for user, read_index in carried:
+            add_edge(user, read_index)
+
+        define_index = {}
+        for read_index, definitions in reads:
+            for key, value, _ordinal, _old_value in definitions:
+                define_index.setdefault((key, value), read_index)
 
         reads_by_key = defaultdict(list)
         for read_index, definitions in reads:
@@ -1930,6 +1993,14 @@ class _Decoder:
                 reads_by_key[key].append((read_index, value))
                 for user in users[key].get(value, ()):
                     add_edge(read_index, user)
+                # AND IT OVERWRITES THE WHOLE REGISTER, so every other value still held must be
+                # read out first -- unless a later read is the one that supplies it.
+                for other, positions in users[key].items():
+                    if other == value or define_index.get((key, other), read_index) > read_index:
+                        continue
+                    for user in positions:
+                        if user > read_index:
+                            add_edge(user, read_index)
                 if old_value is not None and old_value != value:
                     for user in users[key].get(old_value, ()):
                         add_edge(user, read_index)

@@ -242,8 +242,10 @@ def test_verifier_rejects_refill_before_all_unit_values(monkeypatch):
         lambda _self, operations: tuple(operations),
     )
     violations = check_plan(build_gir(_grouped_mxsb_theta()))
+    # Either name: the refill lands before the unit is read out.  Same values back is a
+    # REDUNDANT-RELOAD, different values is the lost-value OVERWRITE-BEFORE-USE.
     assert any(
-        "OVERWRITE-BEFORE-USE" in violation
+        ("OVERWRITE-BEFORE-USE" in violation or "REDUNDANT-RELOAD" in violation)
         and "unconsumed value(s)" in violation
         for violation in violations
     )
