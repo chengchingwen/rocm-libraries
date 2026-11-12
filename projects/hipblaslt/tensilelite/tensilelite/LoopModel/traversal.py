@@ -306,8 +306,176 @@ def original_prefetch_unit_modes(theta, operand):
 
 
 def prefetch_unit_modes(theta, operand):
-    """The per-region prefetch unit before register grouping."""
-    return list(theta.geometry(operand).prefetch_unit)
+    """The per-region prefetch unit before register grouping.
+
+    A MERGE THAT SPANS THE WHOLE FREE WALK makes it one register: there is nothing left for the
+    extra axis to cut, and cutting it anyway hands the ring a unit no read ever fills -- unless a
+    PARTNER AGENT steps the very axis the factor cut out, which costs no register of its own.
+    """
+    geometry = theta.geometry(operand)
+    unit = list(geometry.prefetch_unit)
+    original = list(geometry.original_prefetch)
+    if unit == original or read_merge(theta, operand) <= 1:
+        return unit
+    if carrier_total(theta, operand) > 1:
+        return unit
+    kept = {name for name, _extent in unit}
+    dropped = {name for name, _extent in original if name not in kept}
+    agent = getattr(operand.fragment, "agent_axis", None)
+    return unit if agent is not None and dropped == {agent} else original
+
+
+def read_merge(theta, operand) -> int:
+    """Tiles ONE merged read fills -- the carrier granule, 1 when nothing is merged."""
+    hop = operand.trajectory.shared_read
+    coverage = getattr(hop, "coverage", None) if hop is not None else None
+    if coverage is None:
+        return 1
+    total = product(extent for _name, extent in coverage_candidate_axes(theta, operand))
+    return max(1, len(coverage.group(0, max(1, total))))
+
+
+def carrier_of_tile(theta, operand, flat) -> int:
+    """The dense index of the read that fills `flat` -- `flat` itself when nothing is merged."""
+    hop = operand.trajectory.shared_read
+    coverage = getattr(hop, "coverage", None) if hop is not None else None
+    return int(flat) if coverage is None else int(coverage.carrier_of(int(flat)))
+
+
+def flat_tile_strides(theta, operand) -> tuple:
+    """`(stride per candidate axis, total tiles)` -- the index `coverage` is written on."""
+    stride, total = {}, 1
+    for name, extent in reversed(coverage_candidate_axes(theta, operand)):
+        stride[name] = total
+        total *= extent
+    return stride, total
+
+
+def flat_tile_index(theta, operand, at) -> int:
+    """The coordinate's position in the flat tile walk."""
+    stride, _total = flat_tile_strides(theta, operand)
+    return sum(value * int(dict(at).get(name, 0) or 0) for name, value in stride.items())
+
+
+def carrier_registers(theta, operand) -> int:
+    """Registers ONE carrier occupies -- its merged tiles, less the ones a partner agent holds."""
+    agents = max(1, int(getattr(operand.fragment, "agent_group_size", 0) or 1))
+    return max(1, read_merge(theta, operand) // agents)
+
+
+def unit_free_modes(theta, operand) -> list:
+    """The FREE part of this operand's prefetch unit.
+
+    Empty means the unit is a REDUCTION step: the whole free walk then sits inside one slot,
+    because the reads cover it, and the ring is left to count generations.
+    """
+    free = dict(coverage_candidate_axes(theta, operand))
+    return [(name, extent)
+            for name, extent in prefetch_unit_modes(theta, operand) if name in free]
+
+
+def carrier_slot_tiles(theta, operand) -> int:
+    """Free-walk tiles ONE ring slot holds.
+
+    A slot is one prefetch unit.  When that unit is a REDUCTION step the ring spends its depth on
+    generations and the whole free walk sits inside the slot; when it is a free axis the ring
+    spends its depth on the rest of that walk and the slot keeps only the unit's own free part.
+    """
+    unit = unit_free_modes(theta, operand)
+    if not unit:
+        return max(1, flat_tile_strides(theta, operand)[1])
+    names = {name for name, _extent in unit}
+    tiles = product(extent for _name, extent in unit)
+    if grouping_mode_name(theta, operand) in names:
+        tiles //= max(1, len(operand.fragment.groups()))
+    split = vgpr_group_axis(theta, operand)
+    if split is not None and split[0] in names:
+        tiles //= max(1, int(split[1]))
+    return max(1, tiles)
+
+
+def carrier_slot_capacity(theta, operand) -> int:
+    """Carriers the slot's OWN free tiles fall into -- the finest slot the prefetch unit states.
+
+    Ceiling because the last carrier may reach past them: a ragged fold is still one read and
+    still lands in one buffer.
+    """
+    return max(1, -(-carrier_slot_tiles(theta, operand) // read_merge(theta, operand)))
+
+
+def carrier_capacity(theta, operand) -> int:
+    """Carriers ONE ring slot holds.
+
+    A MERGED READ FILLS ONE BUFFER, so the slot boundary moves to the carrier it lands in.  The
+    finest slot the prefetch unit states is the one to use, but only while it fits the ring the
+    operand was GIVEN: `_set_register_depths` picks between that and the whole walk, and stores
+    the choice, because a slot that moves the depth has changed the rotation and not the layout.
+    """
+    chosen = int(getattr(operand.fragment, "carrier_slot", 0) or 0)
+    return chosen if chosen > 0 else carrier_slot_capacity(theta, operand)
+
+
+def carrier_total(theta, operand) -> int:
+    """Carriers the whole free walk makes."""
+    _stride, total = flat_tile_strides(theta, operand)
+    return max(1, -(-total // read_merge(theta, operand)))
+
+
+def carrier_walk_slots(theta, operand) -> int:
+    """Ring slots ONE pass over the free walk fills -- its carriers over a slot's capacity."""
+    return max(1, -(-carrier_total(theta, operand) // carrier_capacity(theta, operand)))
+
+
+def carrier_ring(theta, operand) -> bool:
+    """Whether the ring counts CARRIERS rather than tiles.
+
+    Only once the merge leaves more than one of them: a merge that spans the whole free walk
+    makes it a single register, and then the ring is the reduction, exactly as for an unmerged
+    operand whose unit is the whole walk.
+    """
+    return read_merge(theta, operand) > 1 and carrier_total(theta, operand) > 1
+
+
+def carrier_reduction_span(theta, operand) -> int:
+    """Unit indexes ONE carrier spans: the reduction digits its slot still carries."""
+    digits, _grouping, group_extent = _rotation_block_digits(theta, operand)
+    reduction = set(summation_names(theta))
+    return _flatten_digits([d for d in digits if d[0] in reduction], {}, group_extent)[1]
+
+
+def carrier_slot_occupancy(theta, operand, buffers) -> list:
+    """Carriers each ring slot must hold.
+
+    Non-uniform while the ring starts every trip on the same phase; where it CARRIES, a slot
+    takes its neighbour's turn and every one of them must stand the ceiling.
+    """
+    width = carrier_capacity(theta, operand)
+    total = carrier_total(theta, operand)
+    walk = carrier_walk_slots(theta, operand)
+    slots = max(1, int(buffers))
+    # Each pass over the walk repeats the same occupancy, so the position WITHIN it decides.
+    held = [max(0, min(width, total - (index % walk) * width)) for index in range(slots)]
+    if any(value != width for value in held) and vgpr_ring_carries(
+            theta, operand, operand.fragment.groups()[0], slots):
+        return [width] * slots
+    return [value or width for value in held]
+
+
+def carrier_walk_step(theta, operand) -> int:
+    """Walk positions ONE carrier advances.
+
+    A merge spanning a whole axis takes that axis out of the walk, so a position is already a
+    carrier; a merge that spans none leaves every tile in it and one carrier is `merge` of them.
+    """
+    merge = read_merge(theta, operand)
+    if merge <= 1:
+        return 1
+    extents = transfer_extents(theta, operand)
+    summation = {name for name, _extent in theta.geometry(operand).summation_modes}
+    span = product(max(1, int(extents.get(name, 1)))
+                   for name in varying_axes(theta, operand) if name not in summation)
+    tiles = max(1, flat_tile_strides(theta, operand)[1])
+    return max(1, merge // max(1, tiles // max(1, span)))
 
 
 def rotation_unit_modes(theta, operand):
@@ -412,15 +580,12 @@ def unit_tile_index(theta, operand, coord) -> int:
         return _flatten_digits(digits, at, group_extent)[0]
 
     reduction = set(summation_names(theta))
-    free_value, free_total = _flatten_digits(
-        [d for d in digits if d[0] not in reduction], at, group_extent)
     reduction_value, reduction_total = _flatten_digits(
         [d for d in digits if d[0] in reduction], at, group_extent)
-
-    keys = [coverage.carrier_of(tile) for tile in range(max(1, free_total))]
-    order = _issue_order(keys)
-    free_index = order.index(keys[free_value])
-    return free_index * reduction_total + reduction_value
+    # THE SLOT BOUNDARY IS A CARRIER, so the unit is the carrier's offset inside its own slot,
+    # read off the FLAT index -- the only place a merge straddling the factor axis is stated.
+    carrier = carrier_of_tile(theta, operand, flat_tile_index(theta, operand, at))
+    return (carrier % carrier_capacity(theta, operand)) * reduction_total + reduction_value
 
 
 def original_prefetch_unit_tiles(theta, operand) -> int:
@@ -455,19 +620,33 @@ def group_prefetch_unit_tiles(theta, operand) -> int:
 def _covered_positions(theta, operand, modes, grouped=False) -> int:
     """Movement positions represented by physical ``modes`` after read coverage."""
     hop = operand.trajectory.shared_read
-    factors = (coverage_factors(theta, operand, getattr(hop, "coverage", None))
-               if hop is not None else {})
+    coverage = getattr(hop, "coverage", None) if hop is not None else None
     grouping = grouping_mode_name(theta, operand) if grouped else None
     groups = max(1, len(operand.fragment.groups()))
     vg_axis = vgpr_group_axis(theta, operand) if grouped else None
-    total = 1
+    spans, total = {}, 1
     for name, extent in modes:
         if grouping == name:
             extent //= groups
         if vg_axis is not None and name == vg_axis[0]:
             extent //= vg_axis[1]
-        total *= max(1, extent // max(1, int(factors.get(name, 1))))
-    return max(1, total)
+        spans[name] = max(1, extent)
+        total *= max(1, extent)
+    if coverage is None:
+        return max(1, total)
+    # The merge is an expression on the FLAT tile index, so count the carriers it makes over
+    # this span; a per-axis factor only answers while a group lines up with one axis.
+    stride, flat = {}, 1
+    for name, extent in reversed(coverage_candidate_axes(theta, operand)):
+        stride[name] = flat
+        flat *= extent
+    present = [(name, spans[name]) for name in stride if name in spans]
+    if not present:
+        return max(1, total)
+    carriers = {coverage.carrier_of(sum(stride[name] * value
+                                        for (name, _e), value in zip(present, combo)))
+                for combo in _iproduct(*[range(extent) for _n, extent in present])}
+    return max(1, len(carriers) * max(1, total // product(e for _n, e in present)))
 
 
 def register_unit_modes(theta, operand):
@@ -884,12 +1063,26 @@ def group_register_positions(theta, operand) -> int:
     return group_prefetch_unit_positions(theta, operand)
 
 
+def ring_slot_widths(theta, operand, group, depths) -> list:
+    """Register positions each ring slot of `group` holds, outermost slot first."""
+    depth = group_ring_depth(theta, operand, group, depths)
+    positions = group_register_slots(theta, operand)
+    if not carrier_ring(theta, operand):
+        return [positions] * depth
+    # The occupancy counts CARRIERS and a slot is measured in register positions.  One carrier
+    # is `span` unit indexes -- the reduction digits the slot still carries, which `unit_index`
+    # multiplies in -- and each of those steps the read's own width, as `leaves` addresses it.
+    span = carrier_reduction_span(theta, operand)
+    per = carrier_registers(theta, operand)
+    return [max(1, held * span * per)
+            for held in carrier_slot_occupancy(theta, operand, depth)]
+
+
 def operand_footprint_regs(theta, operand, depths) -> int:
     """Logical VGPR footprint if register groups are packed independently."""
     if operand.is_output:
         return max(1, free_tiles(theta, operand) * frag_regs(theta, operand))
-    positions = group_register_slots(theta, operand)
-    total = sum(group_ring_depth(theta, operand, group, depths) * positions
+    total = sum(sum(ring_slot_widths(theta, operand, group, depths))
                 for group in operand.fragment.groups())
     return max(1, total) * frag_regs(theta, operand)
 
@@ -936,12 +1129,19 @@ def register_layout(theta, depths) -> dict:
             continue
         offset, slots = 0, {}
         fragment_regs = frag_regs(theta, operand)
-        unit_regs = group_register_slots(theta, operand) * fragment_regs
         for group_index, group in enumerate(operand.fragment.groups()):
-            for slot in range(group_ring_depth(theta, operand, group, depths)):
+            # A ring whose slots hold UNEQUAL carrier counts -- the merge granule did not
+            # divide the unit -- pays for what each slot holds, not the widest one.
+            for slot, width in enumerate(ring_slot_widths(theta, operand, group, depths)):
                 slots[(group_index, slot)] = offset
-                offset += unit_regs
+                offset += width * fragment_regs
         layout[operand.name] = {"slots": slots, "total": offset}
+        if carrier_ring(theta, operand):
+            # THE SLOT'S OWN SHAPE.  A consumer that addresses off the whole tile walk counts the
+            # digits the SLOT already names twice; it needs the carriers a slot holds and the
+            # registers one carrier is to fold that walk back into the slot it lives in.
+            layout[operand.name]["units"] = carrier_capacity(theta, operand)
+            layout[operand.name]["unit_regs"] = carrier_registers(theta, operand)
     return layout
 
 
@@ -1105,7 +1305,11 @@ def ring_axes(theta, operand, group):
     """Outer modes converted to this operand's dense PU-ring offset."""
     geometry = theta.geometry(operand)
     hop = operand.trajectory.shared_read
-    if hop is not None and hop.coverage is not None:
+    if hop is not None and hop.coverage is not None and not (
+            unit_free_modes(theta, operand) and carrier_total(theta, operand) == 1):
+        # THE CARRIER SEPARATES THE WALK while there is more than one of it, so the ring is the
+        # reduction alone.  With a single carrier there is no such index, and what the unit does
+        # not keep is separated by the ring, exactly as for an unmerged operand.
         return list(geometry.summation_modes)
     # THE SAME UNIT THE REGISTER FILE INDEXES.  A region kept in the unit must not also be a
     # ring digit, or it moves the buffer AND the unit index and addresses itself twice.
@@ -1206,6 +1410,12 @@ def _ring_period(theta, operand, extra_axes=()) -> int:
     Every varying axis participates in the flattened position.  Region axes therefore advance
     the offset exactly like any other outer digit; neither VA nor the ring needs a region mode.
     """
+    if carrier_ring(theta, operand):
+        # A MERGED SLOT IS `generation * walk + carrier // capacity`, so one chunk traverses a
+        # walk per generation.  Counting its TILES instead collapses a merge that spans the
+        # whole free space to a single offset, and the ring reads as half its real length.
+        return max(1, carrier_walk_slots(theta, operand) * product(
+            max(1, extent) for _name, extent in theta.geometry(operand).summation_modes))
     ring_modes = ring_axes(theta, operand, operand.fragment.groups()[0])
     ring_names = dict(ring_modes)
     extras = {getattr(axis, "name", axis) for axis in (extra_axes or ())}
@@ -1226,7 +1436,13 @@ def _ring_period(theta, operand, extra_axes=()) -> int:
 
 
 def vgpr_ring_carries(theta, operand, group, buffers, extra_axes=()) -> bool:
-    """Whether one trip advances this VA ring to a different starting phase."""
+    """Whether one trip advances this VA ring to a different starting phase.
+
+    A merged slot names only within-trip coordinates -- the generation and the carrier, both of
+    which restart -- so its ring begins every trip on the same phase however many slots it has.
+    """
+    if carrier_ring(theta, operand):
+        return False
     return _ring_period(theta, operand, extra_axes) % max(1, int(buffers)) != 0
 
 
@@ -1275,6 +1491,28 @@ def _shifted_ring_slot(theta, operand, group, shift, strides, buffers, fold=None
     """The PU-sized ring slot the prefetched read writes, as an Expr."""
     extents = transfer_extents(theta, operand)
     position = _position(theta, position_terms(strides, fold), int(shift))
+
+    merge = read_merge(theta, operand)
+    if carrier_ring(theta, operand):
+        # A MERGED READ FILLS ONE BUFFER, so the slot is the CARRIER's and not the tile's: the
+        # boundary moves to whichever carrier the unit's last tile landed in.  Each digit is
+        # taken by its OWN walk stride -- a reduction axis sitting between two free ones leaves
+        # the free part no longer a contiguous span of the position.
+        def digit(name):
+            return (position // max(1, int(strides[name]))) % max(
+                1, int(extents.get(name, 1)))
+
+        tile_stride, _total = flat_tile_strides(theta, operand)
+        flat = Expr.constant(0)
+        for name, value in tile_stride.items():
+            if name in strides:
+                flat = flat + int(value) * digit(name)
+        generation = Expr.constant(0)
+        for name, _extent in theta.geometry(operand).summation_modes:
+            if name in strides:
+                generation = max(1, int(extents.get(name, 1))) * generation + digit(name)
+        return (generation * carrier_walk_slots(theta, operand)
+                + flat // merge // carrier_capacity(theta, operand)) % max(1, buffers)
 
     base_ring = dict(ring_axes(theta, operand, group))
     varying = {name for name, _extent in theta.geometry(operand).varying}
@@ -1351,7 +1589,10 @@ def chunks_crossed(theta, operand, prefetch_steps):
 def prefetch_distance_for(theta, operand, prefetch_steps, groups=None) -> int:
     if not prefetch_steps:
         return 0
-    return int(prefetch_steps) * group_prefetch_unit_positions(theta, operand)
+    # The unit is counted in CARRIERS and the distance is spent in WALK POSITIONS, which are
+    # the same thing only where nothing is merged.
+    return (int(prefetch_steps) * group_prefetch_unit_positions(theta, operand)
+            * carrier_walk_step(theta, operand))
 
 
 @dataclass(frozen=True, order=True)

@@ -210,11 +210,22 @@ def _read_movements(kernel):
                           instances_per_instruction, read_coverage, agent_group_sizes)
 
 
-def _build_agent_assignment(movements, nest):
+def _build_agent_assignment(movements, nest, kernel):
     """Build agent-axis assignments and adapter movement inputs."""
+
+    def _partner(side, inner, outer, inner_extent):
+        """The axis the HALF-WAVE PARTNER steps: the one at stride VectorWidthMXS in the walk.
+
+        At width 1 that is the inner axis itself; once the width is the whole inner extent the
+        partner is the axis outside it, and the inner axis stays entirely in the register file.
+        """
+        width = kernel.get("VectorWidthMXS" + side) or kernel.get("VectorWidth" + side) or 1
+        width = max(1, int(width))
+        return outer if width > 1 and width == int(inner_extent or 0) else inner
+
     agent_inputs = {
-        "A": "Mi", "MXSA": "Mi",
-        "B": "Ni", "MXSB": "Ni",
+        "A": "Mi", "MXSA": _partner("A", "Mi", "Mo", nest.mInner),
+        "B": "Ni", "MXSB": _partner("B", "Ni", "No", nest.nInner),
     }
     _by_mode = {}
 
@@ -246,6 +257,7 @@ def _build_agent_assignment(movements, nest):
         fragment.vector_elements = int(movements.read_elements.get(name, default) or default)
         fragment.instances_per_instruction = merged
         fragment.agent_group_size = agent_group_size
+        fragment.agent_axis = _free if agent_group_size else None
         fragment.coverage = movements.read_coverage.get(name)
         if fragment.coverage is None:
             fragment.coverage = geometry.derive_transfer_coverage(fragment)
@@ -328,12 +340,14 @@ def _build_operands(configure_read, elem_bytes, frags, movements, kernel, matrix
 
     hasMXA, hasMXB = kernel["MXBlockA"] > 0, kernel["MXBlockB"] > 0
 
-    def add_scale(name, free_mode, copy_width, broadcast, free_mi, block):
+    def add_scale(name, free_mode, copy_width, broadcast, free_mi, block, parent):
         fragment = frags.reg_fragment(broadcast, free_mode)
         fragment.fragment_elements = _mx_frag_elems(kernel, free_mi, block)
-        # A SCALE IS NEVER SPLIT, so it owns no region axis.  Borrowing the parent's gave it
-        # `region_axes` with `split=1`, and every region-count reader had to work around that.
-        shared = Shared(vector_elements=copy_width, ring_depth=frags[name].lds_buffers)
+        # A SCALE IS NEVER SPLIT, so it owns no STORAGE region axis -- but it rides its parent's
+        # walk, so it steps the same FACTOR axis and its prefetch unit is cut the same way.
+        shared = Shared(vector_elements=copy_width, ring_depth=frags[name].lds_buffers,
+                        regions=RegionLayout(
+                            factor_axes=(nest.factorAxes or {}).get(parent, ())))
         operands.append(Operand(
             name, free_mode,
             trajectory=Trajectory(Global(), shared,
@@ -342,10 +356,10 @@ def _build_operands(configure_read, elem_bytes, frags, movements, kernel, matrix
 
     if hasMXA:
         add_scale("MXSA", "Mi", movements.grvwA, nest.N_BCAST,
-                  matrix_instruction[0], kernel["MXBlockA"])
+                  matrix_instruction[0], kernel["MXBlockA"], "A")
     if hasMXB:
         add_scale("MXSB", "Ni", movements.grvwB, nest.M_BCAST,
-                  matrix_instruction[1], kernel["MXBlockB"])
+                  matrix_instruction[1], kernel["MXBlockB"], "B")
 
     return hasMXA, hasMXB, operands
 
@@ -612,10 +626,35 @@ def _set_register_depths(theta, kernel):
         value("PrefetchLocalRead", side)
         clr = value("ClusterLocalRead", side)
         vg = value("VgprGroup", side)
-        depth = value("VgprAlloc", side)
-        if (clr and not bool(kernel.get("VgprAllocExplicit" + side, False))) \
-                or int(getattr(operand.fragment, "agent_group_size", 0) or 0) > 0:
-            depth = min(depth, geometry._ring_period(theta, operand))
+        alloc = value("VgprAlloc", side)
+        clamped = (clr and not bool(kernel.get("VgprAllocExplicit" + side, False))) \
+            or int(getattr(operand.fragment, "agent_group_size", 0) or 0) > 0
+
+        def _depth(capacity):
+            """The ring this operand ends up with if a slot holds `capacity` carriers."""
+            operand.fragment.carrier_slot = int(capacity)
+            value_ = min(alloc, geometry._ring_period(theta, operand)) if clamped else alloc
+            # A CARRIER RING TURNS `walk` SLOTS PER GENERATION.  A depth that is not a whole
+            # number of turns starts each generation on a shifted phase, and two live
+            # coordinates land on one slot -- a ring that cannot be addressed, not a short one.
+            turn = geometry.carrier_walk_slots(theta, operand)
+            if turn > 1 and value_ % turn:
+                value_ = max(turn, (value_ // turn) * turn)
+            return value_
+
+        if geometry.carrier_ring(theta, operand):
+            # THE SLOT MAY NOT LENGTHEN THE RING.  A finer slot is a layout choice; once it needs
+            # more buffers than the whole walk did it has changed the rotation, so fall back to
+            # the whole walk in one slot.  Needing FEWER is the turn above making it addressable.
+            fine = geometry.carrier_slot_capacity(theta, operand)
+            whole = geometry.carrier_total(theta, operand)
+            fine_depth, whole_depth = _depth(fine), _depth(whole)
+            capacity, depth = ((fine, fine_depth) if fine_depth <= whole_depth
+                               else (whole, whole_depth))
+            operand.fragment.carrier_slot = int(capacity)
+        else:
+            operand.fragment.carrier_slot = 0
+            depth = min(alloc, geometry._ring_period(theta, operand)) if clamped else alloc
         operand.fragment.vgpr_group = vg
         unit = geometry.prefetch_unit_tiles(theta, operand)
         if vg > 1 and unit % vg:
@@ -662,7 +701,7 @@ def params_to_theta(p: dict, *, validate_register_depths=True) -> Theta:
     splits = _read_splits(kernel)
     nest = _build_ord(fanM, fanN, kernel, substeps, splits)
     movements = _read_movements(kernel)
-    configure_read, agent_inputs, assignment = _build_agent_assignment(movements, nest)
+    configure_read, agent_inputs, assignment = _build_agent_assignment(movements, nest, kernel)
     frags = _build_fragments(kernel, matrix_instruction, nest, splits)
     hasMXA, hasMXB, operands = _build_operands(
         configure_read, elem_bytes, frags, movements, kernel, matrix_instruction, nest, splits)
