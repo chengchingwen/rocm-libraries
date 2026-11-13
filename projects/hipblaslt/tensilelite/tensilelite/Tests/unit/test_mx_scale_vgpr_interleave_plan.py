@@ -15,9 +15,14 @@ from tensilelite.KernelWriter import KernelWriter
 pytestmark = pytest.mark.unit
 
 
-def _writer(numVgprBuffer=2, lrvwTile=1, valuPerBlock=(4, 4)):
+def _writer(numVgprBuffer=2, lrvwTile=1, valuPerBlock=(4, 4), bufferMXSA=0, bufferMXSB=0):
   states = SimpleNamespace(
     numVgprBuffer=numVgprBuffer,
+    # 0 means allocation has not run, so the per-operand depth falls back to the shared count.
+    numVgprBufferA=0,
+    numVgprBufferB=0,
+    numVgprBufferMXSA=bufferMXSA,
+    numVgprBufferMXSB=bufferMXSB,
     archCaps={"VgprBank": True},
     lrvwTileMXSA=lrvwTile,
     lrvwTileMXSB=lrvwTile,
