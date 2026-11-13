@@ -1088,8 +1088,13 @@ class _Decoder:
         invariant = {name for name, step in guard_axes if step == 0}
         reload_cycle = self._reload_cycle(descriptor, groups)
         remainder = advance % reload_cycle if advance else 0
+        # Only the INNERMOST broadcast axis may defer: deferring across an outer one moves the
+        # read past the consumers of every inner iteration, so the refill lands after the use it
+        # feeds whenever the read runs less than a full ring ahead.
+        innermost = next((name for name, _step in reversed(guard_axes) if name in invariant), None)
         late_values = {
-            name: max(0, int(self.axis_by_name[name].extent.constant_value) - 1)
+            name: (max(0, int(self.axis_by_name[name].extent.constant_value) - 1)
+                   if name == innermost else 0)
             for name in invariant
         }
         if remainder and invariant:
