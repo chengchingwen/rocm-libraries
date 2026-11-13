@@ -7881,7 +7881,8 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
                                # rocisa native tree -> logical IR -> ToStinkyAsmPass.
                                # import rocisa stays the native module; only this
                                # conversion target changes.
-                               "LowerViaLogicalIR": bool(globalParameters.get("StinkyTofuLowerViaLogicalIR", True)),
+                               # TODO: fix gir support.
+                               "LowerViaLogicalIR": bool(globalParameters.get("StinkyTofuLowerViaLogicalIR", True)) if not bool(kernel.get("UseLoopModel", False)) else False,
                                # gfx1250 v0/v1 share ISA (12,5,0); this build-wide name (empty unless a
                                # colliding stepping is targeted) tells StinkyTofu which cost table to use.
                                "ArchName": str(globalParameters.get("StinkyTofuArchName") or ""),
