@@ -6867,7 +6867,9 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
     """(bi, iui) -> offset of vgprValuMXS<tc>_X<bi>_I<iui> in the default layout, mirroring
     the RegSet loops of macroAndSet (aliased buffers share an offset)."""
     side = self.states.mxsa if tc == "A" else self.states.mxsb
-    numBi = self.states.numVgprBuffer
+    # The ring depth is per operand under UseLoopModel, and MXSA and MXSB need not share one:
+    # the shared scaffold count is only the fallback macroAndSet's valuBufferCount also takes.
+    numBi = operandNumVgprBuffer(self, "MXS%s" % tc)
     resetPerBuffer = getattr(self.states, "lrvwTileMXS%s" % tc) > 1 and not kernel["UnrollMajorLDS%s" % tc]
     blocks, ri = {}, 0
     for bi in range(numBi):
@@ -6919,17 +6921,23 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       while parent.setdefault(x, x) != x:
         x = parent[x]
       return x
-    for key in sorted(blocks["A"]):
-      parent[find(("A", blocks["A"][key]))] = find(("B", blocks["B"][key]))
+    # MXSA and MXSB need not have the same ring depth, so a block of the deeper operand pairs
+    # with nothing; it still has to reach a group, or its symbol is never emitted.
+    allKeys = sorted(set(blocks["A"]) | set(blocks["B"]))
+    for key in allKeys:
+      roots = [find((tc, blocks[tc][key])) for tc in ("A", "B") if key in blocks[tc]]
+      for root in roots[1:]:
+        parent[root] = roots[0]
     groups, groupOf = [], {}
-    for key in sorted(blocks["A"]):
-      root = find(("A", blocks["A"][key]))
+    for key in allKeys:
+      anchor = "A" if key in blocks["A"] else "B"
+      root = find((anchor, blocks[anchor][key]))
       if root not in groupOf:
         groupOf[root] = len(groups)
         groups.append({"A": [], "B": []})
       grp = groups[groupOf[root]]
       for tc in ("A", "B"):
-        if blocks[tc][key] not in grp[tc]:
+        if key in blocks[tc] and blocks[tc][key] not in grp[tc]:
           grp[tc].append(blocks[tc][key])
 
     # The B-slot scale of the WMMA (MXSA when SourceSwap swaps the sources) is also kept out
