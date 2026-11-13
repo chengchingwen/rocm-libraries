@@ -131,8 +131,13 @@ TEST(GirFrameAnalysisTest, TensorRawMarkerMovesBeforeOneWmmaQueue) {
     copy->addModifier<GirActionData>(
         GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
     AsmIRBuilder builder(*block, GfxArchID::Gfx1250);
+    // The lead is the hardware queue depth, so the case needs one more WMMA than that: the
+    // marker then lands on wmmas[1], a whole queue ahead of the read and not at the top.
+    const int lead =
+        getMCIDByUOp(GFX::v_wmma_f32_16x16x16_bf16, GfxArchID::Gfx1250)->wmmaQueueDepth;
+    ASSERT_GT(lead, 1);
     std::vector<StinkyInstruction*> wmmas;
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < lead + 1; ++i) {
         StinkyInstruction* wmma =
             builder.create(getMCIDByUOp(GFX::v_wmma_f32_16x16x16_bf16, GfxArchID::Gfx1250));
         wmma->addDestReg(StinkyRegister("v", 40 + i * 24, 8));
@@ -149,13 +154,13 @@ TEST(GirFrameAnalysisTest, TensorRawMarkerMovesBeforeOneWmmaQueue) {
     PassContext context;
     context.setGemmTileConfig(function.getGemmTileConfig());
     PassFeatureConfig config;
-    config.dagFeatures.wmmaQueueDepth = 2;
     context.setPassFeatureConfig(config);
     AnalysisManager analyses;
     registerAllAnalyses(analyses);
     const auto& frames = analyses.getResult<GirFrameAnalysis>(function);
     const auto& hazards = analyses.getResult<GirFrameHazardAnalysis>(function);
-    const GirRawPlacementPlan placements = computeGirRawPlacementPlan(function, frames, hazards, 2);
+    const GirRawPlacementPlan placements =
+        computeGirRawPlacementPlan(function, frames, hazards, lead);
     EXPECT_TRUE(placements.markers.contains(wmmas[1]));
     EXPECT_FALSE(placements.markers.contains(read));
 
@@ -180,8 +185,8 @@ TEST(GirFrameAnalysisTest, TensorRawMarkerMovesBeforeOneWmmaQueue) {
     EXPECT_LT(position(wmmas[0]), tensorWaitPos);
     EXPECT_LT(tensorWaitPos, position(*barrierWait));
     EXPECT_LT(position(*barrierWait), position(wmmas[1]));
-    EXPECT_LT(position(wmmas[1]), position(wmmas[2]));
-    EXPECT_LT(position(wmmas[2]), position(read));
+    EXPECT_LT(position(wmmas[1]), position(wmmas.back()));
+    EXPECT_LT(position(wmmas.back()), position(read));
 }
 
 TEST(GirFrameAnalysisTest, ForwardingPhiDistinguishesLatchBackEdgeFromDrainExit) {

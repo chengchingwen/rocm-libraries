@@ -175,6 +175,20 @@ struct FrameCFG {
     std::vector<std::vector<StinkyInstruction*>> body;
 };
 
+/// The WMMA issue queue's depth, read off the first matrix instruction's hardware metadata
+/// (5 for `v_wmma_scale*`, 8 otherwise). It is hardware, not a knob, and the DAG scheduler
+/// reads the same field, so the RAW lead and the scheduler agree on one queue shape.
+int hardwareWmmaQueueDepth(Function& function) {
+    for (BasicBlock& block : function)
+        for (IRBase& ir : block) {
+            auto* inst = dyn_cast<StinkyInstruction>(&ir);
+            if (inst == nullptr || !isMatrixInstruction(*inst)) continue;
+            const HwInstDesc* desc = inst->getHwInstDesc();
+            if (desc != nullptr && desc->wmmaQueueDepth > 0) return desc->wmmaQueueDepth;
+        }
+    return 1;
+}
+
 /// Every block of the region, not just the schedulable ones: GIR's own CFG roles are spread over
 /// `entry`/`skipPGR`/`LoopEndL` after ScaffoldMapPass renames them, and dropping one severs the
 /// path a loop-carried producer travels to reach its consumer.
@@ -572,7 +586,7 @@ class GirFencePlacementPass final : public StinkyInstPass {
         // stale under an insertion and an undo costs a set erase instead of a block rebuild.
         const FrameCFG cfg = buildFrameCFG(function, frames);
         if (cfg.nodes.empty()) return PreservedAnalyses::all();
-        const int wmmaLead = std::max(0, passCtx.getPassFeatureConfig().dagFeatures.wmmaQueueDepth);
+        const int wmmaLead = std::max(0, hardwareWmmaQueueDepth(function));
         FenceDischarge finalOwnership;
         const GirRawPlacementPlan rawPlan = rawMarkers(cfg, hazards, wmmaLead, &finalOwnership);
         const Markers& mandatoryRawMarkers = rawPlan.markers;

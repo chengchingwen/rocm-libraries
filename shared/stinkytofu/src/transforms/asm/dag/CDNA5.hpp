@@ -3781,8 +3781,8 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
         // A -> ds_load -> B token chain: A publishes a stage, the load consumes it, and B fences
         // the next use of the same slot. It identifies the pipeline head from token lifetime,
         // rather than assuming a CFG header or the first barrier in the region is the head.
-        if (wmmaQueueDepth() > 1) {
-            const int headThreshold = wmmaQueueDepth();
+        if (wmmaQueueOn()) {
+            const int headThreshold = effectiveWmmaQueueDepth();
             const auto barrierGroups =
                 groupBarrierTokens(collectBarrierTokens(regionStart, regionEnd, /*useSrc=*/true));
             std::unordered_map<StinkyInstruction*, unsigned> instOrder;
