@@ -14,16 +14,22 @@ class ValuAlloc(NamedTuple):
 
   ``perBuffer * va`` is the size; the rest is the same statement spelled out,
   for the IR dump and for anyone asking why the size is what it is.
+
+  A RING MAY BE RAGGED, and then it occupies the SUM of its slots rather than the widest one
+  times their count.  What a slot may never fall below is one FOLD -- `ring_slot_widths` holds
+  that floor -- so a short last buffer is a real saving and not an under-allocation.  `perBuffer`
+  is the block the writer addresses, `packed` what the ring actually occupies.
   """
   perBuffer: int    #: registers in one buffer -- the prefetch unit after VG
   va: int           #: VA, the buffer count
   puTiles: int      #: PU in instruction tiles, after a TDMSplit that cut it
   puRegs: int       #: PU in registers, before VG divides it
   vg: int           #: VG, the divisor of the unit
+  packed: int = 0   #: the ragged ring's own size, 0 when `perBuffer * va` already states it
 
   @property
   def total(self) -> int:
-    return self.perBuffer * self.va
+    return self.packed or self.perBuffer * self.va
 
 
 _READ_AXES = {"A": frozenset(("M", "K")), "B": frozenset(("N", "K"))}
@@ -248,9 +254,18 @@ def operandValuPuVaVg(writer, kernel, tc, bpe) -> ValuAlloc:
   perBuffer = puRegs // vg
 
   operand = theta.op(str(tc))
+  packed = 0
   if bpe is None:
-    required = _geometry.register_layout(theta, _depths)[str(tc)]["total"]
-    va = max(1, -(-required // max(1, perBuffer)))
+    # A PU IS SEMANTIC, NOT A REGISTER COUNT.  What one costs depends on the coverage: a merged
+    # read lands its whole fold in one slot, and a half-wave partner shares the register rather
+    # than taking its own.  Take the terms from the layout that already states this, rather than
+    # from `pu * ipt`, which counts tiles as if each cost a register of its own.
+    widths = [width for group in operand.fragment.groups()
+              for width in _geometry.ring_slot_widths(theta, operand, group, _depths)]
+    frag = _geometry.frag_regs(theta, operand)
+    perBuffer = max(1, max(widths) * frag)
+    va = max(1, len(widths))
+    packed = sum(max(1, width) * frag for width in widths)
   else:
     va = int(kernel["VgprAlloc" + side])
   if va < 1:
@@ -261,8 +276,8 @@ def operandValuPuVaVg(writer, kernel, tc, bpe) -> ValuAlloc:
   packing = ((writer.states.packDTVA or writer.states.convDTVA) if side == "A"
              else (writer.states.packDTVB or writer.states.convDTVB))
   if direct and not packing:
-    return ValuAlloc(0, va, pu, puRegs, vg)
-  return ValuAlloc(perBuffer, va, pu, puRegs, vg)
+    return ValuAlloc(0, va, pu, puRegs, vg, packed)
+  return ValuAlloc(perBuffer, va, pu, puRegs, vg, packed)
 
 
 def operandNumVgprBuffer(writer, tc):
