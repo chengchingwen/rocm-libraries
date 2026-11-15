@@ -108,6 +108,23 @@ def tile_row(ctx, t: int) -> int:
     return inRow
 
 
+def mx_scale_segment_rows(macroTile: int, split: bool) -> int:
+    """Free-axis rows of its parent that ONE SEGMENT of a scale tensor holds.
+
+    A SUBSTEP STEPS THE SEGMENT, NOT THE MACRO TILE.  When `LDSSegmentInterleave` cuts MXSA into
+    M-halves -- one per interleaved component, which the wave base jumps between -- a segment
+    holds half the rows, and a substep stride taken from the whole tile lands the second substep
+    at the END of the half instead of inside it.  `SolutionStructs.segment_interleave` sizes that
+    half as `MacroTile0 * (DepthU // MXBlock) // 2`, so the halving has to appear here too.
+    """
+    return max(1, int(macroTile) // (2 if split else 1))
+
+
+def mx_scale_substep_stride(macroTile: int, mxUnit: int, bpeDS, split: bool) -> int:
+    """Bytes between one scale substep and the next, over the rows its segment holds."""
+    return int(mx_scale_segment_rows(macroTile, split) * int(mxUnit) * bpeDS)
+
+
 def component_fold(ctx, row: int) -> tuple:
     """`(rowInComponent, componentBytes)` -- LDSSegmentInterleave stores an operand's two
     components `segWriteStrideBytes` apart, so a row past the end of component 0 belongs to

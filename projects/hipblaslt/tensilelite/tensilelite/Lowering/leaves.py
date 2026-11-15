@@ -17,8 +17,10 @@ from ..Component import Component
 from ..Common.MatrixInstructionNaming import (dataTypeToMfmaInstTypePair,
                                               dataTypeNameAbbrevToInstType)
 from .lds_geometry import (tile_row, region_bytes, region_row_elems, component_fold,
-                           addr_coord_on_split_axis, read_fragments, BPR)
+                           addr_coord_on_split_axis, read_fragments,
+                           mx_scale_substep_stride, BPR)
 from ..Components.TDMSplit import split_of, seg_interleave_row_shape, AXIS_MT
+from ..Common.MxScaleLayout import mxSegmentSplit
 from .gir_tag import gir_tag
 
 #: Per-tensor Solution and LDSSegInterleaveOffsets keys: (vector width, port split, baseline).
@@ -434,7 +436,13 @@ class LeafEmitters:
             # The per-SUBSTEP and per-TILE strides above.  `UnrollStride` is 1 because the fragment
             # displacement (there is one fragment, at 0) is already in elements.
             UnrollStride=1, tileStrideElems=mxUnit,
-            substepStrideBytes=int(kernel["MacroTile%s" % mxTc] * mxUnit * tP["bpeDS"]),
+            # A SUBSTEP STEPS THE ROWS THIS SEGMENT HOLDS, not the whole macro tile.  When the
+            # scale is split into M-halves across the interleaved components (`mxSegmentSplit`,
+            # which the wave base already jumps between) a half holds MT/2 rows, so a substep
+            # stride taken from the full MT lands the second one at the END of the half.
+            substepStrideBytes=mx_scale_substep_stride(
+                kernel["MacroTile%s" % mxTc], mxUnit, tP["bpeDS"],
+                mxSegmentSplit(kernel, tc)),
             MIWaveGroupShape=MIWaveGroupShape, localReadOffset=tP["localReadOffset"],
             wtRegStride=int(ceil(blockWidth)), fragments=((0, 0),), tilePerRead=tilePerRead,
             unitRegStride=int(ceil(kernel["MIInputPerThread%s" % tc]
