@@ -606,6 +606,12 @@ def _build_theta(
 _REGISTER_SIDE = {"A": "A", "MXSA": "A", "B": "B", "MXSB": "B"}
 
 
+def _unit_free_tiles(theta, operand) -> int:
+    """FREE tiles one prefetch unit of `operand` holds -- the space a scale's coverage is in."""
+    return geometry.product(
+        extent for _name, extent in geometry.unit_free_modes(theta, operand))
+
+
 def _set_register_depths(theta, kernel):
     """Apply the register values calculated by LoopModel.Registers."""
 
@@ -617,16 +623,45 @@ def _set_register_depths(theta, kernel):
                 % (base, side))
         return int(result)
 
-    for operand in theta.operands:
-        if not (operand.movements and operand.fragment):
-            continue
-        side = _REGISTER_SIDE.get(operand.name)
-        if side is None:
-            continue
-        value("PrefetchLocalRead", side)
+    # A SCALE'S RING IS DERIVED, ITS PARENT'S IS GIVEN.  Only `VgprAllocA/B` are parameters, so
+    # the data operands must be sized first and the scales read their covered tile count off them.
+    staged = [operand for operand in theta.operands
+              if operand.movements and operand.fragment
+              and _REGISTER_SIDE.get(operand.name) is not None]
+    staged.sort(key=lambda operand: "MXS" in operand.name)
+    covered = {}
+
+    for operand in staged:
+        side = _REGISTER_SIDE[operand.name]
+        plr = value("PrefetchLocalRead", side)
         clr = value("ClusterLocalRead", side)
         vg = value("VgprGroup", side)
-        alloc = value("VgprAlloc", side)
+        if "MXS" in operand.name:
+            # FOLLOW THE PARENT IN TILE COVERAGE, NOT IN BUFFER COUNT.  A scale's unit covers a
+            # whole fold, so it takes however many buffers that unit needs to span the tiles the
+            # parent's ring holds -- which is fewer than the parent's own count once the unit is
+            # the wider of the two.  THE FOLD'S OWN LIVE RANGE IS THE FLOOR: coverage says how
+            # much to hold, `fold_use_span` how long, and a ring short of either loses a value.
+            # IN FREE TILES, BOTH SIDES.  A unit whose own part is a REDUCTION step holds the
+            # whole free walk already, so there is no coverage to divide and the ring spends its
+            # depth on generations -- that is the parent's count, not a tile ratio.
+            unit = _unit_free_tiles(theta, operand)
+            tiles = int(covered.get(side, 0))
+            alloc = (max(1, -(-tiles // unit)) if unit > 1 and tiles
+                     else value("VgprAlloc", side))
+            alloc = max(alloc, geometry.fold_use_span(
+                theta, operand, operand.fragment.groups()[0]))
+            # AND WHAT IS IN FLIGHT.  Coverage says how many buffers the walk needs, never how
+            # many the PIPELINE does: `plr` units run ahead, so that many must be live, capped by
+            # the ring that holds them.  The same floor `_validate_register_depths` states for
+            # A and B, which a scale inherits because it is read on the same schedule.
+            alloc = max(alloc, min(plr + 1, geometry._ring_period(theta, operand)))
+            # Stated on the FRAGMENT, not in the Solution: `VgprAllocA/B` are parameters a user
+            # writes, and a derived value put beside them would be read back as one.  The depth
+            # lands in `ring_depths` below, which is what every consumer already asks.
+            operand.fragment.coverage_tiles = tiles
+        else:
+            alloc = value("VgprAlloc", side)
         clamped = (clr and not bool(kernel.get("VgprAllocExplicit" + side, False))) \
             or int(getattr(operand.fragment, "agent_group_size", 0) or 0) > 0
 
@@ -663,6 +698,8 @@ def _set_register_depths(theta, kernel):
                 "order." % (side, vg, operand.name, unit))
         operand.fragment.ring_depths = {
             label: depth for label in operand.fragment.groups()}
+        if "MXS" not in operand.name:
+            covered[side] = _unit_free_tiles(theta, operand) * max(1, int(depth))
 
 def _validate_register_depths(theta, kernel):
     def value(base, side):
