@@ -603,6 +603,19 @@ class LeafEmitters:
         # this operand actually holds, so their ratio states all three -- and it is the same ratio
         # `MatrixInstruction.py` used to derive the operand's count in the first place.
         perEntry = max(1, int(kernel["MIInputPerThread"]) // max(1, MIInputPerThUnroll))
+        if not isMeta and perEntry != 1:
+            # `MIInputPerThread` is derived from MatrixInstM alone, so it is only B's dense count
+            # while M == N -- which the `numTilePerInst` refusal above guarantees.  Lifting that
+            # refusal without giving each operand its own dense count would make a DENSE B look
+            # compressed here, so say so rather than silently halving its K span.
+            _compressed = {1: "A", 2: "B"}.get(int(kernel["ProblemType"]["Sparse"] or 0))
+            if tc != _compressed or perEntry != 2:
+                raise NotImplementedError(
+                    f"LeafEmitters read ({tc}): MIInputPerThread={kernel['MIInputPerThread']} is "
+                    f"{perEntry}x this operand's {MIInputPerThUnroll}, but {tc} is not the "
+                    f"2:4-compressed tensor (Sparse={kernel['ProblemType']['Sparse']}).  The "
+                    f"K-per-entry ratio needs a per-operand dense count on a non-square "
+                    f"instruction.")
         if isMeta:
             # ONE READ PER TILE.  A lane's whole metadata tile is `MIInputPerThreadMetadata`
             # bytes; `initLocalReadMemoryInstruction` picks the instruction that moves exactly
