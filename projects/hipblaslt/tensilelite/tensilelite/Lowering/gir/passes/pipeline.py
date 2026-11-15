@@ -56,5 +56,15 @@ def run_pipeline(prog, passes=None, verify=True):
     if verify:
         verify_gir(prog)
     # Unconditional: a wmma reading another source is a wrong answer, not a diagnostic.
-    check_register_dataflow(prog, raise_wrong_source=True)
+    lost = [v for v in check_register_dataflow(prog, raise_wrong_source=True)
+            if v.lstrip("[loop-carried] ").startswith("OVERWRITE-BEFORE-USE")]
+    if lost:
+        # A FOLD'S MEMBERS NEED NOT BE CONSUMED TOGETHER.  One read lands tiles that are adjacent
+        # in LDS; the loop order may put the ring between two of them, and the refill then takes
+        # the slot back before the later member is read.  That is this check, said directly --
+        # leaving it to the WRONG SOURCE a consumer raises later names the register and not the
+        # reason.  REDUNDANT-RELOAD stays a diagnostic: the same value back is no loss.
+        raise RuntimeError(
+            "OVERWRITE-BEFORE-USE: a refill took a register back before its value was read.\n"
+            + "\n".join(lost))
     return prog
