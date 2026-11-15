@@ -71,6 +71,54 @@ BenchmarkProblems:
           - Exact: [256, 256, 1, 256]
           - Exact: [257, 129, 1, 512]   # edge: M and N off the macro tile
 
+  # Sparse B.  The compressed tensor is B, so the metadata rides B and its tile index is N's --
+  # the one shape that proves the parent comes from the PROBLEM and not from the operand's name.
+  # `TransposeLDSMetadata: 1` is required: Sparse==2 otherwise defaults to the tile-major image.
+  -
+    -
+      OperationType: GEMM
+      DataType: F8
+      DestDataType: s
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: True
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+      Sparse: 2
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 128, 1,  1,  2, 2,  2, 2]
+        - DepthU: [128]
+        - WavefrontSize: [32]
+        - PrefetchGlobalRead: [1, 2]
+        - PrefetchLocalRead: [0, 1]
+        - StaggerU: [0]
+        - ScheduleIterAlg: [0, 4]
+        - UseSubtileImpl: [false]
+        - UseLoopModel: [true]
+        - TDMInst: [3]
+        - TDMFuse: [0]
+        - LDSTrInst: [false]
+        - TransposeLDSMetadata: [1]
+        - LdsPadMetadata: [0]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - WmmaInnerOrder: [1, 2]
+        - WmmaOuterOrder: [0]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 512]
+          - Exact: [256, 256, 1, 256]
+          - Exact: [257, 129, 1, 512]   # edge: M and N off the macro tile
+
   # The non-UseLoopModel twin of the same problem, so a divergence has a control arm.
   -
     -
