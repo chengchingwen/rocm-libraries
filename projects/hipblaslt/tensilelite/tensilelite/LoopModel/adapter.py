@@ -45,6 +45,36 @@ def _mx_frag_elems(kernel, free_mi, mxblock):
     return max(1, data // max(1, mxblock) * dup)
 
 
+#: Operands that ride a data tensor's walk rather than owning one: the MX scales, and a sparse
+#: problem's metadata.  They share every structural rule -- never region-split, one fragment per
+#: parent tile, a register ring derived from the parent's coverage -- and differ only in the
+#: instruction the leaf finally emits.
+COMPANIONS = ("MXSA", "MXSB", "Metadata")
+
+METADATA = "Metadata"
+
+
+def _is_companion(name) -> bool:
+    return str(name) in COMPANIONS
+
+
+def _metadata_parent(kernel) -> str:
+    """The data tensor a sparse problem's metadata belongs to: B at `Sparse==2`, else A."""
+    return "B" if int(kernel.get("Sparse", 0) or 0) == 2 else "A"
+
+
+def _companion_parent(kernel, name) -> str:
+    """The data tensor whose walk, regions and read parameters `name` rides."""
+    return _metadata_parent(kernel) if str(name) == METADATA else str(name)[-1]
+
+
+def _metadata_frag_elems(kernel) -> int:
+    """Metadata ELEMENTS one wave tile holds.  `MIInputPerThreadMetadata` already counts the
+    per-lane bytes of one instruction tile, and metadata's LDS element IS a byte.
+    """
+    return max(1, int(kernel.get("MIInputPerThreadMetadata", 0) or 0))
+
+
 AXIS_NAMES = ["Ko", "Ki",
               "Mo", "Mi", "No", "Ni"]
 
@@ -71,7 +101,8 @@ DEFAULTS = {
     "VgprGroupA": -1, "VgprGroupB": -1, "VgprAllocA": -1, "VgprAllocB": -1,
     "VgprAllocExplicitA": False, "VgprAllocExplicitB": False,
     "LDSBufferA": -1, "LDSBufferB": -1,
-    "LDSBufferMXSA": -1, "LDSBufferMXSB": -1,
+    "LDSBufferMXSA": -1, "LDSBufferMXSB": -1, "LDSBufferMetadata": -1,
+    "Sparse": 0, "MIInputPerThreadMetadata": 0, "VectorWidthMetadata": 1,
     "ReadVectorElems": {},
     "ReadCoverage": {},
     "PerRegionCompletion": False,
@@ -227,6 +258,10 @@ def _build_agent_assignment(movements, nest, kernel):
         "A": "Mi", "MXSA": _partner("A", "Mi", "Mo", nest.mInner),
         "B": "Ni", "MXSB": _partner("B", "Ni", "No", nest.nInner),
     }
+    if int(kernel.get("Sparse", 0) or 0):
+        # Metadata has no half-wave partner: one `ds_read` of it is one lane's own bytes, so it
+        # steps its parent's inner free axis exactly as the parent does.
+        agent_inputs[METADATA] = agent_inputs[_metadata_parent(kernel)]
     _by_mode = {}
 
     def _assign(axis, level, extent, origin):
@@ -286,8 +321,11 @@ def _build_fragments(kernel, matrix_instruction, nest, splits):
     ldsBufB = 0 if kernel["DirectToVgprB"] else _per_operand(kernel, "LDSBuffer", "B", numLdsBlk)
     ldsBufMXSA = _per_operand(kernel, "LDSBuffer", "MXSA", ldsBufA)
     ldsBufMXSB = _per_operand(kernel, "LDSBuffer", "MXSB", ldsBufB)
+    metaParent = _metadata_parent(kernel)
+    ldsBufMeta = _per_operand(kernel, "LDSBuffer", METADATA,
+                              ldsBufB if metaParent == "B" else ldsBufA)
     for _name, _v in (("A", ldsBufA), ("B", ldsBufB),
-                    ("MXSA", ldsBufMXSA), ("MXSB", ldsBufMXSB)):
+                    ("MXSA", ldsBufMXSA), ("MXSB", ldsBufMXSB), (METADATA, ldsBufMeta)):
         if _v and _v > numLdsBlk:
             raise RuntimeError(
                 "LDSBuffer%s=%d exceeds the kernel's allocated NumLdsBlk=%d -- the LDS allocation "
@@ -299,6 +337,8 @@ def _build_fragments(kernel, matrix_instruction, nest, splits):
         "B":    OperandFragment(fragB, fragElB, splitB, ldsBufB),
         "MXSA": OperandFragment(None, 0, splitA, ldsBufMXSA),
         "MXSB": OperandFragment(None, 0, splitB, ldsBufMXSB),
+        METADATA: OperandFragment(
+            None, 0, splitB if metaParent == "B" else splitA, ldsBufMeta),
     })
 
 
@@ -340,11 +380,11 @@ def _build_operands(configure_read, elem_bytes, frags, movements, kernel, matrix
 
     hasMXA, hasMXB = kernel["MXBlockA"] > 0, kernel["MXBlockB"] > 0
 
-    def add_scale(name, free_mode, copy_width, broadcast, free_mi, block, parent):
+    def add_companion(name, free_mode, copy_width, broadcast, frag_elems, parent):
         fragment = frags.reg_fragment(broadcast, free_mode)
-        fragment.fragment_elements = _mx_frag_elems(kernel, free_mi, block)
-        # A SCALE IS NEVER SPLIT, so it owns no STORAGE region axis -- but it rides its parent's
-        # walk, so it steps the same FACTOR axis and its prefetch unit is cut the same way.
+        fragment.fragment_elements = frag_elems
+        # A COMPANION IS NEVER SPLIT, so it owns no STORAGE region axis -- but it rides its
+        # parent's walk, so it steps the same FACTOR axis and its prefetch unit is cut the same way.
         shared = Shared(vector_elements=copy_width, ring_depth=frags[name].lds_buffers,
                         regions=RegionLayout(
                             factor_axes=(nest.factorAxes or {}).get(parent, ())))
@@ -355,11 +395,20 @@ def _build_operands(configure_read, elem_bytes, frags, movements, kernel, matrix
             elem_bytes=1))
 
     if hasMXA:
-        add_scale("MXSA", "Mi", movements.grvwA, nest.N_BCAST,
-                  matrix_instruction[0], kernel["MXBlockA"], "A")
+        add_companion("MXSA", "Mi", movements.grvwA, nest.N_BCAST,
+                      _mx_frag_elems(kernel, matrix_instruction[0], kernel["MXBlockA"]), "A")
     if hasMXB:
-        add_scale("MXSB", "Ni", movements.grvwB, nest.M_BCAST,
-                  matrix_instruction[1], kernel["MXBlockB"], "B")
+        add_companion("MXSB", "Ni", movements.grvwB, nest.M_BCAST,
+                      _mx_frag_elems(kernel, matrix_instruction[1], kernel["MXBlockB"]), "B")
+    if int(kernel.get("Sparse", 0) or 0):
+        # THE METADATA IS ITS PARENT'S COMPANION, exactly as a scale is: one fragment per parent
+        # tile, broadcast over the other tensor's free modes, riding the parent's factor walk.
+        _parent = _metadata_parent(kernel)
+        add_companion(
+            METADATA, "Mi" if _parent == "A" else "Ni",
+            movements.grvwA if _parent == "A" else movements.grvwB,
+            nest.N_BCAST if _parent == "A" else nest.M_BCAST,
+            _metadata_frag_elems(kernel), _parent)
 
     return hasMXA, hasMXB, operands
 
@@ -379,7 +428,8 @@ def _fuse_view(hasMXA, hasMXB, kernel):
             "UseLoopModel": True,
             "TDMSplitA": int(kernel.get("TDMSplitA", 0) or 0),
             "TDMSplitB": int(kernel.get("TDMSplitB", 0) or 0),
-            "ProblemType": {"MXBlockA": hasMXA, "MXBlockB": hasMXB, "Sparse": 0}}
+            "ProblemType": {"MXBlockA": hasMXA, "MXBlockB": hasMXB,
+                            "Sparse": int(kernel.get("Sparse", 0) or 0)}}
 
 
 def _build_fuse(hasMXA, hasMXB, kernel, operands):
@@ -437,9 +487,9 @@ def _assign_effects(operands, kernel, nest, splits):
     total_waves = max(1, int(kernel.get("NumWaves", 1) or 1))
 
     for operand in operands:
-        if operand.name not in ("A", "B", "MXSA", "MXSB"):
+        if operand.name not in ("A", "B") + COMPANIONS:
             continue
-        parent = "A" if operand.name.endswith("A") else "B"
+        parent = _companion_parent(kernel, operand.name)
         tile01 = 0 if parent == "A" else 1
         free_role = "M" if parent == "A" else "N"
         free_split = (
@@ -532,9 +582,9 @@ def _read_off_requests(kernel, operands, outer_level, copy_depth, read_depth):
     read_requests = {}
     for operand in operands:
         copies = _per_operand(kernel, "PrefetchGlobalRead", operand.name, copy_depth)
-        # A scale reads the local-read parameters of the tensor it scales.
+        # A companion reads the local-read parameters of the tensor it belongs to.
         reads = _per_operand(kernel, "PrefetchLocalRead",
-                             _REGISTER_SIDE.get(operand.name, operand.name), read_depth)
+                             _register_side(kernel, operand.name) or operand.name, read_depth)
         if operand.movements and operand.movements[0].dst is SHARED and copies > 0:
             movement = operand.movements[0]
             movement.destination.offsets[outer_level] = copies
@@ -553,7 +603,11 @@ def _copy_wave_shares(view, groups, operands, waves):
             share[name] = max(1, len(tdmWavePartition(view, name)[1]))
     for name in names:  # an operand in no group keeps every wave
         if not any(name in group for group in groups):
-            share[name] = waves
+            # UNLESS THE TABLE STILL SEATS IT.  No row names Metadata, but `tdmWavePartition`
+            # gives it the even arm's half anyway, and the scaffold issues it on exactly those
+            # waves -- so the model must share the copy the same way or it plans a wider one.
+            share[name] = (max(1, len(tdmWavePartition(view, name)[1]))
+                           if name == METADATA and tdmWaveSeparated(view) else waves)
     return {name: count for name, count in share.items() if name in names}
 
 
@@ -606,6 +660,17 @@ def _build_theta(
 _REGISTER_SIDE = {"A": "A", "MXSA": "A", "B": "B", "MXSB": "B"}
 
 
+def _register_side(kernel, name):
+    """The data tensor whose PrefetchLocalRead/ClusterLocalRead/VgprAlloc `name` rides.
+
+    Metadata's is not in the static map because it is the PROBLEM that decides it: `Sparse==2`
+    compresses B, every other sparse problem A.
+    """
+    if str(name) == METADATA:
+        return _metadata_parent(kernel) if int(kernel.get("Sparse", 0) or 0) else None
+    return _REGISTER_SIDE.get(str(name))
+
+
 def _unit_free_tiles(theta, operand) -> int:
     """FREE tiles one prefetch unit of `operand` holds -- the space a scale's coverage is in."""
     return geometry.product(
@@ -623,20 +688,21 @@ def _set_register_depths(theta, kernel):
                 % (base, side))
         return int(result)
 
-    # A SCALE'S RING IS DERIVED, ITS PARENT'S IS GIVEN.  Only `VgprAllocA/B` are parameters, so
-    # the data operands must be sized first and the scales read their covered tile count off them.
+    # A COMPANION'S RING IS DERIVED, ITS PARENT'S IS GIVEN.  Only `VgprAllocA/B` are parameters,
+    # so the data operands must be sized first and the companions read their covered tile count
+    # off them.
     staged = [operand for operand in theta.operands
               if operand.movements and operand.fragment
-              and _REGISTER_SIDE.get(operand.name) is not None]
-    staged.sort(key=lambda operand: "MXS" in operand.name)
+              and _register_side(kernel, operand.name) is not None]
+    staged.sort(key=lambda operand: _is_companion(operand.name))
     covered = {}
 
     for operand in staged:
-        side = _REGISTER_SIDE[operand.name]
+        side = _register_side(kernel, operand.name)
         plr = value("PrefetchLocalRead", side)
         clr = value("ClusterLocalRead", side)
         vg = value("VgprGroup", side)
-        if "MXS" in operand.name:
+        if _is_companion(operand.name):
             # FOLLOW THE PARENT IN TILE COVERAGE, NOT IN BUFFER COUNT.  A scale's unit covers a
             # whole fold, so it takes however many buffers that unit needs to span the tiles the
             # parent's ring holds -- which is fewer than the parent's own count once the unit is
@@ -698,7 +764,7 @@ def _set_register_depths(theta, kernel):
                 "order." % (side, vg, operand.name, unit))
         operand.fragment.ring_depths = {
             label: depth for label in operand.fragment.groups()}
-        if "MXS" not in operand.name:
+        if not _is_companion(operand.name):
             covered[side] = _unit_free_tiles(theta, operand) * max(1, int(depth))
 
 def _validate_register_depths(theta, kernel):
@@ -815,6 +881,10 @@ def _shape_params(elem_bytes, kernel, mi, wt0, wt1):
         "InnerUnroll": kernel.get("InnerUnroll", 1) or 1,
         "NumLdsBlk": kernel.get("NumLdsBlk", 2),
         "1LDSBuffer": kernel.get("1LDSBuffer", 0),
+        # Metadata's own shape.  Its tile is `MIInputPerThreadMetadata` bytes and its vector
+        # width is the parent's, both already derived by `assignDerivedParameters`.
+        "MIInputPerThreadMetadata": int(kernel.get("MIInputPerThreadMetadata", 0) or 0),
+        "VectorWidthMetadata": int(kernel.get("VectorWidthMetadata", 1) or 1),
     }
 
 
@@ -839,6 +909,7 @@ def _movement_params(kernel, target):
         "WmmaFactorK": int(kernel.get("WmmaFactorK", -1) or -1),
         "MXBlockA": int(kernel["ProblemType"].get("MXBlockA", 0) or 0),
         "MXBlockB": int(kernel["ProblemType"].get("MXBlockB", 0) or 0),
+        "Sparse": int(kernel["ProblemType"].get("Sparse", 0) or 0),
         "LoopOrder": kernel["LoopOrder"],
         "ReadVectorElems": _read_vector_elems(kernel, target),
         "ReadCoverage": _read_coverage(kernel, target),
@@ -926,6 +997,11 @@ def _read_vector_elems(kernel, target) -> dict:
             out[operand_letter] = int(kernel.get("LocalReadVectorWidthMXS", 0) or 0) or 1
         else:
             out[operand_letter] = 1
+    # ONE TILE PER READ.  Metadata's element is a byte, so `MIInputPerThreadMetadata` bytes IS
+    # one instruction tile; the wider `LocalReadVectorWidthMetadata` is the LDS layout's vector,
+    # which the read may not exceed without folding tiles the loop order need not visit together.
+    if METADATA not in out and int(pt.get("Sparse", 0) or 0):
+        out[METADATA] = max(1, int(kernel.get("MIInputPerThreadMetadata", 0) or 0))
     return out
 
 

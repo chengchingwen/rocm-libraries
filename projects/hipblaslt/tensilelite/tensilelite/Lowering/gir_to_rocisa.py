@@ -22,6 +22,9 @@ from ..Components.TDMFuse import tdmFusedGroups, tdmSetOwner
 from ..Common.MxScaleLayout import mxIssueTpList
 from rocisa.instruction import GirActionKind
 
+#: theta's name for the sparsity index operand, which is also its tensorChar.
+_METADATA = "Metadata"
+
 
 def _register_depth(prog, band=None):
     """`{operand: W}` -- the register ring width the leaves use for their `m = u % W` FALLBACK, a
@@ -89,6 +92,12 @@ class GirToRocisa:
                 _tc = _mx["tensorChar"]
                 self._tp[_tc] = _mx
                 self._ctxRd[_tc] = self._leaf.buildMxScaleReadContext(kernel, _mx)
+        # The sparsity metadata is the same kind of companion, and its LDS image is a data
+        # tensor's, so it takes the data-tensor read builder rather than the scale one.
+        _meta = tPA.get("tpsMetadata") or tPB.get("tpsMetadata")
+        if _meta is not None:
+            self._tp[_meta["tensorChar"]] = _meta
+            self._ctxRd[_meta["tensorChar"]] = self._leaf.buildLdsReadContext(kernel, _meta)
 
     # Scaffold metadata consumed by the tags handed in for each stage.
     def emit_block(self, prog, phase, *, tpByOperand=None, internalPointerSwap=False,
@@ -156,7 +165,8 @@ class GirToRocisa:
                                            "MXSB", at.get("groupMXB"), at.get("bufMXB")),
                                        slotMXA=self._slot_shape("MXSA"),
                                        slotMXB=self._slot_shape("MXSB"),
-                                       girComment=self._actLine))
+                                       girComment=self._actLine,
+                                       **self._metadata_slot(at)))
             elif kind in FILL_OPS:
                 tc = at["tc"]
                 # `tile` is the WITHIN-REGION index and `tile_flat` the register index; they differ
@@ -269,6 +279,24 @@ class GirToRocisa:
         if operand not in self._regLayout or group is None or slot is None:
             return None
         return self._regLayout[operand]["slots"].get((int(group), int(slot)))
+
+    def _metadata_slot(self, at) -> dict:
+        """The swmmac metadata source's ring position, from whichever companion slot holds it.
+
+        A scale and a sparsity index are the same thing to the dataflow -- a companion riding one
+        matmul input -- so the plan seats both in the `MX` slot and names the occupant.  Only the
+        name says which, and only one of the two can be present (no instruction carries both).
+        """
+        for side in ("A", "B"):
+            if at.get("opMX" + side) != _METADATA:
+                continue
+            buf, group = at.get("bufMX" + side), at.get("groupMX" + side)
+            return {"bufM": buf,
+                    "unitM": (None if _METADATA in self._coveredReads
+                              else at.get("unitMX" + side)),
+                    "baseM": self._reg_base(_METADATA, group, buf),
+                    "slotM": self._slot_shape(_METADATA)}
+        return {}
 
     def _slot_shape(self, operand):
         """`(carriers a slot holds, registers one carrier is)`, or None when a slot is the walk."""

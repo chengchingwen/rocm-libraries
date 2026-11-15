@@ -279,6 +279,7 @@ class StateValues:
   numVgprBufferB: int                    = 0
   numVgprBufferMXSA: int                 = 0
   numVgprBufferMXSB: int                 = 0
+  numVgprBufferMetadata: int             = 0
   # ReuseAcrossPersistent: which resident k-tile the section being emitted owns.
   # Lives in states (not on the writer) so it is covered by the emitter-state
   # snapshot taken around a second emission of the compute section.
@@ -9083,6 +9084,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       self.states.numVgprBufferB = self.states.numVgprBuffer
       self.states.numVgprBufferMXSA = self.states.numVgprBuffer
       self.states.numVgprBufferMXSB = self.states.numVgprBuffer
+      self.states.numVgprBufferMetadata = self.states.numVgprBuffer
 
       if kernel["EnableMatrixInstruction"]:
         #jgolds bpeCinternal because we are allocating accumulation registers here
@@ -9223,6 +9225,8 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
             operands.append(("MXSA", self.states.mxsa, None, "numVgprBufferMXSA"))
           if kernel["ProblemType"]["MXBlockB"]:
             operands.append(("MXSB", self.states.mxsb, None, "numVgprBufferMXSB"))
+          if kernel["ProblemType"]["Sparse"] and not kernel["DirectToVgprSparseMetadata"]:
+            operands.append(("Metadata", self.states.m, None, "numVgprBufferMetadata"))
           # The terms, not just the product: the IR dump states the formula.
           # Replaced, never accumulated -- one writer sizes many kernels.
           self.states.loopModelValuAlloc = {}
@@ -9249,7 +9253,10 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
         self.states.a.numVgprValu = self.states.a.numVgprValuPerBlock * valuBlocksA
         self.states.b.numVgprValu = self.states.b.numVgprValuPerBlock * valuBlocksB
 
-      if kernel["ProblemType"]["Sparse"]:
+      # UseLoopModel already sized the metadata ring above, from θ, exactly as it did A/B and the
+      # scales; re-running the scaffold product here would overwrite PU * VA / VG with it.
+      if kernel["ProblemType"]["Sparse"] and not (
+          kernel.get("UseLoopModel", False) and not kernel["DirectToVgprSparseMetadata"]):
         if kernel["DirectToVgprSparseMetadata"]:
           miWaveTile = kernel["MIWaveTileB"] if kernel["ProblemType"]["Sparse"] == 2 else kernel["MIWaveTileA"]
           self.states.m.numVgprValuPerBlock = miWaveTile * kernel["LoopIters"] #every 8bit need 1 register

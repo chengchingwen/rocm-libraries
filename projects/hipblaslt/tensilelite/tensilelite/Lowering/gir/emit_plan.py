@@ -236,6 +236,9 @@ def _plan_mma(prog, inst, actions):
         "bufMXA": bufMXA, "bufMXB": bufMXB,
         "groupMXA": groups.get(scale_of.get(in0)), "groupMXB": groups.get(scale_of.get(in1)),
         "unitMXA": unitMXA, "unitMXB": unitMXB,
+        # WHICH OPERAND filled the companion slot.  A scale and a sparsity index occupy the same
+        # position in the dataflow, so the consumer must read the name rather than assume `MXS*`.
+        "opMXA": scale_of.get(in0), "opMXB": scale_of.get(in1),
         "srcs": tuple(srcs), "source_issues": source_issues}))
 
 

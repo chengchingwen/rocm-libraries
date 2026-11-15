@@ -1241,9 +1241,31 @@ class Solution(collections.abc.Mapping):
                "UseLoopModel supports only ScheduleIterAlg 0 or 4 (Stinkytofu)")
         return
 
+      # SPARSE: the metadata is a COMPANION operand, modelled exactly as an MX scale is -- it
+      # rides the compressed tensor's walk, is never region-split, and is consumed by the same
+      # instruction as a third source.  What basic support does not cover is named here rather
+      # than left to a generation failure in the leaf emitters.
       if state["ProblemType"]["Sparse"]:
-        reject(state, printRejectionReason, "ULM does not support sparse yet")
-        return
+        if not isaInfoMap[tuple(state["ISA"])].asmCaps["HasSWMMAC_gfx1250"]:
+          reject(state, printRejectionReason,
+                 "UseLoopModel sparse needs the gfx1250 SWMMAC instruction")
+          return
+        if state["DirectToVgprSparseMetadata"]:
+          reject(state, printRejectionReason,
+                 "UseLoopModel does not support DirectToVgprSparseMetadata: the metadata never "
+                 "reaches LDS, so there is no read for theta's ring to rotate")
+          return
+        if _mxA or _mxB:
+          reject(state, printRejectionReason,
+                 "UseLoopModel: no instruction carries both a sparsity index and a scale -- "
+                 "`v_swmmac` takes the metadata where `v_wmma` takes `matrix_*_scale`")
+          return
+        if state["LDSSegmentInterleave"]:
+          reject(state, printRejectionReason,
+                 "UseLoopModel sparse: LDSSegmentInterleave names no metadata segment")
+          return
+        # The metadata LAYOUT gates (enableTDMMetadata, the unroll-major image) are derived
+        # later; they are checked beside UseLoopModel's other read-path gate.
 
       if state["HalfPLR"]:
         reject(state, printRejectionReason,
@@ -6409,6 +6431,13 @@ class Solution(collections.abc.Mapping):
                "unroll-major reads only, #91).  A tile-major layout is not unroll-major -- pin "
                "LDSTrInst=True for it." % ("+".join(_noRead)))
         return
+      # The metadata's own read path, on the same rule, but `UnrollMajorLDSMetadata` is derived
+      # further down; the rest of it is checked beside that derivation.
+      if state["ProblemType"]["Sparse"] and not state["enableTDMMetadata"]:
+        reject(state, printRejectionReason,
+               "UseLoopModel sparse requires the TDM metadata load; this kernel moves the "
+               "metadata another way, which the read leaf has no path for")
+        return
 
     if tdmFusedGroups(state):
       _regions = {"A": TDMSplit.split_of(state, "A")[0], "B": TDMSplit.split_of(state, "B")[0]}
@@ -6507,6 +6536,17 @@ class Solution(collections.abc.Mapping):
 
       if not state["DirectToVgprSparseMetadata"]:
         state["UnrollMajorLDSMetadata"] = state["TransposeLDSMetadata"]
+
+      # Basic UseLoopModel sparse support reads the UNROLL-MAJOR metadata image -- rows of
+      # `_DepthUMetadata` bytes, the same shape as a data tensor's, which is what the read leaf
+      # derives its stride from.  The transposed image interleaves its bytes differently.
+      if state.get("UseLoopModel", False) and (
+          state["enableLDSTrMetadata"] or not state["UnrollMajorLDSMetadata"]):
+        reject(state, printRejectionReason,
+               "UseLoopModel sparse supports the unroll-major metadata image only "
+               "(enableLDSTrMetadata=%s, UnrollMajorLDSMetadata=%s); set TransposeLDSMetadata=1"
+               % (state["enableLDSTrMetadata"], state["UnrollMajorLDSMetadata"]))
+        return
 
     # Determine if we can load directly-to-LDS.
     # Transpose requires a trip through registers to perform the transpose so can't use DirectToLdsA
