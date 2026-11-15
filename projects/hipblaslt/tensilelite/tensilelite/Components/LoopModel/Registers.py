@@ -35,6 +35,18 @@ class ValuAlloc(NamedTuple):
 _READ_AXES = {"A": frozenset(("M", "K")), "B": frozenset(("N", "K"))}
 
 
+def _parentSide(kernel, tc) -> str:
+  """The data tensor whose VgprGroup/VgprAlloc `tc` rides.
+
+  A companion's letter normally names it (`MXSA` -> `A`); metadata's does not, because the
+  PROBLEM decides which tensor is compressed.
+  """
+  if str(tc) == "Metadata":
+    pt = kernel.get("ProblemType") or {}
+    return "B" if int(pt.get("Sparse", 0) or 0) == 2 else "A"
+  return "A" if str(tc).endswith("A") else "B"
+
+
 def _role(name: str) -> str:
   """The M/N/K an axis belongs to. An axis name is the role plus `o` (outer) or `i` (inner)."""
   return name[:1]
@@ -239,7 +251,7 @@ def operandValuPuVaVg(writer, kernel, tc, bpe) -> ValuAlloc:
   exactly as stated by VgprGroupA/B. ``calculate`` stores PU, VG and VA before
   allocation.
   """
-  side = "A" if str(tc).endswith("A") else "B"
+  side = _parentSide(kernel, tc)
   from .Theta import loopModelTheta
   theta, _depths = loopModelTheta(writer, kernel)
   pu = _geometry.prefetch_unit_tiles(theta, theta.op(str(tc)))
@@ -286,11 +298,12 @@ def operandNumVgprBuffer(writer, tc):
   vgprAllocationImplClassic stores the per-operand count.  A zero field means
   allocation has not run, so the shared scaffold count still applies.
   """
-  stored = {"A": writer.states.numVgprBufferA,
-            "B": writer.states.numVgprBufferB,
-            "MXSA": writer.states.numVgprBufferMXSA,
-            "MXSB": writer.states.numVgprBufferMXSB}[tc]
-  return int(stored or writer.states.numVgprBuffer)
+  # Named per operand, read ONE at a time: an eager dict over every operand makes a caller that
+  # only asks about A depend on a field it has nothing to do with.
+  field = {"A": "numVgprBufferA", "B": "numVgprBufferB",
+           "MXSA": "numVgprBufferMXSA", "MXSB": "numVgprBufferMXSB",
+           "Metadata": "numVgprBufferMetadata"}[tc]
+  return int(getattr(writer.states, field, 0) or writer.states.numVgprBuffer)
 
 
 def loopModelRegBuffers(writer, kernel):
@@ -351,6 +364,8 @@ def applyLoopModelValuRegs(writer, kernel):
     byOperand["MXSA"] = writer.states.mxsa
   if kernel["ProblemType"]["MXBlockB"]:
     byOperand["MXSB"] = writer.states.mxsb
+  if kernel["ProblemType"].get("Sparse") and not kernel.get("DirectToVgprSparseMetadata"):
+    byOperand["Metadata"] = writer.states.m
   missing = [name for name in byOperand if name not in required]
   if missing:
     raise RuntimeError("UseLoopModel has no Valu VGPR allocation for %s" % ", ".join(missing))

@@ -10,7 +10,7 @@ from math import ceil
 
 from rocisa.code import Module
 from rocisa.container import vgpr, DSModifiers
-from rocisa.instruction import MFMAInstruction, MXMFMAInstruction
+from rocisa.instruction import MFMAInstruction, MXMFMAInstruction, SMFMAInstruction
 from rocisa.enum import InstType
 
 from ..Component import Component
@@ -27,7 +27,7 @@ from .gir_tag import gir_tag
 _SEG_INTERLEAVE_KEYS = {"A": ("VectorWidthA", "portSplitA", "aBaseline"),
                         "B": ("VectorWidthB", "portSplitB", "bBaseline")}
 _MACRO_TILE_KEYS = ("MacroTile0", "MacroTile1")
-_VALU_STATE = {"A": "a", "B": "b", "MXSA": "mxsa", "MXSB": "mxsb"}
+_VALU_STATE = {"A": "a", "B": "b", "MXSA": "mxsa", "MXSB": "mxsb", "Metadata": "m"}
 
 
 def allocated_valu_offset(span, linear):
@@ -83,6 +83,10 @@ class MfmaTileContext:
     vgprPerInputMXSB: int = 0
     mxScaleATypeInst: object = None
     mxScaleBTypeInst: object = None
+    # SPARSE (2:4).  `sparse` is the ProblemType value, so it also says WHICH tensor is
+    # compressed -- 2 is B, anything else A -- and that tensor's tile index selects the metadata.
+    sparse: int = 0
+    vgprPerInputMetadata: int = 0
 
 
 @dataclass
@@ -207,7 +211,17 @@ class LeafEmitters:
         if w.states.asmCaps.get("HasMFMA", False):
             raise NotImplementedError("LeafEmitters: MFMA (CDNA) path not supported")
         if pt["Sparse"]:
-            raise NotImplementedError("LeafEmitters: sparse not supported (phase 3a)")
+            if not w.states.asmCaps.get("HasSWMMAC_gfx1250", False):
+                raise NotImplementedError(
+                    "LeafEmitters: sparse needs the gfx1250 SWMMAC instruction")
+            if kernel["DirectToVgprSparseMetadata"]:
+                raise NotImplementedError(
+                    "LeafEmitters: DirectToVgprSparseMetadata keeps the metadata off LDS, so it "
+                    "has no modelled read for the ring to rotate")
+            if pt["MXBlockA"] or pt["MXBlockB"]:
+                raise NotImplementedError(
+                    "LeafEmitters: no instruction carries both a sparsity index and a scale -- "
+                    "`v_swmmac` takes the metadata where `v_wmma` takes `matrix_*_scale`")
         if kernel["UseF32XEmulation"] or kernel.get("EnableF32XdlMathOp", False):
             raise NotImplementedError("LeafEmitters: F32 emulation not supported (phase 3a)")
 
@@ -261,7 +275,12 @@ class LeafEmitters:
             mxBlock=max(mxA, mxB),
             vgprPerInputMXSA=vgprPerInputMXSA, vgprPerInputMXSB=vgprPerInputMXSB,
             mxScaleATypeInst=dataTypeNameAbbrevToInstType(pt["DataTypeMXSA"].toNameAbbrev()),
-            mxScaleBTypeInst=dataTypeNameAbbrevToInstType(pt["DataTypeMXSB"].toNameAbbrev()))
+            mxScaleBTypeInst=dataTypeNameAbbrevToInstType(pt["DataTypeMXSB"].toNameAbbrev()),
+            sparse=int(pt["Sparse"] or 0),
+            # A METADATA ELEMENT IS A BYTE, so the per-tile register count is the byte count
+            # rounded up -- `mfmaIter`'s own `vgprPerInputM`, derived the same way.
+            vgprPerInputMetadata=(int(ceil(kernel["MIInputPerThreadMetadata"] / BPR))
+                                  if pt["Sparse"] else 0))
 
     def emitWmmaTile(self, kernel, tPA, tPB, ctx: MfmaTileContext,
                      idx0: int, idx1: int, u: int, iui: int = 0, girComment=None,
@@ -272,7 +291,9 @@ class LeafEmitters:
                      unitMXA: int = None, unitMXB: int = None,
                      baseA: int = None, baseB: int = None,
                      baseMXA: int = None, baseMXB: int = None,
-                     slotMXA=None, slotMXB=None) -> Module:
+                     slotMXA=None, slotMXB=None,
+                     bufM: int = None, unitM: int = None, baseM: int = None,
+                     slotM=None) -> Module:
         """Emit the SINGLE WMMA instruction for tile (idx0, idx1) at kiter substep `u`."""
         w = self.writer
         # register generation m = u % W, W = the GIR register ring width (reg_depth).  PLR0 has
@@ -323,6 +344,30 @@ class LeafEmitters:
         acc = w.accVgprReadWriteIndex(kernel, accStart, (accEnd - accStart + 1))
         imod = Module("wmma tile (%u,%u) u=%u" % (idx0, idx1, u))
         _wmma = "wmma regA=X%u regB=X%u" % (mA, mB)
+        if ctx.sparse:
+            # ---- SPARSE: `v_swmmac`, the same two data sources plus the compression index ----
+            # The index belongs to the COMPRESSED tensor, so its tile index is that tensor's --
+            # and unlike `matrix_*_scale` it has one operand position, so SourceSwap does not
+            # move it.
+            tPM = tPB["tpsMetadata"] if ctx.sparse == 2 else tPA["tpsMetadata"]
+            tcM = tPM["tensorChar"]
+            mM = bufM if bufM is not None else _fb(tcM)
+            self._checkRegBuffer(tcM, mM, "swmmac metadata source")
+            idxM = idxB if ctx.sparse == 2 else idxA
+            if baseM is not None:
+                offset = _slot_offset(idxM, slotM) if unitM is None else unitM
+                mStr = vgpr(self._valuSymbol(
+                    kernel, tcM, baseM + offset * ctx.vgprPerInputMetadata),
+                    ctx.vgprPerInputMetadata)
+            else:
+                mStr = vgpr(w.generateSrcStrForMFMA(
+                    kernel, tPM, kernel["InnerUnroll"], vregSetIdx,
+                    ctx.vgprPerInputMetadata, mM, u, iui, idxM), ctx.vgprPerInputMetadata)
+            imod.add(SMFMAInstruction(
+                instType=ctx.miInInstType, accType=ctx.miOutInstType, variant=ctx.variant,
+                mfma1k=ctx.mfma_1k, acc=acc, a=src0, b=src1, metadata=mStr, neg=ctx.neg_flag,
+                comment=gir_tag(girComment or _wmma + " meta=X%u" % mM)))
+            return imod
         if not ctx.mxBlock:
             imod.add(MFMAInstruction(
                 instType=ctx.miInInstType, accType=ctx.miOutInstType, variant=ctx.variant,
@@ -491,7 +536,11 @@ class LeafEmitters:
 
         enableLDSTr = tP.get("enableLDSTr", False)
         unrollMajor = bool(kernel["UnrollMajorLDS%s" % tc])
-        if tc not in ("A", "B"):
+        # METADATA SHARES THIS PATH.  Its LDS image is a data tensor's -- free rows of `_DepthU`
+        # entries -- only the entry is a BYTE covering several K positions.  Every term below is
+        # the same derivation with that byte in place of an element; the differences are named.
+        isMeta = tc == "Metadata"
+        if tc not in ("A", "B") and not isMeta:
             raise NotImplementedError(f"LeafEmitters read: tc {tc} not supported (phase 3a)")
         if not (enableLDSTr or unrollMajor):
             raise NotImplementedError("LeafEmitters read: only the LDS-transpose (enableLDSTr) "
@@ -505,9 +554,13 @@ class LeafEmitters:
                                       f"supported (got {tP['bpeDS']})")
         # HalfPLR is no longer here: its halves are ordinary register GROUPS, and the group's
         # physical base already arrives via `regBase` off `register_layout`.
-        if kernel["ProblemType"]["Sparse"] or kernel["numSubTiles"] > 1:
-            raise NotImplementedError("LeafEmitters read: Sparse/SubTiles not supported "
-                                      "(phase 3a)")
+        if kernel["numSubTiles"] > 1:
+            raise NotImplementedError("LeafEmitters read: SubTiles not supported (phase 3a)")
+        if kernel["ProblemType"]["Sparse"] and enableLDSTr:
+            # The transposed metadata image interleaves its bytes differently again; the
+            # unroll-major one is what basic sparse support covers.
+            raise NotImplementedError(
+                "LeafEmitters read: sparse on the LDS-transpose path is not supported")
 
         tile01 = tP["tile01Idx"]
         instruction = tP["localReadInstruction"]
@@ -544,11 +597,29 @@ class LeafEmitters:
         wtRegStride = int(MIInputPerThUnroll * tP["bpeDS"] // bpr)
         maxLDSConstOffset = w.states.regCaps["maxLDSConstOffset"]
 
-        try:
-            fragments = read_fragments(blockWidth, tP["bpeDS"], lrvw, MIInputPerThUnroll,
-                                       kernel["MatrixInstK"])
-        except NotImplementedError as e:
-            raise NotImplementedError(f"LeafEmitters read ({tc}): {e}")
+        # K POSITIONS ONE STORED ENTRY COVERS.  A dense tensor stores every position, so it is 1;
+        # a 2:4-compressed tensor stores half, so 2; a metadata byte indexes 8.  `MIInputPerThread`
+        # is the DENSE per-thread count the instruction consumes and `MIInputPerThread{tc}` what
+        # this operand actually holds, so their ratio states all three -- and it is the same ratio
+        # `MatrixInstruction.py` used to derive the operand's count in the first place.
+        perEntry = max(1, int(kernel["MIInputPerThread"]) // max(1, MIInputPerThUnroll))
+        if isMeta:
+            # ONE READ PER TILE.  A lane's whole metadata tile is `MIInputPerThreadMetadata`
+            # bytes; `initLocalReadMemoryInstruction` picks the instruction that moves exactly
+            # that, so there is one fragment at displacement 0.  Anything else needs a fragment
+            # list this builder does not derive.
+            if int(blockWidth * BPR) != int(MIInputPerThUnroll * tP["bpeDS"]):
+                raise NotImplementedError(
+                    f"LeafEmitters read (Metadata): one ds_read moves {int(blockWidth * BPR)} "
+                    f"bytes but a tile is {int(MIInputPerThUnroll * tP['bpeDS'])}; a split "
+                    f"metadata tile has no fragment list here")
+            fragments = ((0, 0),)
+        else:
+            try:
+                fragments = read_fragments(blockWidth, tP["bpeDS"], lrvw, MIInputPerThUnroll,
+                                           kernel["MatrixInstK"] // perEntry)
+            except NotImplementedError as e:
+                raise NotImplementedError(f"LeafEmitters read ({tc}): {e}")
 
         if unrollMajor:
             # A PACKED REGION SHORTENS THE UNROLL ROW HERE, exactly as it shortens the free row in
@@ -566,6 +637,11 @@ class LeafEmitters:
         if nsplit > 1:
             splitBoundaryBytes = int(w.tdmSplitLdsBoundary(kernel, tP))
 
+        if isMeta and kernel.get("LDSSegmentInterleave"):
+            # `_SEG_INTERLEAVE_KEYS` names A and B only, so metadata has no interleaved image to
+            # fold a row into -- an unnamed tensor would silently read the baseline layout.
+            raise NotImplementedError(
+                "LeafEmitters read (Metadata): LDSSegmentInterleave names no metadata segment")
         segRowShape, segCompCols, segWriteStrideBytes = self._segInterleaveTerms(
             kernel, tc, tile01, MIWaveGroupShape[tile01])
 
@@ -578,9 +654,12 @@ class LeafEmitters:
             padBytes=kernel["LdsPad%s" % tc], UnrollStride=UnrollStride,
             MIWaveGroupShape=MIWaveGroupShape, localReadOffset=tP["localReadOffset"],
             wtRegStride=wtRegStride, fragments=fragments,
-            substepStrideBytes=int(kernel["MatrixInstK"] * UnrollStride * tP["bpeDS"]),
-            maxLDSConstOffset=maxLDSConstOffset, miWaveTileAxis=kernel["MIWaveTile"][tile01],
-            macroTile=kernel["MacroTile%u" % tile01],
+            substepStrideBytes=int(kernel["MatrixInstK"] // perEntry
+                                   * UnrollStride * tP["bpeDS"]),
+            maxLDSConstOffset=maxLDSConstOffset,
+            miWaveTileAxis=(kernel["MIWaveTileMetadata"] if isMeta
+                            else kernel["MIWaveTile"][tile01]),
+            macroTile=kernel["MacroTileMetadata" if isMeta else "MacroTile%u" % tile01],
             enableLDSTr=enableLDSTr, tileStrideElems=tileStrideElems,
             vectorWidth=max(1, kernel["VectorWidth%s" % tc]), unrollMajor=bool(unrollMajor),
             splitBoundaryBytes=splitBoundaryBytes, nsplit=nsplit, splitAxis=splitAxis)

@@ -1,0 +1,114 @@
+# Copyright Advanced Micro Devices, Inc., or its affiliates.
+# SPDX-License-Identifier: MIT
+
+# Basic 2:4 structured sparsity under UseLoopModel.
+#
+# The metadata is a COMPANION operand: it rides the compressed tensor's walk exactly as an MX
+# scale rides its parent's, and the leaf emits `v_swmmac` with it as the third source.  What this
+# covers is the unroll-major metadata image written by the TDM metadata load; MX scales, the
+# transposed image and DirectToVgprSparseMetadata are rejected by Solution.py and named there.
+TestParameters:
+  marks: [skip-gfx900, skip-gfx906, skip-gfx908, skip-gfx90a, skip-gfx940, skip-gfx941, skip-gfx942, skip-gfx950, skip-gfx1010, skip-gfx1011, skip-gfx1012, skip-gfx1030, skip-gfx1100, skip-gfx1101, skip-gfx1102, skip-gfx1200, skip-gfx1201]
+
+GlobalParameters:
+  SyncsPerBenchmark: 0
+  NumElementsToValidate: -1
+  BoundsCheck: 0
+  PrintSolutionRejectionReason: True
+  Architecture: gfx1250
+  KeepBuildTmp: True
+  OutputLoopIR: True
+  PrintLevel: 2
+  PruneSparseMode: 0
+  DataInitTypeA: 3
+  DataInitTypeB: 3
+
+BenchmarkProblems:
+
+  # Sparse A (the compressed tensor is A, so the metadata rides A).
+  -
+    -
+      OperationType: GEMM
+      DataType: F8
+      DestDataType: s
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: True
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+      Sparse: 1
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 128, 1,  1,  2, 2,  2, 2]
+        - DepthU: [128]
+        - WavefrontSize: [32]
+        - PrefetchGlobalRead: [1, 2]
+        - PrefetchLocalRead: [0, 1]
+        - StaggerU: [0]
+        - ScheduleIterAlg: [0, 4]
+        - UseSubtileImpl: [false]
+        - UseLoopModel: [true]
+        - TDMInst: [3]
+        - TDMFuse: [0]
+        - LDSTrInst: [false]
+        - TransposeLDSMetadata: [1]
+        - LdsPadMetadata: [0]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - WmmaInnerOrder: [1, 2]
+        - WmmaOuterOrder: [0]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 512]
+          - Exact: [256, 256, 1, 256]
+          - Exact: [257, 129, 1, 512]   # edge: M and N off the macro tile
+
+  # The non-UseLoopModel twin of the same problem, so a divergence has a control arm.
+  -
+    -
+      OperationType: GEMM
+      DataType: F8
+      DestDataType: s
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: True
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+      Sparse: 1
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 128, 1,  1,  2, 2,  2, 2]
+        - DepthU: [128]
+        - WavefrontSize: [32]
+        - PrefetchGlobalRead: [2]
+        - PrefetchLocalRead: [1]
+        - StaggerU: [0]
+        - ScheduleIterAlg: [4]
+        - UseLoopModel: [false]
+        - TDMInst: [3]
+        - TDMFuse: [0]
+        - LDSTrInst: [false]
+        - TransposeLDSMetadata: [1]
+        - LdsPadMetadata: [0]
+        - SourceSwap: [false]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 512]
+          - Exact: [256, 256, 1, 256]
+          - Exact: [257, 129, 1, 512]
