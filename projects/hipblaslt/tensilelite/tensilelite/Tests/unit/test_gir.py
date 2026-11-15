@@ -10,7 +10,7 @@ each test starts from is a means; `test_loopmodel.py` owns what the model derive
 import inspect
 import itertools
 import pytest
-from tensilelite.Tests.unit.test_halfplr_streamk_rejects import _gp_gfx1250  # noqa: F401
+from test_halfplr_streamk_rejects import _gp_gfx1250  # noqa: F401
 from test_loopmodel import BF16_NT_KMN, calculate_registers, mi_inputs, theta
 from tensilelite.LoopModel import adapter
 from tensilelite.LoopModel.adapter import kernel_to_params as _kernel_to_params
@@ -1044,7 +1044,7 @@ def test_lds_read_folds_on_the_read_stride(_gp_gfx1250, gfx1250_iim, assembler):
     """
     from tensilelite.SolutionStructs.Solution import Solution
     from tensilelite.Lowering.leaves import LeafEmitters
-    from tensilelite.Tests.unit.test_halfplr_streamk_rejects import _make_params
+    from test_halfplr_streamk_rejects import _make_params
     sol = Solution(_make_params(
         gfx1250_iim, mi=[16, 16, 128, 1, 1, 8, 8, 2, 2], StreamK=0, GlobalSplitU=1,
         SourceSwap=True, TDMIterateMode=-1, HalfPLR=1, PrefetchGlobalRead=1,
