@@ -306,23 +306,32 @@ def original_prefetch_unit_modes(theta, operand):
 
 
 def prefetch_unit_modes(theta, operand):
-    """The per-region prefetch unit before register grouping.
+    """The per-region prefetch unit before register grouping, WIDENED TO COVER ONE READ.
 
-    A MERGE THAT SPANS THE WHOLE FREE WALK makes it one register: there is nothing left for the
-    extra axis to cut, and cutting it anyway hands the ring a unit no read ever fills -- unless a
-    PARTNER AGENT steps the very axis the factor cut out, which costs no register of its own.
+    A FOLD IS INDIVISIBLE: one instruction lands every tile of a merged read, so a unit narrower
+    than the fold states a slot no read can fill without running into the next one.  The unit
+    therefore grows outward along the walk until it holds a whole read.
+
+    This is why A and B never needed it: one of their tiles already takes several `ds_read`s at
+    the widest load, so a fold can never outgrow the unit.  An MX scale tile is SMALLER than the
+    load, so a read necessarily folds several of them.
     """
     geometry = theta.geometry(operand)
     unit = list(geometry.prefetch_unit)
+    merge = read_merge(theta, operand)
+    if merge <= 1 or product(extent for _name, extent in unit) >= merge:
+        return unit
+    # `original_prefetch` is the same walk with the factor axes put back, outermost first; take
+    # the shortest suffix that covers the read.  Ragged is fine -- a fold that reaches past the
+    # unit is still one read landing in one buffer, which `carrier_capacity` rounds up.
     original = list(geometry.original_prefetch)
-    if unit == original or read_merge(theta, operand) <= 1:
-        return unit
-    if carrier_total(theta, operand) > 1:
-        return unit
-    kept = {name for name, _extent in unit}
-    dropped = {name for name, _extent in original if name not in kept}
-    agent = getattr(operand.fragment, "agent_axis", None)
-    return unit if agent is not None and dropped == {agent} else original
+    tiles, widened = 1, []
+    for name, extent in reversed(original):
+        widened.insert(0, (name, extent))
+        tiles *= max(1, extent)
+        if tiles >= merge and not {n for n, _e in unit} - {n for n, _e in widened}:
+            return widened
+    return original or unit
 
 
 def read_merge(theta, operand) -> int:
@@ -1068,6 +1077,10 @@ def ring_slot_widths(theta, operand, group, depths) -> list:
     depth = group_ring_depth(theta, operand, group, depths)
     positions = group_register_slots(theta, operand)
     if not carrier_ring(theta, operand):
+        # A SLOT NEVER HOLDS LESS THAN ONE FOLD.  Covering the parent's tiles can shorten the
+        # ring -- that is the buffer COUNT, settled in `_set_register_depths` -- but it cannot
+        # shave the last buffer: one read lands a whole fold, so a narrower slot is one the
+        # instruction filling it would run straight out of.
         return [positions] * depth
     # The occupancy counts CARRIERS and a slot is measured in register positions.  One carrier
     # is `span` unit indexes -- the reduction digits the slot still carries, which `unit_index`
@@ -1315,6 +1328,33 @@ def ring_axes(theta, operand, group):
     # ring digit, or it moves the buffer AND the unit index and addresses itself twice.
     unit = {name for name, _extent in register_unit_modes(theta, operand)}
     return [(name, extent) for name, extent in geometry.varying if name not in unit]
+
+
+def fold_use_span(theta, operand, group) -> int:
+    """Ring positions ONE CARRIER must stay live across -- the floor a fold puts on the ring.
+
+    THE LOAD ORDER AND THE USE ORDER COME APART once a read folds more than one tile: the fold
+    takes tiles that are adjacent in LDS, the loop order consumes them one at a time, and it
+    need not visit them together.  Every ring axis INNER to a folded axis turns between two of
+    that carrier's members, so its slot may not be refilled until the ring has come back -- a
+    shorter ring overwrites the fold's later members before they are read.
+
+    1 when nothing is folded, which leaves every unmerged operand's ring exactly as it was.
+    """
+    hop = operand.trajectory.shared_read
+    coverage = getattr(hop, "coverage", None) if hop is not None else None
+    if coverage is None or read_merge(theta, operand) <= 1:
+        return 1
+    candidates = {name for name, _extent in coverage_candidate_axes(theta, operand)}
+    folded = set(coverage_axes(theta, operand, coverage))
+    folded |= {name for name, _extent in prefetch_unit_modes(theta, operand)
+               if name in candidates}
+    order = [axis.name for axis in theta.ord if axis.name != "iter"]
+    outer = min((order.index(name) for name in folded if name in order), default=None)
+    if outer is None:
+        return 1
+    return max(1, product(extent for name, extent in ring_axes(theta, operand, group)
+                          if name in order and order.index(name) > outer))
 
 
 def ring_slot(theta, operand, group, buffers, advance=0, strides=None):
