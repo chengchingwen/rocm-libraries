@@ -6825,8 +6825,8 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
   ##############################################################################
   # MXScaleVgprInterleave
   # v_wmma_scale costs one cycle when its two scale VGPRs share a VGPR bank (index % 8).
-  # Every MXSA scale of a buffer meets every MXSB scale of the same buffer, so the
-  # interleaved layout puts a buffer's MXSA and MXSB scales on disjoint banks. Each scale
+  # Every MXSA scale of a buffer meets every MXSB scale of the buffers it pairs with, so the
+  # interleaved layout puts paired MXSA and MXSB scales on disjoint banks. Each scale
   # block is cut into pieces (whole block up to 4 VGPRs, else 4-VGPR pieces or local-read
   # sized pieces); piece k > 0 of block vgprValuMXS<tc>_X<bi>_I<iui> is addressed through
   # vgprValuMXS<tc>_X<bi>_I<iui>_P<k> (see remapMXScaleInterleave). Both BASE symbols point at
@@ -6887,9 +6887,9 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
   def _mxsInterleavePlan(self, kernel, tPMXSA, tPMXSB):
     """Group-local MXScaleVgprInterleave layout, or (None, reason) when it does not apply.
 
-    The scales a WMMA reads come from the same (bi, iui) block pair, so blocks are grouped by
-    pairing and each group is packed first-fit with its MXSA and MXSB pieces on disjoint banks.
-    The groups are placed in the region later (placeMXScaleInterleave)."""
+    Blocks whose scales meet in a WMMA are grouped, and each group is packed as tightly as its
+    MXSA and MXSB pieces allow on disjoint banks. The groups are placed in the region later
+    (placeMXScaleInterleave)."""
     pt = kernel["ProblemType"]
     mxsa, mxsb = self.states.mxsa, self.states.mxsb
     if not (pt["MXBlockA"] and pt["MXBlockB"]):
@@ -6919,56 +6919,120 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
         return None, "MXS%s local read (%u VGPRs) does not fit a %u-VGPR piece" % (tc, lrWidth, piece[tc])
     numPieces = {"A": mxsa.numVgprValuPerBlock // piece["A"], "B": mxsb.numVgprValuPerBlock // piece["B"]}
 
+    # The block pairs whose scales meet in one WMMA. The scaffold advances both scales on one
+    # buffer counter, so there buffer bi meets buffer bi. UseLoopModel gives each side its own
+    # ring -- its own depth AND its own read-ahead -- and then a buffer meets every buffer of the
+    # other side whatever the counts are. Only blocks of the same inner-unroll index meet, and
+    # every block meets one, so each reaches a group (else its symbol is never emitted).
+    keys = {tc: sorted(blocks[tc]) for tc in ("A", "B")}
+    if keys["A"] == keys["B"] and not kernel.get("UseLoopModel", False):
+      meets = [(key, key) for key in keys["A"]]
+    else:
+      meets = [(ka, kb) for ka in keys["A"] for kb in keys["B"] if ka[1] == kb[1]]
+
     # Pairing components over the distinct blocks (aliased buffers share a block).
     parent = {}
     def find(x):
       while parent.setdefault(x, x) != x:
         x = parent[x]
       return x
-    # MXSA and MXSB need not have the same ring depth, so a block of the deeper operand pairs
-    # with nothing; it still has to reach a group, or its symbol is never emitted.
-    allKeys = sorted(set(blocks["A"]) | set(blocks["B"]))
-    for key in allKeys:
-      roots = [find((tc, blocks[tc][key])) for tc in ("A", "B") if key in blocks[tc]]
-      for root in roots[1:]:
-        parent[root] = roots[0]
+    for ka, kb in meets:
+      parent[find(("A", blocks["A"][ka]))] = find(("B", blocks["B"][kb]))
     groups, groupOf = [], {}
-    for key in allKeys:
-      anchor = "A" if key in blocks["A"] else "B"
-      root = find((anchor, blocks[anchor][key]))
+    for ka, kb in meets:
+      root = find(("A", blocks["A"][ka]))
       if root not in groupOf:
         groupOf[root] = len(groups)
         groups.append({"A": [], "B": []})
       grp = groups[groupOf[root]]
-      for tc in ("A", "B"):
-        if key in blocks[tc] and blocks[tc][key] not in grp[tc]:
+      for tc, key in (("A", ka), ("B", kb)):
+        if blocks[tc][key] not in grp[tc]:
           grp[tc].append(blocks[tc][key])
 
     # The B-slot scale of the WMMA (MXSA when SourceSwap swaps the sources) is also kept out
     # of the low 8 VGPRs of the WMMA's own C/D where the region allows it (placement step).
     slotTc = "A" if kernel["SourceSwap"] else "B"
+    # The bank split packs no looser than placing pieces one by one, so it moves kernels the
+    # scaffold path already lays out -- it is taken only where the layout is being changed.
+    loopModel = bool(kernel.get("UseLoopModel", False))
+    pack = self._mxsPackGroup if loopModel else self._mxsPackGroupFirstFit
     for grp in groups:
       lists = {tc: [(tc, off, k) for off in grp[tc] for k in range(numPieces[tc])] for tc in ("A", "B")}
-      order = []
-      for i in range(max(len(lists["A"]), len(lists["B"]))):
-        order += [lst[i] for lst in (lists["A"], lists["B"]) if i < len(lst)]
-      used, banks, cells = set(), {"A": set(), "B": set()}, {}
-      for pc in order:
-        tc = pc[0]
-        size = piece[tc]
-        other = banks["B" if tc == "A" else "A"]
-        step = 2 if size >= 2 else 1
-        p = 0
-        while any(c in used for c in range(p, p + size)) or {c % 8 for c in range(p, p + size)} & other:
-          p += step
-          assert p < 4096, "MXScaleVgprInterleave: no bank-disjoint slot"
-        used.update(range(p, p + size))
-        banks[tc].update(c % 8 for c in range(p, p + size))
-        cells[pc] = p
-      grp["cells"] = cells
-      grp["span"] = (max(used) + 2) // 2 * 2  # groups start on even VGPRs
-      grp["slot"] = sorted(c for pc, p in cells.items() if pc[0] == slotTc for c in range(p, p + piece[slotTc]))
+      grp["cells"], grp["span"] = pack(lists, piece)
+      grp["slot"] = sorted(c for pc, p in grp["cells"].items() if pc[0] == slotTc
+                           for c in range(p, p + piece[slotTc]))
+    if groups and loopModel:
+      # A span is rounded up so the NEXT group starts on an even VGPR; after the last one that
+      # padding is region the layout is charged for and never uses, and one VGPR decides whether
+      # a layout fits.
+      last = groups[-1]
+      last["span"] = max(p + piece[pc[0]] for pc, p in last["cells"].items())
     return {"piece": piece, "blocks": blocks, "groups": groups}, None
+
+  @staticmethod
+  def _mxsPackGroupFirstFit(lists, piece):
+    """(cells, span) of one group with the pieces placed one at a time, MXSA and MXSB alternating,
+    each at the first free start taking no bank the other side holds.
+
+    The layout every scaffold kernel is laid out with; `_mxsPackGroup` packs no looser, so taking
+    it here would move kernels for no reason of theirs."""
+    order = []
+    for i in range(max(len(lists["A"]), len(lists["B"]))):
+      order += [lst[i] for lst in (lists["A"], lists["B"]) if i < len(lst)]
+    used, banks, cells = set(), {"A": set(), "B": set()}, {}
+    for pc in order:
+      tc = pc[0]
+      size = piece[tc]
+      other = banks["B" if tc == "A" else "A"]
+      step = 2 if size >= 2 else 1
+      p = 0
+      while any(c in used for c in range(p, p + size)) or {c % 8 for c in range(p, p + size)} & other:
+        p += step
+        assert p < 4096, "MXScaleVgprInterleave: no bank-disjoint slot"
+      used.update(range(p, p + size))
+      banks[tc].update(c % 8 for c in range(p, p + size))
+      cells[pc] = p
+    return cells, (max(used) + 2) // 2 * 2  # groups start on even VGPRs
+
+  @staticmethod
+  def _mxsPackGroup(lists, piece):
+    """(cells, span) of one group: every piece of `lists` at a start, MXSA and MXSB on disjoint
+    banks, in as few VGPRs as that allows.
+
+    A VGPR has one bank, so sides kept to disjoint banks can never share a register and pack
+    independently. Every split of the eight banks is tried and the tightest kept, the first found
+    on a tie."""
+    best = None
+    for mask in range(1, 255):
+      sideBanks = {"A": {b for b in range(8) if mask >> b & 1}}
+      sideBanks["B"] = set(range(8)) - sideBanks["A"]
+      starts = {tc: KernelWriter._mxsPackSide(len(lists[tc]), piece[tc], sideBanks[tc]) for tc in ("A", "B")}
+      if None in starts.values():
+        continue
+      top = max(p + piece[tc] - 1 for tc in ("A", "B") for p in starts[tc])
+      if best is None or top < best[0]:
+        best = (top, starts)
+    assert best is not None, "MXScaleVgprInterleave: no bank-disjoint split"
+    top, starts = best
+    cells = {pc: p for tc in ("A", "B") for pc, p in zip(lists[tc], starts[tc])}
+    return cells, (top + 2) // 2 * 2  # groups start on even VGPRs
+
+  @staticmethod
+  def _mxsPackSide(count, size, banks):
+    """First-fit starts of `count` pieces of `size` VGPRs kept to `banks` (index % 8), or None
+    when no start is. A piece of two or more VGPRs starts on an even VGPR."""
+    step = 2 if size >= 2 else 1
+    residues = [r for r in range(0, 8, step) if all((r + i) % 8 in banks for i in range(size))]
+    if not residues:
+      return None
+    starts, nextFree, row = [], 0, 0
+    while len(starts) < count:
+      for r in residues:
+        if len(starts) < count and row + r >= nextFree:
+          starts.append(row + r)
+          nextFree = row + r + size
+      row += 8
+    return starts
 
   def placeMXScaleInterleave(self, kernel, plan, regionStart, regionEnd, cStart):
     """Place the planned groups in [regionStart, regionEnd): each at the first even offset that
@@ -7003,13 +7067,21 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
     return out
 
   def remapMXScaleInterleave(self, module):
-    """MXScaleVgprInterleave: point every MXS reference that lands in piece k > 0 of its block
-    at that piece's symbol (vgprValuMXS*_X*_I*_P<k>). A reference must stay inside one piece."""
+    """MXScaleVgprInterleave: point every MXS reference at the block and piece that now hold its
+    register (vgprValuMXS*_X*_I*, _P<k> for piece k > 0). A reference must stay inside one piece.
+
+    An offset is a position in the default layout, where a side's blocks sit back to back, so
+    code may name a later block through an earlier one's symbol (X0_I0 + 4 for X1_I0). The
+    interleave does not keep blocks adjacent, so such a reference is moved to the block the
+    default layout puts it in, not read as a piece of its own."""
     plan = self.states.mxsInterleave
-    names = {}
+    blockSize = {"A": self.states.mxsa.numVgprValuPerBlock, "B": self.states.mxsb.numVgprValuPerBlock}
+    where, owner = {}, {}
     for tc in ("A", "B"):
-      for (bi, iui) in plan["blocks"][tc]:
-        names["ValuMXS%s_X%u_I%u" % (tc, bi, iui)] = plan["piece"][tc]
+      for (bi, iui), off in sorted(plan["blocks"][tc].items()):
+        name = "ValuMXS%s_X%u_I%u" % (tc, bi, iui)
+        where[name] = (tc, off)
+        owner.setdefault((tc, off), name)
     def visit(mod):
       for item in mod.items():
         if isinstance(item, Module):
@@ -7025,16 +7097,23 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
             continue
           seen.add(id(param))
           name = param.regName.name
-          size = names.get(name)
-          if size is None:
+          if name not in where:
             continue
+          tc, base = where[name]
           offset = sum(param.regName.getOffsets())
+          if not 0 <= offset < blockSize[tc]:
+            at = base + offset
+            base = max((o for t, o in owner if t == tc and o <= at), default=None)
+            assert base is not None and at - base < blockSize[tc], \
+              "MXScaleVgprInterleave: reference outside every MXS%s block: %s" % (tc, str(item))
+            name, offset = owner[(tc, base)], at - base
+          size = plan["piece"][tc]
           num = max(1, int(ceil(param.regNum)))
           k, local = divmod(offset, size)
           assert local + num <= size, \
             "MXScaleVgprInterleave: reference crosses a %u-VGPR piece: %s" % (size, str(item))
-          if k:
-            param.regName = RegName("%s_P%u" % (name, k), [local])
+          if k or name != param.regName.name:
+            param.regName = RegName("%s_P%u" % (name, k) if k else name, [local])
     visit(module)
 
   ##############################################################################
