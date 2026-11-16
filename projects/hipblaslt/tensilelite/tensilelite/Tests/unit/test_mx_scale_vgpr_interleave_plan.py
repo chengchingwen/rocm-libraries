@@ -1,7 +1,7 @@
 # Copyright Advanced Micro Devices, Inc., or its affiliates.
 # SPDX-License-Identifier: MIT
-"""KernelWriter._mxsInterleavePlan / _mxsDefaultBlocks: when the gfx1250 MX scale interleave
-applies and the reason it gives when it does not.
+"""KernelWriter._mxsInterleavePlan / _mxsDefaultBlocks / remapMXScaleInterleave: when the gfx1250
+MX scale interleave applies, the reason it gives when it does not, and where it moves a reference.
 
 CPU-only; the writer and kernel are minimal stand-ins, so no codegen runs.
 """
@@ -9,6 +9,9 @@ CPU-only; the writer and kernel are minimal stand-ins, so no codegen runs.
 from types import SimpleNamespace
 
 import pytest
+from rocisa.code import Module
+from rocisa.container import vgpr
+from rocisa.instruction import DSLoadB32, DSLoadB128
 
 from tensilelite.KernelWriter import KernelWriter
 
@@ -36,6 +39,7 @@ def _writer(numVgprBuffer=2, lrvwTile=1, valuPerBlock=(4, 4), bufferMXSA=0, buff
   writer._mxsInterleavePlan = lambda kernel, tPA, tPB, **kw: KernelWriter._mxsInterleavePlan(writer, kernel, tPA, tPB, **kw)
   writer._mxsBudgetPlan = lambda *args: KernelWriter._mxsBudgetPlan(writer, *args)
   writer._mxsLayoutConflicts = lambda *args, **kw: KernelWriter._mxsLayoutConflicts(writer, *args, **kw)
+  writer._mxsPackGroup = KernelWriter._mxsPackGroup
   return writer
 
 
@@ -95,6 +99,111 @@ def test_plan_aliased_buffers_share_a_block():
 def test_default_blocks_advance_per_buffer_and_inner_unroll():
   assert KernelWriter._mxsDefaultBlocks(_writer(), _kernel(InnerUnroll=2), "A") == \
     {(0, 0): 0, (0, 1): 4, (1, 0): 8, (1, 1): 12}
+
+
+def _loopModelKernel(**over):
+  """UseLoopModel names the path: each side's ring rotates on its own, and the layout is packed
+  by the bank split rather than the scaffold's first fit."""
+  return _kernel(UseLoopModel=True, **over)
+
+
+def _loopModelWriter():
+  """An MX-F8 UseLoopModel shape: two 4-VGPR MXSA buffers and one 5-VGPR MXSB buffer under a
+  three-deep scaffold, the counts that once sized the region for three of each."""
+  writer = _writer(numVgprBuffer=3, valuPerBlock=(4, 5), bufferMXSA=2, bufferMXSB=1)
+  writer.states.lrvwTileMXSA, writer.states.lrvwTileMXSB = 8, 1
+  writer.states.mxsa.numVgprValu, writer.states.mxsb.numVgprValu = 8, 5
+  return writer
+
+
+def test_default_blocks_follow_each_operands_own_buffers():
+  writer = _loopModelWriter()
+  assert KernelWriter._mxsDefaultBlocks(writer, _loopModelKernel(), "A") == {(0, 0): 0, (1, 0): 4}
+  assert KernelWriter._mxsDefaultBlocks(writer, _loopModelKernel(), "B") == {(0, 0): 0}
+
+
+def test_unequal_buffer_counts_put_every_block_in_one_group():
+  plan, reason = _plan(_loopModelWriter(), _loopModelKernel(), widthA=4)
+  assert reason is None
+  assert [(grp["A"], grp["B"]) for grp in plan["groups"]] == [([0, 4], [0])]
+
+
+def test_loop_model_shape_fits_the_default_span_on_disjoint_banks():
+  plan, regionLen, reason = KernelWriter._mxsInterleaveRegion(
+    _loopModelWriter(), _loopModelKernel(), _tensor(4), _tensor(), 0, False)
+  assert reason is None and regionLen == 15
+  (grp,) = plan["groups"]
+  regs = {tc: {c for pc, p in grp["cells"].items() if pc[0] == tc for c in range(p, p + plan["piece"][tc])}
+          for tc in "AB"}
+  # 13, not the even 14: the padding that starts the NEXT group on an even VGPR is region the
+  # last group is charged for and never uses, and one VGPR is the difference between a layout
+  # that fits the default and one that declines.
+  assert grp["span"] == 13
+  assert regs == {"A": {0, 1, 2, 3, 8, 9, 10, 11}, "B": {4, 5, 6, 7, 12}}
+
+
+def _remapped(*dsts):
+  """The destination text of one ds_load per `dsts` entry, after remapping the interleave of
+  _loopModelWriter: MXSA blocks X0 at +0 and X1 at +8, MXSB pieces at +4..+7 and +12."""
+  writer = _loopModelWriter()
+  writer.states.mxsInterleave, _reason = _plan(writer, _loopModelKernel(), widthA=4)
+  module = Module("remap")
+  loads = [DSLoadB128(vgpr(name, 4), vgpr("LocalReadAddrMXSA")) if width == 4 else
+           DSLoadB32(vgpr(name), vgpr("LocalReadAddrMXSB")) for name, width in dsts]
+  for load in loads:
+    module.add(load)
+  KernelWriter.remapMXScaleInterleave(writer, module)
+  return [str(load).split()[1].rstrip(",") for load in loads]
+
+
+def test_remap_moves_a_reference_to_the_block_the_default_layout_puts_it_in():
+  # Loop-model drain code names MXSA's second buffer through the first one's symbol. X1 no longer
+  # follows X0, so reading +4 as piece 1 of X0 named a piece that does not exist.
+  assert _remapped(("ValuMXSA_X0_I0+4", 4), ("ValuMXSA_X1_I0", 4), ("ValuMXSA_X0_I0", 4)) == [
+    "v[vgprValuMXSA_X1_I0+0:vgprValuMXSA_X1_I0+0+3]",
+    "v[vgprValuMXSA_X1_I0:vgprValuMXSA_X1_I0+3]",
+    "v[vgprValuMXSA_X0_I0:vgprValuMXSA_X0_I0+3]",
+  ]
+
+
+def test_remap_points_a_reference_inside_its_block_at_the_piece():
+  assert _remapped(("ValuMXSB_X0_I0", 1), ("ValuMXSB_X0_I0+2", 1), ("ValuMXSB_X0_I0+4", 1)) == [
+    "v[vgprValuMXSB_X0_I0]", "v[vgprValuMXSB_X0_I0_P2+0]", "v[vgprValuMXSB_X0_I0_P4+0]"]
+
+
+def test_remap_refuses_a_reference_past_every_block():
+  with pytest.raises(AssertionError, match="outside every MXSA block"):
+    _remapped(("ValuMXSA_X1_I0+4", 4))
+
+
+def _firstFitSpan(lists, piece):
+  """The packing the bank split replaced: pieces placed one by one, MXSA and MXSB alternating,
+  each at the first free start that takes no bank the other side holds."""
+  order = [lst[i] for i in range(max(map(len, lists.values()))) for lst in (lists["A"], lists["B"]) if i < len(lst)]
+  used, banks = set(), {"A": set(), "B": set()}
+  for tc, _off, _k in order:
+    size, other = piece[tc], banks["B" if tc == "A" else "A"]
+    p = 0
+    while any(c in used for c in range(p, p + size)) or {c % 8 for c in range(p, p + size)} & other:
+      p += 2 if size >= 2 else 1
+    used.update(range(p, p + size))
+    banks[tc].update(c % 8 for c in range(p, p + size))
+  return (max(used) + 2) // 2 * 2
+
+
+@pytest.mark.parametrize("sizeA, sizeB", [(a, b) for a in (1, 2, 3, 4) for b in (1, 2, 3, 4)])
+def test_bank_split_packs_no_looser_than_first_fit(sizeA, sizeB):
+  piece = {"A": sizeA, "B": sizeB}
+  for countA in range(1, 7):
+    for countB in range(1, 7):
+      lists = {"A": [("A", 0, k) for k in range(countA)], "B": [("B", 0, k) for k in range(countB)]}
+      cells, span = KernelWriter._mxsPackGroup(lists, piece)
+      regs = {tc: [c for pc, p in cells.items() if pc[0] == tc for c in range(p, p + piece[tc])] for tc in "AB"}
+      assert span <= _firstFitSpan(lists, piece), (countA, countB)
+      assert not {c % 8 for c in regs["A"]} & {c % 8 for c in regs["B"]}
+      allRegs = regs["A"] + regs["B"]
+      assert len(allRegs) == len(set(allRegs)) and max(allRegs) < span
+      assert all(p % 2 == 0 for pc, p in cells.items() if piece[pc[0]] >= 2)
 
 
 @pytest.mark.parametrize("problemType", [{"MXBlockA": 0, "MXBlockB": 32}, {"MXBlockA": 32, "MXBlockB": 0}])
