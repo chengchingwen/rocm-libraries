@@ -6714,6 +6714,19 @@ class Solution(collections.abc.Mapping):
                "UseLoopModel sparse requires the TDM metadata load; this kernel moves the "
                "metadata another way, which the read leaf has no path for")
         return
+      # A DATA TENSOR ON THE TRANSPOSE PATH IS ALSO OUT OF SCOPE, and it is a SEPARATE fact from
+      # `enableLDSTrMetadata`: a tile-major A turns `enableLDSTrA` on while the metadata's own
+      # flag stays off (it needs `MetadataLayout`).  The read leaf refuses that pair, so without
+      # this the solution is accepted here and then FAILS TO GENERATE -- a genfail, not a reject.
+      _ldsTr = [tc for tc in ("A", "B")
+                if state["ProblemType"]["Sparse"] and state["enableLDSTr%s" % tc]]
+      if _ldsTr:
+        reject(state, printRejectionReason,
+               "UseLoopModel sparse supports the unroll-major read path only, but %s read(s) "
+               "through the LDS transpose (enableLDSTr%s).  Use an unroll-major layout for the "
+               "data tensors, or drop UseLoopModel."
+               % ("+".join(_ldsTr), "+".join(_ldsTr)))
+        return
 
     if tdmFusedGroups(state):
       _regions = {"A": TDMSplit.split_of(state, "A")[0], "B": TDMSplit.split_of(state, "B")[0]}
