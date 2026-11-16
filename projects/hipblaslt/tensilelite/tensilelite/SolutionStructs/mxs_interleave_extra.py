@@ -96,6 +96,8 @@ def extraVgprMatters(state, isaInfo, bpr: int = 4) -> Optional[bool]:
   writer = SimpleNamespace(states=states)
   writer._mxsDefaultBlocks = lambda kernel, tc: KernelWriter._mxsDefaultBlocks(writer, kernel, tc)
   writer._alignMXSB = lambda kernel, idx: KernelWriter._alignMXSB(writer, kernel, idx)
+  # A loop-model kernel is packed by the bank split, which the plan reaches through the writer.
+  writer._mxsPackGroup = KernelWriter._mxsPackGroup
   tensor = lambda width: {"localReadInstruction": SimpleNamespace(blockWidth=width)}
   tPA, tPB = tensor(lrWidth["A"]), tensor(lrWidth["B"])
 

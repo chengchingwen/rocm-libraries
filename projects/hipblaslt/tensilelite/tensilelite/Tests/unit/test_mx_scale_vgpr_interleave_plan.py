@@ -18,7 +18,8 @@ from tensilelite.KernelWriter import KernelWriter
 pytestmark = pytest.mark.unit
 
 
-def _writer(numVgprBuffer=2, lrvwTile=1, valuPerBlock=(4, 4), bufferMXSA=0, bufferMXSB=0):
+def _writer(numVgprBuffer=2, lrvwTile=1, valuPerBlock=(4, 4), bufferMXSA=0, bufferMXSB=0,
+            force=False):
   states = SimpleNamespace(
     numVgprBuffer=numVgprBuffer,
     # 0 means allocation has not run, so the per-operand depth falls back to the shared count.
@@ -40,6 +41,7 @@ def _writer(numVgprBuffer=2, lrvwTile=1, valuPerBlock=(4, 4), bufferMXSA=0, buff
   writer._mxsBudgetPlan = lambda *args: KernelWriter._mxsBudgetPlan(writer, *args)
   writer._mxsLayoutConflicts = lambda *args, **kw: KernelWriter._mxsLayoutConflicts(writer, *args, **kw)
   writer._mxsPackGroup = KernelWriter._mxsPackGroup
+  writer.do = {"MXScaleVgprInterleaveForce": force}
   return writer
 
 
@@ -300,6 +302,32 @@ def test_shared_groups_pack_into_each_others_holes():
   cells = shared["groups"][0]["cells"]
   used = [c for pc, p in cells.items() for c in range(p, p + shared["piece"][pc[0]])]
   assert len(used) == len(set(used)) == 2 * (4 + 13)
+
+
+def test_forcing_takes_what_the_layout_needs_instead_of_the_default():
+  # For a kernel whose VGPRs are reallocated afterwards the region is a placement, not a count,
+  # so declining a layout one VGPR over the default buys nothing and keeps the bank conflicts.
+  writer = _writer(force=True)
+  writer.states.mxsa.numVgprValu = 1
+  writer.states.mxsb.numVgprValu = 1
+  plan, regionLen, reason = _region(writer, _kernel())
+  assert reason is None and plan is not None
+  assert regionLen == sum(grp["span"] for grp in plan["groups"]) > 2
+
+
+def test_forcing_still_stops_at_v255():
+  # The region has to live below v255 whatever the switch says: past it the MSB window moves.
+  writer = _writer(force=True)
+  plan, regionLen, reason = _region(writer, _kernel(), vgprIdx=250)
+  assert (plan, regionLen) == (None, 0) and "pass v255" in reason
+
+
+@pytest.mark.parametrize("pap, applies", [(False, False), (True, True)])
+def test_region_needs_prefetch_global_read_or_pap(pap, applies):
+  plan, regionLen, reason = _region(_writer(), _kernel(PrefetchGlobalRead=0), papEnabled=pap)
+  assert (plan is not None) == applies
+  if not applies:
+    assert regionLen == 0 and "G2L" in reason
 
 
 def test_shared_groups_keep_each_pairing_bank_disjoint():

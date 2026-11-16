@@ -777,6 +777,10 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
     # _mxsInterleavePlan). Developer switch for A/B comparisons; kernels it cannot
     # interleave keep the default layout.
     self.do["MXScaleVgprInterleave"] = True
+    # Take the layout even where it is wider than the default scale region, which otherwise
+    # declines. The region is then a placement rather than a count, which is what it is for a
+    # kernel whose VGPRs StinkyTofu reallocates afterwards.
+    self.do["MXScaleVgprInterleaveForce"] = False
 
     self.do["executeToInitEnd"] = 0
     self.do["executeToPrefetchEnd"] = 0
@@ -6878,7 +6882,8 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
     By default the region is exactly the default MXSA + MXSB valu span, so the kernel's VGPR
     count does not grow: the bank-conflict-free layout is used when it fits, otherwise the layout
     with the fewest bank conflicts that fits (_mxsBudgetPlan). With the solution parameter
-    MXScaleVgprInterleaveExtraVgpr the region instead grows to hold the conflict-free layout."""
+    MXScaleVgprInterleaveExtraVgpr, or with MXScaleVgprInterleaveForce where the VGPRs are
+    reallocated afterwards, the region instead grows to hold the conflict-free layout."""
     plan, reason = self._mxsInterleavePlan(kernel, tPMXSA, tPMXSB)
     if plan is None:
       return None, 0, reason
@@ -6893,7 +6898,10 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       shared, _ = self._mxsInterleavePlan(kernel, tPMXSA, tPMXSB, shareGroups=True)
       if shared is not None and sum(g["span"] for g in shared["groups"]) < needed:
         plan, needed = shared, sum(g["span"] for g in shared["groups"])
-    allowExtraVgpr = bool(kernel["MXScaleVgprInterleaveExtraVgpr"])
+    # The region is a reservation, so taking more than the default raises the kernel's VGPR
+    # count. Where the VGPRs are reallocated afterwards it is a placement instead and the count
+    # is not this reservation's to raise, which is what the switch says.
+    allowExtraVgpr = bool(kernel["MXScaleVgprInterleaveExtraVgpr"]) or self.do["MXScaleVgprInterleaveForce"]
     if needed > defaultLen and not allowExtraVgpr:
       plan = self._mxsBudgetPlan(kernel, stacked, defaultLen, mxsbStart - vgprIdx)
       needed = sum(g["span"] for g in plan["groups"])
