@@ -712,29 +712,26 @@ def _set_register_depths(theta, kernel):
         clr = value("ClusterLocalRead", side)
         vg = value("VgprGroup", side)
         if _is_companion(operand.name):
-            # FOLLOW THE PARENT IN TILE COVERAGE, NOT IN BUFFER COUNT.  A scale's unit covers a
-            # whole fold, so it takes however many buffers that unit needs to span the tiles the
-            # parent's ring holds -- which is fewer than the parent's own count once the unit is
-            # the wider of the two.  THE FOLD'S OWN LIVE RANGE IS THE FLOOR: coverage says how
-            # much to hold, `fold_use_span` how long, and a ring short of either loses a value.
-            # IN FREE TILES, BOTH SIDES.  A unit whose own part is a REDUCTION step holds the
-            # whole free walk already, so there is no coverage to divide and the ring spends its
-            # depth on generations -- that is the parent's count, not a tile ratio.
+            # Follow the parent in TILE COVERAGE, not in buffer count: the buffers this operand's
+            # unit needs to span the tiles the parent's ring holds, which is fewer than the
+            # parent's own once its unit is the wider.  `fold_use_span` is how LONG, not how much.
+            # A unit spanning the whole free walk has no coverage to divide -- there the ring
+            # counts generations, which is the parent's number and not a tile ratio.
             unit = _unit_free_tiles(theta, operand)
+            walk = geometry.flat_tile_strides(theta, operand)[1]
             tiles = int(covered.get(side, 0))
-            alloc = (max(1, -(-tiles // unit)) if unit > 1 and tiles
+            alloc = (max(1, -(-tiles // unit)) if 1 < unit < walk and tiles
                      else value("VgprAlloc", side))
             alloc = max(alloc, geometry.fold_use_span(
                 theta, operand, operand.fragment.groups()[0]))
-            # The lead is the same coverage statement: PLR counts UNITS, and one companion unit
-            # spanning everything the parent's lead reaches makes a second one a read of a unit
-            # the loop has not arrived at.  Same fallback as the ring when there is no coverage.
+            # The lead is the same coverage statement: PLR counts UNITS, so a parent lead that
+            # does not fill one of the companion's is no read-ahead at all -- the unit it would
+            # fetch is the one being read.  Same fallback as the ring when there is no coverage.
             lead_tiles = int(leads.get(side, 0))
-            lead = max(1, -(-lead_tiles // unit)) if unit > 1 and lead_tiles else plr
+            lead = lead_tiles // unit if unit > 1 and lead_tiles else plr
             operand.fragment.read_lead = lead
-            # Coverage says how many buffers the walk needs, never how many the PIPELINE does:
-            # the lead runs ahead, so that many must be live, capped by the ring holding them.
-            alloc = max(alloc, min(lead + 1, geometry._ring_period(theta, operand)))
+            # No pipeline floor on top: the parent's ring already holds its own lead, so covering
+            # the tiles that ring holds covers everything the companion reads ahead of.
             # Stated on the FRAGMENT, not in the Solution: `VgprAllocA/B` are parameters a user
             # writes, and a derived value put beside them would be read back as one.  The depth
             # lands in `ring_depths` below, which is what every consumer already asks.
@@ -747,19 +744,11 @@ def _set_register_depths(theta, kernel):
         def _depth(capacity):
             """The ring this operand ends up with if a slot holds `capacity` carriers."""
             operand.fragment.carrier_slot = int(capacity)
-            value_ = min(alloc, geometry._ring_period(theta, operand)) if clamped else alloc
-            # A CARRIER RING TURNS `walk` SLOTS PER GENERATION.  A depth that is not a whole
-            # number of turns starts each generation on a shifted phase, and two live
-            # coordinates land on one slot -- a ring that cannot be addressed, not a short one.
-            turn = geometry.carrier_walk_slots(theta, operand)
-            if turn > 1 and value_ % turn:
-                value_ = max(turn, (value_ // turn) * turn)
-            return value_
+            return min(alloc, geometry._ring_period(theta, operand)) if clamped else alloc
 
         if geometry.carrier_ring(theta, operand):
-            # THE SLOT MAY NOT LENGTHEN THE RING.  A finer slot is a layout choice; once it needs
-            # more buffers than the whole walk did it has changed the rotation, so fall back to
-            # the whole walk in one slot.  Needing FEWER is the turn above making it addressable.
+            # The slot a merged read lands in is a layout choice; once it needs more buffers than
+            # the whole walk did it has changed the rotation, so fall back to one slot per walk.
             fine = geometry.carrier_slot_capacity(theta, operand)
             whole = geometry.carrier_total(theta, operand)
             fine_depth, whole_depth = _depth(fine), _depth(whole)
