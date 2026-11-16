@@ -7,11 +7,12 @@ A companion operand -- an MX scale or a sparse problem's metadata -- has no Pref
 its own; it reads the one belonging to the tensor it rides.  PLR counts prefetch UNITS, and a
 companion's unit is the wider one: a merged read lands a whole fold in one buffer, so one of its
 units can already span every tile the parent's lead reaches.  Taking the parent's NUMBER then asks
-for a second read of a unit the loop has not arrived at.
+for a read of a unit the loop has not arrived at.
 
-The lead is therefore the same coverage statement the ring depth is:
+The lead is therefore stated in the companion's own units, and a parent lead that does not fill
+one of them is no read-ahead at all:
 
-    lead  ==  ceil(parent unit tiles * parent PLR / companion unit tiles)
+    lead  ==  (parent unit tiles * parent PLR) // companion unit tiles
 
 pinned below for the three cases that differ -- the parent's lead inside one companion unit, on
 its boundary, and past it.  A and B are pinned alongside because the derivation must not reach
@@ -74,14 +75,14 @@ def _lead(theta, name):
     return geometry._raw_read_ahead(theta, _operand(theta, name))
 
 
-@pytest.mark.parametrize("plr,parent_tiles,companion_lead", [(1, 1, 1), (2, 2, 1), (3, 3, 2)])
+@pytest.mark.parametrize("plr,parent_tiles,companion_lead", [(1, 1, 0), (2, 2, 1), (3, 3, 1)])
 def test_the_lead_is_the_parents_coverage_in_the_companions_units(plr, parent_tiles,
                                                                   companion_lead):
-    """PLR 2 is one MXSA unit, so MXSA leads by 1 -- a second read would have nothing to read."""
+    """PLR 1 is half an MXSA unit, so MXSA does not lead at all; PLR 2 and 3 are one of them."""
     theta = _theta(plr)
     unit = adapter._unit_free_tiles(theta, _operand(theta, "MXSA"))
     assert adapter._unit_free_tiles(theta, _operand(theta, "A")) * plr == parent_tiles
-    assert -(-parent_tiles // unit) == companion_lead
+    assert parent_tiles // unit == companion_lead
     assert _lead(theta, "MXSA") == companion_lead
     assert _lead(theta, "MXSB") == companion_lead
 
@@ -96,11 +97,15 @@ def test_a_data_tensors_lead_is_still_the_parameter_itself(plr):
 
 
 @pytest.mark.parametrize("plr", [1, 2, 3])
-def test_the_lead_never_outruns_the_ring_that_holds_it(plr):
-    """A lead of `n` needs `n+1` buffers live, so the ring must still cover the derived lead."""
+def test_the_ring_holds_the_tiles_its_parents_ring_holds(plr):
+    """THE ONLY TEST THE DEPTH HAS TO MEET.  No pipeline term is added on top of coverage."""
     theta = _theta(plr)
-    for name in ("MXSA", "MXSB"):
-        operand = _operand(theta, name)
-        depth = max(operand.fragment.ring_depths.values())
-        assert depth >= min(_lead(theta, name) + 1,
-                            geometry._ring_period(theta, operand))
+    for name, side in (("MXSA", "A"), ("MXSB", "B")):
+        operand, parent = _operand(theta, name), _operand(theta, side)
+        unit = adapter._unit_free_tiles(theta, operand)
+        held = max(operand.fragment.ring_depths.values()) * unit
+        parent_held = (adapter._unit_free_tiles(theta, parent)
+                       * max(parent.fragment.ring_depths.values()))
+        assert held >= parent_held, (
+            "%s holds %d tiles against %s's %d" % (name, held, side, parent_held))
+        assert _lead(theta, name) <= max(operand.fragment.ring_depths.values())
