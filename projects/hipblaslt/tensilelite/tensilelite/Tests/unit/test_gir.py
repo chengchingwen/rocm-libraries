@@ -1146,3 +1146,49 @@ def test_read_ahead_cap_follows_the_factor_that_splits_the_unit():
     assert _b_read_ahead(5, 10) == 10
     with pytest.raises(RuntimeError, match="the most B can run ahead"):
         _b_read_ahead(5, 11)
+
+
+# ---------------------------------------------------------------------------
+# The ring rotation: a copy of the loop body starts every ring one PERIOD further
+# round, and a check that cannot see a group must say so rather than pass it.
+# ---------------------------------------------------------------------------
+def _rotating_prog():
+    """A three-copy chain whose rings carry -- the shape the check exists for."""
+    k = _half_plr_kernel("NKM", 1)
+    k["SuppressNoLoadLoop"] = True
+    return build_gir(adapter.params_to_theta(kernel_to_params(k)), loop_copies=3)
+
+
+def test_the_ring_rotation_check_passes_a_rotating_chain():
+    from tensilelite.Lowering.gir.verify_dataflow import check_ring_rotation
+    prog = _rotating_prog()
+    assert prog.meta.get("ring_rotation"), "the model must state what each ring advances by"
+    assert not check_ring_rotation(prog)
+
+
+def test_a_ring_that_restarts_each_copy_is_caught(monkeypatch):
+    """Every copy reading copy 0's slots is the defect f8maf7's MXSA shipped with."""
+    from tensilelite.Lowering.gir import verify_dataflow as V
+    prog = _rotating_prog()
+    first = V._read_slot_pattern(prog, V.loop_chain_blocks(prog, "steady")[0])
+    carried = {key for key, (depth, period) in
+               ((k, v) for operand, groups in prog.meta["ring_rotation"].items()
+                for k, v in ((("%s" % operand, g), f) for g, f in groups.items()))
+               if depth > 1 and period % depth}
+    assert carried, "this fixture must contain a ring that carries, or it proves nothing"
+    monkeypatch.setattr(V, "_read_slot_pattern", lambda prog, label: first)
+    viol = V.check_ring_rotation(prog)
+    assert viol, "a ring frozen at copy 0's phase must be reported"
+    assert any("RING-DOES-NOT-ROTATE" in v for v in viol), viol
+
+
+def test_a_group_the_model_does_not_state_is_reported_not_skipped():
+    """The lookup key is the plan's; a mismatch must be loud, not an empty check."""
+    from tensilelite.Lowering.gir.verify_dataflow import check_ring_rotation
+    prog = _rotating_prog()
+    prog.meta["ring_rotation"] = {
+        operand: {"g0": value for value in groups.values()}
+        for operand, groups in prog.meta["ring_rotation"].items()
+    }
+    viol = check_ring_rotation(prog)
+    assert any("RING-ROTATION-UNSTATED" in v for v in viol), viol

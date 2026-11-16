@@ -408,6 +408,51 @@ def _read_slot_pattern(prog, label) -> dict:
     return out
 
 
+def check_ring_rotation(prog, loop="steady") -> list:
+    """Each copy of the loop body starts its rings one PERIOD further round.
+
+    A ring of `W` buffers whose trip walks `P` positions must send every value from slot `s` in
+    one copy to `(s + P) % W` in the next.  A slot naming only within-trip coordinates restarts
+    on the same phase instead, which is right only where `W` divides `P` -- so a merged read's
+    ring passed every other check while one buffer served two of its coordinates.
+    """
+    chain = loop_chain_blocks(prog, loop)
+    facts = prog.meta.get("ring_rotation") or {}
+    if len(chain) < 2 or not facts:
+        return []
+    patterns = [_read_slot_pattern(prog, label) for label in chain]
+    viol = []
+    for key in sorted({key for pattern in patterns for key in pattern}, key=str):
+        operand, group = key
+        known = facts.get(operand)
+        if known is None:
+            continue                   # an operand with no register ring states nothing
+        if group not in known:
+            # Loud, because a check that silently skips is a check that never ran: the plan keys
+            # a group one way and the model another, and the whole operand drops out unseen.
+            viol.append(
+                "RING-ROTATION-UNSTATED  %s reads into group %r, which the model's ring facts "
+                "%r do not name -- the rotation of that group is unchecked."
+                % (operand, group, sorted(known)))
+            continue
+        depth, period = known[group]
+        if depth <= 1:
+            continue
+        want = period % depth
+        for index, (lhs, rhs) in enumerate(zip(patterns, patterns[1:])):
+            common = set(lhs.get(key, {})) & set(rhs.get(key, {}))
+            got = {(rhs[key][value] - lhs[key][value]) % depth for value in common}
+            if not got or got == {want}:
+                continue
+            viol.append(
+                "%s RING-DOES-NOT-ROTATE  %s advances its %d-buffer ring by %s between %s and "
+                "%s, but one trip walks %d positions and must advance it by %d.  A value lands "
+                "on a buffer another coordinate of the same trip already holds."
+                % (chain[index + 1], key, depth, sorted(got), chain[index], chain[index + 1],
+                   period, want))
+    return viol
+
+
 def check_drain_continues_rotation(prog, loop="steady") -> list:
     """A loop-exit block RESUMES the copy chain; it does not restart it.
 
@@ -550,5 +595,6 @@ def check_plan(prog, plans=None) -> list:
     out += check_refill_splits_consumers(prog, acts=steady)
     out += check_unit_index_fits_its_buffer(prog)
     out += check_wmma_reads_its_own_value(prog)
+    out += check_ring_rotation(prog)
     out += check_drain_continues_rotation(prog)
     return out
