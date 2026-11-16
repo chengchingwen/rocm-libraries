@@ -594,6 +594,14 @@ def _read_off_requests(kernel, operands, outer_level, copy_depth, read_depth):
     return read_requests
 
 
+def _apply_companion_leads(theta, read_requests):
+    """Replace a companion's inherited request with the lead its own coverage asks for."""
+    for operand in theta.operands:
+        lead = int(getattr(operand.fragment, "read_lead", -1)) if operand.fragment else -1
+        if lead >= 0 and _is_companion(operand.name) and operand.name in read_requests:
+            read_requests[operand.name] = lead
+
+
 def _copy_wave_shares(view, groups, operands, waves):
     """How many waves cooperate on each operand's global->LDS copy."""
     names = {operand.name for operand in operands}
@@ -650,6 +658,7 @@ def _build_theta(
         if operand.movements and operand.fragment:
             operand.fragment.grouping_mode = geometry.grouping_mode_name(theta, operand)
     _set_register_depths(theta, kernel)
+    _apply_companion_leads(theta, read_requests)
     _place_read_offsets(theta, read_requests)
     if validate_register_depths:
         _validate_register_depths(theta, kernel)
@@ -695,7 +704,7 @@ def _set_register_depths(theta, kernel):
               if operand.movements and operand.fragment
               and _register_side(kernel, operand.name) is not None]
     staged.sort(key=lambda operand: _is_companion(operand.name))
-    covered = {}
+    covered, leads = {}, {}
 
     for operand in staged:
         side = _register_side(kernel, operand.name)
@@ -717,11 +726,15 @@ def _set_register_depths(theta, kernel):
                      else value("VgprAlloc", side))
             alloc = max(alloc, geometry.fold_use_span(
                 theta, operand, operand.fragment.groups()[0]))
-            # AND WHAT IS IN FLIGHT.  Coverage says how many buffers the walk needs, never how
-            # many the PIPELINE does: `plr` units run ahead, so that many must be live, capped by
-            # the ring that holds them.  The same floor `_validate_register_depths` states for
-            # A and B, which a scale inherits because it is read on the same schedule.
-            alloc = max(alloc, min(plr + 1, geometry._ring_period(theta, operand)))
+            # The lead is the same coverage statement: PLR counts UNITS, and one companion unit
+            # spanning everything the parent's lead reaches makes a second one a read of a unit
+            # the loop has not arrived at.  Same fallback as the ring when there is no coverage.
+            lead_tiles = int(leads.get(side, 0))
+            lead = max(1, -(-lead_tiles // unit)) if unit > 1 and lead_tiles else plr
+            operand.fragment.read_lead = lead
+            # Coverage says how many buffers the walk needs, never how many the PIPELINE does:
+            # the lead runs ahead, so that many must be live, capped by the ring holding them.
+            alloc = max(alloc, min(lead + 1, geometry._ring_period(theta, operand)))
             # Stated on the FRAGMENT, not in the Solution: `VgprAllocA/B` are parameters a user
             # writes, and a derived value put beside them would be read back as one.  The depth
             # lands in `ring_depths` below, which is what every consumer already asks.
@@ -766,6 +779,7 @@ def _set_register_depths(theta, kernel):
             label: depth for label in operand.fragment.groups()}
         if not _is_companion(operand.name):
             covered[side] = _unit_free_tiles(theta, operand) * max(1, int(depth))
+            leads[side] = _unit_free_tiles(theta, operand) * max(0, plr)
 
 def _validate_register_depths(theta, kernel):
     def value(base, side):
