@@ -38,6 +38,7 @@ class Fragment:
     ring_depths: dict = None          #: VA -- buffers of one unit, per group
     vgpr_group: int = 1               #: VG -- the factor the prefetch unit is DIVIDED by
     coverage_tiles: int = 0           #: tiles the parent operand's ring covers, 0 when it is one
+    read_lead: int = -1               #: PLR in THIS operand's units, -1 when it is the parent's
 
     space = REGISTER
 
