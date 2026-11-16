@@ -10,12 +10,14 @@ v_wmma_scale costs one cycle when its two scale VGPRs share a VGPR bank
 Where it applies, every v_wmma_scale must read its two scales from disjoint banks, every MXS
 reference must resolve inside v0-v255, and no VGPR may be reached through two different scale
 blocks. Each v_wmma_scale must still read the scales the same ds_loads wrote as in the default
-layout. It never raises the VGPR count: a kernel whose layout needs a larger scale region than the
-default keeps the default layout (kernels already at the 1024 VGPR limit would not assemble).
-With the switch off every kernel keeps the default layout, whose scale banks collide.
+layout. It never raises the VGPR count: a layout that needs a larger scale region than the default
+is taken only when the accumulators keep their place, and otherwise the kernel keeps the default
+layout (kernels already at the 1024 VGPR limit would not assemble). With the switch off every
+kernel keeps the default layout, whose scale banks collide.
 
-The loop-model case keeps a different number of MXSA and MXSB buffers, and its drain names a
-later MXSA buffer through an earlier one's symbol.
+The loop-model cases keep a different number of MXSA and MXSB buffers, and their drain names a
+later MXSA buffer through an earlier one's symbol. The three-buffer case needs one VGPR past the
+default span, and StinkyTofu recolours its VGPRs, so its scales are read as registers.
 
 pytestmark = pytest.mark.unit. CPU-only; no GPU.
 """
@@ -42,6 +44,7 @@ _CONFIGS = [
     ("streamk_tdm_prefetchgl2.yaml", False),
     ("streamk_tdm_prefetchgl2_f4.yaml", False),
     ("loopmodel_mxf8_scale_buffers.yaml", False),
+    ("loopmodel_mxf8_three_mxsa_buffers.yaml", False),
 ]
 _IDS = [name for name, _ in _CONFIGS]
 _VGPRS = re.compile(r"\.amdhsa_next_free_vgpr\s+(\d+)")
@@ -146,7 +149,9 @@ def _scan(src):
                 shared += owner.setdefault(v, block) != block
         if line.startswith("v_wmma_scale"):
             wmma += 1
-            s0, s1 = _range(ops[4], sym), _range(ops[5].split()[0], sym)
+            # A recoloured kernel names its scales as plain registers, not through the symbols.
+            s0, s1 = _physical(ops[4].split()[0], sym), _physical(ops[5].split()[0], sym)
+            high += sum(v >= 256 for regs in (s0, s1) if regs for v in regs)
             if s0 and s1 and {v % 8 for v in s0} & {v % 8 for v in s1}:
                 conflicts += 1
     return wmma, conflicts, high, shared, pieces
