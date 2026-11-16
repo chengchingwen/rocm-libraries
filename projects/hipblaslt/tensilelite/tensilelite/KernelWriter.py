@@ -769,10 +769,6 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
     # _mxsInterleavePlan). Developer switch for A/B comparisons; kernels it cannot
     # interleave keep the default layout.
     self.do["MXScaleVgprInterleave"] = True
-    # Take the layout even where it is wider than the default scale region, which otherwise
-    # declines. The region is then a placement rather than a count, which is what it is for a
-    # kernel whose VGPRs StinkyTofu reallocates afterwards.
-    self.do["MXScaleVgprInterleaveForce"] = False
 
     self.do["executeToInitEnd"] = 0
     self.do["executeToPrefetchEnd"] = 0
@@ -6831,10 +6827,12 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
   # v_wmma_scale costs one cycle when its two scale VGPRs share a VGPR bank (index % 8).
   # Every MXSA scale of a buffer meets every MXSB scale of the buffers it pairs with, so the
   # interleaved layout puts paired MXSA and MXSB scales on disjoint banks. Each scale
-  # block is cut into pieces (whole block up to 4 VGPRs, else 4-VGPR pieces or local-read
-  # sized pieces); piece k > 0 of block vgprValuMXS<tc>_X<bi>_I<iui> is addressed through
-  # vgprValuMXS<tc>_X<bi>_I<iui>_P<k> (see remapMXScaleInterleave). Both BASE symbols point at
-  # the start of the shared region, so every block/piece offset is relative to that start.
+  # block is cut into pieces (the whole block when a side's blocks are one size of up to 4
+  # VGPRs, else 4-VGPR or local-read sized pieces that divide every block of the side; the
+  # last block of a ragged ring is shorter); piece k > 0 of block vgprValuMXS<tc>_X<bi>_I<iui>
+  # is addressed through vgprValuMXS<tc>_X<bi>_I<iui>_P<k> (see remapMXScaleInterleave). Both
+  # BASE symbols point at the start of the shared region, so every block/piece offset is
+  # relative to that start.
   ##############################################################################
   def _alignMXSB(self, kernel, idx):
     """Where the MXSB valu block starts when the MXSA part ends at idx."""
@@ -6850,13 +6848,112 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       idx = ((idx+1)//2)*2
     return idx
 
-  def _mxsInterleaveRegion(self, kernel, tPMXSA, tPMXSB, vgprIdx, papEnabled):
+  def _layoutMXScaleVgprs(self, kernel, vgprIdx, papEnabled, regionLen=None):
+    """Lay out the MX scale VGPRs from vgprIdx and return where the accumulators start.
+
+    regionLen None is the default layout, an MXSA and an MXSB valu block. Otherwise the MXSA valu
+    block is the regionLen-VGPR region MXScaleVgprInterleave shares with MXSB, whose valu block is
+    empty. It only assigns states, so one layout can be tried and then replaced by another."""
+    interleaved = regionLen is not None
+    numValuMXSA = regionLen if interleaved else self.states.mxsa.numVgprValu
+    numValuMXSB = 0 if interleaved else self.states.mxsb.numVgprValu
+
+    if kernel["ProblemType"]["MXBlockA"]:
+      self.states.mxsa.startVgprValu = vgprIdx
+      vgprIdx += numValuMXSA
+      numVgprValuPackMXSA = 0
+      if not kernel["UnrollMajorLDSMXSA"]:
+        self.states.mxsa.startVgprValuPack = vgprIdx
+        if self.states.lrvwTileMXSA > 1:
+          numVgprValuPackMXSA = ceil(kernel["VectorWidthMXSA"] / self.states.bpr) * kernel["MIWaveTileMXSA"] // kernel["VectorWidthMXSA"] * kernel["InnerUnroll"] * operandNumVgprBuffer(self, "MXSA") * kernel["MIInputPerThreadMXSA"]
+          if self.states.packDTVA:
+            # pack DTV case, double the number
+            numVgprValuPackMXSA *= 2
+        else:
+          numVgprValuPackMXSA = self.states.mxsa.numVgprValuPerBlock * kernel["InnerUnroll"] * self.states.numVgprBufferPackMXSA * int(4 - 1)
+      vgprIdx += numVgprValuPackMXSA
+      self.states.mxsa.startVgprG2L = None
+      if not kernel["DirectToLdsMXSA"] or self.do["KeepDirectToLdsAlloc"]:
+        # DirectToVgpr + pack or input conversion case, overlap G2L and ValuPack
+        if self.states.packDTVA and not papEnabled:
+          self.states.mxsa.startVgprG2L = self.states.mxsa.startVgprValuPack
+        elif self.states.convDTVA and not papEnabled:
+          self.states.mxsa.startVgprG2L = self.states.mxsa.startVgprValu
+        # if PGR = True, PAP could be possibly enabled, we move G2LA later to prevent it from being reclaimed
+        # otherwise, put G2L here since it can overlap valu
+        if (not kernel["PrefetchGlobalRead"]) and not papEnabled: # g2l can overlap valu
+          self.states.mxsa.startVgprG2L = self.states.mxsa.startVgprValu
+          vgprIdx = self.states.mxsa.startVgprValu  \
+              + max(numValuMXSA + numVgprValuPackMXSA, self.states.mxsa.numVgprG2LAllocated)
+
+    if kernel["ProblemType"]["MXBlockB"]:
+      if not interleaved:
+        vgprIdx = self._alignMXSB(kernel, vgprIdx)
+
+      self.states.mxsb.startVgprValu = vgprIdx
+      vgprIdx += numValuMXSB
+      numVgprValuPackMXSB = 0
+      if not kernel["UnrollMajorLDSMXSB"]:
+        self.states.mxsb.startVgprValuPack = vgprIdx
+        if self.states.lrvwTileMXSB > 1:
+          numVgprValuPackMXSB = ceil(kernel["VectorWidthMXSB"] / self.states.bpr) * kernel["MIWaveTileMXSB"] // kernel["VectorWidthMXSB"] * kernel["InnerUnroll"] * operandNumVgprBuffer(self, "MXSB") * kernel["MIInputPerThreadMXSB"]
+          if self.states.packDTVB:
+            # pack DTV case, double the number
+            numVgprValuPackMXSB *= 2
+        else:
+          numVgprValuPackMXSB = self.states.mxsb.numVgprValuPerBlock * kernel["InnerUnroll"] * self.states.numVgprBufferPackMXSB * int(4 - 1)
+      vgprIdx += numVgprValuPackMXSB
+      self.states.mxsb.startVgprG2L = None
+      if not kernel["DirectToLdsMXSB"] or self.do["KeepDirectToLdsAlloc"]:
+        # DirectToVgpr + pack or input conversion case, overlap G2L and ValuPack
+        if self.states.packDTVB and not papEnabled:
+          self.states.mxsb.startVgprG2L = self.states.mxsb.startVgprValuPack
+        elif self.states.convDTVB and not papEnabled:
+          self.states.mxsb.startVgprG2L = self.states.mxsb.startVgprValu
+        # if PGR = True, PAP could be possibly enabled, we move G2LA later to prevent it from being reclaimed
+        # otherwise, put G2L here since it can overlap valu
+        if (not kernel["PrefetchGlobalRead"]) and not papEnabled: # g2l can overlap valu
+          self.states.mxsb.startVgprG2L = self.states.mxsb.startVgprValu
+          vgprIdx = self.states.mxsb.startVgprValu  \
+              + max(numValuMXSB + numVgprValuPackMXSB, self.states.mxsb.numVgprG2LAllocated)
+      if interleaved:
+        # MXSB scales live in the shared region; its BASE symbol shares the MXSA start.
+        self.states.mxsb.startVgprValu = self.states.mxsa.startVgprValu
+
+    if kernel["ProblemType"]["MXBlockA"] and not papEnabled:
+      if self.states.mxsa.startVgprG2L is None and self.states.mxsa.numVgprG2LAllocated > 0:
+        # TODO: alignment hack, figure out a better solution
+        vgprIdx = ((vgprIdx+1)//2)*2
+        self.states.mxsa.startVgprG2L = vgprIdx;
+        if ("ULSGRODoubleG2L" in kernel) and kernel["ULSGRODoubleG2L"] == 1:
+          vgprIdx += self.states.mxsa.numVgprG2LAllocated * 2
+        else:
+          vgprIdx += self.states.mxsa.numVgprG2LAllocated
+
+    if kernel["ProblemType"]["MXBlockB"] and not papEnabled:
+      if self.states.mxsb.startVgprG2L is None and self.states.mxsb.numVgprG2LAllocated > 0:
+        # TODO: alignment hack, figure out a better solution
+        vgprIdx = ((vgprIdx+1)//2)*2
+        self.states.mxsb.startVgprG2L = vgprIdx;
+        if ("ULSGRODoubleG2L" in kernel) and kernel["ULSGRODoubleG2L"] == 1:
+          vgprIdx += self.states.mxsb.numVgprG2LAllocated * 2
+        else:
+          vgprIdx += self.states.mxsb.numVgprG2LAllocated
+
+    vgprIdx = (vgprIdx+1)//2*2
+    self.states.lastValuMXSAB = vgprIdx
+    return vgprIdx
+
+  def _mxsInterleaveRegion(self, kernel, tPMXSA, tPMXSB, vgprIdx, papEnabled, accStart=None):
     """(plan, regionLen, reason): the interleave plan and the length of the region it takes from
     vgprIdx, or (None, 0, reason) when the kernel keeps the default layout.
 
-    The region is never longer than the default MXSA + MXSB valu span, so the kernel's VGPR
-    count does not grow (kernels already at the 1024 limit would not assemble) -- unless
-    MXScaleVgprInterleaveForce says to take the layout anyway."""
+    The region is the default MXSA + MXSB valu span when the layout fits in it. A layout that
+    needs more is taken only when accStart -- where the accumulators start with an interleaved
+    region of the given length, or with the default layout for None -- puts them at the same
+    VGPR either way: they start on an even VGPR, so the odd one the default leaves before them
+    can hold the extra. The kernel's VGPR count does not grow (kernels already at the 1024 limit
+    would not assemble), and without accStart a longer layout is refused."""
     plan, reason = self._mxsInterleavePlan(kernel, tPMXSA, tPMXSB)
     if plan is None:
       return None, 0, reason
@@ -6864,8 +6961,12 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
     needed = sum(g["span"] for g in plan["groups"])
     regionLen = defaultLen
     if needed > defaultLen:
-      if not self.do["MXScaleVgprInterleaveForce"]:
-        return None, 0, "the layout needs %u VGPRs, more than the default's %u" % (needed, defaultLen)
+      reason = "the layout needs %u VGPRs, more than the default's %u" % (needed, defaultLen)
+      if accStart is None:
+        return None, 0, reason
+      start, longerStart = accStart(None), accStart(needed)
+      if longerStart != start:
+        return None, 0, "%s, and would move the accumulators from v%u to v%u" % (reason, start, longerStart)
       regionLen = needed
     if (not kernel["PrefetchGlobalRead"]) and not papEnabled:
       # The default layout overlaps the MXSA G2L with its valu block; the shared region cannot
@@ -6911,27 +7012,36 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
     if any(kernel["DirectToVgpr%s" % tc] for tc in ("A", "B", "MXSA", "MXSB")):
       return None, "DirectToVgpr is not supported"
     blocks = {"A": self._mxsDefaultBlocks(kernel, "A"), "B": self._mxsDefaultBlocks(kernel, "B")}
+    # offset -> VGPRs of each distinct block. A ragged ring's last buffer is shorter than the
+    # block the writer addresses: the side holds numVgprValu in all, so a block ends there.
+    sizes = {tc: {off: min(side.numVgprValuPerBlock, side.numVgprValu - off)
+                  for off in set(blocks[tc].values())}
+             for tc, side in (("A", mxsa), ("B", mxsb))}
+    for tc, side in (("A", mxsa), ("B", mxsb)):
+      if min(sizes[tc].values()) <= 0:
+        return None, "an MXS%s block starts past the %u VGPRs the side holds" % (tc, side.numVgprValu)
     piece = {}
-    for tc, side, tP in (("A", mxsa, tPMXSA), ("B", mxsb, tPMXSB)):
-      n = side.numVgprValuPerBlock
+    for tc, tP in (("A", tPMXSA), ("B", tPMXSB)):
+      widths = sorted(set(sizes[tc].values()))
       lrWidth = max(1, int(ceil(tP["localReadInstruction"].blockWidth)))
-      if n <= 4:
-        piece[tc] = n
-      elif n % 4 == 0:
+      if widths[-1] <= 4 and len(widths) == 1:
+        piece[tc] = widths[0]
+      elif all(width % 4 == 0 for width in widths):
         piece[tc] = 4
-      elif lrWidth <= 4 and n % lrWidth == 0:
+      elif lrWidth <= 4 and all(width % lrWidth == 0 for width in widths):
         piece[tc] = lrWidth
       else:
-        return None, "MXS%s block of %u VGPRs cannot be split into local-read pieces" % (tc, n)
+        return None, "MXS%s block of %s VGPRs cannot be split into local-read pieces" % (
+          tc, "/".join(map(str, widths)))
       if lrWidth > piece[tc] or piece[tc] % lrWidth:
         return None, "MXS%s local read (%u VGPRs) does not fit a %u-VGPR piece" % (tc, lrWidth, piece[tc])
-    numPieces = {"A": mxsa.numVgprValuPerBlock // piece["A"], "B": mxsb.numVgprValuPerBlock // piece["B"]}
 
-    # The block pairs whose scales meet in one WMMA. The scaffold advances both scales on one
-    # buffer counter, so there buffer bi meets buffer bi. UseLoopModel gives each side its own
-    # ring -- its own depth AND its own read-ahead -- and then a buffer meets every buffer of the
-    # other side whatever the counts are. Only blocks of the same inner-unroll index meet, and
-    # every block meets one, so each reaches a group (else its symbol is never emitted).
+    # The block pairs whose scales meet in one WMMA, only ever of the same inner-unroll index.
+    # Without UseLoopModel a side's buffers are its local-read stages, and sides with the same
+    # buffers rotate together, so buffer bi meets buffer bi. The loop model also splits a ring by
+    # free tile within one K step (MXSB's second buffer holds other N tiles than its first), and
+    # gives each side its own ring depth, so there every buffer meets every buffer of the other
+    # side. Every block meets one, so each reaches a group (else its symbol is never emitted).
     keys = {tc: sorted(blocks[tc]) for tc in ("A", "B")}
     if keys["A"] == keys["B"] and not kernel.get("UseLoopModel", False):
       meets = [(key, key) for key in keys["A"]]
@@ -6962,20 +7072,14 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
     slotTc = "A" if kernel["SourceSwap"] else "B"
     # The bank split packs no looser than placing pieces one by one, so it moves kernels the
     # scaffold path already lays out -- it is taken only where the layout is being changed.
-    loopModel = bool(kernel.get("UseLoopModel", False))
-    pack = self._mxsPackGroup if loopModel else self._mxsPackGroupFirstFit
+    pack = self._mxsPackGroup if kernel.get("UseLoopModel", False) else self._mxsPackGroupFirstFit
     for grp in groups:
-      lists = {tc: [(tc, off, k) for off in grp[tc] for k in range(numPieces[tc])] for tc in ("A", "B")}
+      lists = {tc: [(tc, off, k) for off in grp[tc] for k in range(sizes[tc][off] // piece[tc])]
+               for tc in ("A", "B")}
       grp["cells"], grp["span"] = pack(lists, piece)
       grp["slot"] = sorted(c for pc, p in grp["cells"].items() if pc[0] == slotTc
                            for c in range(p, p + piece[slotTc]))
-    if groups and loopModel:
-      # A span is rounded up so the NEXT group starts on an even VGPR; after the last one that
-      # padding is region the layout is charged for and never uses, and one VGPR decides whether
-      # a layout fits.
-      last = groups[-1]
-      last["span"] = max(p + piece[pc[0]] for pc, p in last["cells"].items())
-    return {"piece": piece, "blocks": blocks, "groups": groups}, None
+    return {"piece": piece, "blocks": blocks, "sizes": sizes, "groups": groups}, None
 
   @staticmethod
   def _mxsPackGroupFirstFit(lists, piece):
@@ -7083,7 +7187,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
     interleave does not keep blocks adjacent, so such a reference is moved to the block the
     default layout puts it in, not read as a piece of its own."""
     plan = self.states.mxsInterleave
-    blockSize = {"A": self.states.mxsa.numVgprValuPerBlock, "B": self.states.mxsb.numVgprValuPerBlock}
+    sizes = plan["sizes"]
     where, owner = {}, {}
     for tc in ("A", "B"):
       for (bi, iui), off in sorted(plan["blocks"][tc].items()):
@@ -7109,10 +7213,10 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
             continue
           tc, base = where[name]
           offset = sum(param.regName.getOffsets())
-          if not 0 <= offset < blockSize[tc]:
+          if not 0 <= offset < sizes[tc][base]:
             at = base + offset
             base = max((o for t, o in owner if t == tc and o <= at), default=None)
-            assert base is not None and at - base < blockSize[tc], \
+            assert base is not None and at - base < sizes[tc][base], \
               "MXScaleVgprInterleave: reference outside every MXS%s block: %s" % (tc, str(item))
             name, offset = owner[(tc, base)], at - base
           size = plan["piece"][tc]
@@ -9929,105 +10033,21 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
 
       # MXScaleVgprInterleave (see _mxsInterleavePlan): the MXSA valu block becomes the region
       # shared by the MXSA and MXSB scales and the MXSB valu block is empty; packs and G2L
-      # follow as usual. The region keeps the default length when the layout fits in it, so
-      # the accumulators keep their place. The scale-bank rule it avoids is gfx1250's.
+      # follow as usual. The region keeps the default length when the layout fits in it, and a
+      # longer one is taken only when the accumulators keep their place. The scale-bank rule it
+      # avoids is gfx1250's.
       self.states.mxsInterleave = None
       mxsPlan, mxsRegionLen = None, 0
       if self.do["MXScaleVgprInterleave"] and kernel["ISA"][:2] == (12, 5) \
          and kernel["ProblemType"]["MXBlockA"] and kernel["ProblemType"]["MXBlockB"]:
         mxsPlan, mxsRegionLen, reason = self._mxsInterleaveRegion(
-            kernel, tensorParametersMXSA, tensorParametersMXSB, vgprIdx, papEnabled)
+            kernel, tensorParametersMXSA, tensorParametersMXSB, vgprIdx, papEnabled,
+            lambda regionLen, start=vgprIdx: self._layoutMXScaleVgprs(kernel, start, papEnabled, regionLen))
         if mxsPlan is None:
           # The block sizes are only known here (TileSpan, 2D scales): kernels the interleave
           # does not fit keep the default layout.
           print2("MXScaleVgprInterleave not applied (%s): %s" % (reason, self.states.kernelName))
-      numValuMXSA = mxsRegionLen if mxsPlan else self.states.mxsa.numVgprValu
-      numValuMXSB = 0 if mxsPlan else self.states.mxsb.numVgprValu
-
-      if kernel["ProblemType"]["MXBlockA"]:
-        self.states.mxsa.startVgprValu = vgprIdx
-        vgprIdx += numValuMXSA
-        numVgprValuPackMXSA = 0
-        if not kernel["UnrollMajorLDSMXSA"]:
-          self.states.mxsa.startVgprValuPack = vgprIdx
-          if self.states.lrvwTileMXSA > 1:
-            numVgprValuPackMXSA = ceil(kernel["VectorWidthMXSA"] / self.states.bpr) * kernel["MIWaveTileMXSA"] // kernel["VectorWidthMXSA"] * kernel["InnerUnroll"] * operandNumVgprBuffer(self, "MXSA") * kernel["MIInputPerThreadMXSA"]
-            if self.states.packDTVA:
-              # pack DTV case, double the number
-              numVgprValuPackMXSA *= 2
-          else:
-            numVgprValuPackMXSA = self.states.mxsa.numVgprValuPerBlock * kernel["InnerUnroll"] * self.states.numVgprBufferPackMXSA * int(4 - 1)
-        vgprIdx += numVgprValuPackMXSA
-        self.states.mxsa.startVgprG2L = None
-        if not kernel["DirectToLdsMXSA"] or self.do["KeepDirectToLdsAlloc"]:
-          # DirectToVgpr + pack or input conversion case, overlap G2L and ValuPack
-          if self.states.packDTVA and not papEnabled:
-            self.states.mxsa.startVgprG2L = self.states.mxsa.startVgprValuPack
-          elif self.states.convDTVA and not papEnabled:
-            self.states.mxsa.startVgprG2L = self.states.mxsa.startVgprValu
-          # if PGR = True, PAP could be possibly enabled, we move G2LA later to prevent it from being reclaimed
-          # otherwise, put G2L here since it can overlap valu
-          if (not kernel["PrefetchGlobalRead"]) and not papEnabled: # g2l can overlap valu
-            self.states.mxsa.startVgprG2L = self.states.mxsa.startVgprValu
-            vgprIdx = self.states.mxsa.startVgprValu  \
-                + max(numValuMXSA + numVgprValuPackMXSA, self.states.mxsa.numVgprG2LAllocated)
-
-      if kernel["ProblemType"]["MXBlockB"]:
-        if not mxsPlan:
-          vgprIdx = self._alignMXSB(kernel, vgprIdx)
-
-        self.states.mxsb.startVgprValu = vgprIdx
-        vgprIdx += numValuMXSB
-        numVgprValuPackMXSB = 0
-        if not kernel["UnrollMajorLDSMXSB"]:
-          self.states.mxsb.startVgprValuPack = vgprIdx
-          if self.states.lrvwTileMXSB > 1:
-            numVgprValuPackMXSB = ceil(kernel["VectorWidthMXSB"] / self.states.bpr) * kernel["MIWaveTileMXSB"] // kernel["VectorWidthMXSB"] * kernel["InnerUnroll"] * operandNumVgprBuffer(self, "MXSB") * kernel["MIInputPerThreadMXSB"]
-            if self.states.packDTVB:
-              # pack DTV case, double the number
-              numVgprValuPackMXSB *= 2
-          else:
-            numVgprValuPackMXSB = self.states.mxsb.numVgprValuPerBlock * kernel["InnerUnroll"] * self.states.numVgprBufferPackMXSB * int(4 - 1)
-        vgprIdx += numVgprValuPackMXSB
-        self.states.mxsb.startVgprG2L = None
-        if not kernel["DirectToLdsMXSB"] or self.do["KeepDirectToLdsAlloc"]:
-          # DirectToVgpr + pack or input conversion case, overlap G2L and ValuPack
-          if self.states.packDTVB and not papEnabled:
-            self.states.mxsb.startVgprG2L = self.states.mxsb.startVgprValuPack
-          elif self.states.convDTVB and not papEnabled:
-            self.states.mxsb.startVgprG2L = self.states.mxsb.startVgprValu
-          # if PGR = True, PAP could be possibly enabled, we move G2LA later to prevent it from being reclaimed
-          # otherwise, put G2L here since it can overlap valu
-          if (not kernel["PrefetchGlobalRead"]) and not papEnabled: # g2l can overlap valu
-            self.states.mxsb.startVgprG2L = self.states.mxsb.startVgprValu
-            vgprIdx = self.states.mxsb.startVgprValu  \
-                + max(numValuMXSB + numVgprValuPackMXSB, self.states.mxsb.numVgprG2LAllocated)
-        if mxsPlan:
-          # MXSB scales live in the shared region; its BASE symbol shares the MXSA start.
-          self.states.mxsb.startVgprValu = self.states.mxsa.startVgprValu
-
-      if kernel["ProblemType"]["MXBlockA"] and not papEnabled:
-        if self.states.mxsa.startVgprG2L is None and self.states.mxsa.numVgprG2LAllocated > 0:
-          # TODO: alignment hack, figure out a better solution
-          vgprIdx = ((vgprIdx+1)//2)*2
-          self.states.mxsa.startVgprG2L = vgprIdx;
-          if ("ULSGRODoubleG2L" in kernel) and kernel["ULSGRODoubleG2L"] == 1:
-            vgprIdx += self.states.mxsa.numVgprG2LAllocated * 2
-          else:
-            vgprIdx += self.states.mxsa.numVgprG2LAllocated
-
-      if kernel["ProblemType"]["MXBlockB"] and not papEnabled:
-        if self.states.mxsb.startVgprG2L is None and self.states.mxsb.numVgprG2LAllocated > 0:
-          # TODO: alignment hack, figure out a better solution
-          vgprIdx = ((vgprIdx+1)//2)*2
-          self.states.mxsb.startVgprG2L = vgprIdx;
-          if ("ULSGRODoubleG2L" in kernel) and kernel["ULSGRODoubleG2L"] == 1:
-            vgprIdx += self.states.mxsb.numVgprG2LAllocated * 2
-          else:
-            vgprIdx += self.states.mxsb.numVgprG2LAllocated
-
-      vgprIdx = (vgprIdx+1)//2*2
-      self.states.lastValuMXSAB = vgprIdx
+      vgprIdx = self._layoutMXScaleVgprs(kernel, vgprIdx, papEnabled, mxsRegionLen if mxsPlan else None)
 
       if mxsPlan:
         # The accumulators start here (c.startVgprValu below).
