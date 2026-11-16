@@ -18,7 +18,8 @@ from tensilelite.KernelWriter import KernelWriter
 pytestmark = pytest.mark.unit
 
 
-def _writer(numVgprBuffer=2, lrvwTile=1, valuPerBlock=(4, 4), bufferMXSA=0, bufferMXSB=0):
+def _writer(numVgprBuffer=2, lrvwTile=1, valuPerBlock=(4, 4), bufferMXSA=0, bufferMXSB=0,
+            force=False):
   states = SimpleNamespace(
     numVgprBuffer=numVgprBuffer,
     # 0 means allocation has not run, so the per-operand depth falls back to the shared count.
@@ -38,6 +39,7 @@ def _writer(numVgprBuffer=2, lrvwTile=1, valuPerBlock=(4, 4), bufferMXSA=0, buff
   writer._mxsInterleavePlan = lambda kernel, tPA, tPB: KernelWriter._mxsInterleavePlan(writer, kernel, tPA, tPB)
   writer._mxsPackGroup = KernelWriter._mxsPackGroup
   writer._mxsPackGroupFirstFit = KernelWriter._mxsPackGroupFirstFit
+  writer.do = {"MXScaleVgprInterleaveForce": force}
   return writer
 
 
@@ -280,6 +282,24 @@ def test_region_falls_back_when_the_layout_needs_more_vgprs_than_the_default():
   writer.states.mxsb.numVgprValu = 1
   plan, regionLen, reason = _region(writer, _kernel())
   assert (plan, regionLen) == (None, 0) and "more than the default" in reason
+
+
+def test_forcing_takes_what_the_layout_needs_instead_of_the_default():
+  # For a kernel whose VGPRs are reallocated afterwards the region is a placement, not a count,
+  # so declining a layout one VGPR over the default buys nothing and keeps the bank conflicts.
+  writer = _writer(force=True)
+  writer.states.mxsa.numVgprValu = 1
+  writer.states.mxsb.numVgprValu = 1
+  plan, regionLen, reason = _region(writer, _kernel())
+  assert reason is None and plan is not None
+  assert regionLen == sum(grp["span"] for grp in plan["groups"]) > 2
+
+
+def test_forcing_still_stops_at_v255():
+  # The region has to live below v255 whatever the switch says: past it the MSB window moves.
+  writer = _writer(force=True)
+  plan, regionLen, reason = _region(writer, _kernel(), vgprIdx=250)
+  assert (plan, regionLen) == (None, 0) and "pass v255" in reason
 
 
 @pytest.mark.parametrize("pap, applies", [(False, False), (True, True)])

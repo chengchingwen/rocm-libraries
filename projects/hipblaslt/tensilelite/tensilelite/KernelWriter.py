@@ -768,6 +768,10 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
     # _mxsInterleavePlan). Developer switch for A/B comparisons; kernels it cannot
     # interleave keep the default layout.
     self.do["MXScaleVgprInterleave"] = True
+    # Take the layout even where it is wider than the default scale region, which otherwise
+    # declines. The region is then a placement rather than a count, which is what it is for a
+    # kernel whose VGPRs StinkyTofu reallocates afterwards.
+    self.do["MXScaleVgprInterleaveForce"] = False
 
     self.do["executeToInitEnd"] = 0
     self.do["executeToPrefetchEnd"] = 0
@@ -6850,21 +6854,25 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
     vgprIdx, or (None, 0, reason) when the kernel keeps the default layout.
 
     The region is never longer than the default MXSA + MXSB valu span, so the kernel's VGPR
-    count does not grow (kernels already at the 1024 limit would not assemble)."""
+    count does not grow (kernels already at the 1024 limit would not assemble) -- unless
+    MXScaleVgprInterleaveForce says to take the layout anyway."""
     plan, reason = self._mxsInterleavePlan(kernel, tPMXSA, tPMXSB)
     if plan is None:
       return None, 0, reason
     defaultLen = self._alignMXSB(kernel, vgprIdx + self.states.mxsa.numVgprValu) + self.states.mxsb.numVgprValu - vgprIdx
     needed = sum(g["span"] for g in plan["groups"])
+    regionLen = defaultLen
     if needed > defaultLen:
-      return None, 0, "the layout needs %u VGPRs, more than the default's %u" % (needed, defaultLen)
+      if not self.do["MXScaleVgprInterleaveForce"]:
+        return None, 0, "the layout needs %u VGPRs, more than the default's %u" % (needed, defaultLen)
+      regionLen = needed
     if (not kernel["PrefetchGlobalRead"]) and not papEnabled:
       # The default layout overlaps the MXSA G2L with its valu block; the shared region cannot
       # (it also holds the MXSB scales), which would grow the VGPR count.
       return None, 0, "the MXSA G2L cannot overlap the shared region"
-    if vgprIdx + defaultLen > 256:
-      return None, 0, "the region would pass v255 (%u VGPRs)" % defaultLen
-    return plan, defaultLen, None
+    if vgprIdx + regionLen > 256:
+      return None, 0, "the region would pass v255 (%u VGPRs)" % regionLen
+    return plan, regionLen, None
 
   def _mxsDefaultBlocks(self, kernel, tc):
     """(bi, iui) -> offset of vgprValuMXS<tc>_X<bi>_I<iui> in the default layout, mirroring
