@@ -1478,11 +1478,9 @@ def _ring_period(theta, operand, extra_axes=()) -> int:
 def vgpr_ring_carries(theta, operand, group, buffers, extra_axes=()) -> bool:
     """Whether one trip advances this VA ring to a different starting phase.
 
-    A merged slot names only within-trip coordinates -- the generation and the carrier, both of
-    which restart -- so its ring begins every trip on the same phase however many slots it has.
+    A merged slot carries its trip digit like any other, so the test is the same one: a period
+    the depth does not divide leaves each trip starting a phase further on.
     """
-    if carrier_ring(theta, operand):
-        return False
     return _ring_period(theta, operand, extra_axes) % max(1, int(buffers)) != 0
 
 
@@ -1532,6 +1530,13 @@ def _shifted_ring_slot(theta, operand, group, shift, strides, buffers, fold=None
     extents = transfer_extents(theta, operand)
     position = _position(theta, position_terms(strides, fold), int(shift))
 
+    walk_span = max(
+        (
+            max(1, int(stride)) * max(1, int(extents.get(name, 1)))
+            for name, stride in strides.items()
+        ),
+        default=1,
+    )
     merge = read_merge(theta, operand)
     if carrier_ring(theta, operand):
         # A MERGED READ FILLS ONE BUFFER, so the slot is the CARRIER's and not the tile's: the
@@ -1551,7 +1556,11 @@ def _shifted_ring_slot(theta, operand, group, shift, strides, buffers, fold=None
         for name, _extent in theta.geometry(operand).summation_modes:
             if name in strides:
                 generation = max(1, int(extents.get(name, 1))) * generation + digit(name)
-        return (generation * carrier_walk_slots(theta, operand)
+        # THE TRIP IS A DIGIT OF THE SLOT, as it is for an unmerged ring below: every digit
+        # above is taken modulo its own extent, so without this the phase a read-ahead carries
+        # into the next trip is discarded and the ring restarts on buffer 0 every trip.
+        return ((position // max(1, walk_span)) * _ring_period(theta, operand)
+                + generation * carrier_walk_slots(theta, operand)
                 + flat // merge // carrier_capacity(theta, operand)) % max(1, buffers)
 
     base_ring = dict(ring_axes(theta, operand, group))
@@ -1585,13 +1594,6 @@ def _shifted_ring_slot(theta, operand, group, shift, strides, buffers, fold=None
             1, int(extents.get(name, extent)))
         unit_value = max(1, int(extent)) * unit_value + digit
     subunit = (unit_value // max(1, unit_width)) % subdivisions
-    walk_span = max(
-        (
-            max(1, int(stride)) * max(1, int(extents.get(name, 1)))
-            for name, stride in strides.items()
-        ),
-        default=1,
-    )
     generation = position // max(1, walk_span)
     return (
         generation * _ring_period(theta, operand)
