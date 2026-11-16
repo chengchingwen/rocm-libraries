@@ -460,6 +460,24 @@ class ThetaTargetProfile:
                 if operand.is_input and operand.fragment is not None
             ][2:],
             "per_region_completion": bool(self.theta.per_region_completion),
+            # What a ring must ADVANCE by each trip, which the emitted slots alone cannot say:
+            # `verify_dataflow.check_ring_rotation` compares the realized shift against it.
+            # Keyed by the group's INDEX, which is what a plan action carries.
+            "ring_rotation": {
+                operand.name: {
+                    index: (
+                        geometry.group_ring_depth(self.theta, operand, group, self.depths),
+                        geometry.ring_positions(
+                            self.theta, operand, group,
+                            geometry.group_ring_depth(
+                                self.theta, operand, group, self.depths)),
+                    )
+                    for index, group in enumerate(operand.fragment.groups())
+                }
+                for operand in self.theta.operands
+                if operand.fragment is not None and not operand.is_output
+                and operand.movements
+            },
         }
         return metadata
 
