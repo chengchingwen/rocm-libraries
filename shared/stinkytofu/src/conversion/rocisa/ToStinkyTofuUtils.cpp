@@ -83,6 +83,10 @@
 
 namespace nb = nanobind;
 
+namespace stinkytofu {
+GirActionData girActionOf(const rocisa::GirActionData& src);
+}
+
 namespace {
 using namespace rocisa;
 using namespace stinkytofu;
@@ -1296,6 +1300,9 @@ void applyLogicalPayload(LogicalInstruction* logical, const rocisa::Instruction*
     }
 
     if (auto memToken = inst->getMemToken()) logical->memtoken = memToken->tokens;
+    // The action has to survive the logical detour; the frame passes read it off the asm.
+    if (auto girAction = inst->getGirActionData())
+        logical->giraction = stinkytofu::girActionOf(*girAction);
 }
 
 logical::Opcode logicalOpcodeFor(const rocisa::Instruction& inst, const std::string& className) {
@@ -1366,6 +1373,8 @@ struct LogicalLowerCtx {
     const std::map<std::string, int>& asmCaps;
     bool hasVgprMsb;
     GfxArchID archId;
+    // GirFrameContractImportPass aborts on a contract with no actions, so count them here too.
+    int64_t* actionTags = nullptr;
 };
 
 void appendLogicalItem(PyLogicalModule& lm, const rocisa::Item* item, const LogicalLowerCtx& ctx);
@@ -1459,6 +1468,7 @@ void appendLogicalItem(PyLogicalModule& lm, const rocisa::Item* item, const Logi
     if (inst == nullptr) {
         throw std::runtime_error("rocisa item has no logical-IR form: " + item->toString());
     }
+    if (ctx.actionTags != nullptr && inst->getGirActionData()) ++*ctx.actionTags;
     lm.add(createLogicalFromRocisa(*inst, ctx.asmCaps, ctx.hasVgprMsb, ctx.archId));
 }
 
@@ -1466,11 +1476,16 @@ std::shared_ptr<StinkyAsmModule> lowerRocisaModuleViaLogical(
     const rocisa::Module& module, std::array<int, 3> arch, const std::string& moduleName,
     const StinkyAsmModule::ModuleOptions& moduleOptions) {
     const std::map<std::string, int> asmCaps = rocisa::rocIsa::getInstance().getAsmCaps();
+    int64_t actionTags = 0;
     const LogicalLowerCtx ctx{asmCaps, asmCap(asmCaps, "HasVgprMSB") != 0,
-                              resolveArchId(arch, moduleOptions.ArchName)};
+                              resolveArchId(arch, moduleOptions.ArchName), &actionTags};
     PyLogicalModule logical(moduleName.empty() ? module.name : moduleName);
     appendLogicalModule(logical, module, true, ctx);
-    return lowerLogicalModuleToAsm(logical, arch, moduleOptions);
+    std::shared_ptr<StinkyAsmModule> asmModule =
+        lowerLogicalModuleToAsm(logical, arch, moduleOptions);
+    if (asmModule && actionTags > 0)
+        asmModule->setPluginDataI64("gir.action_tag_count", actionTags);
+    return asmModule;
 }
 
 }  // anonymous namespace
