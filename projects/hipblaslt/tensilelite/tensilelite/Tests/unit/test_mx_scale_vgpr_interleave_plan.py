@@ -18,8 +18,7 @@ from tensilelite.KernelWriter import KernelWriter
 pytestmark = pytest.mark.unit
 
 
-def _writer(numVgprBuffer=2, lrvwTile=1, valuPerBlock=(4, 4), bufferMXSA=0, bufferMXSB=0,
-            force=False):
+def _writer(numVgprBuffer=2, lrvwTile=1, valuPerBlock=(4, 4), bufferMXSA=0, bufferMXSB=0):
   states = SimpleNamespace(
     numVgprBuffer=numVgprBuffer,
     # 0 means allocation has not run, so the per-operand depth falls back to the shared count.
@@ -41,7 +40,7 @@ def _writer(numVgprBuffer=2, lrvwTile=1, valuPerBlock=(4, 4), bufferMXSA=0, buff
   writer._mxsBudgetPlan = lambda *args: KernelWriter._mxsBudgetPlan(writer, *args)
   writer._mxsLayoutConflicts = lambda *args, **kw: KernelWriter._mxsLayoutConflicts(writer, *args, **kw)
   writer._mxsPackGroup = KernelWriter._mxsPackGroup
-  writer.do = {"MXScaleVgprInterleaveForce": force}
+  writer._mxsPackGroupFirstFit = KernelWriter._mxsPackGroupFirstFit
   return writer
 
 
@@ -103,12 +102,6 @@ def test_default_blocks_advance_per_buffer_and_inner_unroll():
     {(0, 0): 0, (0, 1): 4, (1, 0): 8, (1, 1): 12}
 
 
-def _loopModelKernel(**over):
-  """UseLoopModel names the path: each side's ring rotates on its own, and the layout is packed
-  by the bank split rather than the scaffold's first fit."""
-  return _kernel(UseLoopModel=True, **over)
-
-
 def _loopModelWriter():
   """An MX-F8 UseLoopModel shape: two 4-VGPR MXSA buffers and one 5-VGPR MXSB buffer under a
   three-deep scaffold, the counts that once sized the region for three of each."""
@@ -118,37 +111,126 @@ def _loopModelWriter():
   return writer
 
 
+def _raggedWriter():
+  """The same kernel once the scale rings follow their tile coverage: two 4-VGPR MXSA buffers,
+  and an MXSB ring of two buffers holding 3 and 2 VGPRs (5 in all), which the writer addresses
+  as 3-VGPR blocks."""
+  writer = _writer(numVgprBuffer=3, valuPerBlock=(4, 3), bufferMXSA=2, bufferMXSB=2)
+  writer.states.lrvwTileMXSA, writer.states.lrvwTileMXSB = 8, 1
+  writer.states.mxsa.numVgprValu, writer.states.mxsb.numVgprValu = 8, 5
+  return writer
+
+
+def test_a_ragged_rings_last_block_ends_with_the_side():
+  writer = _raggedWriter()
+  assert KernelWriter._mxsDefaultBlocks(writer, _kernel(), "B") == {(0, 0): 0, (1, 0): 3}
+  plan, reason = _plan(writer, _kernel(UseLoopModel=True), widthA=4)
+  assert reason is None
+  assert plan["sizes"] == {"A": {0: 4, 4: 4}, "B": {0: 3, 3: 2}}
+  # Only the local read's own width divides both 3 and 2.
+  assert plan["piece"] == {"A": 4, "B": 1}
+
+
+def test_the_loop_model_pairs_every_buffer_with_every_buffer():
+  # Its rings split by free tile within one K step, so MXSA's first buffer also meets MXSB's
+  # second. Local-read stages rotate together.
+  writer = _raggedWriter()
+  groups = lambda kernel: [(grp["A"], grp["B"]) for grp in _plan(writer, kernel, widthA=4)[0]["groups"]]
+  assert groups(_kernel(UseLoopModel=True)) == [([0, 4], [0, 3])]
+  assert groups(_kernel()) == [([0], [0]), ([4], [3])]
+
+
+def test_ragged_loop_model_shape_fits_the_default_span_on_disjoint_banks():
+  plan, regionLen, reason = KernelWriter._mxsInterleaveRegion(
+    _raggedWriter(), _kernel(UseLoopModel=True), _tensor(4), _tensor(), 0, False)
+  assert reason is None and regionLen == 15
+  (grp,) = plan["groups"]
+  regs = {tc: {c for pc, p in grp["cells"].items() if pc[0] == tc for c in range(p, p + plan["piece"][tc])}
+          for tc in "AB"}
+  assert grp["span"] == 14
+  assert regs == {"A": {0, 1, 2, 3, 8, 9, 10, 11}, "B": {4, 5, 6, 7, 12}}
+
+
+def _threeBufferWriter():
+  """The ragged kernel at VgprAllocA 3, once a merged scale ring keeps the depth its coverage asks
+  for: three 4-VGPR MXSA buffers beside MXSB's 3 and 2. The default lays the 17 VGPRs out in 19,
+  MXSB from v14, and a bank-disjoint layout needs 20."""
+  writer = _writer(numVgprBuffer=3, valuPerBlock=(4, 3), bufferMXSA=3, bufferMXSB=2)
+  writer.states.lrvwTileMXSA, writer.states.lrvwTileMXSB = 8, 1
+  writer.states.mxsa.numVgprValu, writer.states.mxsb.numVgprValu = 12, 5
+  return writer
+
+
+def _accStart(writer, kernel, between=0, vgprIdx=0):
+  """A stand-in for _layoutMXScaleVgprs when `between` VGPRs of packs or G2L follow the scales:
+  the accumulators start on the even VGPR after them."""
+  def start(regionLen):
+    if regionLen is None:
+      regionLen = KernelWriter._alignMXSB(writer, kernel, vgprIdx + writer.states.mxsa.numVgprValu) \
+        + writer.states.mxsb.numVgprValu - vgprIdx
+    return (vgprIdx + regionLen + between + 1) // 2 * 2
+  return start
+
+
+def test_three_mxsa_buffers_need_a_vgpr_past_the_default_span():
+  plan, regionLen, reason = KernelWriter._mxsInterleaveRegion(
+    _threeBufferWriter(), _kernel(UseLoopModel=True), _tensor(4), _tensor(), 0, False)
+  assert (plan, regionLen) == (None, 0) and "20 VGPRs, more than the default's 19" in reason
+
+
+def test_a_longer_region_is_taken_when_the_accumulators_keep_their_place():
+  # The default's 19 VGPRs end on v18, so the accumulators start at v20 either way.
+  writer, kernel = _threeBufferWriter(), _kernel(UseLoopModel=True)
+  plan, regionLen, reason = KernelWriter._mxsInterleaveRegion(
+    writer, kernel, _tensor(4), _tensor(), 0, False, _accStart(writer, kernel))
+  assert reason is None and regionLen == 20
+  (grp,) = plan["groups"]
+  regs = {tc: {c for pc, p in grp["cells"].items() if pc[0] == tc for c in range(p, p + plan["piece"][tc])}
+          for tc in "AB"}
+  assert regs == {"A": {0, 1, 2, 3, 8, 9, 10, 11, 16, 17, 18, 19}, "B": {4, 5, 6, 7, 12}}
+
+
+def test_a_longer_region_is_refused_when_it_moves_the_accumulators():
+  # One more VGPR after the scales ends the default on v19, so the longer region would push the
+  # accumulators from v20 to v22.
+  writer, kernel = _threeBufferWriter(), _kernel(UseLoopModel=True)
+  plan, regionLen, reason = KernelWriter._mxsInterleaveRegion(
+    writer, kernel, _tensor(4), _tensor(), 0, False, _accStart(writer, kernel, between=1))
+  assert (plan, regionLen) == (None, 0)
+  assert "20 VGPRs, more than the default's 19, and would move the accumulators from v20 to v22" in reason
+
+
 def test_default_blocks_follow_each_operands_own_buffers():
   writer = _loopModelWriter()
-  assert KernelWriter._mxsDefaultBlocks(writer, _loopModelKernel(), "A") == {(0, 0): 0, (1, 0): 4}
-  assert KernelWriter._mxsDefaultBlocks(writer, _loopModelKernel(), "B") == {(0, 0): 0}
+  assert KernelWriter._mxsDefaultBlocks(writer, _kernel(), "A") == {(0, 0): 0, (1, 0): 4}
+  assert KernelWriter._mxsDefaultBlocks(writer, _kernel(), "B") == {(0, 0): 0}
 
 
 def test_unequal_buffer_counts_put_every_block_in_one_group():
-  plan, reason = _plan(_loopModelWriter(), _loopModelKernel(), widthA=4)
+  plan, reason = _plan(_loopModelWriter(), _kernel(UseLoopModel=True), widthA=4)
   assert reason is None
   assert [(grp["A"], grp["B"]) for grp in plan["groups"]] == [([0, 4], [0])]
 
 
 def test_loop_model_shape_fits_the_default_span_on_disjoint_banks():
+  # UseLoopModel names the path: the bank split is taken only where the layout is being changed,
+  # and the scaffold keeps the one-at-a-time placement its kernels are laid out with.
   plan, regionLen, reason = KernelWriter._mxsInterleaveRegion(
-    _loopModelWriter(), _loopModelKernel(), _tensor(4), _tensor(), 0, False)
+    _loopModelWriter(), _kernel(UseLoopModel=True), _tensor(4), _tensor(), 0, False)
   assert reason is None and regionLen == 15
   (grp,) = plan["groups"]
   regs = {tc: {c for pc, p in grp["cells"].items() if pc[0] == tc for c in range(p, p + plan["piece"][tc])}
           for tc in "AB"}
-  # 13, not the even 14: the padding that starts the NEXT group on an even VGPR is region the
-  # last group is charged for and never uses, and one VGPR is the difference between a layout
-  # that fits the default and one that declines.
-  assert grp["span"] == 13
+  assert grp["span"] == 14
   assert regs == {"A": {0, 1, 2, 3, 8, 9, 10, 11}, "B": {4, 5, 6, 7, 12}}
 
 
-def _remapped(*dsts):
+def _remapped(*dsts, writer=None, kernel=None):
   """The destination text of one ds_load per `dsts` entry, after remapping the interleave of
-  _loopModelWriter: MXSA blocks X0 at +0 and X1 at +8, MXSB pieces at +4..+7 and +12."""
-  writer = _loopModelWriter()
-  writer.states.mxsInterleave, _reason = _plan(writer, _loopModelKernel(), widthA=4)
+  `writer`, by default _loopModelWriter: MXSA blocks X0 at +0 and X1 at +8, MXSB pieces at
+  +4..+7 and +12."""
+  writer = writer or _loopModelWriter()
+  writer.states.mxsInterleave, _reason = _plan(writer, kernel or _kernel(), widthA=4)
   module = Module("remap")
   loads = [DSLoadB128(vgpr(name, 4), vgpr("LocalReadAddrMXSA")) if width == 4 else
            DSLoadB32(vgpr(name), vgpr("LocalReadAddrMXSB")) for name, width in dsts]
@@ -171,6 +253,14 @@ def test_remap_moves_a_reference_to_the_block_the_default_layout_puts_it_in():
 def test_remap_points_a_reference_inside_its_block_at_the_piece():
   assert _remapped(("ValuMXSB_X0_I0", 1), ("ValuMXSB_X0_I0+2", 1), ("ValuMXSB_X0_I0+4", 1)) == [
     "v[vgprValuMXSB_X0_I0]", "v[vgprValuMXSB_X0_I0_P2+0]", "v[vgprValuMXSB_X0_I0_P4+0]"]
+
+
+def test_remap_moves_a_reference_into_a_ragged_rings_short_block():
+  # The WMMAs also reach MXSB's second buffer as X0_I0+3 and +4, its only two VGPRs.
+  assert _remapped(("ValuMXSB_X0_I0+2", 1), ("ValuMXSB_X0_I0+3", 1), ("ValuMXSB_X0_I0+4", 1),
+                   ("ValuMXSB_X1_I0+1", 1), writer=_raggedWriter(), kernel=_kernel(UseLoopModel=True)) == [
+    "v[vgprValuMXSB_X0_I0_P2+0]", "v[vgprValuMXSB_X1_I0+0]", "v[vgprValuMXSB_X1_I0_P1+0]",
+    "v[vgprValuMXSB_X1_I0_P1+0]"]
 
 
 def test_remap_refuses_a_reference_past_every_block():
@@ -263,8 +353,9 @@ def test_align_mxsb(isa, vgprBank, idx, expected):
   assert KernelWriter._alignMXSB(writer, _kernel(ISA=(isa, 5, 0)), idx) == expected
 
 
-def _region(writer, kernel, vgprIdx=100, papEnabled=False):
-  return KernelWriter._mxsInterleaveRegion(writer, kernel, _tensor(), _tensor(), vgprIdx, papEnabled)
+def _region(writer, kernel, vgprIdx=100, papEnabled=False, accStart=None):
+  return KernelWriter._mxsInterleaveRegion(writer, kernel, _tensor(), _tensor(), vgprIdx,
+                                           papEnabled, accStart)
 
 
 def test_region_is_the_default_length():
@@ -304,22 +395,33 @@ def test_shared_groups_pack_into_each_others_holes():
   assert len(used) == len(set(used)) == 2 * (4 + 13)
 
 
-def test_forcing_takes_what_the_layout_needs_instead_of_the_default():
-  # For a kernel whose VGPRs are reallocated afterwards the region is a placement, not a count,
-  # so declining a layout one VGPR over the default buys nothing and keeps the bank conflicts.
-  writer = _writer(force=True)
-  writer.states.mxsa.numVgprValu = 1
-  writer.states.mxsb.numVgprValu = 1
+def test_region_falls_back_when_the_layout_needs_more_vgprs_than_the_default():
+  # Each group's two 3-VGPR pieces start on even VGPRs, banks apart: 8 a group, 16 in all,
+  # where the default lays the same 12 VGPRs out in 14. With no accStart to say the accumulators
+  # keep their place, the region may not grow and the kernel takes the best layout that fits.
+  writer = _writer(valuPerBlock=(3, 3))
+  writer.states.mxsa.numVgprValu = writer.states.mxsb.numVgprValu = 6
   plan, regionLen, reason = _region(writer, _kernel())
   assert reason is None and plan is not None
-  assert regionLen == sum(grp["span"] for grp in plan["groups"]) > 2
+  assert regionLen == 14
+  assert sum(grp["span"] for grp in plan["groups"]) <= 14
 
 
-def test_forcing_still_stops_at_v255():
-  # The region has to live below v255 whatever the switch says: past it the MSB window moves.
-  writer = _writer(force=True)
-  plan, regionLen, reason = _region(writer, _kernel(), vgprIdx=250)
-  assert (plan, regionLen) == (None, 0) and "pass v255" in reason
+def test_region_takes_a_longer_layout_when_the_accumulators_keep_their_place():
+  # The accumulators start on an even VGPR, so the odd one the default leaves before them can
+  # hold the extra: the region is then a placement, not a count, and the layout is taken.
+  writer = _writer(valuPerBlock=(3, 3))
+  writer.states.mxsa.numVgprValu = writer.states.mxsb.numVgprValu = 6
+  plan, regionLen, reason = _region(writer, _kernel(), accStart=lambda regionLen: 0)
+  assert reason is None and plan is not None
+  assert regionLen == 16
+
+
+def test_plan_refuses_a_block_past_what_its_side_holds():
+  writer = _writer()
+  writer.states.mxsb.numVgprValu = 4
+  plan, reason = _plan(writer, _kernel())
+  assert plan is None and "an MXSB block starts past the 4 VGPRs the side holds" in reason
 
 
 @pytest.mark.parametrize("pap, applies", [(False, False), (True, True)])
