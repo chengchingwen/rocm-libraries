@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from ..analysis import AnalysisManager
 from ..verify import verify_gir
-from ..verify_dataflow import check_register_dataflow
+from ..verify_dataflow import check_register_dataflow, check_ring_rotation
 from .scaffold_shape import ScaffoldShapePass
 from .entrance_frames import EntranceFramePhisPass
 from .hoist_copies import HoistCopiesPass
@@ -67,4 +67,11 @@ def run_pipeline(prog, passes=None, verify=True):
         raise RuntimeError(
             "OVERWRITE-BEFORE-USE: a refill took a register back before its value was read.\n"
             + "\n".join(lost))
+    # Also unconditional, and for the same reason: a ring that does not advance by its period
+    # hands one buffer two of a trip's coordinates, which no consumer-side check can see.
+    stuck = check_ring_rotation(prog)
+    if stuck:
+        raise RuntimeError(
+            "RING-DOES-NOT-ROTATE: a copy of the loop body did not advance a ring.\n"
+            + "\n".join(stuck))
     return prog
