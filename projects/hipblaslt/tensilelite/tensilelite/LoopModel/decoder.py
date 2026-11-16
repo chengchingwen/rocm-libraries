@@ -1056,7 +1056,11 @@ class _Decoder:
             )
             for group in selected
         )
-        unit = geometry.group_register_positions(self.theta, descriptor)
+        # The cycle is compared against `advance`, which `_readahead_shift` states in the frame
+        # the ring rotates in: CARRIERS once reads are merged, tile positions otherwise.
+        unit = (geometry.carrier_capacity(self.theta, descriptor)
+                if geometry.carrier_ring(self.theta, descriptor)
+                else geometry.group_register_positions(self.theta, descriptor))
         return max(1, width * unit)
 
     def _read_anchor(self, descriptor, groups, depth, invariant):
