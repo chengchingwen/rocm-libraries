@@ -175,13 +175,13 @@ static void pinGirFenceWindows(RegionDAG& dag, const GirFrameHazardAnalysis::Res
             StinkyInstruction* signal = pair == pairs.end() ? owner.anchor : pair->second.first;
             StinkyInstruction* wait = pair == pairs.end() ? owner.anchor : pair->second.second;
             const BasicBlock* anchorBlock = owner.anchor->getParent();
-            if (anchorBlock == hazard.producerBlock) {
+            if (anchorBlock == hazard.producer->getParent()) {
                 orderForwardInRegion(dag, hazard.producer, signal,
                                      "GIR fence cannot be pinned after its hazard producer");
                 orderForwardInRegion(dag, hazard.producer, wait,
                                      "GIR fence cannot be pinned after its hazard producer");
             }
-            if (anchorBlock == hazard.consumerBlock) {
+            if (anchorBlock == hazard.consumer->getParent()) {
                 orderForwardInRegion(dag, signal, hazard.consumer,
                                      "GIR fence cannot be pinned before its hazard consumer");
                 orderForwardInRegion(dag, wait, hazard.consumer,

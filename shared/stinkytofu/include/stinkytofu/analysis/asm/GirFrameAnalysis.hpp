@@ -28,8 +28,6 @@
 namespace stinkytofu {
 struct StinkyInstruction;
 
-inline constexpr const char* kGirFrameContractKey = "gir.frame_contract";
-
 //: Identifies the blob; NOT a version. The frontend that writes a contract and this parser ship
 //: together, so a mismatch is a build error rather than something to negotiate.
 inline constexpr const char* kGirFrameContractMarker = "gir-frame-contract";
@@ -158,7 +156,6 @@ class GirFrameEdges {
 
 struct GirAccessOccurrence {
     StinkyInstruction* inst = nullptr;
-    BasicBlock* block = nullptr;
     size_t instructionIndex = 0;
     size_t accessIndex = 0;
     GirFrame frame;
@@ -175,7 +172,7 @@ struct GirFrameAnalysis {
         std::unordered_map<BasicBlock*, std::vector<GirFrame>> blockFrames;
         GirFrameEdges edges;
         std::vector<GirAccessOccurrence> occurrences;
-        std::unordered_set<uint64_t> backEdges;
+        std::set<std::pair<const BasicBlock*, const BasicBlock*>> backEdges;
 
         bool empty() const {
             return !contract.loaded;
@@ -193,8 +190,9 @@ struct GirFrameHazard {
     GirHazardKind kind = GirHazardKind::RAW;
     StinkyInstruction* producer = nullptr;
     StinkyInstruction* consumer = nullptr;
-    BasicBlock* producerBlock = nullptr;
-    BasicBlock* consumerBlock = nullptr;
+    // No cached block: it is always `producer->getParent()` / `consumer->getParent()`, and a copy
+    // could only ever differ by being the stale one. The in-block INDEX is kept -- that one is not
+    // cheap to recompute.
     size_t producerIndex = 0;
     size_t consumerIndex = 0;
     GirFrame producerFrame;

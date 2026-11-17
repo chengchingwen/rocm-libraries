@@ -1865,6 +1865,8 @@ TEST_F(DAGSchedulerPassTest, GirFreeScheduleDefersDsThatWouldRequireWaitAlu) {
         StinkyInstruction* ds = createDsReadB128InBlock(bb, arch, /*destReg=*/600, /*addrReg=*/400);
         ds->addModifier<GirActionData>(
             GirActionData{1, 1, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
+        // A GIR-modeled op leaves the region cuts only when a contract is loaded.
+        func->setStringMetaData(kGirFrameContractKey, "gir-frame-contract\n");
         std::vector<StinkyInstruction*> independent;
         independent.reserve(4);
         for (int i = 0; i < 4; ++i)
@@ -1932,6 +1934,8 @@ TEST_F(DAGSchedulerPassTest, GirWaitAwareSelectionSkipsHeldDsForIndependentDs) {
         createDsReadB128InBlock(bb, arch, /*destReg=*/620, /*addrReg=*/500);
     independent->addModifier<GirActionData>(
         GirActionData{2, 2, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
+    // A GIR-modeled op leaves the region cuts only when a contract is loaded.
+    func->setStringMetaData(kGirFrameContractKey, "gir-frame-contract\n");
 
     for (int i = 0; i < 4; ++i)
         createWmmaScaleF8(/*destStart=*/100 + i * 16, /*src0Start=*/300 + i * 16);
@@ -4101,8 +4105,6 @@ TEST_F(DAGSchedulerPassTest, GirFenceWindowPinsBothHalvesOfTheBarrier) {
     hazard.kind = GirHazardKind::RAW;
     hazard.producer = producer;
     hazard.consumer = consumer;
-    hazard.producerBlock = bb;
-    hazard.consumerBlock = bb;
     hazard.crossAgent = true;
     hazards.hazards.push_back(hazard);
 

@@ -136,9 +136,9 @@ std::string hazardText(const GirFrameHazard& hazard) {
             : hazard.kind == GirHazardKind::WAR ? "WAR"
                                                 : "WAW")
         << " LDS" << hazard.storage << " gap=" << hazard.gap
-        << " prod=" << hazard.producerBlock->getLabel() << "#" << hazard.producerIndex << "/act"
-        << hazard.producerAction << " cons=" << hazard.consumerBlock->getLabel() << "#"
-        << hazard.consumerIndex << "/act" << hazard.consumerAction;
+        << " prod=" << hazard.producer->getParent()->getLabel() << "#" << hazard.producerIndex
+        << "/act" << hazard.producerAction << " cons=" << hazard.consumer->getParent()->getLabel()
+        << "#" << hazard.consumerIndex << "/act" << hazard.consumerAction;
     return out.str();
 }
 
@@ -164,8 +164,10 @@ PotentialMap buildPotentials(Function& function, const GirFrameAnalysis::Result&
         const GirFrameHazard& hazard = hazards.hazards[h];
         // GIR models exactly the scheduling region, so an endpoint outside this function is not a
         // hazard of it -- it is a tag riding on a fork that the region never modeled.
-        if (!modeled.count(hazard.producerBlock) || !modeled.count(hazard.consumerBlock)) continue;
-        if (!covers(*hazard.consumerBlock)) continue;
+        if (!modeled.count(hazard.producer->getParent()) ||
+            !modeled.count(hazard.consumer->getParent()))
+            continue;
+        if (!covers(*hazard.consumer->getParent())) continue;
         if (!hazardFeasible(function, frames, feasible, hazard)) continue;
         CounterKind counter = counterFor(hazard);
         if (counter != CK_DS && counter != CK_Tensor) continue;
@@ -179,9 +181,9 @@ PotentialMap buildPotentials(Function& function, const GirFrameAnalysis::Result&
                                  << " counter=" << (counter == CK_DS ? "ds" : "tensor")
                                  << " kind=" << static_cast<int>(hazard.kind)
                                  << " crossAgent=" << hazard.crossAgent << " gap=" << hazard.gap
-                                 << " prod=" << hazard.producerBlock->getLabel() << "#"
+                                 << " prod=" << hazard.producer->getParent()->getLabel() << "#"
                                  << hazard.producerIndex << "/act" << hazard.producerAction
-                                 << " cons=" << hazard.consumerBlock->getLabel() << "#"
+                                 << " cons=" << hazard.consumer->getParent()->getLabel() << "#"
                                  << hazard.consumerIndex << "/act" << hazard.consumerAction
                                  << " anchor=" << anchor->getParent()->getLabel() << "#"
                                  << indexInBlock(*anchor) << " anchorGap=" << anchorGap << "\n");
@@ -368,8 +370,8 @@ bool domainsIntersect(const std::set<int>& lhs, const std::set<int>& rhs) {
 bool hazardFeasible(Function& function, const GirFrameAnalysis::Result& frames,
                     const FeasibleDomainMap& feasible, const GirFrameHazard& hazard) {
     (void)function;
-    const GirFrameNode source{hazard.producerBlock, hazard.producerFrame};
-    const GirFrameNode target{hazard.consumerBlock, hazard.consumerFrame};
+    const GirFrameNode source{hazard.producer->getParent(), hazard.producerFrame};
+    const GirFrameNode target{hazard.consumer->getParent(), hazard.consumerFrame};
     auto sourceDomain = feasible.find(source);
     auto targetDomain = feasible.find(target);
     if (sourceDomain == feasible.end() || targetDomain == feasible.end()) return false;
