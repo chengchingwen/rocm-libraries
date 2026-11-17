@@ -1023,7 +1023,7 @@ void validateGirFrameHazardOrder(const GirFrameHazardAnalysis::Result& hazards, 
     std::unordered_map<const StinkyInstruction*, const BasicBlock*> orderBlock;
     std::unordered_set<const BasicBlock*> visited;
     for (const GirFrameHazard& hazard : hazards.hazards) {
-        for (BasicBlock* block : {hazard.producerBlock, hazard.consumerBlock}) {
+        for (BasicBlock* block : {hazard.producer->getParent(), hazard.consumer->getParent()}) {
             if (!block || !visited.insert(block).second) continue;
             size_t index = 0;
             for (IRBase& node : *block) {

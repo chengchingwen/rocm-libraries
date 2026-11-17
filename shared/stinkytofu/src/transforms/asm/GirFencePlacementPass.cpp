@@ -309,8 +309,9 @@ GirRawPlacementPlan rawMarkers(const FrameCFG& cfg, const GirFrameHazardAnalysis
         if (!hazard.crossAgent || hazard.kind != GirHazardKind::RAW) continue;
         const Counter counter = counterOfProducer(*hazard.producer);
         if (counter == Counter::None) continue;
-        deadlines[{hazard.consumerBlock, hazard.producerAction, counter}][hazard.consumerIndex]
-            .push_back(&hazard);
+        deadlines[{hazard.consumer->getParent(), hazard.producerAction, counter}]
+                 [hazard.consumerIndex]
+                     .push_back(&hazard);
     }
 
     std::map<BasicBlock*, const std::vector<StinkyInstruction*>*, std::less<BasicBlock*>> bodies;
@@ -327,7 +328,8 @@ GirRawPlacementPlan rawMarkers(const FrameCFG& cfg, const GirFrameHazardAnalysis
 
         const auto legalAt = [block](const GirFrameHazard& hazard, size_t slot) {
             if (slot > hazard.consumerIndex) return false;
-            return hazard.producerBlock != block || hazard.gap != 0 || slot > hazard.producerIndex;
+            return hazard.producer->getParent() != block || hazard.gap != 0 ||
+                   slot > hazard.producerIndex;
         };
         for (const auto& [slot, edges] : byDeadline) {
             if (slot >= instructions.size() ||
@@ -468,7 +470,7 @@ std::optional<Reach> reachAtBlockStart(
     if (hazard.gap == 0 && hazard.producerFrame == node.frame && producer != index.end())
         return Reach{counter, 1, producer->second + 1};
 
-    auto producerNodes = byKey.find({hazard.producerBlock, hazard.producerFrame});
+    auto producerNodes = byKey.find({hazard.producer->getParent(), hazard.producerFrame});
     auto anchorNodes = byKey.find({node.block, node.frame});
     if (producerNodes == byKey.end() || anchorNodes == byKey.end()) return std::nullopt;
 
@@ -478,7 +480,7 @@ std::optional<Reach> reachAtBlockStart(
             // The hazard's own gap is the frame's answer wherever it lands in this node; a hazard
             // merely passing through is measured to here instead.
             const int span =
-                hazard.consumerBlock == node.block && hazard.consumerFrame == node.frame
+                hazard.consumer->getParent() == node.block && hazard.consumerFrame == node.frame
                     ? hazard.gap
                     : waitcnt::girFrameDistance(frames, producerNode, anchorNode);
             if (span < 0) continue;
@@ -666,14 +668,14 @@ class GirFencePlacementPass final : public StinkyInstPass {
             for (size_t h = 0; h < hazards.hazards.size(); ++h) {
                 const GirFrameHazard& hazard = hazards.hazards[h];
                 if (!hazard.crossAgent) continue;
-                if (!passCtx.shouldProcessBasicBlock(*hazard.consumerBlock)) continue;
+                if (!passCtx.shouldProcessBasicBlock(*hazard.consumer->getParent())) continue;
                 const GirHazardFenceCover& cover = positionPlan.byHazard[h];
                 if (!cover.hasHazardPath)
                     STINKY_UNREACHABLE(
                         "GirFencePlacementPass found no exact frame path for a GIR hazard");
                 if (!cover.hasUnfencedPath) continue;
                 size_t index = 0;
-                for (IRBase& node : *hazard.consumerBlock) {
+                for (IRBase& node : *hazard.consumer->getParent()) {
                     auto* inst = dyn_cast<StinkyInstruction>(&node);
                     if (!inst) continue;
                     if (index++ == hazard.consumerIndex) {

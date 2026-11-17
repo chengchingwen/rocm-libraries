@@ -251,7 +251,7 @@ GirSlotTokens collectGirSlotTokens(Function& func, AnalysisManager& AM) {
         endpointAccesses[EndpointKey{occurrence.inst, occurrence.frame, occurrence.storage}].insert(
             occurrence.accessIndex);
 
-        auto selected = schedulingFrames.find(occurrence.block);
+        auto selected = schedulingFrames.find(occurrence.inst->getParent());
         if (selected == schedulingFrames.end() || !(occurrence.frame == selected->second)) continue;
 
         const StaticAccessKey accessKey{occurrence.inst, occurrence.accessIndex};
@@ -264,8 +264,10 @@ GirSlotTokens collectGirSlotTokens(Function& func, AnalysisManager& AM) {
         const GirAccessSpec* access = occurrence.accessIndex < frames.contract.accesses.size()
                                           ? &frames.contract.accesses[occurrence.accessIndex]
                                           : nullptr;
-        PASS_DEBUG(std::cerr << "[GirToken] " << instMnemonic(occurrence.inst)
-                             << " bb=" << (occurrence.block ? occurrence.block->getLabel() : "?")
+        PASS_DEBUG(std::cerr << "[GirToken] " << instMnemonic(occurrence.inst) << " bb="
+                             << (occurrence.inst->getParent()
+                                     ? occurrence.inst->getParent()->getLabel()
+                                     : "?")
                              << " inst#" << occurrence.instructionIndex;
                    if (access) {
                        std::cerr << " action=" << access->actionId
@@ -332,9 +334,10 @@ GirSlotTokens collectGirSlotTokens(Function& func, AnalysisManager& AM) {
                               << (isSelected ? "   [scheduled]\n" : "\n");
                     for (const GirFrameHazard& h : sorted)
                         std::cerr << "       " << girHazardKindName(h.kind) << " LDS" << h.storage
-                                  << "  " << girWhere(h.producer, h.producerBlock, h.producerIndex)
+                                  << "  "
+                                  << girWhere(h.producer, h.producer->getParent(), h.producerIndex)
                                   << " -> "
-                                  << girWhere(h.consumer, h.consumerBlock, h.consumerIndex)
+                                  << girWhere(h.consumer, h.consumer->getParent(), h.consumerIndex)
                                   << (h.gap == 0 ? "  (same node)\n"
                                                  : "  (" + std::to_string(h.gap) + " nodes on)\n");
                 }
@@ -361,12 +364,12 @@ GirSlotTokens collectGirSlotTokens(Function& func, AnalysisManager& AM) {
             // The scheduler never moves instructions across blocks. Keep only endpoint tokens that
             // can form a dependency in this barrier's block; dynamic frame occurrences collapse
             // onto the one selected-path storage of that static endpoint.
-            if (hazard.producerBlock == anchorBlock) {
+            if (hazard.producer->getParent() == anchorBlock) {
                 const std::set<int> producer =
                     tokensAtEndpoint(hazard.producer, hazard.producerFrame, hazard.storage);
                 bridge.insert(producer.begin(), producer.end());
             }
-            if (hazard.consumerBlock == anchorBlock) {
+            if (hazard.consumer->getParent() == anchorBlock) {
                 const std::set<int> consumer =
                     tokensAtEndpoint(hazard.consumer, hazard.consumerFrame, hazard.storage);
                 bridge.insert(consumer.begin(), consumer.end());

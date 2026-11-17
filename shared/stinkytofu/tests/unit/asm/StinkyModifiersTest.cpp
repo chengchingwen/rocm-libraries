@@ -357,6 +357,27 @@ TEST(GirActionData, SerializerRoundTripsStableId) {
     EXPECT_EQ(parsed->actionId, 17u);
 }
 
+// The contract parser rejects a malformed record, so the modifier reader must too: a defaulted
+// action or a kind that falls back to Other names a DIFFERENT action than the fixture wrote.
+TEST(GirActionDataDeathTest, DeserializeRejectsAMissingActionAndAnUnknownKind) {
+    const auto deserialize = [](const ParsedModifierDict& modifiers) {
+        Function function("gir_action_strict");
+        BasicBlock* block = function.createBasicBlock("entry");
+        AsmIRBuilder builder(*block, GfxArchID::Gfx1250);
+        StinkyInstruction* inst = builder.createFence();
+        ModifierSerializer::deserialize(inst, modifiers);
+    };
+
+    ParsedModifierDict missingAction;
+    missingAction["mod.gir_action"]["kind"] = "ds";
+    EXPECT_DEATH(deserialize(missingAction), "needs action=");
+
+    ParsedModifierDict unknownKind;
+    unknownKind["mod.gir_action"]["action"] = "3";
+    unknownKind["mod.gir_action"]["kind"] = "dss";
+    EXPECT_DEATH(deserialize(unknownKind), "unknown kind");
+}
+
 // Wait insertion behavior is covered by waitcnt_insertion_barrier_tensor_contract.stir.
 // Keep the native parse -> print -> parse contract separate from pass behavior.
 TEST(SWaitTensorCntData, BarrierContractRoundTripsThroughText) {

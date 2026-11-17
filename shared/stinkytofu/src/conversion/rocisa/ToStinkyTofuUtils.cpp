@@ -1499,6 +1499,16 @@ GirActionData girActionOf(const rocisa::GirActionData& src) {
     for (const rocisa::GirAccess& a : src.accesses)
         accesses.push_back(GirAccessData{a.isWrite, a.operand, a.ring, a.genId, a.gdelta,
                                          a.absolute, a.crossAgent});
+    // The cast is only safe while the two enums agree enumerator by enumerator; they are declared
+    // in different repositories, so pin each one rather than trusting the numbering.
+    static_assert(static_cast<uint8_t>(rocisa::GirActionKind::Other) ==
+                  static_cast<uint8_t>(GirActionKind::Other));
+    static_assert(static_cast<uint8_t>(rocisa::GirActionKind::Ds) ==
+                  static_cast<uint8_t>(GirActionKind::Ds));
+    static_assert(static_cast<uint8_t>(rocisa::GirActionKind::Tensor) ==
+                  static_cast<uint8_t>(GirActionKind::Tensor));
+    static_assert(static_cast<uint8_t>(rocisa::GirActionKind::Wmma) ==
+                  static_cast<uint8_t>(GirActionKind::Wmma));
     return GirActionData{src.actionId, src.anchorAction, static_cast<GirActionKind>(src.kind),
                          std::move(accesses)};
 }
@@ -1892,8 +1902,7 @@ void init_stinkytofu(nb::module_ m) {  // NOLINT(misc-use-internal-linkage)
         .value("BeforeRegionPasses", PipelineExtensionPoint::BeforeRegionPasses)
         .value("InnerRegionBegin", PipelineExtensionPoint::InnerRegionBegin)
         .value("InnerRegionEnd", PipelineExtensionPoint::InnerRegionEnd)
-        .value("AfterRegionPasses", PipelineExtensionPoint::AfterRegionPasses)
-        .value("EndOfPipeline", PipelineExtensionPoint::EndOfPipeline);
+        .value("AfterRegionPasses", PipelineExtensionPoint::AfterRegionPasses);
 
     m.def("loadPlugin", &PassBuilder::loadPlugin, nb::arg("path"),
           "Load a plugin shared library (.so/.dll) that exports registerPlugin()");

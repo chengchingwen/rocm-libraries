@@ -926,8 +926,8 @@ TEST(GirFrameAnalysisTest, HazardBecomesAnOrdinaryDagEdge) {
 
     dag::RegionDAG graph = dag::buildRegisterDependencyDAG({copy, read});
     GirFrameHazardAnalysis::Result hazards;
-    hazards.hazards.push_back({GirHazardKind::RAW, copy, read, block, block, 0, 1, GirFrame{},
-                               GirFrame{}, 0, false, 0, 1});
+    hazards.hazards.push_back(
+        {GirHazardKind::RAW, copy, read, 0, 1, GirFrame{}, GirFrame{}, 0, false, 0, 1});
     dag::addGirFrameHazardEdges(graph, hazards, GirPlanFenceCoverage{});
 
     ASSERT_TRUE(graph.graph[0].contains(1));
@@ -2018,4 +2018,45 @@ TEST(GirFrameAnalysisTest, ContractImportPassPutsTheModuleContractOnTheFunction)
     ASSERT_NE(imported, nullptr);
     EXPECT_TRUE(imported->loaded);
     EXPECT_EQ(imported->generations.at(0).ring, 2);
+}
+
+// The contract is machine-written, so anything it does not say exactly is an authoring mistake.
+// Each of these used to parse into a contract that quietly said something else.
+TEST(GirFrameAnalysisTest, ContractParserRejectsWhatItCannotMeanExactly) {
+    const auto rejected = [](const char* body) {
+        std::string error;
+        return parseGirFrameContract(body, &error) == nullptr && !error.empty();
+    };
+    const auto accepted = [](const char* body) {
+        return parseGirFrameContract(body, nullptr) != nullptr;
+    };
+
+    EXPECT_TRUE(accepted("gir-frame-contract\ngen 0  ring=2 entry=0\n"));
+    // A trailing-garbage integer used to read as its numeric prefix.
+    EXPECT_TRUE(rejected("gir-frame-contract\ngen 0  ring=2abc entry=0\n"));
+    EXPECT_TRUE(rejected("gir-frame-contract\ngen 3x  ring=2 entry=0\n"));
+    // A duplicate generation used to overwrite the first silently.
+    EXPECT_TRUE(rejected("gir-frame-contract\ngen 0  ring=2 entry=0\ngen 0  ring=4 entry=1\n"));
+    // A repeated key used to keep the first value.
+    EXPECT_TRUE(rejected("gir-frame-contract\ngen 0  ring=2 ring=4 entry=0\n"));
+    // A misspelled key used to be dropped, changing the frame phases with no diagnostic.
+    EXPECT_TRUE(
+        rejected("gir-frame-contract\ngen 0  ring=2 entry=0\n"
+                 "incoming  dst=1 src=1 gen=0 value=1 relativ=1\n"));
+    EXPECT_TRUE(
+        rejected("gir-frame-contract\ngen 0  ring=2 entry=0\n"
+                 "incoming  dst=1 src=1 gen=0 value=1 relative=abc\n"));
+    // dst=12junk used to read as 12.
+    EXPECT_TRUE(
+        rejected("gir-frame-contract\ngen 0  ring=2 entry=0\n"
+                 "incoming  dst=12junk src=1 gen=0 value=1\n"));
+    // An empty values= used to parse as "constrains nothing".
+    EXPECT_TRUE(
+        rejected("gir-frame-contract\ngen 0  ring=2 entry=0\n"
+                 "requires  dst=1 src=1 gen=0 values=\n"));
+    // A key that lost its `=` used to be filed as a positional word and ignored.
+    EXPECT_TRUE(
+        rejected("gir-frame-contract\ngen 0  ring=2 entry=0\n"
+                 "incoming  dst=1 src=1 gen=0 value=1 relative\n"));
+    EXPECT_TRUE(rejected("gir-frame-contract\ngen 0 7  ring=2 entry=0\n"));
 }

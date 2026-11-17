@@ -25,14 +25,6 @@ namespace stinkytofu {
 
 namespace {
 
-uint64_t edgeKey(const BasicBlock* from, const BasicBlock* to) {
-    const auto a = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(from));
-    const auto b = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(to));
-    return a ^ (b + 0x9e3779b97f4a7c15ULL + (a << 6U) + (a >> 2U));
-}
-
-//: One record's `key=value` words. A bare word is a flag, stored with an empty value.
-
 const Loop* containingLoop(const std::vector<Loop>& loops, const BasicBlock* block) {
     const Loop* best = nullptr;
     for (const Loop& loop : loops) {
@@ -308,6 +300,7 @@ struct Record {
     std::string_view tag;
     std::vector<std::string_view> positional;
     std::map<std::string_view, std::string_view, std::less<>> fields;
+    bool duplicateKey = false;
 };
 
 Record splitRecord(std::string_view line) {
@@ -321,9 +314,11 @@ Record splitRecord(std::string_view line) {
             line.substr(begin, end == std::string_view::npos ? end : end - begin);
         if (out.tag.empty())
             out.tag = word;
-        else if (const size_t eq = word.find('='); eq != std::string_view::npos)
-            out.fields.emplace(word.substr(0, eq), word.substr(eq + 1));
-        else
+        else if (const size_t eq = word.find('='); eq != std::string_view::npos) {
+            // A repeated key is an authoring mistake, not a last-one-wins override.
+            if (!out.fields.emplace(word.substr(0, eq), word.substr(eq + 1)).second)
+                out.duplicateKey = true;
+        } else
             out.positional.push_back(word);
         if (end == std::string_view::npos) break;
         pos = end;
@@ -331,8 +326,11 @@ Record splitRecord(std::string_view line) {
     return out;
 }
 
+// from_chars reports only that a PREFIX parsed, so `ring=2abc` would read as 2. The contract is
+// machine-written and a typo must fail, so require the whole token to be consumed.
 bool readInt(std::string_view text, int& out) {
-    return std::from_chars(text.data(), text.data() + text.size(), out).ec == std::errc{};
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), out);
+    return result.ec == std::errc{} && result.ptr == text.data() + text.size();
 }
 
 bool readField(const Record& record, std::string_view key, int& out) {
@@ -340,11 +338,28 @@ bool readField(const Record& record, std::string_view key, int& out) {
     return found != record.fields.end() && readInt(found->second, out);
 }
 
+// The keys each record tag accepts. Returns the offending key, or an empty view when all are known.
+std::string_view unknownKey(const Record& record) {
+    static const std::map<std::string_view, std::set<std::string_view>, std::less<>> allowed = {
+        {"gen", {"ring", "entry"}},
+        {"incoming", {"dst", "src", "gen", "value", "relative"}},
+        {"requires", {"dst", "src", "gen", "values"}},
+    };
+    const auto tag = allowed.find(record.tag);
+    if (tag == allowed.end()) return {};  // an unknown TAG is reported by the dispatch
+    for (const auto& [key, value] : record.fields) {
+        (void)value;
+        if (!tag->second.contains(key)) return key;
+    }
+    return {};
+}
+
 bool readAction(const Record& record, std::string_view key, uint64_t& out) {
     auto found = record.fields.find(key);
     if (found == record.fields.end()) return false;
     const std::string_view text = found->second;
-    return std::from_chars(text.data(), text.data() + text.size(), out).ec == std::errc{};
+    const auto result = std::from_chars(text.data(), text.data() + text.size(), out);
+    return result.ec == std::errc{} && result.ptr == text.data() + text.size();
 }
 
 }  // namespace
@@ -371,6 +386,16 @@ std::shared_ptr<const GirFrameContract> parseGirFrameContract(std::string_view t
         if (!marked) return fail("a record precedes the marker");
 
         const Record record = splitRecord(line);
+        if (record.duplicateKey) return fail("'" + std::string(record.tag) + "' repeats a key");
+        // A key this tag does not know is a typo, and splitRecord would otherwise drop it:
+        // `relativ=1` would silently produce a non-relative incoming and shift every phase.
+        // Only `gen` takes a positional word (its id); elsewhere one is a key that lost its `=`.
+        if (record.positional.size() > (record.tag == "gen" ? 1u : 0u))
+            return fail("'" + std::string(record.tag) + "' has a stray word '" +
+                        std::string(record.positional.back()) + "'");
+        if (const std::string_view unknown = unknownKey(record); !unknown.empty())
+            return fail("'" + std::string(record.tag) + "' does not take '" + std::string(unknown) +
+                        "='");
         if (record.tag == "gen") {
             GirGenerationSpec gen;
             if (record.positional.size() != 1 || !readInt(record.positional.front(), gen.id))
@@ -378,11 +403,13 @@ std::shared_ptr<const GirFrameContract> parseGirFrameContract(std::string_view t
             if (!readField(record, "ring", gen.ring) || !readField(record, "entry", gen.entry))
                 return fail("gen needs ring= and entry=");
             if (gen.ring < 1) return fail("gen ring must be positive");
-            contract->generations[gen.id] = gen;
+            if (!contract->generations.emplace(gen.id, gen).second)
+                return fail("gen " + std::to_string(gen.id) + " is declared twice");
         } else if (record.tag == "incoming") {
             GirFrameIncomingSpec incoming;
             int relative = 0;
-            readField(record, "relative", relative);
+            if (record.fields.contains("relative") && !readField(record, "relative", relative))
+                return fail("incoming relative= is not an integer");
             incoming.relative = relative != 0;
             if (!readAction(record, "dst", incoming.destinationAction) ||
                 !readAction(record, "src", incoming.sourceAction) ||
@@ -397,7 +424,8 @@ std::shared_ptr<const GirFrameContract> parseGirFrameContract(std::string_view t
                 !readField(record, "gen", need.genId))
                 return fail("requires needs dst=, src= and gen=");
             auto values = record.fields.find("values");
-            if (values == record.fields.end()) return fail("requires needs values=");
+            if (values == record.fields.end() || values->second.empty())
+                return fail("requires needs a non-empty values=");
             std::string_view rest = values->second;
             while (!rest.empty()) {
                 const size_t comma = rest.find(',');
@@ -450,7 +478,7 @@ size_t GirFrameNodeHash::operator()(const GirFrameNode& node) const {
 }
 
 bool GirFrameAnalysis::Result::isBackEdge(const BasicBlock* from, const BasicBlock* to) const {
-    return backEdges.contains(edgeKey(from, to));
+    return backEdges.contains({from, to});
 }
 
 const std::vector<GirFrame>& GirFrameAnalysis::Result::frames(const BasicBlock* block) const {
@@ -476,7 +504,6 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
     result.contract = *encoded;
 
     std::unordered_map<StinkyInstruction*, size_t> instructionIndex;
-    std::unordered_map<StinkyInstruction*, BasicBlock*> instructionBlock;
     std::unordered_map<BasicBlock*, uint64_t> blockAnchor;
     std::unordered_map<BasicBlock*, uint64_t> blockAnchorOrder;
     std::unordered_map<BasicBlock*, std::unordered_set<uint64_t>> blockActions;
@@ -488,7 +515,6 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
             auto* inst = dyn_cast<StinkyInstruction>(&node);
             if (!inst) continue;
             instructionIndex[inst] = index++;
-            instructionBlock[inst] = &block;
             if (const auto* action = inst->getModifier<GirActionData>()) {
                 result.actionInstructions[action->actionId].push_back(inst);
                 blockActions[&block].insert(action->actionId);
@@ -610,7 +636,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
             if (actionIt == result.actionInstructions.end()) continue;
             for (StinkyInstruction* inst : actionIt->second) {
                 realizedHere = true;
-                const Loop* loop = containingLoop(loops, instructionBlock.at(inst));
+                const Loop* loop = containingLoop(loops, inst->getParent());
                 if (loop) ++votes[loop];
             }
         }
@@ -659,7 +685,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         }
     }
 
-    for (const Loop& loop : loops) result.backEdges.insert(edgeKey(loop.latchBB, loop.headerBB));
+    for (const Loop& loop : loops) result.backEdges.emplace(loop.latchBB, loop.headerBB);
 
     GirFrame base;
     for (const auto& [genId, _] : result.contract.generations) base.setPhase(genId, 0);
@@ -754,7 +780,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         for (StinkyInstruction* inst : instructions->second) {
             if (!instructionRealizes(actionSpec->second.kind, *inst)) continue;
             realized = true;
-            BasicBlock* block = instructionBlock.at(inst);
+            BasicBlock* block = inst->getParent();
             std::set<GirFrame> frames;
             for (const auto& [frame, _incomingAction] : frameSets.at(block)) frames.insert(frame);
             for (const GirFrame& frame : frames) {
@@ -767,8 +793,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
                 }
                 generation %= access.ring;
                 if (generation < 0) generation += access.ring;
-                result.occurrences.push_back({inst, block, instructionIndex.at(inst), accessIndex,
-                                              frame,
+                result.occurrences.push_back({inst, instructionIndex.at(inst), accessIndex, frame,
                                               concreteStorage(access, generation, storageIds)});
             }
         }
@@ -796,7 +821,8 @@ static GirHazardFenceCover coverOfHazard(
 
     std::vector<GirFrameNode> producerNodes;
     const auto rememberProducer = [&](const GirFrameNode& node) {
-        if (node.block != hazard.producerBlock || !(node.frame == hazard.producerFrame)) return;
+        if (node.block != hazard.producer->getParent() || !(node.frame == hazard.producerFrame))
+            return;
         if (std::find(producerNodes.begin(), producerNodes.end(), node) == producerNodes.end())
             producerNodes.push_back(node);
     };
@@ -877,8 +903,8 @@ static GirHazardFenceCover coverOfHazard(
     while (!work.empty()) {
         Step step = std::move(work.front());
         work.pop_front();
-        const bool atConsumer =
-            step.node.block == hazard.consumerBlock && step.node.frame == hazard.consumerFrame;
+        const bool atConsumer = step.node.block == hazard.consumer->getParent() &&
+                                step.node.frame == hazard.consumerFrame;
 
         if (step.gap == hazard.gap) {
             if (!atConsumer || hazard.consumerIndex < step.begin) continue;
@@ -939,7 +965,7 @@ GirFrameHazardAnalysis::Result GirFrameHazardAnalysis::run(Function& function,
         LiveTouchKey key{occurrence.frame, {occurrence.inst, occurrence.accessIndex}};
         if (!registry.emplace(key, &occurrence).second)
             STINKY_UNREACHABLE("GirFrameHazardAnalysis found a duplicate dynamic touch");
-        occurrences[{occurrence.block, occurrence.frame}].push_back(&occurrence);
+        occurrences[{occurrence.inst->getParent(), occurrence.frame}].push_back(&occurrence);
     }
     for (auto& [node, touches] : occurrences) {
         (void)node;
@@ -970,7 +996,8 @@ GirFrameHazardAnalysis::Result GirFrameHazardAnalysis::run(Function& function,
         // block. If the producer already precedes the consumer, 0 is the real same-trip gap for
         // both same- and cross-agent hazards; a barrier does not turn logical generation distance
         // into execution distance or retire the producer's completion counter.
-        if (producer.block == consumer.block && producerSpec.genId == consumerSpec.genId &&
+        if (producer.inst->getParent() == consumer.inst->getParent() &&
+            producerSpec.genId == consumerSpec.genId &&
             producer.instructionIndex >= consumer.instructionIndex &&
             producerSpec.absoluteGeneration < 0 && consumerSpec.absoluteGeneration < 0) {
             const int span = consumerSpec.gdelta - producerSpec.gdelta;
@@ -980,10 +1007,10 @@ GirFrameHazardAnalysis::Result GirFrameHazardAnalysis::run(Function& function,
         LiveTouchKey producerKey{producer.frame, {producer.inst, producer.accessIndex}};
         LiveTouchKey consumerKey{consumer.frame, {consumer.inst, consumer.accessIndex}};
         if (!emitted.emplace(static_cast<int>(kind), producerKey, consumerKey, gap).second) return;
-        result.hazards.push_back(
-            {kind, producer.inst, consumer.inst, producer.block, consumer.block,
-             producer.instructionIndex, consumer.instructionIndex, producer.frame, consumer.frame,
-             gap, crossAgent, actionOf(producer.inst), actionOf(consumer.inst), producer.storage});
+        result.hazards.push_back({kind, producer.inst, consumer.inst, producer.instructionIndex,
+                                  consumer.instructionIndex, producer.frame, consumer.frame, gap,
+                                  crossAgent, actionOf(producer.inst), actionOf(consumer.inst),
+                                  producer.storage});
     };
 
     // Emit in program order, by POSITION: a label carries a per-run suffix, so ordering on it is
