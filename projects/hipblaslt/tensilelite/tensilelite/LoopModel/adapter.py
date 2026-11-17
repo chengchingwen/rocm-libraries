@@ -28,7 +28,13 @@ def _k_tiles(kernel):
     return max(1, kernel["DepthU"] // mi_k) * kernel["InnerUnroll"]
 
 
-def _frag_elems(kernel, free_mi):
+def _frag_elems(kernel, free_mi, tc=None):
+    """ELEMENTS one wave tile holds.  `MIInputPerThread{tc}` is the authority where it is stated:
+    the shape below is the DENSE count, and a compressed operand stores half of it.
+    """
+    stated = int(kernel.get("MIInputPerThread%s" % tc, 0) or 0) if tc else 0
+    if stated:
+        return stated
     mi_k = kernel["MatrixInstruction"][2]
     mi_b = kernel["MatrixInstruction"][3] if len(kernel["MatrixInstruction"]) > 3 else 1
     return max(1, free_mi * mi_k * mi_b // WAVE32)
@@ -103,6 +109,7 @@ DEFAULTS = {
     "LDSBufferA": -1, "LDSBufferB": -1,
     "LDSBufferMXSA": -1, "LDSBufferMXSB": -1, "LDSBufferMetadata": -1,
     "Sparse": 0, "MIInputPerThreadMetadata": 0, "VectorWidthMetadata": 1,
+    "MIInputPerThreadA": 0, "MIInputPerThreadB": 0,
     "ReadVectorElems": {},
     "ReadCoverage": {},
     "PerRegionCompletion": False,
@@ -311,8 +318,8 @@ def _build_fragments(kernel, matrix_instruction, nest, splits):
     fragA = reg_fragment(nest.N_BCAST, "Mi")
     fragB = reg_fragment(nest.M_BCAST, "Ni")
 
-    fragElA = _frag_elems(kernel, matrix_instruction[0])
-    fragElB = _frag_elems(kernel, matrix_instruction[1])
+    fragElA = _frag_elems(kernel, matrix_instruction[0], "A")
+    fragElB = _frag_elems(kernel, matrix_instruction[1], "B")
     splitA = splits.mSplit * splits.aDU
     splitB = splits.nSplit * splits.bDU
 
@@ -884,6 +891,10 @@ def _shape_params(elem_bytes, kernel, mi, wt0, wt1):
         "InnerUnroll": kernel.get("InnerUnroll", 1) or 1,
         "NumLdsBlk": kernel.get("NumLdsBlk", 2),
         "1LDSBuffer": kernel.get("1LDSBuffer", 0),
+        # A compressed (sparse) operand stores half the dense K, and SourceSwap has already
+        # swapped the pair, so the stated count is the authority over the instruction shape.
+        "MIInputPerThreadA": int(kernel.get("MIInputPerThreadA", 0) or 0),
+        "MIInputPerThreadB": int(kernel.get("MIInputPerThreadB", 0) or 0),
         # Metadata's own shape.  Its tile is `MIInputPerThreadMetadata` bytes and its vector
         # width is the parent's, both already derived by `assignDerivedParameters`.
         "MIInputPerThreadMetadata": int(kernel.get("MIInputPerThreadMetadata", 0) or 0),
