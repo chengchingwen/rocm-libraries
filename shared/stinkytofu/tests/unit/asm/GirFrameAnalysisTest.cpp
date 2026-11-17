@@ -8,7 +8,9 @@
 #include "TestHelpers.hpp"
 #include "stinkytofu/analysis/AnalysisRegistration.hpp"
 #include "stinkytofu/analysis/asm/GirFrameAnalysis.hpp"
+#include "stinkytofu/bindings/python/Module.hpp"
 #include "stinkytofu/transforms/asm/GirFencePlacementPass.hpp"
+#include "stinkytofu/transforms/asm/GirFrameContractImportPass.hpp"
 #include "stinkytofu/transforms/asm/GirWaitCntInsertionPass.hpp"
 #include "stinkytofu/transforms/asm/StinkyBuildImplicitDependencyPass.hpp"
 #include "stinkytofu/transforms/asm/StinkyDAGSchedulerPass.hpp"
@@ -1854,4 +1856,125 @@ TEST(GirFrameAnalysisTest, RingOneKeepsItsWawThroughTheRead) {
     registerAllAnalyses(analyses);
     EXPECT_EQ(hazardKindsBetween(analyses, function, first, second),
               (std::multiset{GirHazardKind::WAW}));
+}
+
+// A Ds action is realized by whichever DS op performs it. Recognising only ds_read dropped a
+// ds_write's occurrences, and with them every hazard the later PRs place fences from.
+TEST(GirFrameAnalysisTest, DsActionRealizedByADsWriteIsNotDropped) {
+    Function function("ds_write_realizes");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    BasicBlock* block = function.createBasicBlock("entry");
+
+    StinkyInstruction* write = createDSWriteInBlock(block, GfxArchID::Gfx1250, 0, 4);
+    write->addModifier<GirActionData>(
+        GirActionData{1, 1, GirActionKind::Ds, {GirAccessData{true, 0, 1, -1, 0, 0, false}}});
+    StinkyInstruction* read = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 8, 0);
+    read->addModifier<GirActionData>(
+        GirActionData{2, 2, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
+    function.setStringMetaData(kGirFrameContractKey, kFenceContract);
+
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    const auto& frames = analyses.getResult<GirFrameAnalysis>(function);
+    EXPECT_EQ(std::count_if(frames.occurrences.begin(), frames.occurrences.end(),
+                            [&](const GirAccessOccurrence& o) { return o.inst == write; }),
+              1);
+    EXPECT_EQ(hazardKindsBetween(analyses, function, write, read),
+              (std::multiset{GirHazardKind::RAW}));
+}
+
+// A kind that matches none of its action's instructions used to drop the access without a word,
+// which the fence placement in the later PRs cannot detect. It must be fatal instead.
+TEST(GirFrameAnalysisDeathTest, AnActionNoInstructionRealizesIsFatal) {
+    Function function("mislabelled_kind");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    BasicBlock* block = function.createBasicBlock("entry");
+
+    // A Tensor action tagged onto a ds_read: nothing here performs a tensor access.
+    StinkyInstruction* read = createDsReadB128InBlock(block, GfxArchID::Gfx1250, 0, 20);
+    read->addModifier<GirActionData>(
+        GirActionData{1, 1, GirActionKind::Tensor, {GirAccessData{false, 0, 1, -1, 0, 0, false}}});
+    function.setStringMetaData(kGirFrameContractKey, kFenceContract);
+
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    EXPECT_DEATH((void)analyses.getResult<GirFrameAnalysis>(function),
+                 "none of its instructions performs that access");
+}
+
+// The plan coverage answers, per hazard, which fences stand on its paths and whether any path is
+// left open. A materialized fence between the two ends owns the hazard and closes every path;
+// `alsoFences` is the hook placement uses to ask the same question about a proposed marker.
+TEST(GirFrameAnalysisTest, PlanCoverageNamesTheFenceOwningACrossAgentHazard) {
+    constexpr const char* kPlanCoverageContract =
+        "gir-frame-contract\n"
+        "gen 0  ring=2 entry=0\n"
+        "incoming  dst=2 src=0 gen=0 value=1\n";
+
+    Function function("plan_coverage");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* entry = function.createBasicBlock("entry");
+    BasicBlock* drain = function.createBasicBlock("drain");
+    function.addEdge(entry, drain);
+
+    StinkyInstruction* producer = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 0, 8);
+    producer->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 1, 2, -1, 0, 0, true}}});
+    AsmIRBuilder builder(*drain, GfxArchID::Gfx1250);
+    StinkyInstruction* fence = builder.createFence();
+    fence->addModifier<GirActionData>(GirActionData{2, 2, GirActionKind::Other, {}});
+    StinkyInstruction* consumer = createDsReadB128InBlock(drain, GfxArchID::Gfx1250, 0, 20);
+    consumer->addModifier<GirActionData>(
+        GirActionData{3, 2, GirActionKind::Ds, {GirAccessData{false, 1, 2, 0, -1, -1, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kPlanCoverageContract);
+
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    const auto& frames = analyses.getResult<GirFrameAnalysis>(function);
+    const auto& hazards = analyses.getResult<GirFrameHazardAnalysis>(function);
+    ASSERT_EQ(hazards.hazards.size(), 1u);
+
+    const GirPlanFenceCoverage plan = buildGirPlanFenceCoverage(frames, hazards);
+    ASSERT_EQ(plan.byHazard.size(), 1u);
+    const GirHazardFenceCover& cover = plan.byHazard.front();
+    EXPECT_TRUE(cover.hasHazardPath);
+    EXPECT_FALSE(cover.hasUnfencedPath);
+    ASSERT_EQ(cover.owners.size(), 1u);
+    EXPECT_EQ(cover.owners.front().anchor, fence);
+
+    // Nominating the consumer is what placement does while searching: it already sits after the
+    // fence, so the answer is unchanged rather than double-counted.
+    const GirPlanFenceCoverage marked = buildGirPlanFenceCoverage(
+        frames, hazards, [&](const StinkyInstruction& inst) { return &inst == consumer; });
+    ASSERT_EQ(marked.byHazard.size(), 1u);
+    EXPECT_FALSE(marked.byHazard.front().hasUnfencedPath);
+}
+
+// The import pass is what hands the module's contract to each function; without it the analysis
+// above has nothing to read.
+TEST(GirFrameAnalysisTest, ContractImportPassPutsTheModuleContractOnTheFunction) {
+    StinkyAsmModule::ModuleOptions options{};
+    options.OptLevel = 0;
+    StinkyAsmModule module("import", {12, 5, 0}, options);
+    auto contract = std::make_shared<GirFrameContract>();
+    contract->loaded = true;
+    contract->generations.emplace(0, GirGenerationSpec{0, 2, 0});
+    module.setGirFrameContract(contract);
+    module.setPluginDataI64("gir.action_tag_count", 1);
+
+    Function function("imported");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    function.createBasicBlock("entry");
+    ASSERT_EQ(function.getStructMetaData<GirFrameContract>(kGirFrameContractKey), nullptr);
+
+    PassContext context;
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    createGirFrameContractImportPass(module)->run(function, context, analyses);
+
+    const auto* imported = function.getStructMetaData<GirFrameContract>(kGirFrameContractKey);
+    ASSERT_NE(imported, nullptr);
+    EXPECT_TRUE(imported->loaded);
+    EXPECT_EQ(imported->generations.at(0).ring, 2);
 }

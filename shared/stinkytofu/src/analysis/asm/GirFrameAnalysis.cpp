@@ -42,9 +42,13 @@ const Loop* containingLoop(const std::vector<Loop>& loops, const BasicBlock* blo
     return best;
 }
 
+// Which of an action's instructions PERFORMS the access. Legalization splits one action across
+// several instructions (address arithmetic, a second half), and only the memory op realizes it.
+// A kind names the FAMILY, not one opcode: `GirAccessData` already carries the direction, so a
+// ds_write realizes a Ds access exactly as a ds_read does.
 bool instructionRealizes(GirActionKind kind, const StinkyInstruction& inst) {
-    if (kind == GirActionKind::Ds) return isDSRead(inst);
-    if (kind == GirActionKind::Tensor) return isTensorLoad(inst);
+    if (kind == GirActionKind::Ds) return isDSAccess(inst);
+    if (kind == GirActionKind::Tensor) return isTensorAccess(inst);
     return false;
 }
 
@@ -746,8 +750,10 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         if (actionSpec == result.contract.actions.end() ||
             instructions == result.actionInstructions.end())
             continue;  // A folded GIR action can intentionally have no physical realization.
+        bool realized = false;
         for (StinkyInstruction* inst : instructions->second) {
             if (!instructionRealizes(actionSpec->second.kind, *inst)) continue;
+            realized = true;
             BasicBlock* block = instructionBlock.at(inst);
             std::set<GirFrame> frames;
             for (const auto& [frame, _incomingAction] : frameSets.at(block)) frames.insert(frame);
@@ -766,6 +772,16 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
                                               concreteStorage(access, generation, storageIds)});
             }
         }
+        // An action that survived lowering but whose kind matches none of its instructions drops
+        // every access it declares -- no occurrence, so no hazard, no fence, and nothing says so.
+        // Either the kind is mislabelled (an unknown `.stir` spelling parses to `Other`) or the
+        // family above is missing the opcode that realizes it.
+        if (!realized)
+            STINKY_UNREACHABLE(("GirFrameAnalysis: action " + std::to_string(access.actionId) +
+                                " declares kind " +
+                                std::to_string(static_cast<int>(actionSpec->second.kind)) +
+                                " but none of its instructions performs that access")
+                                   .c_str());
     }
 
     return result;

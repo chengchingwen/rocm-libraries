@@ -877,7 +877,7 @@ inline bool hasLdsPseudoRegs(const StinkyInstruction& inst) {
 /// enter the scheduler DAG and GirFrameHazardAnalysis can add only the ordering edges it needs.
 /// GIR does not choose the schedule.  Untagged memory operations remain conservative region cuts.
 inline bool hasGirMemoryHazardModel(const StinkyInstruction& inst) {
-    if (!isTensorLoad(inst) && !isDSRead(inst)) return false;
+    if (!isTensorAccess(inst) && !isDSAccess(inst)) return false;
     const GirActionData* action = inst.getModifier<GirActionData>();
     return action != nullptr && !action->accesses.empty();
 }
