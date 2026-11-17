@@ -466,6 +466,28 @@ def read_operand(inst):
     return src.tile.operand
 
 
+def read_pointer_operands(prog):
+    """Every operand that reads shared->register, in first-seen order."""
+    out = []
+    for block in prog.blocks.values():
+        for inst in block.body:
+            operand = read_operand(inst)
+            if operand is not None and operand not in out:
+                out.append(operand)
+    return tuple(out)
+
+
+def read_pointer_unit(prog, operand):
+    """The read POINTER `operand` rotates: `descriptor_unit`'s mirror, from the target's groups.
+
+    Absent any, every operand is its own pointer -- the per-operand `LocalReadAddr` xor.
+    """
+    for group in prog.meta.get("read_pointer_groups", ()) or ():
+        if operand in group:
+            return tuple(group)
+    return (operand,)
+
+
 def covered_coords(ref) -> tuple:
     """Every coordinate ONE reference fills -- its absorbed axes, re-inserted.
 

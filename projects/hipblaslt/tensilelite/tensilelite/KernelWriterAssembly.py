@@ -16935,7 +16935,7 @@ class KernelWriterAssembly(KernelWriter):
   # internalPointerSwap: swap internally tracked offsets - rather than
   #    emit specific instructions to do the pointer swap
   ##############################################################################
-  def localReadSwapOffsets(self, kernel, internalPointerSwap, tP):
+  def localReadSwapOffsets(self, kernel, internalPointerSwap, tP, advanceSharedInc=None):
     tc=tP["tensorChar"]
     if (not self.do["LocalRead%s"%tc]):
       return Module("localReadSwapOffsets (no local read)")
@@ -16975,8 +16975,9 @@ class KernelWriterAssembly(KernelWriter):
     if self.states.IncLdsBufSwitch:
       # IncLdsBufSwitch case, we do not use xor. Instead, use add and max check for round back
       # (numLDSBlk>=3 is for DTL (and LocalWriteUseSgpr) and the non-DTL TDM TDMPlusLdsBuf path)
-      is1st = tc == "A" # so far, A is always first
-      # LDSBufferReadInc is common for A and B. Add this only for the first one (tc=="A")
+      # LDSBufferReadInc is common to every operand: advanced once, then each rebuilds from it.
+      # Legacy emits A first; GIR owns the whole pointer and names the member that advances it.
+      is1st = (tc == "A") if advanceSharedInc is None else advanceSharedInc
       if is1st:
         module.add(SAddU32(
           dst=sgpr("LDSBufferReadInc"), \
