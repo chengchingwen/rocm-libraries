@@ -185,8 +185,7 @@ class GirToRocisa:
                                           merge=_merge, gen=at.get("gen"),
                                           girComment=self._actLine))
             elif kind == "swap":
-                # A read swap names an operand, a copy swap names the fused movement -- see
-                # `gir/refs.copy_unit` and the act table in `gir/emit_plan`.
+                # Both hops name a POINTER -- see `gir/nodes.read_pointer_unit` / `copy_unit`.
                 who = at["operand"] if at["hop"] == "ds_load" else at["unit"]
                 self._tag_act(out, phase, act)
                 self._emit_swap(out, at["hop"], who, tpByOperand, internalPointerSwap)
@@ -373,15 +372,18 @@ class GirToRocisa:
     def _emit_swap(self, out, hop, who, tpByOperand, internalPointerSwap):
         """Realize ONE buffer-pointer swap via the scaffold's primitive.
 
-        read hop -> `localReadSwapOffsets` (v_xor LocalReadAddr), per OP-CLASS: A and B read from
-        their own LDS regions through their own address registers, so `who` is an operand name and
-        multi-wave changes nothing here.
+        `who` is the POINTER, so a grouped read swap rotates it ONCE and rebuilds each member's
+        address from it, in the order the model named them.
         """
         if hop == "ds_load":
-            tP = tpByOperand.get(who)
-            if tP is None:
+            members = [m for m in who if tpByOperand.get(m) is not None]
+            if not members:
                 return
-            code = self.writer.localReadSwapOffsets(self.kernel, internalPointerSwap, tP)
+            code = Module("GIR read swap %s" % self._who(who))
+            for index, member in enumerate(members):
+                code.add(self.writer.localReadSwapOffsets(
+                    self.kernel, internalPointerSwap, tpByOperand[member],
+                    advanceSharedInc=(index == 0)))
         elif len(who) > 1:
             tP, _peer = self._fused_tp(who, tpByOperand, "descriptor swap")
             code = self.writer.tdmSwapLdsOffset(self.kernel, self._ownerTp(who, tpByOperand, tP))

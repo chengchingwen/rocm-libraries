@@ -12,6 +12,7 @@ from ...Lowering.loopir_to_gir import lower_to_gir
 from ...Lowering.gir import check_plan
 from ...Lowering.gir.analyses import Gl2PrefetchRegions
 from ...Lowering.gir.frame_contract import install_frame_contract
+from ...Lowering.gir.nodes import read_pointer_operands
 from ...Lowering.gir.passes import pipeline as gir_pipeline
 from ...Lowering.gir.passes import run_pipeline
 from ...Lowering.gir.passes.manual_schedule import (
@@ -87,6 +88,10 @@ def loopModelGirProgram(writer, kernel):
             for name, alloc in (writer.states.loopModelValuAlloc or {}).items()
             if int(alloc.total) > 0
         }
+        # Which operands SHARE a read address register is the scaffold's layout, not LoopIR:
+        # 3+ buffers rebuild every LocalReadAddr from one LDSBufferReadInc, the xor path does not.
+        if writer.states.IncLdsBufSwitch:
+            prog.meta["read_pointer_groups"] = (read_pointer_operands(prog),)
         # PrefetchGL2 is a target-side GIR placement parameter, not LoopIR.
         prog.params[Gl2PrefetchRegions.PARAM] = kernel["PrefetchGL2"]
         passes = gir_pipeline()

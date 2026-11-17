@@ -34,6 +34,26 @@ using namespace stinkytofu;
 
 constexpr int kWorkgroupBarrierId = -1;
 
+/// The hazard a fatal is about: without the frames and the gap there is nothing to compare the
+/// frame graph against.
+std::string describeHazard(const GirFrameHazard& hazard) {
+    const auto frame = [](const GirFrame& value) {
+        std::string out = "{";
+        for (const auto& [gen, phase] : value.phases)
+            out += (out.size() > 1 ? ", " : "") + std::to_string(gen) + "=" + std::to_string(phase);
+        return out + "}";
+    };
+    const char* kind = hazard.kind == GirHazardKind::RAW   ? "RAW"
+                       : hazard.kind == GirHazardKind::WAR ? "WAR"
+                                                           : "WAW";
+    return std::string(kind) + " storage=" + std::to_string(hazard.storage) +
+           " gap=" + std::to_string(hazard.gap) + " producer=action" +
+           std::to_string(hazard.producerAction) + "@" + frame(hazard.producerFrame) + "[" +
+           std::to_string(hazard.producerIndex) + "] consumer=action" +
+           std::to_string(hazard.consumerAction) + "@" + frame(hazard.consumerFrame) + "[" +
+           std::to_string(hazard.consumerIndex) + "]";
+}
+
 /// Producer occurrences that have executed with no owned publication crossed since.  A physical
 /// pre-existing fence publishes everything; a virtual marker publishes only the hazard kinds it
 /// owns until the complete marker plan is materialized.
@@ -671,8 +691,10 @@ class GirFencePlacementPass final : public StinkyInstPass {
                 if (!passCtx.shouldProcessBasicBlock(*hazard.consumer->getParent())) continue;
                 const GirHazardFenceCover& cover = positionPlan.byHazard[h];
                 if (!cover.hasHazardPath)
-                    STINKY_UNREACHABLE(
-                        "GirFencePlacementPass found no exact frame path for a GIR hazard");
+                    STINKY_UNREACHABLE(("GirFencePlacementPass found no exact frame path for a "
+                                        "GIR hazard: " +
+                                        describeHazard(hazard))
+                                           .c_str());
                 if (!cover.hasUnfencedPath) continue;
                 size_t index = 0;
                 for (IRBase& node : *hazard.consumer->getParent()) {

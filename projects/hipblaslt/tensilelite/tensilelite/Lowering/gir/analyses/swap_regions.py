@@ -8,7 +8,8 @@ dataflow analysis over the GIR CFG.
 from __future__ import annotations
 
 from ..nodes import Move, Mark, CondGoto, Goto
-from ..nodes import (copy_unit, descriptor_unit, first_shared_ref, read_operand, Region,
+from ..nodes import (copy_unit, descriptor_unit, first_shared_ref, read_operand,
+                     read_pointer_unit, Region,
                      PendingMark, BLOCK_ENTRY, BLOCK_EXIT, EARLIEST, MIDPOINT)
 from .value_placement import RequiredValue, ValuePlacementSolver
 from ..analysis import Analysis
@@ -23,15 +24,14 @@ ENTRY_GENERATION = 0
 def _hop_access(prog, inst, hop):
     """`(unit, shared_ref)` if `inst` is a Move on `hop` ('ds_load'|'tensor_load'), else None.
 
- `unit` is the POINTER identity, and it is not the same kind of thing on the two hops: a read has
- its own LocalReadAddr per operand, while every member of a Phi group shares one TDM descriptor --
- so a copy's identity is the descriptor, not the members this particular movement carries."""
+ `unit` is the POINTER identity: on BOTH hops, the operands sharing one address register. One
+ identity means one placement, so no emitter has to pick which swap carries a shared advance."""
     if not isinstance(inst, Move):
         return None
     if hop == "ds_load":
         op = read_operand(inst)
         if op is not None:
-            return (op, first_shared_ref(inst.srcs))
+            return (read_pointer_unit(prog, op), first_shared_ref(inst.srcs))
     elif hop == "tensor_load":
         members, refs = copy_unit(inst)
         if members is not None:
@@ -40,15 +40,28 @@ def _hop_access(prog, inst, hop):
 
 
 def _ring_for_unit(prog, hop, unit):
-    """The buffer ring depth for this (hop, unit) -- from the Gen a Ref names."""
+    """The buffer ring depth for this (hop, unit) -- from the Gen a Ref names.
+
+    One pointer carries one modulus, so grouped OPERANDS must rotate alike; within one operand
+    the first ring still wins, as it always has.
+    """
+    first, byOperand = None, {}
     for blk in prog.blocks.values():
         for inst in blk.body:
             acc = _hop_access(prog, inst, hop)
             if acc is not None and acc[0] == unit:
                 g = getattr(acc[1], "gen", None)
                 if g is not None:
-                    return max(1, g.ring)
-    return 1
+                    first = max(1, g.ring) if first is None else first
+                    byOperand.setdefault(
+                        getattr(getattr(acc[1], "tile", None), "operand", None),
+                        max(1, g.ring))
+    if len(set(byOperand.values())) > 1:
+        raise RuntimeError(
+            "SwapRegions: the %s pointer %r is shared by operands with different ring depths %r, "
+            "but one address register carries one modulus. Give them separate pointers, or equal "
+            "LDS buffer counts." % (hop, unit, byOperand))
+    return first if first is not None else 1
 
 
 def _requirements(prog, blk, hop, unit, ring):

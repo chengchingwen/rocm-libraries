@@ -1,0 +1,61 @@
+# Copyright Advanced Micro Devices, Inc., or its affiliates.
+# SPDX-License-Identifier: MIT
+#
+# PGR2 x TDMPlusLdsBuf under UseLoopModel: a 3-deep LDS ring, forked over both wave counts, with
+# K sizes walking every trip count mod 3 so the tail drains on each phase.
+TestParameters:
+  marks: [skip-gfx900, skip-gfx906, skip-gfx908, skip-gfx90a, skip-gfx940, skip-gfx941, skip-gfx942, skip-gfx950, skip-gfx1010, skip-gfx1011, skip-gfx1012, skip-gfx1030, skip-gfx1100, skip-gfx1101, skip-gfx1102, skip-gfx1200, skip-gfx1201]
+
+GlobalParameters:
+  SyncsPerBenchmark: 0
+  NumElementsToValidate: -1
+  BoundsCheck: 0
+  PrintSolutionRejectionReason: True
+  Architecture: gfx1250
+  KeepBuildTmp: True
+  PrintLevel: 2
+
+BenchmarkProblems:
+
+  -
+    -
+      OperationType: GEMM
+      DataType: b
+      DestDataType: b
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      TransposeA: False
+      TransposeB: True
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 32, 1,  1,  2, 2,  1, 1]
+          - [16, 16, 32, 1,  1,  2, 2,  2, 2]
+        - DepthU: [64, 128]
+        - WavefrontSize: [32]
+        - PrefetchGlobalRead: [2]
+        - PrefetchLocalRead: [0, 1]
+        - StaggerU: [0]
+        - ScheduleIterAlg: [0, 4]
+        - TDMPlusLdsBuf: [0, 1]
+        - UseSubtileImpl: [false]
+        - UseLoopModel: [true]
+        - TDMInst: [3]
+        - LDSTrInst: [true]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 256]
+          - Exact: [256, 256, 1, 97]    # tail only partially fills a slab
+          - Exact: [256, 256, 1, 1000]  # trips mod 3 == 0, plus a tail
+          - Exact: [256, 256, 1, 1064]  # trips mod 3 == 1, plus a tail
+          - Exact: [256, 256, 1, 1128]  # trips mod 3 == 2, plus a tail
