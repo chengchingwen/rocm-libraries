@@ -534,25 +534,32 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
         if (retired) continue;
 
         if (retireAtEnd(step.node.block, step.count)) continue;
-        // Ran out of span, or off the end of the frame graph, without ever reaching the anchor:
-        // this path was not modelled, so it proves nothing about the producer being retired.
-        if (step.steps >= span) {
-            unaccounted = true;
-            continue;
-        }
 
         auto successors = frames.edges.find(step.node);
-        if (successors == frames.edges.end()) {
+        // Ran out of span, or off the end of the frame graph, without ever reaching the anchor:
+        // this path was not modelled, so it proves nothing about the producer being retired.
+        // Span is counted in GIR blocks, so an edge within one spends none of it.
+        const auto costOf = [&](const GirFrameNode& successor) {
+            return frames.insideOneGirBlock(step.node.block, successor.block) ? 0 : 1;
+        };
+        if (successors == frames.edges.end() ||
+            std::none_of(successors->second.begin(), successors->second.end(),
+                         [&](const GirFrameNode& successor) {
+                             return step.steps + costOf(successor) <= span;
+                         })) {
             unaccounted = true;
             continue;
         }
         for (const GirFrameNode& successor : successors->second) {
+            const int advance = costOf(successor);
+            if (step.steps + advance > span) continue;
             std::set<int> trips = step.trips;
             if (feasible && !trips.empty()) {
                 trips = edgeTripDomain(step.node.block, successor.block, trips);
                 if (trips.empty()) continue;  // no trip count takes this edge onward
             }
-            Step next{successor, 0, step.steps + 1, step.count, step.node.block, std::move(trips)};
+            Step next{successor,       0, step.steps + advance, step.count, step.node.block,
+                      std::move(trips)};
             if (visited.insert(stateKey(next)).second) work.push_back(std::move(next));
         }
     }
@@ -995,20 +1002,31 @@ int girFrameIssuesAcrossSpan(const GirFrameAnalysis::Result& frames, CounterKind
 int girFrameDistance(const GirFrameAnalysis::Result& frames, const GirFrameNode& from,
                      const GirFrameNode& to) {
     if (from == to) return 0;
-    std::unordered_set<GirFrameNode, GirFrameNodeHash> seen{from};
-    std::deque<std::pair<GirFrameNode, int>> work{{from, 0}};
+    // Distance is counted in GIR blocks, so an edge within one costs nothing and a plain queue no
+    // longer pops in distance order: this is a 0-1 BFS, and a node may be relaxed after its visit.
+    std::unordered_map<GirFrameNode, int, GirFrameNodeHash> best{{from, 0}};
+    std::deque<GirFrameNode> work{from};
     while (!work.empty()) {
-        auto [node, steps] = std::move(work.front());
+        GirFrameNode node = std::move(work.front());
         work.pop_front();
+        const int steps = best[node];
         auto successors = frames.edges.find(node);
         if (successors == frames.edges.end()) continue;
         for (const GirFrameNode& successor : successors->second) {
-            if (successor == to) return steps + 1;
-            if (!seen.insert(successor).second) continue;
-            work.push_back({successor, steps + 1});
+            const int advance = frames.insideOneGirBlock(node.block, successor.block) ? 0 : 1;
+            auto [slot, fresh] = best.try_emplace(successor, steps + advance);
+            if (!fresh) {
+                if (slot->second <= steps + advance) continue;
+                slot->second = steps + advance;
+            }
+            if (advance == 0)
+                work.push_front(successor);
+            else
+                work.push_back(successor);
         }
     }
-    return -1;
+    auto found = best.find(to);
+    return found == best.end() ? -1 : found->second;
 }
 
 WaitInsertionPlan buildGirFrameWaitPlan(
