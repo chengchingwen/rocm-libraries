@@ -1031,20 +1031,53 @@ class GirFencePlacementPass final : public StinkyInstPass {
                     });
         }
 
+        // A workgroup barrier is a rendezvous, so it cannot stand where only some agents arrive.
+        // Lowering branches a conditionally-issued movement over itself, and the solver picks a
+        // slot per asm block, so a cut whose deadline is that movement lands inside the seam --
+        // half the waves then signal once more per trip than the rest. The GIR block is the unit:
+        // move such a fence ahead of the branch that does the skipping. Nothing but that branch
+        // is crossed, so the cut is the same one, taken a step earlier.
+        const auto rendezvous = [&](const StinkyInstruction* target) -> StinkyInstruction* {
+            auto* marker = const_cast<StinkyInstruction*>(target);
+            BasicBlock* source = frames.girSkipSource(marker->getParent());
+            if (!source) return marker;
+            StinkyInstruction* branch = nullptr;
+            for (IRBase& node : *source)
+                if (auto* inst = dyn_cast<StinkyInstruction>(&node))
+                    if (isBranch(*inst)) branch = inst;
+            if (!branch) return marker;
+            // Only the skipped seam's own prefix may be passed over, and only if it moves no
+            // memory; anything else would be a different cut, not the same one placed earlier.
+            for (IRBase& node : *marker->getParent()) {
+                auto* inst = dyn_cast<StinkyInstruction>(&node);
+                if (!inst || inst == marker) break;
+                if (counterOfProducer(*inst) != Counter::None) return marker;
+            }
+            return branch;
+        };
+
         // Phase 4: and only now does the plan become instructions.
         const size_t placed = markers.size();
         const size_t erased = 0;
+        std::unordered_map<StinkyInstruction*, StinkyInstruction*> rendezvousWait;
+        std::map<StinkyInstruction*, HazardKinds, std::less<StinkyInstruction*>> waitKinds;
         for (const StinkyInstruction* target : inProgramOrder(markers)) {
-            auto* anchor = const_cast<StinkyInstruction*>(target);
-            AsmIRBuilder builder(*anchor->getParent(), archId);
-            StinkyInstruction* signal = builder.create(signalDesc, anchor);
-            signal->addSrcReg(StinkyRegister(kWorkgroupBarrierId));
-            StinkyInstruction* wait = builder.create(waitDesc, anchor);
-            wait->addSrcReg(StinkyRegister(kWorkgroupBarrierId));
+            auto* anchor = rendezvous(target);
+            // Two seams of one GIR block answer at the same branch; that is one rendezvous, and a
+            // second signal there would reintroduce the count every agent has to match.
+            StinkyInstruction* wait = rendezvousWait[anchor];
+            if (!wait) {
+                AsmIRBuilder builder(*anchor->getParent(), archId);
+                StinkyInstruction* signal = builder.create(signalDesc, anchor);
+                signal->addSrcReg(StinkyRegister(kWorkgroupBarrierId));
+                wait = builder.create(waitDesc, anchor);
+                wait->addSrcReg(StinkyRegister(kWorkgroupBarrierId));
+                rendezvousWait[anchor] = wait;
+            }
             auto covered = markerCoverage.find(target);
             if (covered == markerCoverage.end() || covered->second.empty())
                 STINKY_UNREACHABLE("GirFencePlacementPass: barrier has no hazard-kind stamp");
-            wait->addModifier<CommentData>(CommentData{fenceStamp(hazardKinds(covered->second))});
+            waitKinds[wait].merge(hazardKinds(covered->second));
             // One entry per fence. Both halves answer for the same cut, so a consumer that holds
             // either one reaches it through the signal/wait pairing it already knows.
             auto owned = finalOwnership.find(target);
@@ -1054,6 +1087,9 @@ class GirFencePlacementPass final : public StinkyInstPass {
                 for (const GirFrameHazard* hazard : covered)
                     fenceCoverage->add(wait, frame, *hazard);
         }
+        // Stamped once the merge is settled: a shared rendezvous answers for every cut on it.
+        for (auto& [wait, kinds] : waitKinds)
+            wait->addModifier<CommentData>(CommentData{fenceStamp(kinds)});
         function.setStructMetaData<GirFenceCoverage>(kGirFenceCoverageKey, fenceCoverage);
 
         if (placed == 0 && erased == 0) return PreservedAnalyses::all();
