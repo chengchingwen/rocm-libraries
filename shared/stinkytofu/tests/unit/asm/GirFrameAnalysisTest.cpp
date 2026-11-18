@@ -2037,3 +2037,65 @@ TEST(GirFrameAnalysisTest, ASeamInsideOneGirBlockIsNotDistance) {
     // counting asm blocks reported 1 on the short arm and 2 on the guarded one.
     EXPECT_EQ(gaps, (std::set<int>{0}));
 }
+
+// A workgroup barrier is a rendezvous, so it cannot stand where only some agents arrive. Lowering
+// branches a conditionally-issued movement over itself, and the solver picks a slot per ASM block,
+// so a cut whose deadline is that movement used to land inside the seam -- half the waves then ran
+// one more barrier per trip than the rest, and the workgroup drifted apart. The GIR block is the
+// unit: the fence belongs ahead of the branch that does the skipping.
+TEST(GirFrameAnalysisTest, AFenceNeverStandsInASeamOnlySomeAgentsEnter) {
+    Function function("seam_fence");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    setFunctionNumWaves(function, 2);
+    BasicBlock* entry = function.createBasicBlock("entry");
+    BasicBlock* head = function.createBasicBlock("head");
+    BasicBlock* guarded = function.createBasicBlock("guarded");
+    BasicBlock* join = function.createBasicBlock("join");
+    BasicBlock* exit = function.createBasicBlock("exit");
+    function.addEdge(entry, head);
+    function.addEdge(head, guarded);
+    function.addEdge(head, join);
+    function.addEdge(guarded, join);
+    function.addEdge(join, exit);
+
+    // head/guarded/join are one GIR block (anchor 1); the guard branch belongs to the action it
+    // skips, exactly as the metadata lowering emits it.
+    StinkyInstruction* producer = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 0, 8);
+    producer->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 1, -1, 0, 0, true}}});
+    AsmIRBuilder headBuilder(*head, GfxArchID::Gfx1250);
+    StinkyInstruction* guardBranch =
+        headBuilder.create(getMCIDByUOp(GFX::s_cbranch_scc1, GfxArchID::Gfx1250));
+    guardBranch->addModifier<GirActionData>(GirActionData{1, 1, GirActionKind::Tensor, {}});
+    StinkyInstruction* seamRead = createDsReadB128InBlock(guarded, GfxArchID::Gfx1250, 0, 20);
+    seamRead->addModifier<GirActionData>(
+        GirActionData{2, 1, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+    StinkyInstruction* joinRead = createDsReadB128InBlock(join, GfxArchID::Gfx1250, 8, 28);
+    joinRead->addModifier<GirActionData>(
+        GirActionData{3, 1, GirActionKind::Ds, {GirAccessData{false, 0, 1, -1, 0, 0, true}}});
+    function.setStringMetaData(kGirFrameContractKey, kFenceContract);
+
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    const auto& frames = analyses.getResult<GirFrameAnalysis>(function);
+    // `head` branches around `guarded`; `join` is on every path, and `head` is where they enter.
+    EXPECT_EQ(frames.girSkipSource(guarded), head);
+    EXPECT_EQ(frames.girSkipSource(join), nullptr);
+    EXPECT_EQ(frames.girSkipSource(head), nullptr);
+    EXPECT_EQ(frames.girSkipSource(entry), nullptr);
+
+    const auto barriers = [](BasicBlock* block) {
+        int count = 0;
+        for (IRBase& node : *block)
+            if (auto* inst = dyn_cast<StinkyInstruction>(&node))
+                if (isBarrierSignal(*inst)) ++count;
+        return count;
+    };
+    PassContext context;
+    context.setGemmTileConfig(function.getGemmTileConfig());
+    createGirFencePlacementPass()->run(function, context, analyses);
+    // The cross-agent RAW into the seam is real and must be cut -- but not where half the waves
+    // would never arrive.
+    EXPECT_EQ(barriers(guarded), 0) << "a rendezvous inside the seam desynchronizes the workgroup";
+    EXPECT_EQ(barriers(head), 1);
+}
