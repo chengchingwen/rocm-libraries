@@ -150,7 +150,11 @@ class GrIncrementRegions(Analysis):
         def delta(a, b):
             # Requirements are ABSOLUTE chunks, so forward edges need no re-framing.  The back edge
             # re-enters the same block one trip on, so the value leaving must be `adv` further along
-            return adv_of.get(a, 1) if (a, b) in back_set else 0
+            if (a, b) in back_set:
+                return adv_of.get(a, 1)
+            # ...except where a folded edge leaves THIS unit behind the base the block states,
+            # which a lockstep peel never does, so this is 0 for every symmetric program.
+            return prog.blocks[b].path_unit_skew.get(a, {}).get(unit, 0)
 
         def on_conflict(kind, detail):
             blk, other, have, want = detail

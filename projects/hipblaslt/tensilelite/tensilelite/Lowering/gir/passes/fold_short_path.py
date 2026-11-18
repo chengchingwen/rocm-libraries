@@ -8,7 +8,27 @@ then remove the arm.
 from __future__ import annotations
 
 from ..nodes import CondGoto, Goto, LoopBack, LoopCopy, Mma, Move
-from ..nodes import terminator_targets
+from ..nodes import copy_unit, descriptor_unit, terminator_targets
+
+
+def _peel_skew(prog):
+    """`{unit: chunks it sits BEHIND the deepest}` after the peel -- 0 for every unit in lockstep.
+
+    Per-operand prefetch depths let the prologue peel one tensor further than another, and the
+    folded edge's block base can only state the deepest one.
+    """
+    reached = {}
+    entry = prog.blocks.get(prog.entry)
+    for inst in (entry.body if entry else ()):
+        if not isinstance(inst, Move):
+            continue
+        members, dsts = copy_unit(inst)
+        if members is None or not dsts or dsts[0].abs_gen is None:
+            continue
+        unit = descriptor_unit(prog, members)
+        reached[unit] = max(reached.get(unit, 0), int(dsts[0].abs_gen))
+    deepest = max(reached.values(), default=0)
+    return {unit: gen - deepest for unit, gen in reached.items() if gen != deepest}
 
 
 def _register_slots(refs):
@@ -152,12 +172,16 @@ class FoldShortPathPass(Pass):
         # THE FOLDED EDGE INHERITS THE ARM'S FRAME.  Rewiring `-> short0` into `-> drain0`
         # does not merely change a target: the two land at DIFFERENT positions on the summation
         arm_base = prog.blocks[v.short_blocks[0]].chunk_base if v.short_blocks else 0
+        # One base states the DEEPEST unit's frame; a shallower one sits behind it by its skew.
+        skew = _peel_skew(prog)
 
         def _rewire(src_lab):
             # `first_drain` is "end" when the coverage leaves no drain block to land in; there is then
             # no frame to state.
             if first_drain in prog.blocks:
                 prog.blocks[first_drain].path_chunk_base[src_lab] = arm_base
+                if skew:
+                    prog.blocks[first_drain].path_unit_skew[src_lab] = dict(skew)
 
         for lab, blk in prog.blocks.items():
             if lab in short:

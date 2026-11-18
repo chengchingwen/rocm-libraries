@@ -50,8 +50,14 @@ class EarlyExitPass(Pass):
             # ONE RULE, STATED BY THE FOLD: every edge from this guard lands in the arm's frame.
             head = prog.blocks[drains[0]]
             base = head.path_chunk_base.get(lab, head.chunk_base)
+            # A unit the peel left behind is behind it on EVERY arm out of this guard, so its
+            # skew travels with the base; giving the arms different skews would make them
+            # disagree about the one value the guard may leave.
+            skew = head.path_unit_skew.get(lab, {})
             for k in range(1, M):
                 prog.blocks[drains[M - k]].path_chunk_base[lab] = base
+                if skew:
+                    prog.blocks[drains[M - k]].path_unit_skew[lab] = dict(skew)
             changed = True
         if not changed:
             return

@@ -306,6 +306,16 @@ class Block:
     chunk_base: int = 0          # position on the global summation-chunk timeline
     model_only: bool = False     # GIR reasons about this block; NO backend emits it (see below)
     path_chunk_base: dict = field(default_factory=dict)   # {pred: chunk_base ON THAT PATH}
+    #: {pred: {unit: delta}} -- how far THAT unit sits from `path_chunk_base` on that path.  A
+    #: block base is one number, which only reframes every unit at once while they move in
+    #: lockstep; per-operand prefetch depths break that.  Empty, and every delta zero, whenever
+    #: they do move together, so this adds nothing to a symmetric program.
+    path_unit_skew: dict = field(default_factory=dict)
+
+    def path_base(self, pred, unit=None) -> int:
+        """`pred`'s chunk base for `unit` -- the block base plus that unit's skew on that path."""
+        base = self.path_chunk_base.get(pred, self.chunk_base)
+        return base + (self.path_unit_skew.get(pred, {}).get(unit, 0) if unit is not None else 0)
 
     @property
     def label(self) -> str:
