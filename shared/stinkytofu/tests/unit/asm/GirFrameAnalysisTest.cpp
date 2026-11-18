@@ -1129,6 +1129,7 @@ TEST(GirFrameAnalysisTest, FrameWaitReconcilesGenericDscntStream) {
     EXPECT_EQ(waits, (std::vector<int>{0, 1}));
 }
 
+namespace {
 /// Every wait the region emits, in order, as (opcode, count).
 std::vector<std::pair<unsigned, int>> warWaitStream(bool merged) {
     Function function(merged ? "war_merged_wait_pass" : "war_separate_wait_passes");
@@ -1163,6 +1164,7 @@ std::vector<std::pair<unsigned, int>> warWaitStream(bool merged) {
     }
     return waits;
 }
+}  // namespace
 
 TEST(GirFrameAnalysisTest, MergedWaitPassMatchesGenericThenFramePasses) {
     const auto merged = warWaitStream(/*merged=*/true);

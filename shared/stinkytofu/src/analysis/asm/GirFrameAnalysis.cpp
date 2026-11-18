@@ -520,11 +520,9 @@ BasicBlock* GirFrameAnalysis::Result::girSkipSource(const BasicBlock* block) con
     }
 
     bool escapes = false;
-    std::vector<BasicBlock*> reached;
     while (!work.empty()) {
         BasicBlock* node = work.front();
         work.pop_front();
-        reached.push_back(node);
         for (BasicBlock* successor : node->getSuccessors()) {
             if (successor == block) continue;
             if (!inGroup(successor)) {
@@ -536,12 +534,13 @@ BasicBlock* GirFrameAnalysis::Result::girSkipSource(const BasicBlock* block) con
     }
     if (!escapes) return nullptr;
 
-    // The branch that does the skipping: a reached member of the group that also enters `block`.
-    for (BasicBlock* candidate : reached)
-        if (candidate->getSuccessors().size() > 1 &&
-            std::find(candidate->getSuccessors().begin(), candidate->getSuccessors().end(),
-                      block) != candidate->getSuccessors().end())
-            return candidate;
+    // The branch that does the skipping enters `block`, so it is one of its PREDECESSORS. Reading
+    // the answer off them, rather than off the blocks the walk reached, keeps the same candidates
+    // in a CFG order: a hash map of pointers has none, and the seam must be the same every run.
+    for (BasicBlock* predecessor : block->getPredecessors())
+        if (predecessor != block && seen.contains(predecessor) &&
+            predecessor->getSuccessors().size() > 1)
+            return predecessor;
     return nullptr;
 }
 
@@ -568,7 +567,6 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
     result.contract = *encoded;
 
     std::unordered_map<StinkyInstruction*, size_t> instructionIndex;
-    std::unordered_map<BasicBlock*, uint64_t> blockAnchor;
     std::unordered_map<BasicBlock*, uint64_t> blockAnchorOrder;
     std::unordered_map<BasicBlock*, std::unordered_set<uint64_t>> blockActions;
     std::unordered_map<uint64_t, std::unordered_set<BasicBlock*>> anchorBlocks;
@@ -603,15 +601,14 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
                 anchorBlocks[canonical].insert(&block);
                 auto [order, inserted] = blockAnchorOrder.emplace(&block, action->actionId);
                 if (inserted) {
-                    blockAnchor[&block] = canonical;
+                    result.girBlockOf[&block] = canonical;
                 } else if (action->actionId > order->second) {
                     order->second = action->actionId;
-                    blockAnchor[&block] = canonical;
+                    result.girBlockOf[&block] = canonical;
                 }
             }
         }
     }
-    for (const auto& [block, canonical] : blockAnchor) result.girBlockOf[block] = canonical;
     if (!result.contract.actions.empty() && result.actionInstructions.empty())
         STINKY_UNREACHABLE(
             "GirFrameAnalysis: frame contract imported but no GirActionData survived lowering");
@@ -771,8 +768,8 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         auto blockNeeds = requiredValues.find(successor);
         if (blockNeeds == requiredValues.end()) return true;
         uint64_t outgoingAction = node.incomingAction;
-        auto anchor = blockAnchor.find(node.block);
-        if (anchor != blockAnchor.end()) outgoingAction = anchor->second;
+        auto anchor = result.girBlockOf.find(node.block);
+        if (anchor != result.girBlockOf.end()) outgoingAction = anchor->second;
         auto source = blockNeeds->second.find(outgoingAction);
         if (source == blockNeeds->second.end()) return true;
         for (const auto& [genId, allowed] : source->second)
@@ -784,8 +781,8 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         GirFrame next =
             advanceFrame(node.frame, node.block, successor, loops, genLoops, result.contract);
         uint64_t outgoingAction = node.incomingAction;
-        auto anchor = blockAnchor.find(node.block);
-        if (anchor != blockAnchor.end()) outgoingAction = anchor->second;
+        auto anchor = result.girBlockOf.find(node.block);
+        if (anchor != result.girBlockOf.end()) outgoingAction = anchor->second;
         auto blockIncoming = incomingValues.find(successor);
         if (blockIncoming != incomingValues.end()) {
             auto source = blockIncoming->second.find(outgoingAction);

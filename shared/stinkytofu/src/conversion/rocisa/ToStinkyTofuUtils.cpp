@@ -84,7 +84,7 @@
 namespace nb = nanobind;
 
 namespace stinkytofu {
-GirActionData girActionOf(const rocisa::GirActionData& src);
+static GirActionData girActionOf(const rocisa::GirActionData& src);
 }
 
 namespace {
@@ -1491,8 +1491,8 @@ std::shared_ptr<StinkyAsmModule> lowerRocisaModuleViaLogical(
 
 namespace stinkytofu {
 
-//: rocisa's per-instruction GIR facts, in StinkyTofu's shape.
-GirActionData girActionOf(const rocisa::GirActionData& src) {
+//: rocisa's per-instruction GIR facts, in StinkyTofu's shape. Used only by this converter.
+static GirActionData girActionOf(const rocisa::GirActionData& src) {
     std::vector<GirAccessData> accesses;
     accesses.reserve(src.accesses.size());
     for (const rocisa::GirAccess& a : src.accesses)
