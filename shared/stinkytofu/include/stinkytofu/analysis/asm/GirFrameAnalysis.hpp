@@ -184,6 +184,10 @@ struct GirFrameAnalysis {
         bool isBackEdge(const BasicBlock* from, const BasicBlock* to) const;
         /// Whether \p from -> \p to stays within one GIR block, so a hazard must not age over it.
         bool insideOneGirBlock(const BasicBlock* from, const BasicBlock* to) const;
+        /// The block whose branch skips \p block from inside the same GIR block, or null when
+        /// every agent that enters that GIR block runs \p block. A conditionally-issued movement
+        /// branches over itself, so its seam is a place only some agents reach.
+        BasicBlock* girSkipSource(const BasicBlock* block) const;
         const std::vector<GirFrame>& frames(const BasicBlock* block) const;
     };
 
