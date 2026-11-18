@@ -45,7 +45,7 @@ BenchmarkProblems:
       ForkParameters:
         - MatrixInstruction:
           - [16, 16, 128, 1,  1,  2, 2,  2, 2]
-        - DepthU: [128]
+        - DepthU: [128, 256]
         - WavefrontSize: [32]
         - PrefetchGlobalRead: [1, 2]
         - PrefetchLocalRead: [0, 1]
@@ -93,7 +93,7 @@ BenchmarkProblems:
       ForkParameters:
         - MatrixInstruction:
           - [16, 16, 128, 1,  1,  2, 2,  2, 2]
-        - DepthU: [128]
+        - DepthU: [128, 256]
         - WavefrontSize: [32]
         - PrefetchGlobalRead: [1, 2]
         - PrefetchLocalRead: [0, 1]
@@ -139,7 +139,7 @@ BenchmarkProblems:
       ForkParameters:
         - MatrixInstruction:
           - [16, 16, 128, 1,  1,  2, 2,  2, 2]
-        - DepthU: [128]
+        - DepthU: [128, 256]
         - WavefrontSize: [32]
         - PrefetchGlobalRead: [2]
         - PrefetchLocalRead: [1]

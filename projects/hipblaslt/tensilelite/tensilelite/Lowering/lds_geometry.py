@@ -13,23 +13,28 @@ BPR = 4
 LANE_INTERLEAVE = 2
 
 
-def read_fragments(blockWidth, bpeDS, lrvw: int, inputPerThUnroll: int, matrixInstK: int) -> tuple:
-    """Return ``(unroll_elements, register_offset)`` pairs for one local-read act."""
+def read_fragments(blockWidth, bpeDS, blockElems: int, inputPerThUnroll: int, matrixInstK: int,
+                   laneInterleave: int = LANE_INTERLEAVE) -> tuple:
+    """Return ``(unroll_elements, register_offset)`` pairs for one local-read act.
+
+    `blockElems` is the ELEMENT run a lane holds before the next thread group's range begins;
+    `inputPerThUnroll // blockElems` such runs tile the lane's K span.
+    """
     vwTrLoad = int(blockWidth * BPR / bpeDS)
-    nInner = lrvw // vwTrLoad if vwTrLoad else 0
-    nOuter = inputPerThUnroll // lrvw if lrvw else 0
+    nInner = blockElems // vwTrLoad if vwTrLoad else 0
+    nOuter = inputPerThUnroll // blockElems if blockElems else 0
     regSpan = int(inputPerThUnroll * bpeDS // BPR)
     if not (nInner and nOuter) or nOuter * nInner * int(blockWidth) != regSpan:
         raise NotImplementedError(
             "local-read fragments do not tile the tile's registers (%s x %s x blockWidth %s != "
-            "%s; inputPerThUnroll=%s, lrvw=%s, vwTrLoad=%s, bpeDS=%s)"
-            % (nOuter, nInner, blockWidth, regSpan, inputPerThUnroll, lrvw, vwTrLoad, bpeDS))
-    if nOuter * nInner * vwTrLoad * LANE_INTERLEAVE != matrixInstK:
+            "%s; inputPerThUnroll=%s, blockElems=%s, vwTrLoad=%s, bpeDS=%s)"
+            % (nOuter, nInner, blockWidth, regSpan, inputPerThUnroll, blockElems, vwTrLoad, bpeDS))
+    if nOuter * nInner * vwTrLoad * laneInterleave != matrixInstK:
         raise NotImplementedError(
             "local-read fragments do not cover MatrixInstK (%s x %s x %s elems x %s lanes != %s; "
-            "lrvw=%s, bpeDS=%s)"
-            % (nOuter, nInner, vwTrLoad, LANE_INTERLEAVE, matrixInstK, lrvw, bpeDS))
-    return tuple(((v + i * nInner * LANE_INTERLEAVE) * vwTrLoad,
+            "blockElems=%s, bpeDS=%s)"
+            % (nOuter, nInner, vwTrLoad, laneInterleave, matrixInstK, blockElems, bpeDS))
+    return tuple(((v + i * nInner * laneInterleave) * vwTrLoad,
                   int(blockWidth) * (v + nInner * i))
                  for i in range(nOuter) for v in range(nInner))
 
