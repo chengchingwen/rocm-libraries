@@ -28,6 +28,8 @@ If someone reshapes the metadata tile or changes how the solution derives
 import pytest
 
 from tensilelite.Components.LoopModel.Registers import _parentSide
+from tensilelite.Lowering.lds_geometry import read_fragments
+from tensilelite.Lowering.leaves import LeafEmitters
 from tensilelite.LoopModel.adapter import (COMPANIONS, METADATA, _is_companion,
                                            _metadata_frag_elems, _metadata_parent)
 
@@ -89,3 +91,59 @@ def test_the_metadata_fragment_is_its_per_thread_byte_count(mi_k, ipt, ipt_a, ip
     assert _metadata_frag_elems({"MIInputPerThreadMetadata": ipt_m}) == ipt_m
     # Never zero: a companion with no fragment would get no ring at all.
     assert _metadata_frag_elems({}) == 1
+
+
+# --- 3.  How a SWMMAC operand's K span is laid out in LDS -------------------------------------
+#
+# A dense WMMA lane holds its K span as single-read runs that alternate with the partner thread
+# group's.  A SWMMAC lane holds TWO longer runs instead -- `blocksPerTGroupSMFMA` in
+# `Components/LocalRead.py`.  Reading a SWMMAC operand at the dense granule therefore picks up
+# the partner group's K positions, which is silently wrong for every output element rather than
+# a generation failure, so it is pinned here.
+
+# One `ds_load_b128` of bytes: the local read every f8 row below emits.
+_B128, _BYTE, _MI_TO, _WAVE32 = 4, 1, 16, 32
+
+# (MIInputPerThread{tc}, the K span this operand's own entries cover, fragments)
+_SWMMAC_READS = [
+    (64, 128, ((0, 0), (16, 4), (64, 8), (80, 12))),   # the dense operand: two runs of 32
+    (32, 64, ((0, 0), (32, 4))),                       # the 2:4 compressed one: two runs of 16
+]
+
+
+def _lane_block(sparse, ipt, lrvw=16):
+    return LeafEmitters._laneBlock({"WavefrontSize": _WAVE32, "ProblemType": {"Sparse": sparse}},
+                                   _MI_TO, ipt, lrvw)
+
+
+@pytest.mark.parametrize("ipt,k_span,expected", _SWMMAC_READS)
+def test_a_swmmac_operand_is_read_as_two_runs(ipt, k_span, expected):
+    """Both data operands -- the compressed one and its dense partner -- get two runs."""
+    blockElems, laneInterleave = _lane_block(1, ipt)
+    assert (blockElems, laneInterleave) == (ipt // 2, 2)
+    assert read_fragments(_B128, _BYTE, blockElems, ipt, k_span, laneInterleave) == expected
+
+
+def test_the_dense_granule_is_wrong_for_the_uncompressed_operand_only():
+    """Why the defect survived review: on the COMPRESSED operand the two rules coincide.
+
+    At MI 16x16x128 a compressed lane's run is 16 elements, which is exactly one `ds_load_b128`,
+    so reading it at the dense granule lands on the same addresses.  Its dense partner's run is
+    32, and there the two disagree -- so a fix checked only against A reads as correct.
+    """
+    dense_granule, lanes = _lane_block(0, 64)
+    assert dense_granule == 16
+    assert read_fragments(_B128, _BYTE, dense_granule, 64, 128, lanes) \
+        == ((0, 0), (32, 4), (64, 8), (96, 12))        # NOT the SWMMAC layout
+    assert read_fragments(_B128, _BYTE, dense_granule, 32, 64, lanes) \
+        == read_fragments(_B128, _BYTE, *_lane_block(1, 32)[:1], 32, 64, lanes)
+
+
+def test_a_dense_problem_keeps_the_single_read_run():
+    """The granule a non-sparse operand gets is its LocalReadVectorWidth, unchanged."""
+    for lrvw in (8, 16):
+        assert _lane_block(0, 64, lrvw) == (lrvw, 2)
+    # The interleave is derived, not assumed: it is the number of thread groups the wave splits
+    # into over the instruction's tile axis.
+    assert LeafEmitters._laneBlock({"WavefrontSize": 64, "ProblemType": {"Sparse": 0}},
+                                   _MI_TO, 64, 16) == (16, 4)

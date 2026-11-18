@@ -527,6 +527,21 @@ class LeafEmitters:
         compCols = kernel[_MACRO_TILE_KEYS[tile01]] // (kernel["NumWaves"] // 2)
         return (0, compCols if compCols > 0 and stride else 0, stride)
 
+    @staticmethod
+    def _laneBlock(kernel, matrixInstTO, inputPerThUnroll, lrvw):
+        """`(elements a lane holds contiguously, how many thread groups interleave)`.
+
+        `Components/LocalRead.py` is the authority: it calls these `elementsPerBlockSMFMA` and
+        `threadGroups`.  A DENSE operand's run is one read, so the groups interleave every
+        `lrvw`; SWMMAC stores a data operand's K span as TWO longer runs, and reading one at the
+        dense granule picks up the partner group's K positions instead.  The metadata keeps a
+        single run and never arrives here -- its whole tile is one read.
+        """
+        threadGroups = kernel["WavefrontSize"] // matrixInstTO
+        if not kernel["ProblemType"]["Sparse"]:
+            return lrvw, threadGroups
+        return inputPerThUnroll // 2, threadGroups
+
     # ------------------------------------------------------------------ LDS read leaf
     def buildLdsReadContext(self, kernel, tP) -> LdsReadTileContext:
         """Loop-order-invariant LDS-read constants for one operand (gfx1250 transpose OR
@@ -628,9 +643,12 @@ class LeafEmitters:
                     f"metadata tile has no fragment list here")
             fragments = ((0, 0),)
         else:
+            blockElems, laneInterleave = self._laneBlock(kernel, matrixInstTO,
+                                                         MIInputPerThUnroll, lrvw)
             try:
-                fragments = read_fragments(blockWidth, tP["bpeDS"], lrvw, MIInputPerThUnroll,
-                                           kernel["MatrixInstK"] // perEntry)
+                fragments = read_fragments(blockWidth, tP["bpeDS"], blockElems,
+                                           MIInputPerThUnroll,
+                                           kernel["MatrixInstK"] // perEntry, laneInterleave)
             except NotImplementedError as e:
                 raise NotImplementedError(f"LeafEmitters read ({tc}): {e}")
 
