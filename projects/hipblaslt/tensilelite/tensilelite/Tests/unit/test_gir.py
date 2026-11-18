@@ -1192,3 +1192,72 @@ def test_a_group_the_model_does_not_state_is_reported_not_skipped():
     }
     viol = check_ring_rotation(prog)
     assert any("RING-ROTATION-UNSTATED" in v for v in viol), viol
+
+
+def _asymmetric_pgr_theta(pgrA, pgrB):
+    """A per-operand PrefetchGlobalRead pair: A and B prefetch at DIFFERENT depths."""
+    return theta(dict(BF16_NT_KMN, PrefetchGlobalRead=max(pgrA, pgrB),
+                      NumLdsBlk=max(2, pgrA, pgrB),
+                      PrefetchGlobalReadA=pgrA, PrefetchGlobalReadB=pgrB))
+
+
+def _copy_units(blk):
+    """The copy units a block issues a global->shared Move for."""
+    from tensilelite.Lowering.gir.nodes import Move, copy_unit
+    out = set()
+    for inst in blk.body:
+        if isinstance(inst, Move):
+            members, _refs = copy_unit(inst)
+            if members is not None:
+                out.add(tuple(members))
+    return out
+
+
+@pytest.mark.parametrize("pgrA,pgrB", [(2, 1), (1, 2), (3, 2), (2, 3)])
+def test_asymmetric_prefetch_depths_give_a_placed_and_valid_gir(pgrA, pgrB):
+    """Each operand carries its OWN copy depth to a PLACED, semantically valid program.
+
+    `pipeline()` peels the deeper operand further and keeps ISSUING the shallower one into the
+    drain, so the two leave the peel on different chunks.  One chunk base per block cannot
+    reframe both, and without `Block.path_unit_skew` carrying the second the global-read
+    increment has no placement and `build_gir` raises before any of this is reached.
+    """
+    th = _asymmetric_pgr_theta(pgrA, pgrB)
+    offsets = {name: depth for (name, op, _axis), depth in th.movement_offsets().items()
+               if name in ("A", "B") and op.__name__ == "TENSOR_LOAD"}
+    assert offsets == {"A": pgrA, "B": pgrB}, offsets
+
+    prog = build_gir(th)
+    assert not check_plan(prog), check_plan(prog)
+
+    # The shallower operand is still LOADING in the drain -- the whole point of the asymmetry.
+    shallow = ("B",) if pgrB < pgrA else ("A",)
+    deeper = ("A",) if shallow == ("B",) else ("B",)
+    drain0 = prog.blocks["drain0"]
+    assert shallow in _copy_units(drain0), _copy_units(drain0)
+    assert deeper not in _copy_units(drain0), _copy_units(drain0)
+
+    # ...and its address still advances: a gr_increment is placed for both operands.
+    from tensilelite.Lowering.gir.nodes import Mark
+    incremented = {tuple(i.at["unit"]) for blk in prog.blocks.values() for i in blk.body
+                   if isinstance(i, Mark) and i.kind == "gr_increment"}
+    assert {shallow, deeper} <= incremented, incremented
+
+
+@pytest.mark.parametrize("pgrA,pgrB", [(2, 1), (1, 2), (3, 2), (2, 3)])
+def test_the_folded_edge_states_the_shallower_operands_own_chunk_base(pgrA, pgrB):
+    """The skew names the SHALLOWER operand and equals how far it lags the peel."""
+    prog = build_gir(_asymmetric_pgr_theta(pgrA, pgrB))
+    shallow = ("B",) if pgrB < pgrA else ("A",)
+    lag = -abs(pgrA - pgrB)
+    skews = {lab: blk.path_unit_skew for lab, blk in prog.blocks.items() if blk.path_unit_skew}
+    assert skews, "one chunk base reframed both operands; the second is unstated"
+    for byPred in skews.values():
+        for skew in byPred.values():
+            assert skew == {shallow: lag}, skew
+
+
+def test_equal_prefetch_depths_state_no_skew():
+    """The skew is an OFFSET that is zero in lockstep, so a symmetric pair records none."""
+    prog = build_gir(_asymmetric_pgr_theta(2, 2))
+    assert not any(blk.path_unit_skew for blk in prog.blocks.values())

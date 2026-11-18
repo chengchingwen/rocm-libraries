@@ -80,7 +80,8 @@ class SplitPrefetchGuardPass(Pass):
         join = Block(phase=join_lab, body=rest, term=term, role=entry.role,
                      preds=(skip_lab, pgr_lab), succs=succs,
                      gen_rel=entry.gen_rel, chunk_base=entry.chunk_base,
-                     path_chunk_base=dict(entry.path_chunk_base))
+                     path_chunk_base=dict(entry.path_chunk_base),
+                     path_unit_skew={k: dict(v) for k, v in entry.path_unit_skew.items()})
         # `role` names WHICH AGENTS run the block, and this guard is the scalar trip count: every
         # wave takes the same arm.  Narrowing it would read as a path some waves skip.
         pgr = Block(phase=pgr_lab, body=guarded, term=Goto(join_lab), role=entry.role,
@@ -102,6 +103,9 @@ class SplitPrefetchGuardPass(Pass):
             blk.preds = tuple(join_lab if p == entry.label else p for p in blk.preds)
             if entry.label in blk.path_chunk_base:
                 blk.path_chunk_base[join_lab] = blk.path_chunk_base.pop(entry.label)
+            # The per-unit skew is keyed on the same predecessor and follows it.
+            if entry.label in blk.path_unit_skew:
+                blk.path_unit_skew[join_lab] = blk.path_unit_skew.pop(entry.label)
 
         prog.add_block(pgr)
         prog.add_block(skip)
