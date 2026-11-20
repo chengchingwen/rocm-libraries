@@ -317,9 +317,10 @@ bool countsFor(const StinkyInstruction& inst, Counter counter) {
 }
 
 /// Give every tensor/DS RAW its own latest physical publication point. RAWs from one logical
-/// producer action may share the earliest of their deadlines only when that slot is legal for
-/// every edge and no issue on the producer's counter lies between them; each edge's FIFO rank is
-/// then unchanged. Different groups that land on the same instruction naturally share one marker.
+/// producer action may share the earliest of their deadlines when that slot is legal for every
+/// edge and either no issue on the producer's counter lies between them -- so each edge's FIFO
+/// rank is unchanged -- or every edge names one producer INSTRUCTION, which one wait discharges
+/// whole. Different groups that land on the same instruction naturally share one marker.
 GirRawPlacementPlan rawMarkers(const FrameCFG& cfg, const GirFrameHazardAnalysis::Result& hazards,
                                int wmmaLead, FenceDischarge* discharge = nullptr) {
     using Group = std::tuple<BasicBlock*, uint64_t, Counter>;
@@ -387,6 +388,19 @@ GirRawPlacementPlan rawMarkers(const FrameCFG& cfg, const GirFrameHazardAnalysis
                 for (const GirFrameHazard* hazard : cluster)
                     (*discharge)[marker][hazard->consumerFrame].insert(hazard);
         };
+        // A crossed issue re-ranks a wait only when the two sides name different producers. Edges
+        // off ONE producer instruction -- a fused unit's accesses, A and MXSA under TDMFuse -- are
+        // discharged together, so the earlier deadline is the same proof, taken sooner.
+        const auto sharesOneProducer = [](const std::vector<const GirFrameHazard*>& held,
+                                          const std::vector<const GirFrameHazard*>& joining) {
+            if (held.empty() || joining.empty()) return false;
+            const StinkyInstruction* producer = held.front()->producer;
+            const auto same = [&](const GirFrameHazard* hazard) {
+                return hazard->producer == producer;
+            };
+            return std::all_of(held.begin(), held.end(), same) &&
+                   std::all_of(joining.begin(), joining.end(), same);
+        };
         for (++deadline; deadline != byDeadline.rend(); ++deadline) {
             const size_t candidate = deadline->first;
             bool crossedIssue =
@@ -408,7 +422,7 @@ GirRawPlacementPlan rawMarkers(const FrameCFG& cfg, const GirFrameHazardAnalysis
                 std::all_of(
                     deadline->second.begin(), deadline->second.end(),
                     [&](const GirFrameHazard* hazard) { return legalAt(*hazard, candidate); });
-            if (crossedIssue || !legal) {
+            if ((crossedIssue && !sharesOneProducer(cluster, deadline->second)) || !legal) {
                 flush();
                 clusterHigh = candidate;
                 cluster = deadline->second;
