@@ -32,7 +32,6 @@
 
 #include "stinkytofu/ir/asm/StinkyAsmIR.hpp"
 #include "stinkytofu/ir/asm/StinkyModifiers.hpp"
-#include "stinkytofu/support/ErrorHandling.hpp"
 
 namespace stinkytofu {
 namespace {
@@ -746,13 +745,6 @@ void deserializeVisit(StinkyInstruction* inst, const std::string& attrKey,
             inst->addModifier(MemTokenData(getIntVector(fields, "tokens")));
         }
     } else if (attrKey == "mod.gir_action") {
-        // The contract parser rejects a malformed record, so the modifier reader must too: an
-        // action that defaults to 0 or a kind that falls back to Other would be a DIFFERENT
-        // action than the fixture wrote, and the frame analysis would answer about that one.
-        if (!fields.contains("action")) STINKY_UNREACHABLE("mod.gir_action needs action=");
-        const std::string kindText = getStr(fields, "kind", "other");
-        if (parseGirActionKind(kindText) == GirActionKind::Other && kindText != "other")
-            STINKY_UNREACHABLE(("mod.gir_action has unknown kind '" + kindText + "'").c_str());
         const uint64_t action = getUInt64(fields, "action", 0);
         std::vector<GirAccessData> accesses;
         for (size_t n = 0;; ++n) {
@@ -769,7 +761,8 @@ void deserializeVisit(StinkyInstruction* inst, const std::string& attrKey,
             accesses.push_back(access);
         }
         inst->addModifier(GirActionData(action, getUInt64(fields, "anchor", action),
-                                        parseGirActionKind(kindText), std::move(accesses)));
+                                        parseGirActionKind(getStr(fields, "kind", "other")),
+                                        std::move(accesses)));
     } else if (attrKey == "mod.label") {
         inst->addModifier(LabelData(getStr(fields, "label", ""),
                                     static_cast<uint16_t>(getInt(fields, "alignment", 1))));

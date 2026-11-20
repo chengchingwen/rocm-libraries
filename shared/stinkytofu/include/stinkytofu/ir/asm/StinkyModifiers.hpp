@@ -1129,10 +1129,6 @@ struct MemTokenData : public TypedModifier<MemTokenData> {
 /// it cannot live in the analysis header that consumes it.
 enum class GirActionKind : uint8_t { Other, Ds, Tensor, Wmma };
 
-/// Where a function carries its frame contract. Same reason as the kind above: the contract is
-/// IR metadata, so the key names it here rather than in the analysis that happens to parse it.
-inline constexpr const char* kGirFrameContractKey = "gir.frame_contract";
-
 /// One shared-memory touch an instruction makes.  A fact ABOUT THE INSTRUCTION, so it rides on
 /// it rather than in a contract table keyed by action id.
 struct GirAccessData {

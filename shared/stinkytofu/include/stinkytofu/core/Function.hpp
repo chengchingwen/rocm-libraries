@@ -23,6 +23,7 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 #include <iosfwd>
 #include <memory>
 #include <optional>
@@ -52,9 +53,12 @@ class STINKYTOFU_EXPORT Function {
     GemmTileConfig gemmConfig;
     std::unordered_map<std::string, uint64_t> metadata_;
     std::unordered_map<std::string, std::string> stringMetadata_;
-    std::unordered_map<std::string, std::pair<const void*, std::shared_ptr<const void>>>
-        structMetadata_;
+    std::unordered_map<std::string, std::shared_ptr<const void>> structMetadata_;
     bool isCallable = false;
+    /// Called just before an IR node is freed by BasicBlock::eraseIR, with (node, next, prev).
+    /// Lets an owner holding raw node pointers (StinkyAsmModule's instruction-group endpoints)
+    /// move them off the dying node instead of being left with a dangling pointer.
+    std::function<void(IRBase*, IRBase*, IRBase*)> onEraseIR_;
 
    public:
     explicit Function(const std::string& name = "");
@@ -176,33 +180,18 @@ class STINKYTOFU_EXPORT Function {
         return it->second;
     }
 
-    /// A unique address per T, standing in for a type id: the build is -fno-rtti, so typeid is
-    /// unavailable and a pass's `static char ID` is the established substitute.
-    template <class T>
-    static const void* structTypeTag() {
-        static const char tag = 0;
-        return &tag;
-    }
-
     /// Structured metadata: a producer hands over the object it already built instead of a text
     /// encoding two hand-written parsers have to agree on.  Ownership is shared, the payload is
-    /// opaque here, and the reader names the type it expects.  The stored type is remembered so
-    /// reading one key as the wrong type answers nullptr instead of reinterpreting the bytes.
+    /// opaque here, and the reader names the type it expects.
     template <class T>
     void setStructMetaData(const std::string& key, std::shared_ptr<const T> value) {
-        structMetadata_[key] = {structTypeTag<T>(), std::move(value)};
+        structMetadata_[key] = std::move(value);
     }
     template <class T>
     const T* getStructMetaData(const std::string& key) const {
         auto it = structMetadata_.find(key);
-        if (it == structMetadata_.end() || it->second.first != structTypeTag<T>()) return nullptr;
-        return static_cast<const T*>(it->second.second.get());
-    }
-
-    /// Whether \p key carries structured metadata, without naming its type.  For a caller that
-    /// only needs to know a contract was loaded and cannot see the payload's definition.
-    bool hasStructMetaData(const std::string& key) const {
-        return structMetadata_.find(key) != structMetadata_.end();
+        if (it == structMetadata_.end()) return nullptr;
+        return static_cast<const T*>(it->second.get());
     }
 
     // Iteration over basic blocks
@@ -238,6 +227,13 @@ class STINKYTOFU_EXPORT Function {
     /// Drop instruction/block SSA metadata and arena values. Physical operands
     /// are left unchanged.
     void clearAttachedSSA();
+
+    void setEraseObserver(std::function<void(IRBase*, IRBase*, IRBase*)> observer) {
+        onEraseIR_ = std::move(observer);
+    }
+    const std::function<void(IRBase*, IRBase*, IRBase*)>& eraseObserver() const {
+        return onEraseIR_;
+    }
 
     void dump(std::ostream& out) const;
 

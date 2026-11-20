@@ -28,6 +28,8 @@
 namespace stinkytofu {
 struct StinkyInstruction;
 
+inline constexpr const char* kGirFrameContractKey = "gir.frame_contract";
+
 //: Identifies the blob; NOT a version. The frontend that writes a contract and this parser ship
 //: together, so a mismatch is a build error rather than something to negotiate.
 inline constexpr const char* kGirFrameContractMarker = "gir-frame-contract";
@@ -156,6 +158,7 @@ class GirFrameEdges {
 
 struct GirAccessOccurrence {
     StinkyInstruction* inst = nullptr;
+    BasicBlock* block = nullptr;
     size_t instructionIndex = 0;
     size_t accessIndex = 0;
     GirFrame frame;
@@ -172,18 +175,12 @@ struct GirFrameAnalysis {
         std::unordered_map<BasicBlock*, std::vector<GirFrame>> blockFrames;
         GirFrameEdges edges;
         std::vector<GirAccessOccurrence> occurrences;
-        std::set<std::pair<const BasicBlock*, const BasicBlock*>> backEdges;
-        /// Which GIR block an asm block lowered from, named by its canonical anchor action.
-        /// Lowering may split one GIR block across several asm blocks -- a conditionally-issued
-        /// movement branches over itself -- and those seams are not frame-graph distance.
-        std::unordered_map<const BasicBlock*, uint64_t> girBlockOf;
+        std::unordered_set<uint64_t> backEdges;
 
         bool empty() const {
             return !contract.loaded;
         }
         bool isBackEdge(const BasicBlock* from, const BasicBlock* to) const;
-        /// Whether \p from -> \p to stays within one GIR block, so a hazard must not age over it.
-        bool insideOneGirBlock(const BasicBlock* from, const BasicBlock* to) const;
         const std::vector<GirFrame>& frames(const BasicBlock* block) const;
     };
 
@@ -196,9 +193,8 @@ struct GirFrameHazard {
     GirHazardKind kind = GirHazardKind::RAW;
     StinkyInstruction* producer = nullptr;
     StinkyInstruction* consumer = nullptr;
-    // No cached block: it is always `producer->getParent()` / `consumer->getParent()`, and a copy
-    // could only ever differ by being the stale one. The in-block INDEX is kept -- that one is not
-    // cheap to recompute.
+    BasicBlock* producerBlock = nullptr;
+    BasicBlock* consumerBlock = nullptr;
     size_t producerIndex = 0;
     size_t consumerIndex = 0;
     GirFrame producerFrame;

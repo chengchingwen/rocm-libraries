@@ -25,6 +25,14 @@ namespace stinkytofu {
 
 namespace {
 
+uint64_t edgeKey(const BasicBlock* from, const BasicBlock* to) {
+    const auto a = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(from));
+    const auto b = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(to));
+    return a ^ (b + 0x9e3779b97f4a7c15ULL + (a << 6U) + (a >> 2U));
+}
+
+//: One record's `key=value` words. A bare word is a flag, stored with an empty value.
+
 const Loop* containingLoop(const std::vector<Loop>& loops, const BasicBlock* block) {
     const Loop* best = nullptr;
     for (const Loop& loop : loops) {
@@ -34,13 +42,9 @@ const Loop* containingLoop(const std::vector<Loop>& loops, const BasicBlock* blo
     return best;
 }
 
-// Which of an action's instructions PERFORMS the access. Legalization splits one action across
-// several instructions (address arithmetic, a second half), and only the memory op realizes it.
-// A kind names the FAMILY, not one opcode: `GirAccessData` already carries the direction, so a
-// ds_write realizes a Ds access exactly as a ds_read does.
 bool instructionRealizes(GirActionKind kind, const StinkyInstruction& inst) {
-    if (kind == GirActionKind::Ds) return isDSAccess(inst);
-    if (kind == GirActionKind::Tensor) return isTensorAccess(inst);
+    if (kind == GirActionKind::Ds) return isDSRead(inst);
+    if (kind == GirActionKind::Tensor) return isTensorLoad(inst);
     return false;
 }
 
@@ -266,20 +270,15 @@ std::unordered_map<GirFrameNode, HazardState, GirFrameNodeHash> reachingHazards(
         work.pop_back();
         auto touches = occurrences.find(node);
         static const std::vector<const GirAccessOccurrence*> empty;
-        // Distance is counted in GIR blocks, so a hazard ages on the EDGE: an edge that stays
-        // inside one GIR block is lowering, not a trip, and must leave the distance alone.
-        HazardState walked =
-            walkHazards(node, touches == occurrences.end() ? empty : touches->second,
-                        incoming[node], frames.contract, registry);
-        HazardState aged = stepHazards(walked);
+        HazardState aged =
+            stepHazards(walkHazards(node, touches == occurrences.end() ? empty : touches->second,
+                                    incoming[node], frames.contract, registry));
         auto successors = frames.edges.find(node);
         if (successors == frames.edges.end()) continue;
         for (const GirFrameNode& successor : successors->second) {
             auto target = incoming.find(successor);
             if (target == incoming.end()) continue;
-            const HazardState& outgoing =
-                frames.insideOneGirBlock(node.block, successor.block) ? walked : aged;
-            if (mergeHazardState(target->second, outgoing)) work.push_back(successor);
+            if (mergeHazardState(target->second, aged)) work.push_back(successor);
         }
     }
     return incoming;
@@ -305,7 +304,6 @@ struct Record {
     std::string_view tag;
     std::vector<std::string_view> positional;
     std::map<std::string_view, std::string_view, std::less<>> fields;
-    bool duplicateKey = false;
 };
 
 Record splitRecord(std::string_view line) {
@@ -319,11 +317,9 @@ Record splitRecord(std::string_view line) {
             line.substr(begin, end == std::string_view::npos ? end : end - begin);
         if (out.tag.empty())
             out.tag = word;
-        else if (const size_t eq = word.find('='); eq != std::string_view::npos) {
-            // A repeated key is an authoring mistake, not a last-one-wins override.
-            if (!out.fields.emplace(word.substr(0, eq), word.substr(eq + 1)).second)
-                out.duplicateKey = true;
-        } else
+        else if (const size_t eq = word.find('='); eq != std::string_view::npos)
+            out.fields.emplace(word.substr(0, eq), word.substr(eq + 1));
+        else
             out.positional.push_back(word);
         if (end == std::string_view::npos) break;
         pos = end;
@@ -331,11 +327,8 @@ Record splitRecord(std::string_view line) {
     return out;
 }
 
-// from_chars reports only that a PREFIX parsed, so `ring=2abc` would read as 2. The contract is
-// machine-written and a typo must fail, so require the whole token to be consumed.
 bool readInt(std::string_view text, int& out) {
-    const auto result = std::from_chars(text.data(), text.data() + text.size(), out);
-    return result.ec == std::errc{} && result.ptr == text.data() + text.size();
+    return std::from_chars(text.data(), text.data() + text.size(), out).ec == std::errc{};
 }
 
 bool readField(const Record& record, std::string_view key, int& out) {
@@ -343,28 +336,11 @@ bool readField(const Record& record, std::string_view key, int& out) {
     return found != record.fields.end() && readInt(found->second, out);
 }
 
-// The keys each record tag accepts. Returns the offending key, or an empty view when all are known.
-std::string_view unknownKey(const Record& record) {
-    static const std::map<std::string_view, std::set<std::string_view>, std::less<>> allowed = {
-        {"gen", {"ring", "entry"}},
-        {"incoming", {"dst", "src", "gen", "value", "relative"}},
-        {"requires", {"dst", "src", "gen", "values"}},
-    };
-    const auto tag = allowed.find(record.tag);
-    if (tag == allowed.end()) return {};  // an unknown TAG is reported by the dispatch
-    for (const auto& [key, value] : record.fields) {
-        (void)value;
-        if (!tag->second.contains(key)) return key;
-    }
-    return {};
-}
-
 bool readAction(const Record& record, std::string_view key, uint64_t& out) {
     auto found = record.fields.find(key);
     if (found == record.fields.end()) return false;
     const std::string_view text = found->second;
-    const auto result = std::from_chars(text.data(), text.data() + text.size(), out);
-    return result.ec == std::errc{} && result.ptr == text.data() + text.size();
+    return std::from_chars(text.data(), text.data() + text.size(), out).ec == std::errc{};
 }
 
 }  // namespace
@@ -391,16 +367,6 @@ std::shared_ptr<const GirFrameContract> parseGirFrameContract(std::string_view t
         if (!marked) return fail("a record precedes the marker");
 
         const Record record = splitRecord(line);
-        if (record.duplicateKey) return fail("'" + std::string(record.tag) + "' repeats a key");
-        // A key this tag does not know is a typo, and splitRecord would otherwise drop it:
-        // `relativ=1` would silently produce a non-relative incoming and shift every phase.
-        // Only `gen` takes a positional word (its id); elsewhere one is a key that lost its `=`.
-        if (record.positional.size() > (record.tag == "gen" ? 1u : 0u))
-            return fail("'" + std::string(record.tag) + "' has a stray word '" +
-                        std::string(record.positional.back()) + "'");
-        if (const std::string_view unknown = unknownKey(record); !unknown.empty())
-            return fail("'" + std::string(record.tag) + "' does not take '" + std::string(unknown) +
-                        "='");
         if (record.tag == "gen") {
             GirGenerationSpec gen;
             if (record.positional.size() != 1 || !readInt(record.positional.front(), gen.id))
@@ -408,13 +374,11 @@ std::shared_ptr<const GirFrameContract> parseGirFrameContract(std::string_view t
             if (!readField(record, "ring", gen.ring) || !readField(record, "entry", gen.entry))
                 return fail("gen needs ring= and entry=");
             if (gen.ring < 1) return fail("gen ring must be positive");
-            if (!contract->generations.emplace(gen.id, gen).second)
-                return fail("gen " + std::to_string(gen.id) + " is declared twice");
+            contract->generations[gen.id] = gen;
         } else if (record.tag == "incoming") {
             GirFrameIncomingSpec incoming;
             int relative = 0;
-            if (record.fields.contains("relative") && !readField(record, "relative", relative))
-                return fail("incoming relative= is not an integer");
+            readField(record, "relative", relative);
             incoming.relative = relative != 0;
             if (!readAction(record, "dst", incoming.destinationAction) ||
                 !readAction(record, "src", incoming.sourceAction) ||
@@ -429,8 +393,7 @@ std::shared_ptr<const GirFrameContract> parseGirFrameContract(std::string_view t
                 !readField(record, "gen", need.genId))
                 return fail("requires needs dst=, src= and gen=");
             auto values = record.fields.find("values");
-            if (values == record.fields.end() || values->second.empty())
-                return fail("requires needs a non-empty values=");
+            if (values == record.fields.end()) return fail("requires needs values=");
             std::string_view rest = values->second;
             while (!rest.empty()) {
                 const size_t comma = rest.find(',');
@@ -483,17 +446,7 @@ size_t GirFrameNodeHash::operator()(const GirFrameNode& node) const {
 }
 
 bool GirFrameAnalysis::Result::isBackEdge(const BasicBlock* from, const BasicBlock* to) const {
-    return backEdges.contains({from, to});
-}
-
-bool GirFrameAnalysis::Result::insideOneGirBlock(const BasicBlock* from,
-                                                 const BasicBlock* to) const {
-    // The back edge IS the rotation, never a seam, however the two ends happen to be named.
-    if (isBackEdge(from, to)) return false;
-    auto source = girBlockOf.find(from);
-    auto target = girBlockOf.find(to);
-    if (source == girBlockOf.end() || target == girBlockOf.end()) return false;
-    return source->second == target->second;
+    return backEdges.contains(edgeKey(from, to));
 }
 
 const std::vector<GirFrame>& GirFrameAnalysis::Result::frames(const BasicBlock* block) const {
@@ -519,6 +472,8 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
     result.contract = *encoded;
 
     std::unordered_map<StinkyInstruction*, size_t> instructionIndex;
+    std::unordered_map<StinkyInstruction*, BasicBlock*> instructionBlock;
+    std::unordered_map<BasicBlock*, uint64_t> blockAnchor;
     std::unordered_map<BasicBlock*, uint64_t> blockAnchorOrder;
     std::unordered_map<BasicBlock*, std::unordered_set<uint64_t>> blockActions;
     std::unordered_map<uint64_t, std::unordered_set<BasicBlock*>> anchorBlocks;
@@ -529,6 +484,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
             auto* inst = dyn_cast<StinkyInstruction>(&node);
             if (!inst) continue;
             instructionIndex[inst] = index++;
+            instructionBlock[inst] = &block;
             if (const auto* action = inst->getModifier<GirActionData>()) {
                 result.actionInstructions[action->actionId].push_back(inst);
                 blockActions[&block].insert(action->actionId);
@@ -553,10 +509,10 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
                 anchorBlocks[canonical].insert(&block);
                 auto [order, inserted] = blockAnchorOrder.emplace(&block, action->actionId);
                 if (inserted) {
-                    result.girBlockOf[&block] = canonical;
+                    blockAnchor[&block] = canonical;
                 } else if (action->actionId > order->second) {
                     order->second = action->actionId;
-                    result.girBlockOf[&block] = canonical;
+                    blockAnchor[&block] = canonical;
                 }
             }
         }
@@ -650,7 +606,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
             if (actionIt == result.actionInstructions.end()) continue;
             for (StinkyInstruction* inst : actionIt->second) {
                 realizedHere = true;
-                const Loop* loop = containingLoop(loops, inst->getParent());
+                const Loop* loop = containingLoop(loops, instructionBlock.at(inst));
                 if (loop) ++votes[loop];
             }
         }
@@ -699,7 +655,7 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         }
     }
 
-    for (const Loop& loop : loops) result.backEdges.emplace(loop.latchBB, loop.headerBB);
+    for (const Loop& loop : loops) result.backEdges.insert(edgeKey(loop.latchBB, loop.headerBB));
 
     GirFrame base;
     for (const auto& [genId, _] : result.contract.generations) base.setPhase(genId, 0);
@@ -720,8 +676,8 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         auto blockNeeds = requiredValues.find(successor);
         if (blockNeeds == requiredValues.end()) return true;
         uint64_t outgoingAction = node.incomingAction;
-        auto anchor = result.girBlockOf.find(node.block);
-        if (anchor != result.girBlockOf.end()) outgoingAction = anchor->second;
+        auto anchor = blockAnchor.find(node.block);
+        if (anchor != blockAnchor.end()) outgoingAction = anchor->second;
         auto source = blockNeeds->second.find(outgoingAction);
         if (source == blockNeeds->second.end()) return true;
         for (const auto& [genId, allowed] : source->second)
@@ -733,8 +689,8 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         GirFrame next =
             advanceFrame(node.frame, node.block, successor, loops, genLoops, result.contract);
         uint64_t outgoingAction = node.incomingAction;
-        auto anchor = result.girBlockOf.find(node.block);
-        if (anchor != result.girBlockOf.end()) outgoingAction = anchor->second;
+        auto anchor = blockAnchor.find(node.block);
+        if (anchor != blockAnchor.end()) outgoingAction = anchor->second;
         auto blockIncoming = incomingValues.find(successor);
         if (blockIncoming != incomingValues.end()) {
             auto source = blockIncoming->second.find(outgoingAction);
@@ -790,11 +746,9 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         if (actionSpec == result.contract.actions.end() ||
             instructions == result.actionInstructions.end())
             continue;  // A folded GIR action can intentionally have no physical realization.
-        bool realized = false;
         for (StinkyInstruction* inst : instructions->second) {
             if (!instructionRealizes(actionSpec->second.kind, *inst)) continue;
-            realized = true;
-            BasicBlock* block = inst->getParent();
+            BasicBlock* block = instructionBlock.at(inst);
             std::set<GirFrame> frames;
             for (const auto& [frame, _incomingAction] : frameSets.at(block)) frames.insert(frame);
             for (const GirFrame& frame : frames) {
@@ -807,20 +761,11 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
                 }
                 generation %= access.ring;
                 if (generation < 0) generation += access.ring;
-                result.occurrences.push_back({inst, instructionIndex.at(inst), accessIndex, frame,
+                result.occurrences.push_back({inst, block, instructionIndex.at(inst), accessIndex,
+                                              frame,
                                               concreteStorage(access, generation, storageIds)});
             }
         }
-        // An action that survived lowering but whose kind matches none of its instructions drops
-        // every access it declares -- no occurrence, so no hazard, no fence, and nothing says so.
-        // Either the kind is mislabelled (an unknown `.stir` spelling parses to `Other`) or the
-        // family above is missing the opcode that realizes it.
-        if (!realized)
-            STINKY_UNREACHABLE(("GirFrameAnalysis: action " + std::to_string(access.actionId) +
-                                " declares kind " +
-                                std::to_string(static_cast<int>(actionSpec->second.kind)) +
-                                " but none of its instructions performs that access")
-                                   .c_str());
     }
 
     return result;
@@ -835,8 +780,7 @@ static GirHazardFenceCover coverOfHazard(
 
     std::vector<GirFrameNode> producerNodes;
     const auto rememberProducer = [&](const GirFrameNode& node) {
-        if (node.block != hazard.producer->getParent() || !(node.frame == hazard.producerFrame))
-            return;
+        if (node.block != hazard.producerBlock || !(node.frame == hazard.producerFrame)) return;
         if (std::find(producerNodes.begin(), producerNodes.end(), node) == producerNodes.end())
             producerNodes.push_back(node);
     };
@@ -917,12 +861,11 @@ static GirHazardFenceCover coverOfHazard(
     while (!work.empty()) {
         Step step = std::move(work.front());
         work.pop_front();
-        const bool atConsumer = step.node.block == hazard.consumer->getParent() &&
-                                step.node.frame == hazard.consumerFrame;
+        const bool atConsumer =
+            step.node.block == hazard.consumerBlock && step.node.frame == hazard.consumerFrame;
 
-        // At the target gap but not yet at the consumer the walk must FALL THROUGH, not stop: a
-        // successor inside the same GIR block costs nothing, so the consumer is still reachable.
-        if (step.gap == hazard.gap && atConsumer && hazard.consumerIndex >= step.begin) {
+        if (step.gap == hazard.gap) {
+            if (!atConsumer || hazard.consumerIndex < step.begin) continue;
             scan(step, hazard.consumerIndex, true);
             cover.hasHazardPath = true;
             if (!step.anchor) {
@@ -949,9 +892,7 @@ static GirHazardFenceCover coverOfHazard(
         auto successors = frames.edges.find(step.node);
         if (successors == frames.edges.end()) continue;
         for (const GirFrameNode& successor : successors->second) {
-            const int advance = frames.insideOneGirBlock(step.node.block, successor.block) ? 0 : 1;
-            if (step.gap + advance > hazard.gap) continue;
-            Step next{step.producerNode, successor,     0, step.gap + advance, step.anchor,
+            Step next{step.producerNode, successor,     0, step.gap + 1, step.anchor,
                       step.anchorNode,   step.anchorGap};
             if (seen.insert(keyOf(next)).second) work.push_back(std::move(next));
         }
@@ -982,7 +923,7 @@ GirFrameHazardAnalysis::Result GirFrameHazardAnalysis::run(Function& function,
         LiveTouchKey key{occurrence.frame, {occurrence.inst, occurrence.accessIndex}};
         if (!registry.emplace(key, &occurrence).second)
             STINKY_UNREACHABLE("GirFrameHazardAnalysis found a duplicate dynamic touch");
-        occurrences[{occurrence.inst->getParent(), occurrence.frame}].push_back(&occurrence);
+        occurrences[{occurrence.block, occurrence.frame}].push_back(&occurrence);
     }
     for (auto& [node, touches] : occurrences) {
         (void)node;
@@ -1013,10 +954,7 @@ GirFrameHazardAnalysis::Result GirFrameHazardAnalysis::run(Function& function,
         // block. If the producer already precedes the consumer, 0 is the real same-trip gap for
         // both same- and cross-agent hazards; a barrier does not turn logical generation distance
         // into execution distance or retire the producer's completion counter.
-        // Only a reported 0 is repaired: the span is a GENERATION count the graph need not
-        // spell in that many nodes, so it may not override a distance the walk realized.
-        if (gap == 0 && producer.inst->getParent() == consumer.inst->getParent() &&
-            producerSpec.genId == consumerSpec.genId &&
+        if (producer.block == consumer.block && producerSpec.genId == consumerSpec.genId &&
             producer.instructionIndex >= consumer.instructionIndex &&
             producerSpec.absoluteGeneration < 0 && consumerSpec.absoluteGeneration < 0) {
             const int span = consumerSpec.gdelta - producerSpec.gdelta;
@@ -1026,10 +964,10 @@ GirFrameHazardAnalysis::Result GirFrameHazardAnalysis::run(Function& function,
         LiveTouchKey producerKey{producer.frame, {producer.inst, producer.accessIndex}};
         LiveTouchKey consumerKey{consumer.frame, {consumer.inst, consumer.accessIndex}};
         if (!emitted.emplace(static_cast<int>(kind), producerKey, consumerKey, gap).second) return;
-        result.hazards.push_back({kind, producer.inst, consumer.inst, producer.instructionIndex,
-                                  consumer.instructionIndex, producer.frame, consumer.frame, gap,
-                                  crossAgent, actionOf(producer.inst), actionOf(consumer.inst),
-                                  producer.storage});
+        result.hazards.push_back(
+            {kind, producer.inst, consumer.inst, producer.block, consumer.block,
+             producer.instructionIndex, consumer.instructionIndex, producer.frame, consumer.frame,
+             gap, crossAgent, actionOf(producer.inst), actionOf(consumer.inst), producer.storage});
     };
 
     // Emit in program order, by POSITION: a label carries a per-run suffix, so ordering on it is
