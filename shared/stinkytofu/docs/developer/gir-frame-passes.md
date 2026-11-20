@@ -17,6 +17,7 @@ rotation and control-flow facts while instruction modifiers supply the accesses.
 | `GirFrameAnalysis` | `src/analysis/asm/GirFrameAnalysis.cpp` |
 | `GirFrameHazardAnalysis` | same file, `GirFrameHazardAnalysis::run` |
 | Same-trip scheduling edges | `src/transforms/asm/dag/RegionDAG.cpp`, `addGirFrameHazardEdges` |
+| Per-ring barrier window reconcile | `src/transforms/asm/dag/CDNA5.hpp` |
 | `GirFencePlacementPass` | `src/transforms/asm/GirFencePlacementPass.cpp` |
 | Fence discharge record (`GirFenceCoverage`) | `include/stinkytofu/analysis/asm/GirFrameAnalysis.hpp` |
 | Barrier memory tokens | `src/transforms/asm/StinkyBuildImplicitDependencyPass.cpp` |
@@ -192,6 +193,8 @@ branches are unaffected.
 | `edges` | Frame-node successor lists, including incoming-action identity |
 | `occurrences` | Every `(instruction, access, frame)` with its storage id |
 | `backEdges` | Latch-to-header edge keys |
+| `girBlockOf` | Which GIR block an asm block lowered from. Lowering may split one GIR block across several asm blocks, and those seams are not frame-graph distance |
+| `storageRing` | The ring each storage id belongs to. A storage id is keyed `(operand, generation)`, so a storage's ring is exactly its `operand`, and two storages share a ring iff they are slots of one operand's LDS buffer set |
 
 State explosion is bounded by `kMaxFrameStates` (2^20).
 
@@ -314,6 +317,19 @@ the scheduled order, and the pass invalidates and rebuilds the hazard analysis
 after scheduling. In GIR frame mode the scheduler does not use the legacy LDS
 memory-token dependencies; the frame hazards are the ordering authority.
 
+### Barrier linking is per ring
+
+The ready queue reconciles the WMMA windows of a WAR barrier and the RAW barrier
+after it, because `WAR -> tensor_load -> RAW` is one ring's refill cycle. That
+pairing is only meaningful within a ring: with two operand units in flight, the
+full cross product also orders one unit's WAR fence against the other unit's RAW
+fence, two barriers naming no common storage. `RegionDependencies` carries
+`storageRing` to the queue, and a pair whose ring sets are disjoint is skipped.
+
+The map is optional. Without a frame graph it is null, every ring set is empty,
+and all pairs stay eligible — so a scaffold barrier keeps the linking it has
+without the pipeline.
+
 ---
 
 ## GirFencePlacementPass
@@ -336,9 +352,22 @@ what leaves a hazard undischarged.
 
 Before the general cut, `rawMarkers` gives each cross-agent RAW a latest
 physical publication point. RAWs from the same logical producer action and
-counter may share an earlier deadline only when that slot is legal for every
-edge and no same-counter issue, existing wait or barrier lies between their
+counter may share an earlier deadline when that slot is legal for every edge
+and no same-counter issue, existing wait or barrier lies between their
 deadlines. This preserves each producer's FIFO rank.
+
+A crossed issue is not disqualifying when **every** hazard on both sides names
+one producer *instruction* (`sharesOneProducer`). A fused unit writes several
+operands from one `tensor_load_to_lds` — A and MXSA under TDMFuse — and those
+accesses are discharged together, so the earlier deadline is the same proof
+taken sooner: stricter, never weaker. Without that case the two halves of one
+fused unit land on separate markers, and the second fence protects a storage the
+first already published.
+
+Fences are **not** merged by distance. Folding a later fence into a nearby
+earlier one removes the work that was paying for its wait, which costs more than
+the barrier it saves; the dscnt-neutral WAR reuse below is a different rule and
+moves no wait earlier.
 
 These markers are ownership points, not ordinary hitting-set candidates. Moving
 a RAW to an older barrier can shorten its in-flight interval and turn a graded
