@@ -40,6 +40,7 @@ st.func @gir_fence_tags_only_what_it_discharges() {
 #
 # The complement: when one fence is the first to answer for BOTH storages it carries both. The
 # narrowing above is a discharge test, not a cap on how much a single barrier may publish.
+# One fused copy writes both storages here, so one marker owns both RAW edges.
 #
 # CHECK-LABEL: @gir_fence_tags_every_storage_it_discharges
 # CHECK: ^loop:
@@ -47,8 +48,7 @@ st.func @gir_fence_tags_only_what_it_discharges() {
 
 st.func @gir_fence_tags_every_storage_it_discharges() {
 ^entry:
-  "st.tensor_load_to_lds"(s[0:3], s[10:17]) { mod.gir_action = { action = 100, anchor = 100, kind = tensor, access0_write = 1, access0_operand = 0, access0_ring = 2, access0_abs = 0, access0_cross = 1 } }
-  "st.tensor_load_to_lds"(s[4:7], s[10:17]) { mod.gir_action = { action = 101, anchor = 100, kind = tensor, access0_write = 1, access0_operand = 1, access0_ring = 2, access0_abs = 0, access0_cross = 1 } }
+  "st.tensor_load_to_lds"(s[0:3], s[10:17]) { mod.gir_action = { action = 100, anchor = 100, kind = tensor, access0_write = 1, access0_operand = 0, access0_ring = 2, access0_abs = 0, access0_cross = 1, access1_write = 1, access1_operand = 1, access1_ring = 2, access1_abs = 0, access1_cross = 1 } }
   "st.s_branch"("loop")
   Successors: ^loop
 ^loop:
