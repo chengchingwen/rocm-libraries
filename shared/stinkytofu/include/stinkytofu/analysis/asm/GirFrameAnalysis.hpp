@@ -177,6 +177,10 @@ struct GirFrameAnalysis {
         /// Lowering may split one GIR block across several asm blocks -- a conditionally-issued
         /// movement branches over itself -- and those seams are not frame-graph distance.
         std::unordered_map<const BasicBlock*, uint64_t> girBlockOf;
+        /// The ring each storage id belongs to: `GirAccessSpec::operand`, the first half of the
+        /// `(operand, generation)` key that named the slot. Two storages share a ring iff they are
+        /// slots of one operand's LDS buffer set.
+        std::unordered_map<int, int> storageRing;
 
         bool empty() const {
             return !contract.loaded;

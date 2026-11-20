@@ -815,8 +815,10 @@ static void scheduleRegionWithMovableSideEffects(
     // (these orderings are heuristic, not derived from real data dependencies, so
     // contradictory requests across barrier groups are possible).
     std::vector<HardSchedulingConstraint> requestedConstraints;
-    const dag::RegionDependencies regionDeps{.dag = regionDag,
-                                             .requestedConstraints = requestedConstraints};
+    const dag::RegionDependencies regionDeps{
+        .dag = regionDag,
+        .requestedConstraints = requestedConstraints,
+        .storageRing = girFrames.empty() ? nullptr : &girFrames.storageRing};
     readyQueue.onInitRegion(regionStart, regionEnd, blockBegin, regionDeps);
     // Provenance only (not consulted by scheduling): which merged dagGraph edges are
     // policy-injected rather than real register dependencies, so debug output can still

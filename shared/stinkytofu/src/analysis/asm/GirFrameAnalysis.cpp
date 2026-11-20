@@ -855,8 +855,10 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
                 }
                 generation %= access.ring;
                 if (generation < 0) generation += access.ring;
-                result.occurrences.push_back({inst, instructionIndex.at(inst), accessIndex, frame,
-                                              concreteStorage(access, generation, storageIds)});
+                const int storage = concreteStorage(access, generation, storageIds);
+                result.storageRing[storage] = access.operand;
+                result.occurrences.push_back(
+                    {inst, instructionIndex.at(inst), accessIndex, frame, storage});
             }
         }
         // An action that survived lowering but whose kind matches none of its instructions drops
