@@ -745,29 +745,6 @@ class GirFencePlacementPass final : public StinkyInstPass {
         };
         closeFenceCut();
 
-        std::unordered_set<const BasicBlock*> loopBlocks;
-        for (const Loop& loop : AM.getResult<LoopAnalysis>(function))
-            for (const BasicBlock* block : loop.bodyBBs) loopBlocks.insert(block);
-
-        // Number of WMMA instructions that execute after `first`'s barrier and before `later`'s.
-        // Barrier markers name the instruction they precede, so a WMMA at `first` is included and
-        // one at `later` is not. All non-WMMA instructions are deliberately ignored.
-        const auto wmmaDistance = [](const StinkyInstruction* first,
-                                     const StinkyInstruction* later) {
-            if (!first || !later || first->getParent() != later->getParent()) return INT_MAX;
-            int count = 0;
-            bool active = false;
-            for (const IRBase& node : *first->getParent()) {
-                auto* inst = dyn_cast<const StinkyInstruction>(&node);
-                if (!inst) continue;
-                if (inst == later) return active ? count : INT_MAX;
-                if (inst == first) active = true;
-                if (active && isMatrixInstruction(*inst)) ++count;
-            }
-            return INT_MAX;
-        };
-        const int mergeWmmaLimit = wmmaLead > INT_MAX / 2 ? INT_MAX : 2 * wmmaLead;
-
         const auto dsCountAt = [](const waitcnt::WaitInsertionPlan& plan,
                                   const StinkyInstruction* marker) {
             auto wait = plan.anchorWaits.find(const_cast<StinkyInstruction*>(marker));
@@ -842,31 +819,8 @@ class GirFencePlacementPass final : public StinkyInstPass {
             return true;
         };
 
-        // Merge a nearby later fence into the first fence when at most two configured WMMA queues
-        // lie between them. Exact frame-path ownership is rechecked after removing the candidate;
-        // the final counter-flow pass then re-derives tensorcnt/dscnt at the earlier marker.
-        for (bool merged = true; merged;) {
-            merged = false;
-            const std::vector<const StinkyInstruction*> ordered = inProgramOrder(markers);
-            for (size_t firstIndex = 0; firstIndex < ordered.size() && !merged; ++firstIndex) {
-                const StinkyInstruction* first = ordered[firstIndex];
-                if (!loopBlocks.contains(first->getParent())) continue;
-                for (size_t candidateIndex = firstIndex + 1; candidateIndex < ordered.size();
-                     ++candidateIndex) {
-                    const StinkyInstruction* candidate = ordered[candidateIndex];
-                    const int distance = wmmaDistance(first, candidate);
-                    if (distance == INT_MAX) break;
-                    if (distance > mergeWmmaLimit) break;
-                    if (tryMergeInto(first, candidate, false)) {
-                        merged = true;
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Outside the unconditional WMMA-distance window, a pure WAR may still reuse the
-        // preceding mandatory RAW marker when that marker's dscnt is exactly unchanged.
+        // A pure WAR may reuse the preceding mandatory RAW marker when that marker's dscnt is
+        // exactly unchanged.
         for (bool merged = true; merged;) {
             merged = false;
             const std::vector<const StinkyInstruction*> ordered = inProgramOrder(markers);

@@ -607,8 +607,10 @@ TEST(GirFrameAnalysisTest, EarlyRawFenceDoesNotOwnAnOlderWar) {
     }
     std::sort(stamps.begin(), stamps.end());
     // `readB` names the generation `copyB` does NOT write, so nothing ever reads copyB's slot and
-    // its loop-carried WAW stands.  The point is the WAR: it keeps a fence of its own.
-    EXPECT_EQ(stamps, (std::vector<std::string>{"GIR fence (RAW,WAW)", "GIR fence (WAR)"}));
+    // its loop-carried WAW stands.  The point is the WAR: it keeps a fence of its own.  The RAW
+    // and the WAW stand apart too now that no WMMA-distance merge folds nearby fences.
+    EXPECT_EQ(stamps,
+              (std::vector<std::string>{"GIR fence (RAW)", "GIR fence (WAR)", "GIR fence (WAW)"}));
 }
 
 TEST(GirFrameAnalysisTest, UnwaitedRawRemovalReclosesWarCut) {
