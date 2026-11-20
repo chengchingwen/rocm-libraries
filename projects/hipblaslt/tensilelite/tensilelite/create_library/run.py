@@ -436,14 +436,29 @@ def _loopModelDumpTexts(kernelWriter):
     return irText, girText
 
 
-def _writeFailedLoopModelDumps(kernelWriter, kernelName, irPath):
+def _wantsLoopModelDump(kernel) -> bool:
+    """Only a LoopModel kernel has an IR; the rest would dump an "unavailable" stub."""
+    return bool(globalParameters.get("OutputLoopIR", False)) and bool(
+        kernel.get("UseLoopModel", False)
+    )
+
+
+def _irDir(irPath) -> Path:
+    """Create the OutputLoopIR dir on the first write, from whichever worker gets there first."""
+    directory = Path(irPath)
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _writeFailedLoopModelDumps(kernelWriter, kernel, kernelName, irPath):
     """Best-effort observability for an exception raised before KernelCodeGenResult exists."""
-    if irPath is None or not globalParameters.get("OutputLoopIR", False):
+    if irPath is None or not _wantsLoopModelDump(kernel):
         return
     irText, girText = _loopModelDumpTexts(kernelWriter)
     try:
-        Path(irPath, f"{kernelName}.txt").write_text(irText, encoding="utf-8")
-        Path(irPath, f"{kernelName}.gir").write_text(girText, encoding="utf-8")
+        directory = _irDir(irPath)
+        (directory / f"{kernelName}.txt").write_text(irText, encoding="utf-8")
+        (directory / f"{kernelName}.gir").write_text(girText, encoding="utf-8")
     except Exception as e:
         printWarning(f"Failed to write IR for failed kernel {kernelName}: {e}")
 
@@ -476,7 +491,7 @@ def _emitKernel(kernelWriterAssembly, splitGSU, kernel, compress=False,
     try:
         err, src = kernelWriterAssembly.getSourceFileString(kernel)
     except Exception:
-        _writeFailedLoopModelDumps(kernelWriterAssembly, asmFilename, irPath)
+        _writeFailedLoopModelDumps(kernelWriterAssembly, kernel, asmFilename, irPath)
         raise
     if compress:
         src = memCompress(src)
@@ -491,7 +506,7 @@ def _emitKernel(kernelWriterAssembly, splitGSU, kernel, compress=False,
             f"runtime will clamp to 1."
         )
     irText = girText = None
-    if globalParameters.get("OutputLoopIR", False):
+    if _wantsLoopModelDump(kernel):
         # Observability only, and never allowed to break codegen: both render what the writer
         # already cached, so neither can disagree with the `.s` beside it.
         irText, girText = _loopModelDumpTexts(kernelWriterAssembly)
@@ -754,7 +769,7 @@ def writeAssembly(asmPath: Union[Path, str], result: KernelCodeGenResult, irPath
     # The IR string is already ASCII-sanitized in adapter.kernel_to_ir_text.
     if irPath is not None and result.ir is not None:
         try:
-            irFile = Path(irPath) / f"{result.name}.txt"
+            irFile = _irDir(irPath) / f"{result.name}.txt"
             with open(irFile, "w", encoding="utf-8") as f:
                 f.write(result.ir)
         except Exception as e:
@@ -764,7 +779,7 @@ def writeAssembly(asmPath: Union[Path, str], result: KernelCodeGenResult, irPath
     # layer by diffing the two dumps against the .s (LoopIR decided / GIR carried / L3 emitted).
     if irPath is not None and result.gir is not None:
         try:
-            girFile = Path(irPath) / f"{result.name}.gir"
+            girFile = _irDir(irPath) / f"{result.name}.gir"
             with open(girFile, "w", encoding="utf-8") as f:
                 f.write(result.gir)
         except Exception as e:
@@ -940,7 +955,8 @@ def prepareSolutionsAndKernels(
             buildTmpPath / "code_object_tmp"
         )  # Temp path for HSA code object files (.hsaco)
         # OutputLoopIR: ir/ dir ADJACENT to the assembly/ dir (both under build_tmp).
-        irOutputPath = ensurePath(buildTmpPath / "ir") if globalParameters.get("OutputLoopIR", False) else None
+        # Named here, created by the first writer, so no LoopModel kernel leaves no dir.
+        irOutputPath = (buildTmpPath / "ir") if globalParameters.get("OutputLoopIR", False) else None
 
         kernelGroups = _normalizeKernelGroups(kernels, splitGSU)
         asmGroups = [
@@ -1184,7 +1200,8 @@ def writeSolutionsAndKernelsTCL(
     # directory, so the three have to travel together.
     copyStaticFiles(buildTmpPath)
     # OutputLoopIR: ir/ dir ADJACENT to the assembly/ dir (both under build_tmp).
-    irOutputPath = ensurePath(buildTmpPath / "ir") if globalParameters.get("OutputLoopIR", False) else None
+    # Named here, created by the first writer, so no LoopModel kernel leaves no dir.
+    irOutputPath = (buildTmpPath / "ir") if globalParameters.get("OutputLoopIR", False) else None
 
     splitGSU = False
     kernelGroups = _normalizeKernelGroups(kernels, splitGSU)
