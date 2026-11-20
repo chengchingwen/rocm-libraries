@@ -537,18 +537,11 @@ accesses to the shared region is the clearest convention.
 
 ## 2.6 Verification workflow
 
-What this PR adds is the contract and the analysis, so a fixture here stops at the frame graph:
-
-```text
-stinkytofu-opt --arch gfx1250 example.stir --print-output
-```
-
-The wait-count fixture arrives with `StinkyWaitCntInsertionPass`'s `girFrameWaits` option, in the
-follow-up PR that derives the waits:
+The checked-in wait-count fixture uses:
 
 ```text
 stinkytofu-opt --arch gfx1250 example.stir \
-  --StinkyWaitCntInsertionPass=girFrameWaits --print-output
+  --GirWaitCntInsertionPass --print-output
 ```
 
 Verify all of the following:
@@ -690,16 +683,12 @@ decisions:
    finite frame graph.
 2. `GirFrameHazardAnalysis` compares concrete storage and emits RAW, WAR, and
    WAW hazards with frame distance and cross-agent status.
-
-Steps 3 to 5 are the consumers, and each lands in a later PR of this series; this one stops at
-step 2.
-
 3. `StinkyDAGSchedulerPass` adds same-trip (`gap == 0`) hazard edges when both
    endpoints are in one scheduling region. It also keeps the pieces of an
    existing GIR fence in order.
 4. `GirFencePlacementPass` places workgroup barriers for cross-agent hazards.
-5. `insertGirFrameWaits` (inside `StinkyWaitCntInsertionPass`) derives graded
-   tensor and DS waits from the same frame spans.
+5. `GirWaitCntInsertionPass` derives graded tensor and DS waits from the same
+   frame spans.
 
 This separation is important when debugging output:
 

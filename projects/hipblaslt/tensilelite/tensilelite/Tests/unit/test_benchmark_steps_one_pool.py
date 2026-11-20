@@ -74,11 +74,11 @@ def test_kernels_of_all_builds_are_generated_in_one_pool(monkeypatch):
     assert procs == 7
     # The sources of all builds are held until each step is finished: compressed.
     assert function.args == (True,)
-    # Each kernel is generated with its own build's writer and output options.
+    # Each kernel is generated with its own build's writer, output options and IR dump dir.
     assert objects == [
-        ("writer-a", "data-a", "options-a", False, "a0"),
-        ("writer-a", "data-a", "options-a", False, "a1"),
-        ("writer-c", "data-c", "options-c", False, "c0"),
+        ("writer-a", "data-a", "options-a", False, "a0", None),
+        ("writer-a", "data-a", "options-a", False, "a1", None),
+        ("writer-c", "data-c", "options-c", False, "c0", None),
     ]
     assert [b.asmResults for b in builds] == [["result-a0", "result-a1"], [], ["result-c0"]]
 

@@ -83,10 +83,6 @@
 
 namespace nb = nanobind;
 
-namespace stinkytofu {
-static GirActionData girActionOf(const rocisa::GirActionData& src);
-}
-
 namespace {
 using namespace rocisa;
 using namespace stinkytofu;
@@ -1300,9 +1296,6 @@ void applyLogicalPayload(LogicalInstruction* logical, const rocisa::Instruction*
     }
 
     if (auto memToken = inst->getMemToken()) logical->memtoken = memToken->tokens;
-    // The action has to survive the logical detour; the frame passes read it off the asm.
-    if (auto girAction = inst->getGirActionData())
-        logical->giraction = stinkytofu::girActionOf(*girAction);
 }
 
 logical::Opcode logicalOpcodeFor(const rocisa::Instruction& inst, const std::string& className) {
@@ -1373,8 +1366,6 @@ struct LogicalLowerCtx {
     const std::map<std::string, int>& asmCaps;
     bool hasVgprMsb;
     GfxArchID archId;
-    // GirFrameContractImportPass aborts on a contract with no actions, so count them here too.
-    int64_t* actionTags = nullptr;
 };
 
 void appendLogicalItem(PyLogicalModule& lm, const rocisa::Item* item, const LogicalLowerCtx& ctx);
@@ -1468,7 +1459,6 @@ void appendLogicalItem(PyLogicalModule& lm, const rocisa::Item* item, const Logi
     if (inst == nullptr) {
         throw std::runtime_error("rocisa item has no logical-IR form: " + item->toString());
     }
-    if (ctx.actionTags != nullptr && inst->getGirActionData()) ++*ctx.actionTags;
     lm.add(createLogicalFromRocisa(*inst, ctx.asmCaps, ctx.hasVgprMsb, ctx.archId));
 }
 
@@ -1476,39 +1466,24 @@ std::shared_ptr<StinkyAsmModule> lowerRocisaModuleViaLogical(
     const rocisa::Module& module, std::array<int, 3> arch, const std::string& moduleName,
     const StinkyAsmModule::ModuleOptions& moduleOptions) {
     const std::map<std::string, int> asmCaps = rocisa::rocIsa::getInstance().getAsmCaps();
-    int64_t actionTags = 0;
     const LogicalLowerCtx ctx{asmCaps, asmCap(asmCaps, "HasVgprMSB") != 0,
-                              resolveArchId(arch, moduleOptions.ArchName), &actionTags};
+                              resolveArchId(arch, moduleOptions.ArchName)};
     PyLogicalModule logical(moduleName.empty() ? module.name : moduleName);
     appendLogicalModule(logical, module, true, ctx);
-    std::shared_ptr<StinkyAsmModule> asmModule =
-        lowerLogicalModuleToAsm(logical, arch, moduleOptions);
-    if (asmModule && actionTags > 0)
-        asmModule->setPluginDataI64("gir.action_tag_count", actionTags);
-    return asmModule;
+    return lowerLogicalModuleToAsm(logical, arch, moduleOptions);
 }
 
 }  // anonymous namespace
 
 namespace stinkytofu {
 
-//: rocisa's per-instruction GIR facts, in StinkyTofu's shape. Used only by this converter.
-static GirActionData girActionOf(const rocisa::GirActionData& src) {
+//: rocisa's per-instruction GIR facts, in StinkyTofu's shape.
+GirActionData girActionOf(const rocisa::GirActionData& src) {
     std::vector<GirAccessData> accesses;
     accesses.reserve(src.accesses.size());
     for (const rocisa::GirAccess& a : src.accesses)
         accesses.push_back(GirAccessData{a.isWrite, a.operand, a.ring, a.genId, a.gdelta,
                                          a.absolute, a.crossAgent});
-    // The cast is only safe while the two enums agree enumerator by enumerator; they are declared
-    // in different repositories, so pin each one rather than trusting the numbering.
-    static_assert(static_cast<uint8_t>(rocisa::GirActionKind::Other) ==
-                  static_cast<uint8_t>(GirActionKind::Other));
-    static_assert(static_cast<uint8_t>(rocisa::GirActionKind::Ds) ==
-                  static_cast<uint8_t>(GirActionKind::Ds));
-    static_assert(static_cast<uint8_t>(rocisa::GirActionKind::Tensor) ==
-                  static_cast<uint8_t>(GirActionKind::Tensor));
-    static_assert(static_cast<uint8_t>(rocisa::GirActionKind::Wmma) ==
-                  static_cast<uint8_t>(GirActionKind::Wmma));
     return GirActionData{src.actionId, src.anchorAction, static_cast<GirActionKind>(src.kind),
                          std::move(accesses)};
 }
@@ -1902,7 +1877,8 @@ void init_stinkytofu(nb::module_ m) {  // NOLINT(misc-use-internal-linkage)
         .value("BeforeRegionPasses", PipelineExtensionPoint::BeforeRegionPasses)
         .value("InnerRegionBegin", PipelineExtensionPoint::InnerRegionBegin)
         .value("InnerRegionEnd", PipelineExtensionPoint::InnerRegionEnd)
-        .value("AfterRegionPasses", PipelineExtensionPoint::AfterRegionPasses);
+        .value("AfterRegionPasses", PipelineExtensionPoint::AfterRegionPasses)
+        .value("EndOfPipeline", PipelineExtensionPoint::EndOfPipeline);
 
     m.def("loadPlugin", &PassBuilder::loadPlugin, nb::arg("path"),
           "Load a plugin shared library (.so/.dll) that exports registerPlugin()");
