@@ -1087,7 +1087,11 @@ def finishSolutionsAndKernels(build: BenchmarkKernelBuild):
         if removeTemporaries:
             p.unlink()
 
-    unaryWriteAssembly = functools.partial(writeAssembly, assemblyTmpPath, irPath=irOutputPath)
+    # Same rule as the processKernelSource partial above: with no dump requested the call keeps
+    # exactly the arguments it always had.
+    unaryWriteAssembly = functools.partial(
+        writeAssembly, assemblyTmpPath, **({} if irOutputPath is None else {"irPath": irOutputPath})
+    )
     compose = lambda *F: functools.reduce(lambda f, g: lambda x: f(g(x)), F)
     with timing_context("python_kernel_write_assemble"):
         ret = ParallelMap2(
@@ -1221,7 +1225,11 @@ def writeSolutionsAndKernelsTCL(
         **({} if irOutputPath is None else {"irPath": irOutputPath}),
     )
 
-    unaryWriteAssembly = functools.partial(writeAssembly, assemblyTmpPath, irPath=irOutputPath)
+    # Same rule as the processKernelSource partial above: with no dump requested the call keeps
+    # exactly the arguments it always had.
+    unaryWriteAssembly = functools.partial(
+        writeAssembly, assemblyTmpPath, **({} if irOutputPath is None else {"irPath": irOutputPath})
+    )
     def compose(assemble, unaryWriteAssembly, unaryProcessKernelSource):
         def composed_function(kernel):
             processed_kernel = unaryProcessKernelSource(kernel)
