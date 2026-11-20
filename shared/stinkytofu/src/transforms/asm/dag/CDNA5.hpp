@@ -3547,8 +3547,29 @@ void CDNA5ReadyQueue::onInitRegion(IRList::iterator regionStart, IRList::iterato
         // before moves later by whatever separation is left.
         // The two groups keep one window apart for the tensor load.
         const int separationSlack = 1;
+        // `WAR -> tensor_load -> RAW` is one ring's refill cycle. Two barriers that name no
+        // common ring are not that pair, and ordering them only invents a cross-operand
+        // dependency. Without GIR storage rings nothing is known, so every pair stays eligible.
+        const auto ringsOf = [&](const BarrierGroupThresholdSummary& group) {
+            std::unordered_set<int> rings;
+            if (deps.storageRing == nullptr) return rings;
+            for (StinkyInstruction* barrier : group.barriers)
+                for (uint32_t token : pseudoTokens(*barrier)) {
+                    auto ring = deps.storageRing->find(static_cast<int>(token));
+                    if (ring != deps.storageRing->end()) rings.insert(ring->second);
+                }
+            return rings;
+        };
+        const auto shareARing = [&](const std::unordered_set<int>& after,
+                                    const std::unordered_set<int>& before) {
+            if (after.empty() || before.empty()) return true;
+            return std::any_of(after.begin(), after.end(),
+                               [&](int ring) { return before.count(ring) != 0; });
+        };
         for (auto& afterGroup : exclusiveAfterGroups) {
+            const std::unordered_set<int> afterRings = ringsOf(afterGroup);
             for (auto& beforeGroup : exclusiveBeforeGroups) {
+                if (!shareARing(afterRings, ringsOf(beforeGroup))) continue;
                 // separationSlack is a gap between the two thresholds, so the
                 // claim windows themselves stay unchanged.
                 // Extra gap so a tensor load is not issued next to the
