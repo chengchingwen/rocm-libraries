@@ -747,6 +747,9 @@ def _set_register_depths(theta, kernel):
             alloc = value("VgprAlloc", side)
         clamped = (clr and not bool(kernel.get("VgprAllocExplicit" + side, False))) \
             or int(getattr(operand.fragment, "agent_group_size", 0) or 0) > 0
+        # VA counts BUFFERS and VG cuts the buffer, so the period it is clamped against has to be
+        # in buffers too -- `_ring_period` reads this off the fragment, so it must be set first.
+        operand.fragment.vgpr_group = vg
 
         def _depth(capacity):
             """The ring this operand ends up with if a slot holds `capacity` carriers."""
@@ -765,7 +768,6 @@ def _set_register_depths(theta, kernel):
         else:
             operand.fragment.carrier_slot = 0
             depth = min(alloc, geometry._ring_period(theta, operand)) if clamped else alloc
-        operand.fragment.vgpr_group = vg
         unit = geometry.prefetch_unit_tiles(theta, operand)
         if vg > 1 and unit % vg:
             raise RuntimeError(

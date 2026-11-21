@@ -151,9 +151,12 @@ def calculate(kernel):
     clr_name = "ClusterLocalRead" + side
     clr = value(clr_name)
     auto_clr = clr == -1
+    # Only an explicit VgprAlloc states the ring, so only it displaces the CLR derivation.
+    # VgprGroup sizes the buffer, not the count, and `reloads` is a floor rather than a
+    # preference -- suppressing it on a bare VgprGroup derived a ring below that floor.
     if auto_clr:
-      clr = 0 if explicit_vg or explicit_va else scalar_clr
-    if reloads and auto_clr and not (explicit_vg or explicit_va):
+      clr = 0 if explicit_va else scalar_clr
+    if reloads and auto_clr and not explicit_va:
       clr = 1
 
     va = value(va_name)
