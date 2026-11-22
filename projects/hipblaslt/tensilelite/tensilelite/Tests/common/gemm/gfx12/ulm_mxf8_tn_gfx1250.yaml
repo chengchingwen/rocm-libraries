@@ -6,7 +6,7 @@
 TestParameters:
   marks: [skip-gfx900, skip-gfx906, skip-gfx908, skip-gfx90a, skip-gfx940, skip-gfx941, skip-gfx942, skip-gfx950, skip-gfx1010, skip-gfx1011, skip-gfx1012, skip-gfx1030, skip-gfx1100, skip-gfx1101, skip-gfx1102, skip-gfx1200, skip-gfx1201] # not supported by arch
 GlobalParameters:
-  PrintSolutionRejectionReason: False
+  PrintSolutionRejectionReason: True
   SyncsPerBenchmark: 0
   NumElementsToValidate: -1
   KernelTime: False
@@ -26,7 +26,18 @@ GlobalParameters:
   KeepBuildTmp: False
   PrintLevel: 2
   CodeObjectVersion: "4"
+  LoopModelIRVerify: True   # the sweep is only meaningful with the checker on
 
+#
+# Blocks after the first SWEEP the eleven per-operand dials -- PrefetchLocalRead{A,B},
+# VgprGroup{A,B}, VgprAlloc{A,B}, WmmaInnerOrder, WmmaOuterOrder and WmmaFactor{M,N,K}
+# -- with the register dials STATED rather than left at -1.  Stating them is a
+# different path: an explicit VgprAlloc turns off the adapter ring clamp and displaces
+# the ClusterLocalRead derivation, so shapes that are clean when derived are not
+# necessarily clean when asked for.
+#
+# The ONLY outcomes a run may show are: a kernel, a rejection that names its reason,
+# or a VgprAlloc under/over-allocation.  Anything else is a defect.
 BenchmarkProblems:
 
   # mxf8 TN
@@ -83,4 +94,370 @@ BenchmarkProblems:
           - Exact: [256, 256, 1, 256]
           - Exact: [257, 129, 1, 1024]
           - Exact: [256, 256, 1, 416]
+          - Exact: [257, 129, 1, 416]
+
+  # SWEEP 1 -- per-operand read-ahead, with the register dials STATED.
+  # PrefetchLocalRead{A,B} over every value the cap admits; above it the solution is
+  # refused BY NAME ("exceeds 2, the most A can run ahead"), which is not a failure.
+  -
+    -
+      OperationType: GEMM
+      DataType: F8
+      DestDataType: s
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      MXBlockA: 32
+      MXBlockB: 32
+      DataTypeMXSA: e8
+      DataTypeMXSB: e8
+      TransposeA: True
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 128, 1,  1,  4, 4,  2, 2]
+        - DepthU: [256]
+        - WavefrontSize: [32]
+        - UseLoopModel: [true]
+        - UseSubtileImpl: [false]
+        - TDMInst: [3]
+        - TDMIterateMode: [-1]
+        - LDSTrInst: [false]
+        - LDSSegmentInterleave: [0]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - StaggerU: [0]
+        - PrefetchGlobalRead: [2]
+        - PrefetchLocalRead: [1]
+        - ScheduleIterAlg: [4]
+        - VectorWidthA: [-1]
+        - VectorWidthB: [-1]
+        - TDMSplitA: [0]
+        - TDMSplitB: [0]
+        - TDMFuse: [0]
+        - PrefetchLocalReadA: [-1, 0, 1, 2]
+        - PrefetchLocalReadB: [-1, 0, 1, 2]
+        - VgprGroupA: [1]
+        - VgprGroupB: [1]
+        - VgprAllocA: [2]
+        - VgprAllocB: [2]
+        - WmmaInnerOrder: [1]
+        - WmmaOuterOrder: [-1]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 1024]
+          - Exact: [257, 129, 1, 416]
+
+  # SWEEP 2 -- VgprGroup over its whole declared range, 1..8 plus derive.
+  # A VG the prefetch unit does not divide is refused by name.
+  -
+    -
+      OperationType: GEMM
+      DataType: F8
+      DestDataType: s
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      MXBlockA: 32
+      MXBlockB: 32
+      DataTypeMXSA: e8
+      DataTypeMXSB: e8
+      TransposeA: True
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 128, 1,  1,  4, 4,  2, 2]
+        - DepthU: [256]
+        - WavefrontSize: [32]
+        - UseLoopModel: [true]
+        - UseSubtileImpl: [false]
+        - TDMInst: [3]
+        - TDMIterateMode: [-1]
+        - LDSTrInst: [false]
+        - LDSSegmentInterleave: [0]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - StaggerU: [0]
+        - PrefetchGlobalRead: [2]
+        - PrefetchLocalRead: [1]
+        - ScheduleIterAlg: [4]
+        - VectorWidthA: [-1]
+        - VectorWidthB: [-1]
+        - TDMSplitA: [0]
+        - TDMSplitB: [0]
+        - TDMFuse: [0]
+        - PrefetchLocalReadA: [1]
+        - PrefetchLocalReadB: [1]
+        - VgprGroupA: [-1, 1, 2, 3, 4, 5, 6, 7, 8]
+        - VgprGroupB: [-1, 1, 2, 3, 4, 5, 6, 7, 8]
+        - VgprAllocA: [-1]
+        - VgprAllocB: [-1]
+        - WmmaInnerOrder: [1]
+        - WmmaOuterOrder: [-1]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 1024]
+          - Exact: [257, 129, 1, 416]
+
+  # SWEEP 3 -- VgprAlloc across the whole feasible band AND over the cliff.
+  # 1..10 generate; 11 is the first that overflows the 1024-register file
+  # (vgprs=1025, rising 68 per buffer).  Over-allocation is an ALLOWED outcome;
+  # the range stops at 16 because each point past the cliff still emits the whole
+  # oversized kernel before the assembler refuses it.
+  -
+    -
+      OperationType: GEMM
+      DataType: F8
+      DestDataType: s
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      MXBlockA: 32
+      MXBlockB: 32
+      DataTypeMXSA: e8
+      DataTypeMXSB: e8
+      TransposeA: True
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 128, 1,  1,  4, 4,  2, 2]
+        - DepthU: [256]
+        - WavefrontSize: [32]
+        - UseLoopModel: [true]
+        - UseSubtileImpl: [false]
+        - TDMInst: [3]
+        - TDMIterateMode: [-1]
+        - LDSTrInst: [false]
+        - LDSSegmentInterleave: [0]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - StaggerU: [0]
+        - PrefetchGlobalRead: [2]
+        - PrefetchLocalRead: [1]
+        - ScheduleIterAlg: [4]
+        - VectorWidthA: [-1]
+        - VectorWidthB: [-1]
+        - TDMSplitA: [0]
+        - TDMSplitB: [0]
+        - TDMFuse: [0]
+        - PrefetchLocalReadA: [1]
+        - PrefetchLocalReadB: [1]
+        - VgprGroupA: [1]
+        - VgprGroupB: [1]
+        - VgprAllocA: [-1, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 16]
+        - VgprAllocB: [-1, 2, 4, 8]
+        - WmmaInnerOrder: [1]
+        - WmmaOuterOrder: [-1]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 1024]
+          - Exact: [257, 129, 1, 416]
+
+  # SWEEP 4 -- the wmma traversal: every WmmaInnerOrder x every WmmaOuterOrder.
+  # VgprAlloc is derived here: WIO 3 and 5 need a ring of 4, and stating 2 is an
+  # under-allocation (ring_period 4 against depth 2), which is an ALLOWED outcome.
+  -
+    -
+      OperationType: GEMM
+      DataType: F8
+      DestDataType: s
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      MXBlockA: 32
+      MXBlockB: 32
+      DataTypeMXSA: e8
+      DataTypeMXSB: e8
+      TransposeA: True
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 128, 1,  1,  4, 4,  2, 2]
+        - DepthU: [256]
+        - WavefrontSize: [32]
+        - UseLoopModel: [true]
+        - UseSubtileImpl: [false]
+        - TDMInst: [3]
+        - TDMIterateMode: [-1]
+        - LDSTrInst: [false]
+        - LDSSegmentInterleave: [0]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - StaggerU: [0]
+        - PrefetchGlobalRead: [2]
+        - PrefetchLocalRead: [1]
+        - ScheduleIterAlg: [4]
+        - VectorWidthA: [-1]
+        - VectorWidthB: [-1]
+        - TDMSplitA: [0]
+        - TDMSplitB: [0]
+        - TDMFuse: [0]
+        - PrefetchLocalReadA: [1]
+        - PrefetchLocalReadB: [1]
+        - VgprGroupA: [1]
+        - VgprGroupB: [1]
+        - VgprAllocA: [-1, 2, 4]
+        - VgprAllocB: [-1, 2, 4]
+        - WmmaInnerOrder: [1, 2, 3, 4, 5, 6]
+        - WmmaOuterOrder: [-1, 0, 1, 2, 3]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 1024]
+          - Exact: [257, 129, 1, 416]
+
+  # SWEEP 5 -- WmmaFactorM/N/K over every value that divides this shape, plus derive.
+  # A factor that does not divide MIWaveTile/LoopIters is refused by name.  The
+  # factor changes PU, so it changes the SLOT SIZE -- VgprAlloc never may.
+  -
+    -
+      OperationType: GEMM
+      DataType: F8
+      DestDataType: s
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      MXBlockA: 32
+      MXBlockB: 32
+      DataTypeMXSA: e8
+      DataTypeMXSB: e8
+      TransposeA: True
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 128, 1,  1,  4, 4,  2, 2]
+        - DepthU: [256]
+        - WavefrontSize: [32]
+        - UseLoopModel: [true]
+        - UseSubtileImpl: [false]
+        - TDMInst: [3]
+        - TDMIterateMode: [-1]
+        - LDSTrInst: [false]
+        - LDSSegmentInterleave: [0]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - StaggerU: [0]
+        - PrefetchGlobalRead: [2]
+        - PrefetchLocalRead: [1]
+        - ScheduleIterAlg: [4]
+        - VectorWidthA: [-1]
+        - VectorWidthB: [-1]
+        - TDMSplitA: [0]
+        - TDMSplitB: [0]
+        - TDMFuse: [0]
+        - PrefetchLocalReadA: [1]
+        - PrefetchLocalReadB: [1]
+        - VgprGroupA: [1]
+        - VgprGroupB: [1]
+        - VgprAllocA: [-1, 2, 8]
+        - VgprAllocB: [-1, 2, 8]
+        - WmmaFactorM: [-1, 1, 2, 4]
+        - WmmaFactorN: [-1, 1, 2, 4]
+        - WmmaFactorK: [-1, 1, 2]
+        - WmmaInnerOrder: [1]
+        - WmmaOuterOrder: [-1]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 1024]
+          - Exact: [257, 129, 1, 416]
+
+  # SWEEP 6 -- the factors against the traversal they key on, and against TDMSplit,
+  # which PINS a factor on an axis it cuts (mismatches are refused by name).
+  -
+    -
+      OperationType: GEMM
+      DataType: F8
+      DestDataType: s
+      ComputeDataType: s
+      HighPrecisionAccumulate: True
+      MXBlockA: 32
+      MXBlockB: 32
+      DataTypeMXSA: e8
+      DataTypeMXSB: e8
+      TransposeA: True
+      TransposeB: False
+      UseBeta: True
+      Batched: True
+
+    - InitialSolutionParameters:
+      BenchmarkCommonParameters:
+        - KernelLanguage: ["Assembly"]
+      ForkParameters:
+        - MatrixInstruction:
+          - [16, 16, 128, 1,  1,  4, 4,  2, 2]
+        - DepthU: [256]
+        - WavefrontSize: [32]
+        - UseLoopModel: [true]
+        - UseSubtileImpl: [false]
+        - TDMInst: [3]
+        - TDMIterateMode: [-1]
+        - LDSTrInst: [false]
+        - LDSSegmentInterleave: [0]
+        - SourceSwap: [false]
+        - ExpandPointerSwap: [false]
+        - StaggerU: [0]
+        - PrefetchGlobalRead: [2]
+        - PrefetchLocalRead: [1]
+        - ScheduleIterAlg: [4]
+        - VectorWidthA: [-1]
+        - VectorWidthB: [-1]
+        - TDMSplitA: [0]
+        - TDMSplitB: [0]
+        - TDMFuse: [0]
+        - PrefetchLocalReadA: [-1, 1]
+        - PrefetchLocalReadB: [-1, 1]
+        - VgprGroupA: [-1, 2]
+        - VgprGroupB: [-1, 2]
+        - VgprAllocA: [-1]
+        - VgprAllocB: [-1]
+        - WmmaFactorM: [-1, 2]
+        - WmmaFactorN: [-1, 2]
+        - WmmaFactorK: [-1, 2]
+        - WmmaInnerOrder: [1, 3, 5]
+        - WmmaOuterOrder: [-1, 0, 3]
+      BenchmarkForkParameters:
+      JoinParameters:
+      BenchmarkJoinParameters:
+      BenchmarkFinalParameters:
+        - ProblemSizes:
+          - Exact: [256, 256, 1, 1024]
           - Exact: [257, 129, 1, 416]
