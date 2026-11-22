@@ -658,6 +658,10 @@ def _covered_positions(theta, operand, modes, grouped=False) -> int:
     return max(1, len(carriers) * max(1, total // product(e for _n, e in present)))
 
 
+#: Operands that ride a data tensor's walk: they own no storage region, they borrow one.
+_COMPANIONS = ("MXSA", "MXSB", "Metadata")
+
+
 def register_unit_modes(theta, operand):
     """The unit modes the REGISTER file indexes -- the region included when it must be.
 
@@ -665,9 +669,18 @@ def register_unit_modes(theta, operand):
     register file is not region-displaced, so when the ring has more positions than buffers the
     region has nowhere left to live and two of its values land on one register.  Keep it in the
     unit index for exactly those operands; everyone else is unchanged.
+
+    THE STORAGE REGIONS ONLY.  A slot is `PU / VG`, and a `WmmaFactor` axis is already inside PU
+    -- it has no storage behind it, so it displaces no address and nothing was stripped from the
+    unit to put back.  Widening on one lets `VgprAlloc`, read below as `ring_depths`, decide the
+    slot SIZE: the same shape laid out 4 tiles per slot at VA=2 and 1 at VA=8.  A ring too short
+    to separate its values is an under-allocation, not a wider buffer.
     """
     unit = prefetch_unit_modes(theta, operand)
-    regions = set(getattr(operand, "factor_axes", ()) or ())
+    # A companion owns no storage axis of its own but RIDES its parent's, so its factor axis
+    # still stands for one; only a data operand can answer this for itself.
+    regions = set((getattr(operand, "factor_axes", ()) if str(operand.name) in _COMPANIONS
+                   else getattr(operand, "region_axes", ())) or ())
     if not regions or not operand.fragment:
         return unit
     original = list(theta.geometry(operand).original_prefetch)
