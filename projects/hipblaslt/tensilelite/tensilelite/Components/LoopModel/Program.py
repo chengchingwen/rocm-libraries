@@ -30,8 +30,29 @@ def _valuAllocation(writer):
     return dict(getattr(writer.states, "loopModelValuAlloc", {}) or {})
 
 
+def _refuseIfRingDoesNotFit(writer, kernel):
+    """Refuse a ring already sized past the register file, before any GIR is built for it."""
+    if writer is None or not kernel.get("UseLoopModel"):
+        return
+    cap = int((getattr(writer.states, "regCaps", None) or {}).get("MaxVgpr", 0) or 0)
+    per = {name: int(alloc.total)
+           for name, alloc in (getattr(writer.states, "loopModelValuAlloc", {}) or {}).items()}
+    # The RINGS ALONE, not `totalVgprs`: that is a pre-optimisation estimate and the register
+    # reallocation still reclaims from it, so only the rings are a refusal nothing can undo.
+    ring = sum(per.values())
+    if not cap or not ring or ring <= cap:
+        return
+    if getattr(getattr(writer, "debugConfig", None), "forceGenerateKernel", False):
+        return
+    raise RuntimeError(
+        "UseLoopModel: the register ring does not fit -- %d registers of operand ring over the "
+        "%d the file holds, so no GIR was built. Lower VgprAlloc. Per operand: %s"
+        % (ring, cap, per))
+
+
 def loopModelGirProgram(writer, kernel):
     """Build and cache the finalized GIR program for one kernel."""
+    _refuseIfRingDoesNotFit(writer, kernel)
     key = getattr(writer.states, "kernelName", None) or id(kernel)
     true_sia0 = int(kernel.get("ScheduleIterAlg", 0) or 0) == 0 \
         and int(kernel.get("_StinkyTofuOptLevel", 0) or 0) == 0
