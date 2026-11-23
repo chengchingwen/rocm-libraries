@@ -1796,7 +1796,9 @@ class _Decoder:
         reduction_loops = tuple(
             node for node in walk(copy_steps[0].body)
             if isinstance(node, Loop)
-            and node.axis in reduction_axes
+            # BY IDENTITY, as the selection just below does: `in` compares with `==`, and an
+            # Axis builds a PREDICATE from that, which has no truth value.
+            and any(node.axis is axis for axis in reduction_axes)
         )
         target = next(
             (

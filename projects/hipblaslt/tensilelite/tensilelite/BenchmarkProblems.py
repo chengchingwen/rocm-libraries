@@ -364,8 +364,10 @@ def _generateForkedSolutions(problemType, constantParams, forkPermutations, asse
         itertools.repeat(isaInfoMap),
         itertools.repeat(rocisa.rocIsa.getInstance().getData())
     )
-    raw_solutions = ParallelMap2(_generate_single_solution, forkIters, "fork solutions", return_as="list",
-                                 procs=_poolSize())
+    # `forkPermutations` is lazy and states its own length; the `zip` cannot, so pass the count.
+    raw_solutions = ParallelMap2(_generate_single_solution, forkIters, "fork solutions",
+                                 return_as="list", procs=_poolSize(),
+                                 count=len(forkPermutations))
 
     # Filter out None and duplicates. Solutions compare by name, and that name
     # records only the register-allocation mode, so two configs with one mode
