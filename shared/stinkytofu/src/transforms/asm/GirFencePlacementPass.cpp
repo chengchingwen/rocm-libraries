@@ -1009,17 +1009,31 @@ class GirFencePlacementPass final : public StinkyInstPass {
             auto* marker = const_cast<StinkyInstruction*>(target);
             BasicBlock* source = frames.girSkipSource(marker->getParent());
             if (!source) return marker;
+            // The FIRST branch: everything after it is already on one arm.
             StinkyInstruction* branch = nullptr;
             for (IRBase& node : *source)
                 if (auto* inst = dyn_cast<StinkyInstruction>(&node))
-                    if (isBranch(*inst)) branch = inst;
-            if (!branch) return marker;
+                    if (isBranch(*inst)) {
+                        branch = inst;
+                        break;
+                    }
+            // An arm that cannot hoist ABORTS: returning the marker leaves the barrier where only
+            // some agents reach it, which hangs.
+            if (!branch)
+                STINKY_UNREACHABLE(("GirFencePlacementPass: skip source '" + source->getLabel() +
+                                    "' forks in the CFG but has no branch")
+                                       .c_str());
             // Only the skipped seam's own prefix may be passed over, and only if it moves no
             // memory; anything else would be a different cut, not the same one placed earlier.
             for (IRBase& node : *marker->getParent()) {
                 auto* inst = dyn_cast<StinkyInstruction>(&node);
                 if (!inst || inst == marker) break;
-                if (counterOfProducer(*inst) != Counter::None) return marker;
+                if (counterOfProducer(*inst) != Counter::None)
+                    STINKY_UNREACHABLE(("GirFencePlacementPass: skippable seam '" +
+                                        marker->getParent()->getLabel() +
+                                        "' moves memory before the fence, so the fence cannot be "
+                                        "hoisted out of it")
+                                           .c_str());
             }
             return branch;
         };

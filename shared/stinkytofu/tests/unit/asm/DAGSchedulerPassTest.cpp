@@ -4130,3 +4130,52 @@ TEST_F(DAGSchedulerPassTest, GirFenceWindowPinsBothHalvesOfTheBarrier) {
     EXPECT_TRUE(ordered(signal, consumer));
     EXPECT_TRUE(ordered(wait, consumer)) << "the wait needs the consumer pin too";
 }
+
+// A loop-carried pair names this trip's producer and the NEXT trip's consumer, so the whole of
+// this trip after the producer precedes that consumer. The in-trip order of the two is therefore
+// free, and the window is held by the one forward edge the fence does get.
+TEST_F(DAGSchedulerPassTest, LoopCarriedGirHazardPinsTheFenceWithoutASameTripEdge) {
+    StinkyInstruction* consumer =
+        createMovableDsLoad(/*destReg=*/0, /*addrReg=*/300, /*ldsToken=*/1);
+    StinkyInstruction* producer = createMovableTensorLoad(bb, /*s0=*/40, /*s1=*/48, /*ldsToken=*/1);
+    auto [signal, wait] = createMovableWorkgroupBarrier(bb, /*ldsToken=*/1);
+
+    std::vector<StinkyInstruction*> region;
+    for (IRBase& ir : *bb)
+        if (ir.getType() == IRBase::IRType::StinkyTofu)
+            region.push_back(cast<StinkyInstruction>(&ir));
+
+    GirFrameHazardAnalysis::Result hazards;
+    GirFrameHazard hazard;
+    hazard.kind = GirHazardKind::RAW;
+    hazard.producer = producer;
+    hazard.consumer = consumer;
+    hazard.crossAgent = true;
+    hazard.gap = 1;
+    hazards.hazards.push_back(hazard);
+
+    GirPlanFenceCoverage coverage;
+    GirHazardFenceCover cover;
+    cover.hasHazardPath = true;
+    GirHazardFenceOwner owner;
+    owner.anchor = signal;
+    cover.owners.push_back(owner);
+    coverage.byHazard.push_back(cover);
+
+    dag::RegionDAG regionDag = dag::buildRegisterDependencyDAG(region);
+    dag::addGirFrameHazardEdges(regionDag, hazards, coverage);
+
+    const auto ordered = [&](StinkyInstruction* before, StinkyInstruction* after) {
+        auto from = regionDag.instToId.find(before);
+        auto to = regionDag.instToId.find(after);
+        return from != regionDag.instToId.end() && to != regionDag.instToId.end() &&
+               regionDag.graph[from->second].contains(to->second);
+    };
+    EXPECT_FALSE(ordered(producer, consumer))
+        << "the consumer this producer feeds is a trip away, not the one in front of it";
+    EXPECT_TRUE(ordered(producer, signal)) << "this trip's fence must follow this trip's producer";
+    EXPECT_TRUE(ordered(producer, wait));
+    EXPECT_FALSE(ordered(signal, consumer))
+        << "that edge names THIS trip's consumer, which the fence does not owe anything to";
+    EXPECT_FALSE(ordered(wait, consumer));
+}

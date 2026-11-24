@@ -878,6 +878,13 @@ inline bool hasLdsPseudoRegs(const StinkyInstruction& inst) {
 /// GIR does not choose the schedule.  Untagged memory operations remain conservative region cuts.
 /// The CONTRACT is what makes the model real: without one the frame analysis is empty, so no
 /// edge would replace the region cut this drops and a tagged pair would be left unordered.
+/// Either form counts: the import pass hands over the built contract, a `.stir` fixture carries
+/// its text. One of them has to be there for the frame analysis to say anything.
+inline bool hasGirFrameContract(const Function& function) {
+    return function.hasStructMetaData(kGirFrameContractKey) ||
+           function.getStringMetaData(kGirFrameContractKey).has_value();
+}
+
 inline bool hasGirMemoryHazardModel(const StinkyInstruction& inst) {
     if (!isTensorAccess(inst) && !isDSAccess(inst)) return false;
     const GirActionData* action = inst.getModifier<GirActionData>();
@@ -885,10 +892,7 @@ inline bool hasGirMemoryHazardModel(const StinkyInstruction& inst) {
     const BasicBlock* block = inst.getParent();
     const Function* function = block != nullptr ? block->getParentFunc() : nullptr;
     if (function == nullptr) return false;
-    // Either form counts: the import pass hands over the built contract, a `.stir` fixture
-    // carries its text. One of them has to be there for the frame analysis to say anything.
-    return function->hasStructMetaData(kGirFrameContractKey) ||
-           function->getStringMetaData(kGirFrameContractKey).has_value();
+    return hasGirFrameContract(*function);
 }
 
 /// Returns true for a GIR-owned memory fence -- the order-only FENCE and both halves of the

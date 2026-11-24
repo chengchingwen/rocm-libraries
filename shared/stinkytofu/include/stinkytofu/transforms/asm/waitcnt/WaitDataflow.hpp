@@ -203,6 +203,15 @@ class WaitDataflow {
         loopCarriedTokenDepsEnabled = enabled;
     }
 
+    /// Whether the GIR frame pipeline actually derives this function's waits.
+    /// Off by default, so a caller that does not say so keeps the conservative
+    /// MemTokenData fallbacks: the frame contract alone only means the map was
+    /// imported, and the map replaces a drain only when the frame waits are
+    /// emitted from it.
+    void setGirFrameWaitsEnabled(bool enabled) {
+        girFrameWaitsEnabled = enabled;
+    }
+
     /// Materialise the conservative per-consumer wait plan from the
     /// converged dataflow state. Run WaitPlanOptimizer(s) on the result,
     /// then finalizePlan() before emit.
@@ -241,6 +250,7 @@ class WaitDataflow {
     bool capHit = false;
     unsigned iterationCap = 0;
     bool loopCarriedTokenDepsEnabled = false;
+    bool girFrameWaitsEnabled = false;
 
     /// (block, counter) pairs whose per-pred queue exceeded the bounded
     /// hardware-count window during a solver sweep. Older producers are
