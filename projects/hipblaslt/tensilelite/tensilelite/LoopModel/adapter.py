@@ -718,31 +718,36 @@ def _set_register_depths(theta, kernel):
         plr = value("PrefetchLocalRead", side)
         clr = value("ClusterLocalRead", side)
         vg = value("VgprGroup", side)
+        # ONE BUFFER HOLDS `unit // vg` TILES.  `VgprGroup` cuts the buffer a prefetch unit fills,
+        # and a carrier ring is that same cut made by the merge, so an operand that already has
+        # one is not cut again.  Everything below is in TILES, so parent and companion are the
+        # same statement at different granules.
+        perBuffer = max(1, _unit_free_tiles(theta, operand)
+                        // max(1, 1 if geometry.carrier_ring(theta, operand) else vg))
         if _is_companion(operand.name):
-            # Follow the parent in TILE COVERAGE, not in buffer count: the buffers this operand's
-            # unit needs to span the tiles the parent's ring holds, which is fewer than the
-            # parent's own once its unit is the wider.  `fold_use_span` is how LONG, not how much.
-            # A unit spanning the whole free walk has no coverage to divide -- there the ring
-            # counts generations, which is the parent's number and not a tile ratio.
-            unit = _unit_free_tiles(theta, operand)
-            walk = geometry.flat_tile_strides(theta, operand)[1]
+            # Follow the parent in TILE COVERAGE, not in buffer count: the buffers this operand
+            # needs to span the tiles the parent's ring holds.  `fold_use_span` is how LONG, not
+            # how much.
+            # TWO THINGS AT ONCE, so take the larger: the ring must hold as many GENERATIONS as
+            # the parent keeps (its depth in whole buffers, since `VgprGroup` cut them), and it
+            # must SPAN the tiles that depth covers.  A unit as wide as the free walk divides to
+            # one buffer and only the generation term is left -- which is the case the old
+            # `unit < walk` guard existed to keep.
             tiles = int(covered.get(side, 0))
-            alloc = (max(1, -(-tiles // unit)) if 1 < unit < walk and tiles
+            generations = max(1, -(-value("VgprAlloc", side) // max(1, vg)))
+            alloc = (max(generations, -(-tiles // perBuffer)) if tiles
                      else value("VgprAlloc", side))
             alloc = max(alloc, geometry.fold_use_span(
                 theta, operand, operand.fragment.groups()[0]))
-            # The lead is the same coverage statement: PLR counts UNITS, so a parent lead that
-            # does not fill one of the companion's is no read-ahead at all -- the unit it would
-            # fetch is the one being read.  Same fallback as the ring when there is no coverage.
-            lead_tiles = int(leads.get(side, 0))
-            lead = lead_tiles // unit if unit > 1 and lead_tiles else plr
-            operand.fragment.read_lead = lead
-            # No pipeline floor on top: the parent's ring already holds its own lead, so covering
-            # the tiles that ring holds covers everything the companion reads ahead of.
-            # Stated on the FRAGMENT, not in the Solution: `VgprAllocA/B` are parameters a user
-            # writes, and a derived value put beside them would be read back as one.  The depth
-            # lands in `ring_depths` below, which is what every consumer already asks.
+            # The lead is the same statement: a parent lead that does not fill one of this
+            # operand's buffers is no read-ahead at all.
+            leadTiles = int(leads.get(side, 0))
+            operand.fragment.read_lead = (leadTiles // perBuffer) if leadTiles else plr
+            # Stated on the FRAGMENT: `VgprAllocA/B` are parameters a user writes, and a derived
+            # value put beside them would be read back as one.
             operand.fragment.coverage_tiles = tiles
+            if geometry.carrier_ring(theta, operand):
+                vg = 1
         else:
             alloc = value("VgprAlloc", side)
         clamped = (clr and not bool(kernel.get("VgprAllocExplicit" + side, False))) \
@@ -776,8 +781,8 @@ def _set_register_depths(theta, kernel):
         operand.fragment.ring_depths = {
             label: depth for label in operand.fragment.groups()}
         if not _is_companion(operand.name):
-            covered[side] = _unit_free_tiles(theta, operand) * max(1, int(depth))
-            leads[side] = _unit_free_tiles(theta, operand) * max(0, plr)
+            covered[side] = perBuffer * max(1, int(depth))
+            leads[side] = perBuffer * max(0, plr)
 
 def _validate_register_depths(theta, kernel):
     def value(base, side):
