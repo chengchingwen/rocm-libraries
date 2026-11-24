@@ -5,6 +5,7 @@
 from contextlib import contextmanager
 
 from ...Component import Component
+from ...Common.MxScaleLayout import mxReadVectorWidth
 from ...LoopModel.adapter import kernel_to_params, params_to_theta
 from ...LoopModel.schedule import build_S
 
@@ -79,12 +80,17 @@ def mxScaleBlockWidth(writer, kernel, tc, lrvw):
     # would require the real pool lookup.
     return None
   caps = getattr(writer.states, "asmCaps", {}) or {}
+  # THE SCALE'S OWN READ WIDTH, not the parent's configured one.  They are equal by derivation
+  # (`VectorWidthMXSA = VectorWidthA`) except under `WaveTileContiguousA`, where one read group
+  # holds a single scale tile; taking the parent's 2 there doubles the modelled merge while the
+  # plan still emits pairs, and the carrier a consumer addresses stops being the one filled.
+  vw = int(mxReadVectorWidth(kernel, tc))
   if kernel.get("UnrollMajorLDS%s" % tc):
     width = lrvw * bpeDS / 4.0
     if caps.get("HasWMMA_V3") and kernel.get("MXScaleFormat") == "InMemorySwizzle":
-      width *= int(kernel["VectorWidth%s" % parent])
+      width *= vw
   else:
-    width = int(kernel["VectorWidth%s" % parent]) * bpeDS / 4.0
+    width = vw * bpeDS / 4.0
   if width <= 0:
     return None
   return min(width, 4.0)                            # the pool's widest LocalRead is b128

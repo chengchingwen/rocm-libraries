@@ -77,7 +77,17 @@ def free_position(ctx, t: int) -> int:
     wave-group further along.  Where that position lands in the LDS image is the layout's
     business (`tile_row`); the position itself is not, which is why `wave_region_span`,
     `localReadDo` and this module can all ask for it and get one answer.
+
+    WaveTileContiguousA hands the wave CONSECUTIVE instruction rows instead, so the group jump
+    and the within-group jump become the same `contiguousStep` and the two terms collapse to
+    `t * step`.  That is `localReadDo`'s contiguous arm (`vCols = vIdx*matrixInstT*vw`,
+    `freeStep = matrixInstT`) and `localReadMX`'s (`mStep = MatrixInstM*vw`, `offset_val *=
+    MatrixInstM`) stated once -- both reduce to it, and both take that arm BEFORE the
+    segment-interleave ones, which is why the caller zeroes the seg terms alongside.
     """
+    step = getattr(ctx, "contiguousStep", 0)
+    if step:
+        return t * step
     vw = max(1, ctx.vectorWidth)
     group = ctx.MIWaveGroupShape[ctx.tile01] if ctx.MIWaveGroupShape else vw
     return (t // vw) * (getattr(ctx, "segRowShape", 0) or group) + (t % vw)

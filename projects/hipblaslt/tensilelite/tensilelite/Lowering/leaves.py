@@ -20,7 +20,7 @@ from .lds_geometry import (tile_row, region_bytes, region_row_elems, component_f
                            addr_coord_on_split_axis, read_fragments,
                            mx_scale_substep_stride, BPR)
 from ..Components.TDMSplit import split_of, seg_interleave_row_shape, AXIS_MT
-from ..Common.MxScaleLayout import mxSegmentSplit
+from ..Common.MxScaleLayout import mxSegmentSplit, mxReadVectorWidth
 from .gir_tag import gir_tag
 
 #: Per-tensor Solution and LDSSegInterleaveOffsets keys: (vector width, port split, baseline).
@@ -28,6 +28,16 @@ _SEG_INTERLEAVE_KEYS = {"A": ("VectorWidthA", "portSplitA", "aBaseline"),
                         "B": ("VectorWidthB", "portSplitB", "bBaseline")}
 _MACRO_TILE_KEYS = ("MacroTile0", "MacroTile1")
 _VALU_STATE = {"A": "a", "B": "b", "MXSA": "mxsa", "MXSB": "mxsb", "Metadata": "m"}
+
+
+def _contiguousStep(kernel, tc, matrixInstT) -> int:
+    """Free-axis elements per wave tile under `WaveTileContiguousA`, 0 when it is off.
+
+    It names A and the scale that rides with it; B keeps its wave-group distribution, which is
+    the same pair `Components/LocalRead.py` and `LraTileAssignment` test."""
+    if tc not in ("A", "MXSA") or not kernel.get("WaveTileContiguousA"):
+        return 0
+    return int(matrixInstT)
 
 
 def allocated_valu_offset(span, linear):
@@ -135,6 +145,10 @@ class LdsReadTileContext:
     segRowShape: int = 0
     segCompCols: int = 0
     segWriteStrideBytes: int = 0
+    # WaveTileContiguousA: the free-axis step PER WAVE TILE, 0 = the ordinary vector-group
+    # distribution.  See `lds_geometry.free_position`; the wave stride it pairs with is
+    # `LraTileAssignment`'s (shared, so the base already carries it).
+    contiguousStep: int = 0
     # The 64K read windows this operand reserved a local-read address for, None = one per window.
     addressWindows: tuple = None
 
@@ -496,7 +510,10 @@ class LeafEmitters:
             maxLDSConstOffset=w.states.regCaps["maxLDSConstOffset"],
             miWaveTileAxis=kernel["MIWaveTile"][tile01],
             enableLDSTr=False, unrollMajor=True,
-            vectorWidth=max(1, kernel["VectorWidth%s" % tc]),
+            # `mxReadVectorWidth`, not the configured width: a contiguous A packs ONE scale tile
+            # per read group, which is the same call `getMxsTileSpanInfo` above makes.
+            vectorWidth=max(1, mxReadVectorWidth(kernel, tc)),
+            contiguousStep=_contiguousStep(kernel, tc, kernel["MatrixInstM"]),
             # A scale tensor is NEVER region-split -- `TDMSplit.split_of` answers `(1, None)` for
             # any `MXS*` char -- so every region term below is inert by construction.
             splitBoundaryBytes=0, nsplit=1, splitAxis=AXIS_MT)
@@ -675,10 +692,15 @@ class LeafEmitters:
                 "LeafEmitters read (Metadata): LDSSegmentInterleave names no metadata segment")
         segRowShape, segCompCols, segWriteStrideBytes = self._segInterleaveTerms(
             kernel, tc, tile01, MIWaveGroupShape[tile01])
+        contiguousStep = _contiguousStep(kernel, tc, matrixInstT)
+        if contiguousStep:
+            # `localReadDo` takes the contiguous arm BEFORE the port/component ones, so the
+            # segment jump is the wave stride's (LraTileAssignment forces segILWaveSpansComp).
+            segRowShape = segCompCols = segWriteStrideBytes = 0
 
         return LdsReadTileContext(
             segRowShape=segRowShape, segCompCols=segCompCols,
-            segWriteStrideBytes=segWriteStrideBytes,
+            segWriteStrideBytes=segWriteStrideBytes, contiguousStep=contiguousStep,
             addressWindows=_readAddressWindows(kernel, tc),
             tc=tc, tile01=tile01, LocalReadX=LocalReadX, blockWidth=blockWidth,
             bpeDS=tP["bpeDS"], LdsPad=LdsPad, ldsBlockSizePerPad=kernel["LdsBlockSizePerPad%s" % tc],
