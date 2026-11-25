@@ -844,6 +844,39 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         }
     }
 
+    // A state that can be entered and never left does not exist. Lowering spells one GIR edge as
+    // a chain of scaffold branches, and those carry no action for a `requires` to name, so an arm
+    // is admitted into a branch it cannot take and is only refused at the next block that owns an
+    // action -- by then the state is built. Dropping it needs a fixpoint: losing one state can
+    // leave the predecessor that reached it with no feasible exit of its own.
+    for (bool pruned = true; pruned;) {
+        pruned = false;
+        for (BasicBlock& block : function) {
+            auto states = frameSets.find(&block);
+            if (states == frameSets.end() || block.getSuccessors().empty()) continue;
+            for (auto state = states->second.begin(); state != states->second.end();) {
+                const GirFrameNode node{&block, state->first, state->second};
+                // An edge escapes only if the state it LANDS IN still stands: a successor dropped
+                // on an earlier round is no exit either.
+                const bool escapes = std::any_of(
+                    block.getSuccessors().begin(), block.getSuccessors().end(),
+                    [&](BasicBlock* succ) {
+                        if (!edgeFeasible(node, succ)) return false;
+                        const GirFrameNode next = advanceNode(node, succ);
+                        auto landing = frameSets.find(succ);
+                        return landing != frameSets.end() &&
+                               landing->second.contains({next.frame, next.incomingAction});
+                    });
+                if (escapes) {
+                    ++state;
+                    continue;
+                }
+                state = states->second.erase(state);
+                pruned = true;
+            }
+        }
+    }
+
     // Program order, not `frameSets` order: a pointer-keyed hash map iterates differently
     // between runs, and the edge map keeps what it is given.
     for (BasicBlock& block : function) {
