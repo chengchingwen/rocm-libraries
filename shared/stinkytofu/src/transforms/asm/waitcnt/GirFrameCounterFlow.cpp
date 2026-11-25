@@ -433,6 +433,9 @@ size_t indexInBlock(StinkyInstruction& inst) {
 struct SpanResult {
     int count = -1;
     bool unaccounted = false;
+    /// A wait on the way drained the producer. That answers the walk wherever it happened: the
+    /// hazard is discharged, so there is no count to report and nothing was left unmodelled.
+    bool drained = false;
 };
 
 /// How many same-counter issues stand at or after `potential`'s producer when control reaches the
@@ -478,6 +481,7 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
     const int span = std::max(0, gap);
     int best = -1;
     bool unaccounted = false;
+    bool drained = false;
     std::set<int> producerTrips;
     if (feasible) {
         auto found = feasible->find(producerNode);
@@ -528,6 +532,7 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
             }
 
             if (retireAt(*inst, step.count)) {
+                drained = true;
                 retired = true;
                 break;
             }
@@ -536,7 +541,10 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
         }
         if (retired) continue;
 
-        if (retireAtEnd(step.node.block, step.count)) continue;
+        if (retireAtEnd(step.node.block, step.count)) {
+            drained = true;
+            continue;
+        }
 
         auto successors = frames.edges.find(step.node);
         // Ran out of span, or off the end of the frame graph, without ever reaching the anchor:
@@ -566,7 +574,7 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
             if (visited.insert(stateKey(next)).second) work.push_back(std::move(next));
         }
     }
-    return {best, unaccounted};
+    return {best, unaccounted, drained};
 }
 
 SpanResult countAcrossSpan(const GirFrameAnalysis::Result& frames, const DecisionMap& decisions,
@@ -627,7 +635,7 @@ RequirementMap simulate(Function& function, const GirFrameAnalysis::Result& fram
                     // Only a walk that reached the anchor on NO path and ended some path by
                     // exhaustion is a modelling failure.  In a branching graph most paths simply
                     // lead elsewhere, so counting every one of those measures the graph, not a bug.
-                    if (span.count < 0 && span.unaccounted) ++girUnaccountedSpans;
+                    if (span.count < 0 && span.unaccounted && !span.drained) ++girUnaccountedSpans;
                     if (span.count <= 0) continue;
                     for (const auto& [pred, arrived] : perPred)
                         requirements[{site.anchor, site.counter}].record(
@@ -998,7 +1006,7 @@ int girFrameIssuesAcrossSpan(const GirFrameAnalysis::Result& frames, CounterKind
             return keep >= 0 && count > keep;
         },
         [](BasicBlock*, int) { return false; }, nullptr);
-    if (result.count < 0 && result.unaccounted) ++girUnaccountedSpans;
+    if (result.count < 0 && result.unaccounted && !result.drained) ++girUnaccountedSpans;
     return result.count;
 }
 
