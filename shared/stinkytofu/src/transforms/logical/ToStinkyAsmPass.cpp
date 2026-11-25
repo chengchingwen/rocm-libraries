@@ -181,6 +181,11 @@ StinkyInstruction* createAsmFromIR(LogicalInstruction* irInst, GfxArchID arch) {
         if (!irInst->comment.empty()) {
             asmInst->addModifier(CommentData(irInst->comment));
         }
+        // A fence can be a GIR block's ONLY content -- an arm that moves nothing still has to be
+        // a block the frame graph can name -- so it carries the action naming that block.
+        if (irInst->giraction.has_value()) {
+            asmInst->addModifier<GirActionData>(irInst->giraction.value());
+        }
         return asmInst;
     }
     // ====================================================================
