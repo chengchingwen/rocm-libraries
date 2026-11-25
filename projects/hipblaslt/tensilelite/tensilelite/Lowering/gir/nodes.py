@@ -127,6 +127,7 @@ class Mma:
 MARK_KINDS = (
     "phase_boundary", "swap", "gr_increment", "region_increment",
     "descriptor_enable", "gl2_prefetch", "chunk_pin", "buffer_pin",
+    "guard_anchor",
 )
 
 

@@ -87,8 +87,11 @@ class SplitPrefetchGuardPass(Pass):
         pgr = Block(phase=pgr_lab, body=guarded, term=Goto(join_lab), role=entry.role,
                     preds=(entry.label,), succs=(join_lab,),
                     gen_rel=entry.gen_rel, chunk_base=entry.chunk_base)
-        skip = Block(phase=skip_lab, body=[], term=Goto(join_lab), role=entry.role,
-                     preds=(entry.label,), succs=(join_lab,),
+        # The skip arm carries no movement, but it is still a block of its own: an empty body has
+        # no action to name it, so `_anchor_actions` forwards through it and nothing downstream can
+        # say which GIR block a drain placed here belongs to. One anchor mark gives it an identity.
+        skip = Block(phase=skip_lab, body=[Mark("guard_anchor", {})], term=Goto(join_lab),
+                     role=entry.role, preds=(entry.label,), succs=(join_lab,),
                      gen_rel=entry.gen_rel, chunk_base=entry.chunk_base)
 
         # Taken == the short trip, which skips the generation -- the sense TensileLite's ladder uses.

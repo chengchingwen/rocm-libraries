@@ -36,6 +36,9 @@ _MARK_SCHEMA = {
     "chunk_pin":      ("unit", "chunk"),
     # The buffer generation a movement's pointer must hold HERE, for the same reason.
     "buffer_pin":     ("hop", "unit", "gen"),
+    # A block whose whole content is "this arm exists": it carries no payload, only the identity
+    # that an otherwise-empty block has nothing else to be named by.
+    "guard_anchor":   (),
 }
 
 

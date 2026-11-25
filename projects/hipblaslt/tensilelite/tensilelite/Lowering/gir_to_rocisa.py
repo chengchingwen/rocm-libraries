@@ -20,7 +20,7 @@ from .leaves import LeafEmitters
 from .loopir_to_gir import steady_chain
 from ..Components.TDMFuse import tdmFusedGroups, tdmSetOwner
 from ..Common.MxScaleLayout import mxIssueTpList
-from rocisa.instruction import GirActionKind
+from rocisa.instruction import GirActionKind, SSchedulingFence
 
 #: theta's name for the sparsity index operand, which is also its tensorChar.
 _METADATA = "Metadata"
@@ -219,6 +219,11 @@ class GirToRocisa:
                                        bool(at["enabled"]), tpByOperand)
             elif kind == "region_inc":
                 self._emit_region_inc_act(out, phase, at, tpByOperand)
+            elif kind == "guard_anchor":
+                # The block's only content: an otherwise-empty block has nothing for an action to
+                # ride on, so it gets no identity of its own. `_stamp_action` gives this kind
+                # `Other` with no accesses -- enough to name the block, nothing a hazard reads.
+                out.add(SSchedulingFence("GIR guard anchor"))
             self._stamp_action(out.flatitems()[before:], act)
         self._drop_mem_tokens(out)
         return out

@@ -257,6 +257,8 @@ def _plan_mark(inst, actions):
         # the L2 warm-up pair, at the point `Gl2PrefetchRegions` chose.  Unlike every other
         # act here it names no operand and no movement -- the position IS the entire content.
         actions.append(EmitAction("gl2_prefetch", dict(inst.at)))
+    elif inst.kind == "guard_anchor":
+        actions.append(EmitAction("guard_anchor", dict(inst.at)))
     # phase_boundary is a no-op for emit; the fork handles its label.
 
 
