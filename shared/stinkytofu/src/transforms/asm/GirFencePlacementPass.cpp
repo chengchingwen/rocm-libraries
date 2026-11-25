@@ -48,10 +48,10 @@ std::string describeHazard(const GirFrameHazard& hazard) {
                                                            : "WAW";
     return std::string(kind) + " storage=" + std::to_string(hazard.storage) +
            " gap=" + std::to_string(hazard.gap) + " producer=action" +
-           std::to_string(hazard.producerAction) + "@" + frame(hazard.producerFrame) + "[" +
-           std::to_string(hazard.producerIndex) + "] consumer=action" +
-           std::to_string(hazard.consumerAction) + "@" + frame(hazard.consumerFrame) + "[" +
-           std::to_string(hazard.consumerIndex) + "]";
+           std::to_string(girExternalActionId(hazard.producerAction)) + "@" +
+           frame(hazard.producerFrame) + "[" + std::to_string(hazard.producerIndex) +
+           "] consumer=action" + std::to_string(girExternalActionId(hazard.consumerAction)) + "@" +
+           frame(hazard.consumerFrame) + "[" + std::to_string(hazard.consumerIndex) + "]";
 }
 
 /// Producer occurrences that have executed with no owned publication crossed since.  A physical

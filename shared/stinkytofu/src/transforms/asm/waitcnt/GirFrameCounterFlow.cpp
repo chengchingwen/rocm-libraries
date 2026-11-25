@@ -137,8 +137,9 @@ std::string hazardText(const GirFrameHazard& hazard) {
                                                 : "WAW")
         << " LDS" << hazard.storage << " gap=" << hazard.gap
         << " prod=" << hazard.producer->getParent()->getLabel() << "#" << hazard.producerIndex
-        << "/act" << hazard.producerAction << " cons=" << hazard.consumer->getParent()->getLabel()
-        << "#" << hazard.consumerIndex << "/act" << hazard.consumerAction;
+        << "/act" << girExternalActionId(hazard.producerAction)
+        << " cons=" << hazard.consumer->getParent()->getLabel() << "#" << hazard.consumerIndex
+        << "/act" << girExternalActionId(hazard.consumerAction);
     return out.str();
 }
 
@@ -182,9 +183,11 @@ PotentialMap buildPotentials(Function& function, const GirFrameAnalysis::Result&
                                  << " kind=" << static_cast<int>(hazard.kind)
                                  << " crossAgent=" << hazard.crossAgent << " gap=" << hazard.gap
                                  << " prod=" << hazard.producer->getParent()->getLabel() << "#"
-                                 << hazard.producerIndex << "/act" << hazard.producerAction
+                                 << hazard.producerIndex << "/act"
+                                 << girExternalActionId(hazard.producerAction)
                                  << " cons=" << hazard.consumer->getParent()->getLabel() << "#"
-                                 << hazard.consumerIndex << "/act" << hazard.consumerAction
+                                 << hazard.consumerIndex << "/act"
+                                 << girExternalActionId(hazard.consumerAction)
                                  << " anchor=" << anchor->getParent()->getLabel() << "#"
                                  << indexInBlock(*anchor) << " anchorGap=" << anchorGap << "\n");
             result[{anchor, anchorFrame, counter}].push_back(
@@ -540,7 +543,7 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
         // this path was not modelled, so it proves nothing about the producer being retired.
         // Span is counted in GIR blocks, so an edge within one spends none of it.
         const auto costOf = [&](const GirFrameNode& successor) {
-            return frames.insideOneGirBlock(step.node.block, successor.block) ? 0 : 1;
+            return frames.insideOneGirBlock(step.node, successor) ? 0 : 1;
         };
         if (successors == frames.edges.end() ||
             std::none_of(successors->second.begin(), successors->second.end(),
@@ -1013,7 +1016,7 @@ int girFrameDistance(const GirFrameAnalysis::Result& frames, const GirFrameNode&
         auto successors = frames.edges.find(node);
         if (successors == frames.edges.end()) continue;
         for (const GirFrameNode& successor : successors->second) {
-            const int advance = frames.insideOneGirBlock(node.block, successor.block) ? 0 : 1;
+            const int advance = frames.insideOneGirBlock(node, successor) ? 0 : 1;
             auto [slot, fresh] = best.try_emplace(successor, steps + advance);
             if (!fresh) {
                 if (slot->second <= steps + advance) continue;

@@ -277,8 +277,7 @@ std::unordered_map<GirFrameNode, HazardState, GirFrameNodeHash> reachingHazards(
         for (const GirFrameNode& successor : successors->second) {
             auto target = incoming.find(successor);
             if (target == incoming.end()) continue;
-            const HazardState& outgoing =
-                frames.insideOneGirBlock(node.block, successor.block) ? walked : aged;
+            const HazardState& outgoing = frames.insideOneGirBlock(node, successor) ? walked : aged;
             if (mergeHazardState(target->second, outgoing)) work.push_back(successor);
         }
     }
@@ -496,6 +495,26 @@ bool GirFrameAnalysis::Result::insideOneGirBlock(const BasicBlock* from,
     return source->second == target->second;
 }
 
+std::optional<uint64_t> GirFrameAnalysis::Result::girBlockOfNode(const GirFrameNode& node) const {
+    auto owner = girBlockOf.find(node.block);
+    if (owner != girBlockOf.end()) return owner->second;
+    // An action-less piece carries the block it is still inside in `incomingAction`; 0 there is
+    // the initial reset, i.e. no action has been seen on this path yet.
+    if (node.incomingAction != 0) return node.incomingAction;
+    return std::nullopt;
+}
+
+bool GirFrameAnalysis::Result::insideOneGirBlock(const GirFrameNode& from,
+                                                 const GirFrameNode& to) const {
+    if (isBackEdge(from.block, to.block)) return false;
+    const std::optional<uint64_t> source = girBlockOfNode(from);
+    const std::optional<uint64_t> target = girBlockOfNode(to);
+    // Only two KNOWN and different GIR blocks are a crossing; an end no action has named says
+    // nothing about distance.
+    if (!source || !target) return true;
+    return *source == *target;
+}
+
 BasicBlock* GirFrameAnalysis::Result::girSkipSource(const BasicBlock* block) const {
     auto owner = girBlockOf.find(block);
     if (owner == girBlockOf.end()) return nullptr;
@@ -565,6 +584,15 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
     }
     if (!encoded->loaded) return result;
     result.contract = *encoded;
+    // A contract names actions in the producer's numbering; everything below this is internal.
+    for (GirFrameIncomingSpec& in : result.contract.incomings) {
+        in.destinationAction = girInternalActionId(in.destinationAction);
+        in.sourceAction = girInternalActionId(in.sourceAction);
+    }
+    for (GirFrameRequiresSpec& need : result.contract.requires_) {
+        need.destinationAction = girInternalActionId(need.destinationAction);
+        need.sourceAction = girInternalActionId(need.sourceAction);
+    }
 
     std::unordered_map<StinkyInstruction*, size_t> instructionIndex;
     std::unordered_map<BasicBlock*, uint64_t> blockAnchorOrder;
@@ -578,32 +606,33 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
             if (!inst) continue;
             instructionIndex[inst] = index++;
             if (const auto* action = inst->getModifier<GirActionData>()) {
-                result.actionInstructions[action->actionId].push_back(inst);
-                blockActions[&block].insert(action->actionId);
+                const uint64_t actionId = action->actionId;
+                const uint64_t anchorAction = action->anchorAction;
+                result.actionInstructions[actionId].push_back(inst);
+                blockActions[&block].insert(actionId);
                 // The action and what it touches are facts ABOUT THIS INSTRUCTION, so they come
                 // off the modifier.  Legalization can split one rocisa instruction into several
                 // carrying the same id, so only the first occurrence contributes its accesses.
                 auto [spec, fresh] = result.contract.actions.try_emplace(
-                    action->actionId,
-                    GirActionSpec{action->actionId, action->anchorAction, action->kind, {}});
+                    actionId, GirActionSpec{actionId, anchorAction, action->kind, {}});
                 if (fresh) {
                     for (const GirAccessData& touch : action->accesses) {
                         if (touch.ring < 1)
                             STINKY_UNREACHABLE("GirFrameAnalysis: access ring must be positive");
                         spec->second.accesses.push_back(result.contract.accesses.size());
                         result.contract.accesses.push_back(GirAccessSpec{
-                            action->actionId, touch.isWrite, touch.genId, touch.ring, touch.gdelta,
+                            actionId, touch.isWrite, touch.genId, touch.ring, touch.gdelta,
                             touch.absolute, touch.crossAgent, touch.operand});
                     }
                 }
                 const uint64_t canonical = spec->second.anchorAction;
                 realizedAnchors.insert(canonical);
                 anchorBlocks[canonical].insert(&block);
-                auto [order, inserted] = blockAnchorOrder.emplace(&block, action->actionId);
+                auto [order, inserted] = blockAnchorOrder.emplace(&block, actionId);
                 if (inserted) {
                     result.girBlockOf[&block] = canonical;
-                } else if (action->actionId > order->second) {
-                    order->second = action->actionId;
+                } else if (actionId > order->second) {
+                    order->second = actionId;
                     result.girBlockOf[&block] = canonical;
                 }
             }
@@ -668,8 +697,9 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
             !namedActions.contains(incoming.destinationAction))
             STINKY_UNREACHABLE(
                 ("GirFrameAnalysis: INCOMING names unknown action (src=" +
-                 std::to_string(incoming.sourceAction) + (source ? " here" : " ABSENT") +
-                 ", dst=" + std::to_string(incoming.destinationAction) +
+                 std::to_string(girExternalActionId(incoming.sourceAction)) +
+                 (source ? " here" : " ABSENT") +
+                 ", dst=" + std::to_string(girExternalActionId(incoming.destinationAction)) +
                  (destination ? " here" : " ABSENT") + ", function " + function.getName() + ")")
                     .c_str());
         if (!source || !destination)
@@ -866,7 +896,8 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         // Either the kind is mislabelled (an unknown `.stir` spelling parses to `Other`) or the
         // family above is missing the opcode that realizes it.
         if (!realized)
-            STINKY_UNREACHABLE(("GirFrameAnalysis: action " + std::to_string(access.actionId) +
+            STINKY_UNREACHABLE(("GirFrameAnalysis: action " +
+                                std::to_string(girExternalActionId(access.actionId)) +
                                 " declares kind " +
                                 std::to_string(static_cast<int>(actionSpec->second.kind)) +
                                 " but none of its instructions performs that access")
@@ -999,7 +1030,7 @@ static GirHazardFenceCover coverOfHazard(
         auto successors = frames.edges.find(step.node);
         if (successors == frames.edges.end()) continue;
         for (const GirFrameNode& successor : successors->second) {
-            const int advance = frames.insideOneGirBlock(step.node.block, successor.block) ? 0 : 1;
+            const int advance = frames.insideOneGirBlock(step.node, successor) ? 0 : 1;
             if (step.gap + advance > hazard.gap) continue;
             Step next{step.producerNode, successor,     0, step.gap + advance, step.anchor,
                       step.anchorNode,   step.anchorGap};
