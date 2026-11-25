@@ -553,15 +553,22 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
         const auto costOf = [&](const GirFrameNode& successor) {
             return frames.insideOneGirBlock(step.node, successor) ? 0 : 1;
         };
+        // Every state the graph holds owns an edge entry, so a successor WITHOUT one was dropped
+        // for having no feasible exit. It is not a path: following it reads a state that does not
+        // exist, and finding nothing there reads as running off the end of the model.
+        const auto holds = [&](const GirFrameNode& successor) {
+            return frames.edges.find(successor) != frames.edges.end();
+        };
         if (successors == frames.edges.end() ||
             std::none_of(successors->second.begin(), successors->second.end(),
                          [&](const GirFrameNode& successor) {
-                             return step.steps + costOf(successor) <= span;
+                             return holds(successor) && step.steps + costOf(successor) <= span;
                          })) {
             unaccounted = true;
             continue;
         }
         for (const GirFrameNode& successor : successors->second) {
+            if (!holds(successor)) continue;
             const int advance = costOf(successor);
             if (step.steps + advance > span) continue;
             std::set<int> trips = step.trips;
