@@ -492,6 +492,26 @@ struct Reach {
     size_t from = 0;
 };
 
+/// Distance from a producer to the TOP of `anchorNode`. `girFrameDistance` answers 0 for a node
+/// and itself, which is the same-trip answer for a point AFTER the producer; the top of the
+/// producer's own node is behind it, reached only by leaving and coming back, so measure that
+/// from the successors instead.
+int spanToNodeTop(const GirFrameAnalysis::Result& frames, const GirFrameNode& producerNode,
+                  const GirFrameNode& anchorNode) {
+    if (!(producerNode == anchorNode))
+        return waitcnt::girFrameDistance(frames, producerNode, anchorNode);
+    auto successors = frames.edges.find(producerNode);
+    if (successors == frames.edges.end()) return -1;
+    int best = -1;
+    for (const GirFrameNode& successor : successors->second) {
+        const int onward = waitcnt::girFrameDistance(frames, successor, anchorNode);
+        if (onward < 0) continue;
+        const int step = frames.insideOneGirBlock(producerNode, successor) ? 0 : 1;
+        if (best < 0 || step + onward < best) best = step + onward;
+    }
+    return best;
+}
+
 std::optional<Reach> reachAtBlockStart(
     const GirFrameAnalysis::Result& frames, const NodesByKey& byKey, const Node& node,
     const GirFrameHazard& hazard,
@@ -516,7 +536,7 @@ std::optional<Reach> reachAtBlockStart(
             const int span =
                 hazard.consumer->getParent() == node.block && hazard.consumerFrame == node.frame
                     ? hazard.gap
-                    : waitcnt::girFrameDistance(frames, producerNode, anchorNode);
+                    : spanToNodeTop(frames, producerNode, anchorNode);
             if (span < 0) continue;
             const int count = waitcnt::girFrameIssuesAcrossSpan(
                 frames, kindOf(counter), producerNode, hazard.producerIndex, span, anchorNode, 0);
