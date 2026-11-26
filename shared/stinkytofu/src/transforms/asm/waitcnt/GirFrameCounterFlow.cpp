@@ -470,6 +470,10 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
         int steps = 0;
         int count = 0;
         BasicBlock* pred = nullptr;
+        // Discharged by a wait already standing in the IR. The hazard model measured its gap
+        // without seeing that wait, so such a path must still be WALKED -- it just stops
+        // contributing a count.
+        bool spent = false;
         // Trip counts this path is still possible for. A short prefetch arm reaches the steady
         // loop for no trip count, so the rank along it is not a constraint on the steady wait.
         std::set<int> trips;
@@ -477,13 +481,14 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
 
     const int span = std::max(0, gap);
     int best = -1;
+    bool reached = false;  // the traversal got to the anchor, discharged or not
     bool unaccounted = false;
     std::set<int> producerTrips;
     if (feasible) {
         auto found = feasible->find(producerNode);
         if (found != feasible->end()) producerTrips = found->second;
     }
-    std::deque<Step> work{{producerNode, producerIndex + 1, 0, 1, nullptr, producerTrips}};
+    std::deque<Step> work{{producerNode, producerIndex + 1, 0, 1, nullptr, false, producerTrips}};
     // The frame graph is a graph, so the same state is reachable many ways and an unmemoised walk
     // re-expands it exponentially.  Truncating that with a budget is what made the answer depend
     // on exploration order; deduplicating the state makes the walk finite AND complete, because a
@@ -493,7 +498,7 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
         size_t key = GirFrameNodeHash{}(step.node);
         for (const size_t part :
              {step.index, static_cast<size_t>(step.steps), static_cast<size_t>(step.count),
-              std::hash<BasicBlock*>{}(step.pred)})
+              static_cast<size_t>(step.spent), std::hash<BasicBlock*>{}(step.pred)})
             key = key * 1099511628211ULL ^ part;
         key = key * 1099511628211ULL ^ step.trips.size();
         for (int trip : step.trips) key = key * 1099511628211ULL ^ static_cast<size_t>(trip);
@@ -518,25 +523,28 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
             // a RAW to an unrelated publication point or let a WAR overwrite before its drain.
             if (inst == anchor && step.steps == span && here == anchorIndex &&
                 step.node == anchorNode) {
-                if (best < 0 || step.count < best) best = step.count;
-                if (perPred) {
-                    auto [entry, inserted] = perPred->emplace(step.pred, step.count);
-                    if (!inserted) entry->second = std::min(entry->second, step.count);
+                reached = true;  // the model's own path, found
+                if (!step.spent) {
+                    if (best < 0 || step.count < best) best = step.count;
+                    if (perPred) {
+                        auto [entry, inserted] = perPred->emplace(step.pred, step.count);
+                        if (!inserted) entry->second = std::min(entry->second, step.count);
+                    }
                 }
                 retired = true;  // this path is answered; do not walk past its own anchor
                 break;
             }
 
-            if (retireAt(*inst, step.count)) {
-                retired = true;
-                break;
-            }
+            // A wait already standing here discharges the producer, so this path asks for nothing
+            // more. It keeps SCANNING, though: the hazard model measured its gap without seeing
+            // this wait, and the anchor it measured to is usually further down this very block.
+            if (!step.spent && retireAt(*inst, step.count)) step.spent = true;
 
-            if (classifyMemOp(*inst) == counter) ++step.count;
+            if (!step.spent && classifyMemOp(*inst) == counter) ++step.count;
         }
         if (retired) continue;
 
-        if (retireAtEnd(step.node.block, step.count)) continue;
+        if (retireAtEnd(step.node.block, step.count)) step.spent = true;
 
         auto successors = frames.edges.find(step.node);
         // Ran out of span, or off the end of the frame graph, without ever reaching the anchor:
@@ -568,12 +576,14 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
                 trips = edgeTripDomain(step.node.block, successor.block, trips);
                 if (trips.empty()) continue;  // no trip count takes this edge onward
             }
-            Step next{successor,       0, step.steps + advance, step.count, step.node.block,
-                      std::move(trips)};
+            Step next{successor,       0,          step.steps + advance, step.count,
+                      step.node.block, step.spent, std::move(trips)};
             if (visited.insert(stateKey(next)).second) work.push_back(std::move(next));
         }
     }
-    return {best, unaccounted};
+    // The hazard model asserted a path at this distance. If the traversal reached the anchor at
+    // all -- even on a path a standing wait had already discharged -- the model is reproduced.
+    return {best, unaccounted && !reached};
 }
 
 SpanResult countAcrossSpan(const GirFrameAnalysis::Result& frames, const DecisionMap& decisions,
