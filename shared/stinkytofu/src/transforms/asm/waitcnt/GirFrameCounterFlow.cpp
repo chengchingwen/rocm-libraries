@@ -115,7 +115,6 @@ using TailDecisionMap = std::map<TailSite, int>;
 using TailProducerMap = std::map<TailSite, std::set<IssueKey>>;
 using PotentialMap = std::map<DynamicSite, std::vector<Potential>>;
 using RequirementMap = std::map<StaticSite, RequirementSummary>;
-using FeasibleDomainMap = std::unordered_map<GirFrameNode, std::set<int>, GirFrameNodeHash>;
 
 CounterKind counterFor(const GirFrameHazard& hazard) {
     if (hazard.kind == GirHazardKind::RAW) return classifyMemOp(*hazard.producer);
@@ -139,17 +138,12 @@ std::string hazardText(const GirFrameHazard& hazard) {
 }
 
 size_t indexInBlock(StinkyInstruction& inst);
-FeasibleDomainMap computeFeasibleDomains(Function& function,
-                                         const GirFrameAnalysis::Result& frames);
-bool hazardFeasible(Function& function, const GirFrameAnalysis::Result& frames,
-                    const FeasibleDomainMap& feasible, const GirFrameHazard& hazard);
 
 PotentialMap buildPotentials(Function& function, const GirFrameAnalysis::Result& frames,
                              const GirFrameHazardAnalysis::Result& hazards,
                              const std::function<bool(const BasicBlock&)>& covers,
                              const std::function<bool(const StinkyInstruction&)>& alsoFences) {
     PotentialMap result;
-    const FeasibleDomainMap feasible = computeFeasibleDomains(function, frames);
     std::set<std::tuple<StinkyInstruction*, GirFrame, CounterKind, StinkyInstruction*, GirFrame,
                         size_t, int, int>>
         seen;
@@ -164,7 +158,6 @@ PotentialMap buildPotentials(Function& function, const GirFrameAnalysis::Result&
             !modeled.count(hazard.consumer->getParent()))
             continue;
         if (!covers(*hazard.consumer->getParent())) continue;
-        if (!hazardFeasible(function, frames, feasible, hazard)) continue;
         CounterKind counter = counterFor(hazard);
         if (counter != CK_DS && counter != CK_Tensor) continue;
         const auto addPotential = [&](StinkyInstruction* anchor, const GirFrame& anchorFrame,
@@ -222,189 +215,6 @@ int observedWait(const StinkyInstruction& inst, CounterKind counter) {
     return counts[counter];
 }
 
-bool isTripCompare(const StinkyInstruction& inst) {
-    const auto opcode = inst.getUnifiedOpcode();
-    return opcode == GFX::s_cmp_eq_u32 || opcode == GFX::s_cmp_eq_i32 ||
-           opcode == GFX::s_cmp_lg_u32 || opcode == GFX::s_cmp_lg_i32 ||
-           opcode == GFX::s_cmp_lt_u32 || opcode == GFX::s_cmp_lt_i32 ||
-           opcode == GFX::s_cmp_le_u32 || opcode == GFX::s_cmp_le_i32 ||
-           opcode == GFX::s_cmp_gt_u32 || opcode == GFX::s_cmp_gt_i32 ||
-           opcode == GFX::s_cmp_ge_u32 || opcode == GFX::s_cmp_ge_i32;
-}
-
-const StinkyInstruction* definingTripCompare(const StinkyInstruction& branch) {
-    for (StinkyInstruction* source : branch.getSources())
-        if (source && isTripCompare(*source)) return source;
-
-    const BasicBlock* block = branch.getParent();
-    for (auto it = block->rbegin(); it != block->rend(); ++it) {
-        auto* candidate = dyn_cast<StinkyInstruction>(it.getNodePtr());
-        if (candidate && candidate != &branch && isTripCompare(*candidate)) return candidate;
-    }
-    return nullptr;
-}
-
-std::optional<int> compareLiteral(const StinkyInstruction& compare) {
-    for (const StinkyRegister& operand : compare.getSrcRegs()) {
-        if (operand.dataType == StinkyRegister::Type::LiteralInt) return operand.getLiteralInt();
-        if (operand.dataType == StinkyRegister::Type::LiteralString) {
-            const std::string text = operand.getLiteralString();
-            char* end = nullptr;
-            const long value = std::strtol(text.c_str(), &end, 0);
-            if (end == text.c_str() + text.size()) return static_cast<int>(value);
-        }
-    }
-    return std::nullopt;
-}
-
-bool isTripControlTarget(const std::string& label) {
-    return label.find("skipPGR") != std::string::npos || label.find("toPGR") != std::string::npos ||
-           label.find("LoopEndL") != std::string::npos ||
-           label.find("NoGlobalLoadLoop") != std::string::npos;
-}
-
-std::optional<bool> evaluateTripCompare(const StinkyInstruction& compare, int trip) {
-    const std::optional<int> literal = compareLiteral(compare);
-    if (!literal) return std::nullopt;
-    const auto opcode = compare.getUnifiedOpcode();
-    if (opcode == GFX::s_cmp_eq_u32 || opcode == GFX::s_cmp_eq_i32) return trip == *literal;
-    if (opcode == GFX::s_cmp_lg_u32 || opcode == GFX::s_cmp_lg_i32) return trip != *literal;
-    if (opcode == GFX::s_cmp_lt_u32 || opcode == GFX::s_cmp_lt_i32) return trip < *literal;
-    if (opcode == GFX::s_cmp_le_u32 || opcode == GFX::s_cmp_le_i32) return trip <= *literal;
-    if (opcode == GFX::s_cmp_gt_u32 || opcode == GFX::s_cmp_gt_i32) return trip > *literal;
-    if (opcode == GFX::s_cmp_ge_u32 || opcode == GFX::s_cmp_ge_i32) return trip >= *literal;
-    return std::nullopt;
-}
-
-std::set<int> edgeTripDomain(BasicBlock* block, BasicBlock* successor,
-                             const std::set<int>& domain) {
-    IRBase* terminator = block->getTerminator();
-    auto* branch = terminator ? dyn_cast<StinkyInstruction>(terminator) : nullptr;
-    if (!branch || !isConditionalBranch(*branch)) return domain;
-    const std::vector<std::string> targets = getBranchTargets(*branch);
-    if (targets.size() != 1 || !isTripControlTarget(targets.front())) return domain;
-    const StinkyInstruction* compare = definingTripCompare(*branch);
-    if (!compare) return domain;
-
-    const bool taken = successor->getLabel() == targets.front();
-    bool branchOnTrue = false;
-    if (branch->getUnifiedOpcode() == GFX::s_cbranch_scc1)
-        branchOnTrue = true;
-    else if (branch->getUnifiedOpcode() != GFX::s_cbranch_scc0)
-        return domain;
-
-    std::set<int> allowed;
-    for (int trip : domain) {
-        const std::optional<bool> comparison = evaluateTripCompare(*compare, trip);
-        if (!comparison) return domain;
-        const bool takesBranch = *comparison == branchOnTrue;
-        if (takesBranch == taken) allowed.insert(trip);
-    }
-    return allowed;
-}
-
-std::set<int> initialTripDomain(Function& function) {
-    int limit = 4;
-    for (BasicBlock& block : function) {
-        IRBase* terminator = block.getTerminator();
-        auto* branch = terminator ? dyn_cast<StinkyInstruction>(terminator) : nullptr;
-        if (!branch || !isConditionalBranch(*branch)) continue;
-        const std::vector<std::string> targets = getBranchTargets(*branch);
-        if (targets.size() != 1 || !isTripControlTarget(targets.front())) continue;
-        const StinkyInstruction* compare = definingTripCompare(*branch);
-        if (!compare) continue;
-        const std::optional<int> literal = compareLiteral(*compare);
-        if (literal) limit = std::max(limit, *literal + 3);
-    }
-    std::set<int> result;
-    for (int trip = 1; trip <= limit; ++trip) result.insert(trip);
-    return result;
-}
-
-FeasibleDomainMap computeFeasibleDomains(Function& function,
-                                         const GirFrameAnalysis::Result& frames) {
-    FeasibleDomainMap feasible;
-    std::deque<GirFrameNode> work;
-    BasicBlock* entry = function.getEntryBlock();
-    if (!entry) return feasible;
-    const std::set<int> initial = initialTripDomain(function);
-    for (const GirFrame& frame : frames.frames(entry)) {
-        GirFrameNode node{entry, frame};
-        feasible[node] = initial;
-        work.push_back(node);
-    }
-
-    while (!work.empty()) {
-        GirFrameNode node = std::move(work.front());
-        work.pop_front();
-        auto successors = frames.edges.find(node);
-        if (successors == frames.edges.end()) continue;
-        for (const GirFrameNode& successor : successors->second) {
-            const std::set<int> allowed =
-                edgeTripDomain(node.block, successor.block, feasible[node]);
-            if (allowed.empty()) continue;
-            std::set<int>& destination = feasible[successor];
-            const size_t before = destination.size();
-            destination.insert(allowed.begin(), allowed.end());
-            if (destination.size() != before) work.push_back(successor);
-        }
-    }
-    return feasible;
-}
-
-bool domainsIntersect(const std::set<int>& lhs, const std::set<int>& rhs) {
-    auto a = lhs.begin();
-    auto b = rhs.begin();
-    while (a != lhs.end() && b != rhs.end()) {
-        if (*a == *b) return true;
-        if (*a < *b)
-            ++a;
-        else
-            ++b;
-    }
-    return false;
-}
-
-bool hazardFeasible(Function& function, const GirFrameAnalysis::Result& frames,
-                    const FeasibleDomainMap& feasible, const GirFrameHazard& hazard) {
-    (void)function;
-    const GirFrameNode source{hazard.producer->getParent(), hazard.producerFrame};
-    const GirFrameNode target{hazard.consumer->getParent(), hazard.consumerFrame};
-    auto sourceDomain = feasible.find(source);
-    auto targetDomain = feasible.find(target);
-    if (sourceDomain == feasible.end() || targetDomain == feasible.end()) return false;
-    if (source == target && hazard.producerIndex < hazard.consumerIndex)
-        return domainsIntersect(sourceDomain->second, targetDomain->second);
-
-    std::deque<std::pair<GirFrameNode, std::set<int>>> work;
-    auto first = frames.edges.find(source);
-    if (first == frames.edges.end()) return false;
-    for (const GirFrameNode& successor : first->second) {
-        std::set<int> domain = edgeTripDomain(source.block, successor.block, sourceDomain->second);
-        if (!domain.empty()) work.push_back({successor, std::move(domain)});
-    }
-
-    FeasibleDomainMap seen;
-    while (!work.empty()) {
-        auto [node, domain] = std::move(work.front());
-        work.pop_front();
-        std::set<int> fresh;
-        std::set<int>& prior = seen[node];
-        std::set_difference(domain.begin(), domain.end(), prior.begin(), prior.end(),
-                            std::inserter(fresh, fresh.end()));
-        if (fresh.empty()) continue;
-        prior.insert(fresh.begin(), fresh.end());
-        if (node == target && domainsIntersect(fresh, targetDomain->second)) return true;
-        auto successors = frames.edges.find(node);
-        if (successors == frames.edges.end()) continue;
-        for (const GirFrameNode& successor : successors->second) {
-            std::set<int> next = edgeTripDomain(node.block, successor.block, fresh);
-            if (!next.empty()) work.push_back({successor, std::move(next)});
-        }
-    }
-    return false;
-}
-
 int decisionFor(const DecisionMap& decisions, StinkyInstruction* anchor, CounterKind counter) {
     auto found = decisions.find({anchor, counter});
     if (found == decisions.end() || found->second == WaitCountSpec::kUnused) return -1;
@@ -457,8 +267,7 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
                     const GirFrameNode& producerNode, size_t producerIndex, int gap,
                     const StinkyInstruction* anchor, const GirFrameNode& anchorNode,
                     size_t anchorIndex, RetireAt retireAt, RetireAtEnd retireAtEnd,
-                    std::map<BasicBlock*, int, std::less<BasicBlock*>>* perPred,
-                    const FeasibleDomainMap* feasible = nullptr) {
+                    std::map<BasicBlock*, int, std::less<BasicBlock*>>* perPred) {
     struct Step {
         GirFrameNode node;
         size_t index = 0;
@@ -469,21 +278,13 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
         // without seeing that wait, so such a path must still be WALKED -- it just stops
         // contributing a count.
         bool spent = false;
-        // Trip counts this path is still possible for. A short prefetch arm reaches the steady
-        // loop for no trip count, so the rank along it is not a constraint on the steady wait.
-        std::set<int> trips;
     };
 
     const int span = std::max(0, gap);
     int best = -1;
     bool reached = false;  // the traversal got to the anchor, discharged or not
     bool unaccounted = false;
-    std::set<int> producerTrips;
-    if (feasible) {
-        auto found = feasible->find(producerNode);
-        if (found != feasible->end()) producerTrips = found->second;
-    }
-    std::deque<Step> work{{producerNode, producerIndex + 1, 0, 1, nullptr, false, producerTrips}};
+    std::deque<Step> work{{producerNode, producerIndex + 1, 0, 1, nullptr, false}};
     // The frame graph is a graph, so the same state is reachable many ways and an unmemoised walk
     // re-expands it exponentially.  Truncating that with a budget is what made the answer depend
     // on exploration order; deduplicating the state makes the walk finite AND complete, because a
@@ -495,8 +296,6 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
              {step.index, static_cast<size_t>(step.steps), static_cast<size_t>(step.count),
               static_cast<size_t>(step.spent), std::hash<BasicBlock*>{}(step.pred)})
             key = key * 1099511628211ULL ^ part;
-        key = key * 1099511628211ULL ^ step.trips.size();
-        for (int trip : step.trips) key = key * 1099511628211ULL ^ static_cast<size_t>(trip);
         return key;
     };
     visited.insert(stateKey(work.front()));
@@ -566,13 +365,7 @@ SpanResult walkSpan(const GirFrameAnalysis::Result& frames, CounterKind counter,
             if (!holds(successor)) continue;
             const int advance = costOf(successor);
             if (step.steps + advance > span) continue;
-            std::set<int> trips = step.trips;
-            if (feasible && !trips.empty()) {
-                trips = edgeTripDomain(step.node.block, successor.block, trips);
-                if (trips.empty()) continue;  // no trip count takes this edge onward
-            }
-            Step next{successor,       0,          step.steps + advance, step.count,
-                      step.node.block, step.spent, std::move(trips)};
+            Step next{successor, 0, step.steps + advance, step.count, step.node.block, step.spent};
             if (visited.insert(stateKey(next)).second) work.push_back(std::move(next));
         }
     }
@@ -586,8 +379,7 @@ SpanResult countAcrossSpan(const GirFrameAnalysis::Result& frames, const Decisio
                            const GirFrameNode& producerNode, const Potential& potential,
                            StinkyInstruction* anchor, const GirFrameNode& anchorNode,
                            size_t anchorIndex,
-                           std::map<BasicBlock*, int, std::less<BasicBlock*>>* perPred,
-                           const FeasibleDomainMap* feasible) {
+                           std::map<BasicBlock*, int, std::less<BasicBlock*>>* perPred) {
     auto retireAt = [&](const StinkyInstruction& inst, int count) {
         for (const int keep :
              {decisionFor(decisions, const_cast<StinkyInstruction*>(&inst), counter),
@@ -601,13 +393,12 @@ SpanResult countAcrossSpan(const GirFrameAnalysis::Result& frames, const Decisio
     };
 
     return walkSpan(frames, counter, producerNode, potential.producerIndex, potential.anchorGap,
-                    anchor, anchorNode, anchorIndex, retireAt, retireAtEnd, perPred, feasible);
+                    anchor, anchorNode, anchorIndex, retireAt, retireAtEnd, perPred);
 }
 
 RequirementMap simulate(Function& function, const GirFrameAnalysis::Result& frames,
                         const PotentialMap& potentials, const DecisionMap& decisions,
                         const TailDecisionMap& tailDecisions) {
-    const FeasibleDomainMap feasible = computeFeasibleDomains(function, frames);
     RequirementMap requirements;
 
     // A `(block, frame)` pair can name several nodes, which differ only by the action that entered
@@ -635,7 +426,7 @@ RequirementMap simulate(Function& function, const GirFrameAnalysis::Result& fram
                     std::map<BasicBlock*, int, std::less<BasicBlock*>> perPred;
                     const SpanResult span = countAcrossSpan(
                         frames, decisions, tailDecisions, site.counter, producerNode, potential,
-                        site.anchor, anchorNode, anchorIndex, &perPred, &feasible);
+                        site.anchor, anchorNode, anchorIndex, &perPred);
                     // Only a walk that reached the anchor on NO path and ended some path by
                     // exhaustion is a modelling failure.  In a branching graph most paths simply
                     // lead elsewhere, so counting every one of those measures the graph, not a bug.
