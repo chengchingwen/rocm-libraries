@@ -38,11 +38,6 @@
 
 namespace stinkytofu::waitcnt {
 
-/// Span walks that ended with a path neither reaching the anchor nor retiring -- a hazard the
-/// counter flow did not model and then treated as discharged.  Should be 0; `ST_GIR_SPAN_STATS=1`
-/// reports it per function.
-unsigned girUnaccountedSpans = 0;
-
 namespace {
 
 struct IssueKey {
@@ -644,7 +639,20 @@ RequirementMap simulate(Function& function, const GirFrameAnalysis::Result& fram
                     // Only a walk that reached the anchor on NO path and ended some path by
                     // exhaustion is a modelling failure.  In a branching graph most paths simply
                     // lead elsewhere, so counting every one of those measures the graph, not a bug.
-                    if (span.count < 0 && span.unaccounted) ++girUnaccountedSpans;
+                    // The hazard analysis asserted this producer-consumer pair and measured its
+                    // distance. Reproducing no path at all, while one ran out short, means the
+                    // counter flow disagrees with the pair it was handed -- and it then records
+                    // no requirement, so a wait that is needed can simply go missing.
+                    if (span.count < 0 && span.unaccounted)
+                        STINKY_UNREACHABLE(
+                            ("GIR counter flow found no path for a hazard it was given: anchor=" +
+                             site.anchor->getParent()->getLabel() + "#" +
+                             std::to_string(anchorIndex) +
+                             " producer=" + producerNode.block->getLabel() + "#" +
+                             std::to_string(potential.producerIndex) +
+                             " span=" + std::to_string(potential.anchorGap) +
+                             " counter=" + (site.counter == CK_DS ? "ds" : "tensor"))
+                                .c_str());
                     if (span.count <= 0) continue;
                     for (const auto& [pred, arrived] : perPred)
                         requirements[{site.anchor, site.counter}].record(
@@ -1015,7 +1023,12 @@ int girFrameIssuesAcrossSpan(const GirFrameAnalysis::Result& frames, CounterKind
             return keep >= 0 && count > keep;
         },
         [](BasicBlock*, int) { return false; }, nullptr);
-    if (result.count < 0 && result.unaccounted) ++girUnaccountedSpans;
+    if (result.count < 0 && result.unaccounted)
+        STINKY_UNREACHABLE(("GIR fence placement found no path for a hazard it was given: anchor=" +
+                            anchorNode.block->getLabel() + "#" + std::to_string(anchorIndex) +
+                            " producer=" + producerNode.block->getLabel() + "#" +
+                            std::to_string(producerIndex) + " span=" + std::to_string(span))
+                               .c_str());
     return result.count;
 }
 
@@ -1176,9 +1189,6 @@ WaitInsertionPlan buildGirFrameWaitPlan(
             std::cerr << "\n";
         });
     }
-    if (girUnaccountedSpans && std::getenv("ST_GIR_SPAN_STATS"))
-        std::cerr << "[gir-span] " << function.getName() << ": " << girUnaccountedSpans
-                  << " unaccounted span walk(s)\n";
     WaitInsertionPlan plan =
         materializePlan(decisions, tailDecisions, tailProducers, requirements, tailKinds, kinds);
     validateNoRedundantWaits(function, plan);
