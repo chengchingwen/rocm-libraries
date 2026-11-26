@@ -888,8 +888,17 @@ GirFrameAnalysis::Result GirFrameAnalysis::run(Function& function, AnalysisManag
         for (const auto& [frame, incomingAction] : states->second) {
             GirFrameNode node{&block, frame, incomingAction};
             auto& successors = result.edges[node];
-            for (BasicBlock* succ : block.getSuccessors())
-                if (edgeFeasible(node, succ)) successors.push_back(advanceNode(node, succ));
+            for (BasicBlock* succ : block.getSuccessors()) {
+                if (!edgeFeasible(node, succ)) continue;
+                // A state the prune dropped is gone: naming it here would hand a walk an edge to
+                // a node the graph no longer holds, which reads as running off the end of it.
+                GirFrameNode next = advanceNode(node, succ);
+                auto landing = frameSets.find(succ);
+                if (landing == frameSets.end() ||
+                    !landing->second.contains({next.frame, next.incomingAction}))
+                    continue;
+                successors.push_back(std::move(next));
+            }
         }
     }
 

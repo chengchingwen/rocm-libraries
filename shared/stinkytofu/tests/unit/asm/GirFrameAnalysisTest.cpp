@@ -2153,3 +2153,57 @@ TEST(GirFrameAnalysisTest, AFenceNeverStandsInASeamOnlySomeAgentsEnter) {
     EXPECT_EQ(barriers(guarded), 0) << "a rendezvous inside the seam desynchronizes the workgroup";
     EXPECT_EQ(barriers(head), 1);
 }
+
+constexpr const char* kPrunedStateContract =
+    "gir-frame-contract\n"
+    "gen 0  ring=2 entry=0\n"
+    "incoming  dst=2 src=0 gen=0 value=1\n"
+    "requires  dst=2 src=0 gen=0 values=1\n";
+
+// A state admitted into a block it can never leave is dropped by the prune below -- lowering
+// spells one GIR edge as a chain of scaffold branches that carry no action for a `requires` to
+// name, so an arm enters a branch it cannot take and is only refused further on.  The edge map is
+// built afterwards and used to be built from the successor list alone, so it still NAMED the
+// dropped state.  A walk handed that successor finds a node the graph does not hold, which reads
+// as running off the end of the graph rather than as the dead end it is.
+TEST(GirFrameAnalysisTest, APrunedStateIsNeverNamedAsASuccessor) {
+    Function function("pruned_state");
+    setFunctionArch(function, GfxArchID::Gfx1250);
+    BasicBlock* entry = function.createBasicBlock("entry");
+    BasicBlock* keep = function.createBasicBlock("keep");
+    BasicBlock* scaffold = function.createBasicBlock("scaffold");
+    BasicBlock* sink = function.createBasicBlock("sink");
+    function.addEdge(entry, keep);
+    function.addEdge(entry, scaffold);
+    function.addEdge(keep, sink);
+    function.addEdge(scaffold, sink);
+
+    StinkyInstruction* produce = createTensorLoadInBlock(entry, GfxArchID::Gfx1250, 0, 8);
+    produce->addModifier<GirActionData>(
+        GirActionData{0, 0, GirActionKind::Tensor, {GirAccessData{true, 0, 2, -1, 0, 0, false}}});
+    StinkyInstruction* advance = createTensorLoadInBlock(keep, GfxArchID::Gfx1250, 16, 24);
+    advance->addModifier<GirActionData>(
+        GirActionData{3, 3, GirActionKind::Tensor, {GirAccessData{true, 0, 2, 0, 1, -1, false}}});
+    // The scaffold arm carries NO GIR action, so nothing on it can satisfy the `requires`.
+    AsmIRBuilder scaffoldBuilder(*scaffold, GfxArchID::Gfx1250);
+    scaffoldBuilder.create(getMCIDByUOp(GFX::s_nop, GfxArchID::Gfx1250));
+    StinkyInstruction* consume = createDsReadB128InBlock(sink, GfxArchID::Gfx1250, 0, 20);
+    consume->addModifier<GirActionData>(
+        GirActionData{2, 2, GirActionKind::Ds, {GirAccessData{false, 0, 2, 0, -1, -1, false}}});
+    function.setStringMetaData(kGirFrameContractKey, kPrunedStateContract);
+
+    AnalysisManager analyses;
+    registerAllAnalyses(analyses);
+    const auto& frames = analyses.getResult<GirFrameAnalysis>(function);
+
+    // The fixture must actually prune, or the invariant below is vacuous.
+    ASSERT_TRUE(frames.frames(scaffold).empty())
+        << "fixture no longer strands a state; it cannot cover the edge map";
+
+    for (const auto& [node, successors] : frames.edges) {
+        for (const GirFrameNode& successor : successors) {
+            EXPECT_NE(frames.edges.find(successor), frames.edges.end())
+                << "edge names a frame state the graph does not hold";
+        }
+    }
+}
