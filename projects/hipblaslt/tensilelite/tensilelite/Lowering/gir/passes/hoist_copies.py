@@ -71,6 +71,29 @@ def _latest(inst, label, limit, *hazard_sets):
                default=limit)
 
 
+def _consumed_at(inst, label, limit, *hazard_sets):
+    """When this movement's first consumer runs, as (trips ahead, position).
+
+    `_latest` must drop a loop-carried edge, since a consumer a trip away does not bound where
+    this movement sits in THIS trip -- but dropping it also discards the only record of what the
+    movement feeds. A next-generation read has no same-trip consumer at all, so it keeps nothing
+    and every such read then compares equal. Issue order is that record: a read runs in the order
+    its consumer does, the trip it is consumed on deciding first."""
+    same, carried = [], []
+    for hazards in hazard_sets:
+        for h in hazards:
+            if (h.kind is not RAW or h.producer.inst is not inst
+                    or h.producer.block != label or h.cross_block):
+                continue
+            target = (same if h.same_trip and h.in_program_order else carried)
+            target.append(h.consumer.pos)
+    if same:
+        return 0, min(same)
+    if carried:
+        return 1, min(carried)
+    return 2, limit
+
+
 def _copy_earliest(inst, label, lds, reg):
     """A copy's earliest slot.
 
@@ -130,14 +153,19 @@ def _wmma_ruler(body):
     return at, before
 
 
-def _place_reads(body, floors, ceilings):
+def _place_reads(body, floors, ceilings, consumed):
     """A slot for every read: its ring's turn, `BURST` at a time, `WAR_SLACK` wmma past its floor.
 
     Rings are refilled in the order their first consumer runs, so what a read fetches is what the
     next wmma wants, and within a ring the reads keep their own order.  The floor only ORDERS a
     read behind the wmma still holding the register, which leaves the wmma's own source read
-    uncovered -- hence the slack, which is what keeps the WAR off a wait.  Returned in placement
-    order, so reads landing on one slot issue in the order they were chosen."""
+    uncovered -- hence the slack, which is what keeps the WAR off a wait.
+
+    Returned in ISSUE order, which is the order the consumers run: reads landing on one slot are
+    ordered by nothing else, and a whole generation lands on one slot whenever the ruler runs out
+    before it -- its reads are consumed next trip, so nothing in this one bounds them.  Draining
+    one ring and then the next would group those by operand, which is the ring's identity and not
+    an order the loop asked for."""
     wmma, before = _wmma_ruler(body)
     if not wmma:
         return {}
@@ -151,7 +179,8 @@ def _place_reads(body, floors, ceilings):
         issued += 1
         slot = wmma[cursor] if cursor < len(wmma) else len(body)
         slots[i] = min(max(slot, floors[i]), ceilings[i])
-    return slots
+    return {i: slots[i]
+            for i in sorted(slots, key=lambda i: (slots[i], consumed[i], i))}
 
 
 def hoisted(blk, lds, reg=(), group=True, reads=False, copies=True):
@@ -184,7 +213,8 @@ def hoisted(blk, lds, reg=(), group=True, reads=False, copies=True):
         floors = {i: _earliest(inst, blk.label, lds, reg)
                   for i, inst in enumerate(body) if _is_read(inst)}
         ceilings = {i: _latest(body[i], blk.label, len(body), lds, reg) for i in floors}
-        placed = _place_reads(body, floors, ceilings)
+        consumed = {i: _consumed_at(body[i], blk.label, len(body), lds, reg) for i in floors}
+        placed = _place_reads(body, floors, ceilings, consumed)
         at.update(placed)
         issue.extend(placed)
     # COPY ORDER IS NOT FREE, INCLUDING A COPY THAT DOES NOT MOVE.  Split copies have individual
