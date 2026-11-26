@@ -117,9 +117,6 @@ def _real_region(state, numBuffer, perBlockA, perBlockB, extra):
   w._mxsInterleavePlan = lambda k, a, b, **kw: KernelWriter._mxsInterleavePlan(w, k, a, b, **kw)
   w._mxsBudgetPlan = lambda *a: KernelWriter._mxsBudgetPlan(w, *a)
   w._mxsLayoutConflicts = lambda *a, **kw: KernelWriter._mxsLayoutConflicts(w, *a, **kw)
-  # The packer is chosen by UseLoopModel, and the plan reaches both through the writer.
-  w._mxsPackGroup = KernelWriter._mxsPackGroup
-  w._mxsPackGroupFirstFit = KernelWriter._mxsPackGroupFirstFit
   w.do = {}
   tensor = {"localReadInstruction": SimpleNamespace(blockWidth=1)}
   pap = bool(kernel.get("PrefetchAcrossPersistent", 0))

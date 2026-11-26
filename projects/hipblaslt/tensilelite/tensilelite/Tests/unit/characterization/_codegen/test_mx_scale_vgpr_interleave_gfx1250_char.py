@@ -9,17 +9,18 @@ v_wmma_scale costs one cycle when its two scale VGPRs share a VGPR bank
 (index % 8). The interleave is on by default (KernelWriter.do["MXScaleVgprInterleave"]).
 Where it applies, every MXS reference must resolve inside v0-v255 and no VGPR may be reached
 through two different scale blocks, and each v_wmma_scale must still read the scales the same
-ds_loads wrote as in the default layout. By default it never raises the VGPR count: a layout
-that needs a larger scale region than the default is taken only when the accumulators keep their
-place, and otherwise the kernel gets the layout with the fewest bank conflicts that fits the
-default region (kernels already at the 1024 VGPR limit would not assemble otherwise). With the
-parameter MXScaleVgprInterleaveExtraVgpr the region grows instead and every v_wmma_scale reads
-its two scales from disjoint banks. With the switch off every
-kernel keeps the default layout, whose scale banks collide.
+ds_loads wrote as in the default layout. Without MXScaleVgprInterleaveExtraVgpr it never raises
+the VGPR count: a layout needing more than the default scale region is refused and the kernel
+gets the layout with the fewest bank conflicts that fits (kernels already at the 1024 VGPR limit
+would not assemble otherwise). With the parameter the region grows instead and every
+v_wmma_scale reads its two scales from disjoint banks -- Solution derives it for every
+loop-model MX kernel, whose rings rotate independently and whose bank-disjoint layout is
+routinely past the default span. With the switch off every kernel keeps the default layout,
+whose scale banks collide.
 
 The loop-model cases keep a different number of MXSA and MXSB buffers, and their drain names a
-later MXSA buffer through an earlier one's symbol. The three-buffer case needs one VGPR past the
-default span, and StinkyTofu recolours its VGPRs, so its scales are read as registers.
+later MXSA buffer through an earlier one's symbol. StinkyTofu recolours the three-buffer case's
+VGPRs, so its scales are read as registers.
 
 pytestmark = pytest.mark.unit. CPU-only; no GPU.
 """
@@ -38,26 +39,23 @@ _ARCH = "gfx1250"
 
 _DESIGNED = os.path.join(os.path.dirname(__file__), "data", "test_data", "_designed", "gfx1250")
 
-# (config, fallsBack, extraMatters).
-#   fallsBack:    the bank-conflict-free layout needs more VGPRs than the default AND the longer
-#                 region would move the accumulators, so the kernels get the fewest-conflict
-#                 layout that fits the default region instead.
-#   extraMatters: MXScaleVgprInterleaveExtraVgpr is not folded away, so True and False are two
-#                 kernels.  These were one flag until the region learned to grow when the
-#                 accumulators keep their place: a layout can then be taken without the
-#                 parameter (three_mxsa_buffers), while Solution still forks on it because
-#                 mxs_interleave_extra answers from the Solution state, which does not carry
-#                 where the accumulators start.
+# (config, fallsBack, extraMatters, asksExtra).
+#   fallsBack:    the bank-conflict-free layout needs more VGPRs than the region may take, so the
+#                 kernels get the fewest-conflict layout that fits instead.
+#   extraMatters: forking MXScaleVgprInterleaveExtraVgpr builds a second kernel, i.e. the value
+#                 the solution already has is not the forked one.
+#   asksExtra:    Solution derives the parameter for this config (every loop-model MX kernel), so
+#                 its region may be longer than the default span and its VGPR count may rise.
 _CONFIGS = [
-    ("cluster_padding_npot_mt1.yaml", True, False),
-    ("streamk_cluster_multicast.yaml", False, False),
-    ("streamk_cluster_multicast_pgr2.yaml", False, False),
-    ("streamk_tdm_prefetchgl2.yaml", False, False),
-    ("streamk_tdm_prefetchgl2_f4.yaml", False, False),
-    ("loopmodel_mxf8_scale_buffers.yaml", False, False),
-    ("loopmodel_mxf8_three_mxsa_buffers.yaml", False, True),
+    ("cluster_padding_npot_mt1.yaml", True, False, False),
+    ("streamk_cluster_multicast.yaml", False, False, False),
+    ("streamk_cluster_multicast_pgr2.yaml", False, False, False),
+    ("streamk_tdm_prefetchgl2.yaml", False, False, False),
+    ("streamk_tdm_prefetchgl2_f4.yaml", False, False, False),
+    ("loopmodel_mxf8_scale_buffers.yaml", False, False, True),
+    ("loopmodel_mxf8_three_mxsa_buffers.yaml", False, False, True),
 ]
-_IDS = [name for name, _, _ in _CONFIGS]
+_IDS = [name for name, _, _, _ in _CONFIGS]
 _VGPRS = re.compile(r"\.amdhsa_next_free_vgpr\s+(\d+)")
 
 
@@ -174,13 +172,13 @@ def _emit(name):
 
 @pytest.fixture(scope="module", params=_CONFIGS, ids=_IDS)
 def kernels(request):
-    name, fallsBack, _extraMatters = request.param
+    name, fallsBack, _extraMatters, _asksExtra = request.param
     return fallsBack, _emit(name)
 
 
 @pytest.fixture(scope="module", params=_CONFIGS, ids=_IDS)
 def kernels_on_off(request):
-    name, fallsBack, _extraMatters = request.param
+    name, fallsBack, _extraMatters, _asksExtra = request.param
     on = _emit(name)
     init = KernelWriter.__init__
 
@@ -222,7 +220,12 @@ def test_mx_scale_vgpr_interleave_assembles(kernels):
         assert_assembles(src, base)
 
 
-def test_mx_scale_vgpr_interleave_never_adds_vgprs(kernels_on_off):
+def test_mx_scale_vgpr_interleave_never_adds_vgprs(kernels_on_off, request):
+    # Only where the kernel did not ask for extra VGPRs: a loop-model MX kernel derives
+    # MXScaleVgprInterleaveExtraVgpr, and raising the count is exactly what that buys. That it
+    # still assembles is test_mx_scale_vgpr_interleave_assembles.
+    if dict((c[0], c[3]) for c in _CONFIGS)[request.node.callspec.id]:
+        pytest.skip("derives MXScaleVgprInterleaveExtraVgpr, so the region may be longer")
     _fallsBack, on, off = kernels_on_off
     assert [b for b, _s, _e in off] == [b for b, _s, _e in on]
     for (base, src, _e), (_b, srcOff, _eOff) in zip(on, off):
@@ -275,13 +278,13 @@ def _emit_with_extra_vgpr(name, tmp_path_factory, values="true", limit=8):
 
 @pytest.fixture(scope="module", params=_CONFIGS, ids=_IDS)
 def kernels_extra_requested(request, tmp_path_factory):
-    name, _fallsBack, extraMatters = request.param
+    name, _fallsBack, extraMatters, _asksExtra = request.param
     return extraMatters, _emit(name), _emit_with_extra_vgpr(name, tmp_path_factory)
 
 
 @pytest.fixture(scope="module", params=[c for c in _CONFIGS if c[2]], ids=[c[0] for c in _CONFIGS if c[2]])
 def kernels_extra_vgprs(request, tmp_path_factory):
-    name, _fallsBack, _extraMatters = request.param
+    name, _fallsBack, _extraMatters, _asksExtra = request.param
     return _emit_with_extra_vgpr(name, tmp_path_factory)
 
 

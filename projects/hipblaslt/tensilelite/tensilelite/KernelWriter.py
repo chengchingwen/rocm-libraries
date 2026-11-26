@@ -6969,18 +6969,15 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
     self.states.lastValuMXSAB = vgprIdx
     return vgprIdx
 
-  def _mxsInterleaveRegion(self, kernel, tPMXSA, tPMXSB, vgprIdx, papEnabled, accStart=None):
+  def _mxsInterleaveRegion(self, kernel, tPMXSA, tPMXSB, vgprIdx, papEnabled):
     """(plan, regionLen, reason): the interleave plan and the length of the region it takes from
     vgprIdx, or (None, 0, reason) when the kernel keeps the default layout.
 
     The region is the default MXSA + MXSB valu span when the layout fits in it, so the kernel's
     VGPR count does not grow (kernels already at the 1024 limit would not assemble). A layout
-    that needs more is taken when the solution parameter MXScaleVgprInterleaveExtraVgpr asks for
-    the extra VGPRs, or when accStart -- where the accumulators start with an interleaved region
-    of the given length, or with the default layout for None -- puts them at the same VGPR either
-    way: they start on an even VGPR, so the odd one the default leaves before them can hold the
-    extra. Otherwise the kernel gets the layout with the fewest bank conflicts that does fit
-    (_mxsBudgetPlan)."""
+    that needs more is taken only when the solution parameter MXScaleVgprInterleaveExtraVgpr
+    asks for the extra VGPRs; otherwise the kernel gets the layout with the fewest bank
+    conflicts that does fit (_mxsBudgetPlan)."""
     plan, reason = self._mxsInterleavePlan(kernel, tPMXSA, tPMXSB)
     if plan is None:
       return None, 0, reason
@@ -6997,12 +6994,9 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
         plan, needed = shared, sum(g["span"] for g in shared["groups"])
     if needed > defaultLen:
       # The region is a reservation, so taking more than the default raises the kernel's VGPR
-      # count -- unless the solution asks for the extra VGPRs, or the accumulators land where
-      # they would anyway: they start on an even VGPR, so the odd one the default leaves before
-      # them holds the extra. Where it may not grow, take the best layout that does fit.
-      mayGrow = bool(kernel["MXScaleVgprInterleaveExtraVgpr"]) or (
-        accStart is not None and accStart(needed) == accStart(None))
-      if not mayGrow:
+      # count: only the solution parameter may ask for that. Otherwise take the best layout
+      # that does fit.
+      if not kernel["MXScaleVgprInterleaveExtraVgpr"]:
         plan = self._mxsBudgetPlan(kernel, stacked, defaultLen, mxsbStart - vgprIdx)
         needed = sum(g["span"] for g in plan["groups"])
     regionLen = max(needed, defaultLen)
@@ -7121,10 +7115,6 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
     # The B-slot scale of the WMMA (MXSA when SourceSwap swaps the sources) is also kept out
     # of the low 8 VGPRs of the WMMA's own C/D where the region allows it (placement step).
     slotTc = "A" if kernel["SourceSwap"] else "B"
-    # The bank split packs no looser than placing pieces one by one, so it moves kernels the
-    # scaffold path already lays out -- it is taken only where the layout is being changed.
-    packGroup = self._mxsPackGroup if kernel.get("UseLoopModel", False) else self._mxsPackGroupFirstFit
-
     def listsOf(grp):
       return {tc: [(tc, off, k) for off in grp[tc] for k in range(sizes[tc][off] // piece[tc])]
               for tc in ("A", "B")}
@@ -7178,75 +7168,9 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       groups = [shared]
     else:
       for grp in groups:
-        grp["cells"], grp["span"] = packGroup(listsOf(grp), piece)
-        grp["slot"] = sorted(c for pc, p in grp["cells"].items() if pc[0] == slotTc
-                             for c in range(p, p + piece[slotTc]))
+        used = set()
+        finish(grp, pack(grp, used, None), used)
     return {"piece": piece, "blocks": blocks, "sizes": sizes, "groups": groups}, None
-
-  @staticmethod
-  def _mxsPackGroupFirstFit(lists, piece):
-    """(cells, span) of one group with the pieces placed one at a time, MXSA and MXSB alternating,
-    each at the first free start taking no bank the other side holds.
-
-    The layout every scaffold kernel is laid out with; `_mxsPackGroup` packs no looser, so taking
-    it there would move kernels for no reason of theirs."""
-    order = []
-    for i in range(max(len(lists["A"]), len(lists["B"]))):
-      order += [lst[i] for lst in (lists["A"], lists["B"]) if i < len(lst)]
-    used, banks, cells = set(), {"A": set(), "B": set()}, {}
-    for pc in order:
-      tc = pc[0]
-      size = piece[tc]
-      other = banks["B" if tc == "A" else "A"]
-      step = 2 if size >= 2 else 1
-      p = 0
-      while any(c in used for c in range(p, p + size)) or {c % 8 for c in range(p, p + size)} & other:
-        p += step
-        assert p < 4096, "MXScaleVgprInterleave: no bank-disjoint slot"
-      used.update(range(p, p + size))
-      banks[tc].update(c % 8 for c in range(p, p + size))
-      cells[pc] = p
-    return cells, (max(used) + 2) // 2 * 2  # groups start on even VGPRs
-
-  @staticmethod
-  def _mxsPackGroup(lists, piece):
-    """(cells, span) of one group: every piece of `lists` at a start, MXSA and MXSB on disjoint
-    banks, in as few VGPRs as that allows.
-
-    A VGPR has one bank, so sides kept to disjoint banks can never share a register and pack
-    independently. Every split of the eight banks is tried and the tightest kept, the first found
-    on a tie."""
-    best = None
-    for mask in range(1, 255):
-      sideBanks = {"A": {b for b in range(8) if mask >> b & 1}}
-      sideBanks["B"] = set(range(8)) - sideBanks["A"]
-      starts = {tc: KernelWriter._mxsPackSide(len(lists[tc]), piece[tc], sideBanks[tc]) for tc in ("A", "B")}
-      if None in starts.values():
-        continue
-      top = max(p + piece[tc] - 1 for tc in ("A", "B") for p in starts[tc])
-      if best is None or top < best[0]:
-        best = (top, starts)
-    assert best is not None, "MXScaleVgprInterleave: no bank-disjoint split"
-    top, starts = best
-    cells = {pc: p for tc in ("A", "B") for pc, p in zip(lists[tc], starts[tc])}
-    return cells, (top + 2) // 2 * 2  # groups start on even VGPRs
-
-  @staticmethod
-  def _mxsPackSide(count, size, banks):
-    """First-fit starts of `count` pieces of `size` VGPRs kept to `banks` (index % 8), or None
-    when no start is. A piece of two or more VGPRs starts on an even VGPR."""
-    step = 2 if size >= 2 else 1
-    residues = [r for r in range(0, 8, step) if all((r + i) % 8 in banks for i in range(size))]
-    if not residues:
-      return None
-    starts, nextFree, row = [], 0, 0
-    while len(starts) < count:
-      for r in residues:
-        if len(starts) < count and row + r >= nextFree:
-          starts.append(row + r)
-          nextFree = row + r + size
-      row += 8
-    return starts
 
   def _mxsLayoutConflicts(self, stacked, bBase, pos=None):
     """(conflicts, pairs) of a layout of the planned MXS pieces: the default layout (MXSA from 0,
@@ -10308,8 +10232,7 @@ class KernelWriter(PersistentKernelState, StreamKKernelState, metaclass=abc.ABCM
       if self.do["MXScaleVgprInterleave"] and kernel["ISA"][:2] == (12, 5) \
          and kernel["ProblemType"]["MXBlockA"] and kernel["ProblemType"]["MXBlockB"]:
         mxsPlan, mxsRegionLen, reason = self._mxsInterleaveRegion(
-            kernel, tensorParametersMXSA, tensorParametersMXSB, vgprIdx, papEnabled,
-            lambda regionLen, start=vgprIdx: self._layoutMXScaleVgprs(kernel, start, papEnabled, regionLen))
+            kernel, tensorParametersMXSA, tensorParametersMXSB, vgprIdx, papEnabled)
         if mxsPlan is None:
           # The block sizes are only known here (TileSpan, 2D scales): kernels the interleave
           # does not fit keep the default layout.

@@ -8936,6 +8936,15 @@ class Solution(collections.abc.Mapping):
           state, problemType, isa, isaInfoMap, packedC0, packedC1)
       state["_RAPNumResidentKTiles"] = max(state["PrefetchGlobalRead"] + 1, kMax or 0)
 
+    # A loop-model MX kernel gives each scale ring its own depth and read-ahead, so every MXSA
+    # buffer meets every MXSB buffer and the bank-disjoint layout is routinely a VGPR or two past
+    # the default span. Ask for the extra VGPRs there: without them the kernel falls back to the
+    # fewest-conflict layout that fits, and its v_wmma_scale pay the bank cycle. The scaffold
+    # path is untouched -- its rings rotate together and its layout fits.
+    if state["UseLoopModel"] and state["ISA"][:2] == (12, 5) \
+       and state["ProblemType"]["MXBlockA"] and state["ProblemType"]["MXBlockB"]:
+      state["MXScaleVgprInterleaveExtraVgpr"] = True
+
     # MXScaleVgprInterleaveExtraVgpr only changes the scale layout when the conflict-free layout does not
     # fit the default VGPR span. Elsewhere True builds the same kernel as False under another name, so fold
     # it into False (undecidable cases keep True). Last, so every derived input is final.

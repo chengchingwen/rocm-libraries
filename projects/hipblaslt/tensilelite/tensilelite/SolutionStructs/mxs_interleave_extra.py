@@ -96,9 +96,6 @@ def extraVgprMatters(state, isaInfo, bpr: int = 4) -> Optional[bool]:
   writer = SimpleNamespace(states=states)
   writer._mxsDefaultBlocks = lambda kernel, tc: KernelWriter._mxsDefaultBlocks(writer, kernel, tc)
   writer._alignMXSB = lambda kernel, idx: KernelWriter._alignMXSB(writer, kernel, idx)
-  # The packer is chosen by UseLoopModel, and the plan reaches both through the writer.
-  writer._mxsPackGroup = KernelWriter._mxsPackGroup
-  writer._mxsPackGroupFirstFit = KernelWriter._mxsPackGroupFirstFit
   tensor = lambda width: {"localReadInstruction": SimpleNamespace(blockWidth=width)}
   tPA, tPB = tensor(lrWidth["A"]), tensor(lrWidth["B"])
 
