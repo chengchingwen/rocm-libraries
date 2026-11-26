@@ -55,7 +55,7 @@
     'getitem_kernel_language': 'Assembly',
     'iter_matches_keys': True,
     'keys_is_list': True,
-    'len': 382,
+    'len': 384,
   })
 # ---
 # name: test_solution_construction

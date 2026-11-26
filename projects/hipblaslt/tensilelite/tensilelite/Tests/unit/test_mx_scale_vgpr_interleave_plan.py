@@ -173,9 +173,15 @@ def _accStart(writer, kernel, between=0, vgprIdx=0):
 
 
 def test_three_mxsa_buffers_need_a_vgpr_past_the_default_span():
+  # The bank-disjoint layout wants 20 and nothing says the region may grow, so the kernel gets
+  # the fewest-conflict layout that fits the default 19 instead.
+  writer, kernel = _threeBufferWriter(), _kernel(UseLoopModel=True)
+  stacked, _ = KernelWriter._mxsInterleavePlan(writer, kernel, _tensor(4), _tensor())
+  assert sum(grp["span"] for grp in stacked["groups"]) == 20
   plan, regionLen, reason = KernelWriter._mxsInterleaveRegion(
-    _threeBufferWriter(), _kernel(UseLoopModel=True), _tensor(4), _tensor(), 0, False)
-  assert (plan, regionLen) == (None, 0) and "20 VGPRs, more than the default's 19" in reason
+    writer, kernel, _tensor(4), _tensor(), 0, False)
+  assert reason is None and regionLen == 19
+  assert sum(grp["span"] for grp in plan["groups"]) <= 19
 
 
 def test_a_longer_region_is_taken_when_the_accumulators_keep_their_place():
@@ -192,12 +198,17 @@ def test_a_longer_region_is_taken_when_the_accumulators_keep_their_place():
 
 def test_a_longer_region_is_refused_when_it_moves_the_accumulators():
   # One more VGPR after the scales ends the default on v19, so the longer region would push the
-  # accumulators from v20 to v22.
+  # accumulators from v20 to v22. The region stays at the default; the layout inside it is then
+  # the fewest-conflict one that fits, which is never worse than keeping the default layout.
   writer, kernel = _threeBufferWriter(), _kernel(UseLoopModel=True)
   plan, regionLen, reason = KernelWriter._mxsInterleaveRegion(
     writer, kernel, _tensor(4), _tensor(), 0, False, _accStart(writer, kernel, between=1))
-  assert (plan, regionLen) == (None, 0)
-  assert "20 VGPRs, more than the default's 19, and would move the accumulators from v20 to v22" in reason
+  assert reason is None and regionLen == 19
+  assert sum(grp["span"] for grp in plan["groups"]) <= 19
+  default = KernelWriter._mxsInterleavePlan(writer, kernel, _tensor(4), _tensor())[0]
+  before = KernelWriter._mxsLayoutConflicts(
+    writer, default, KernelWriter._alignMXSB(writer, kernel, writer.states.mxsa.numVgprValu))[0]
+  assert plan["conflicts"] <= before
 
 
 def test_default_blocks_follow_each_operands_own_buffers():

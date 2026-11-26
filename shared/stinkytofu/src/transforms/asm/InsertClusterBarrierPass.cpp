@@ -1930,12 +1930,14 @@ std::optional<uint32_t> estimateLoopBodyCycles(StinkyInstruction* head, const Cy
 /// front of a tensor-counter drain reports the short distance it would actually get. No other
 /// handshake is assumed to exist: whichever ones get chosen are not known yet.
 int64_t measureReducedHandshakeLead(const ReduceCandidate& cand, const CycleMap& cycleMap,
-                                    int leadCycles, int maxHops) {
+                                    int leadCycles, int maxHops, bool girFramePipeline) {
     if (leadCycles <= 0) return 0;
     static const std::unordered_set<StinkyInstruction*> kNoPriorWaits;
+    // The drain stop is the real placement's, so the estimate has to be asked under the same
+    // flag: measuring a lead the placement will not get is what makes the reduction overcount.
     const Rule3SignalAnchor found = findRule3SignalAnchorByCycleLead(
         cand.waitAnchorInst, cand.segBegin, cand.waitAnchor, cycleMap, leadCycles,
-        kRule3SignalMaxLeadCycles, kNoPriorWaits, maxHops, cand.head);
+        kRule3SignalMaxLeadCycles, kNoPriorWaits, maxHops, cand.head, girFramePipeline);
     // A hop is only taken when the segment alone cannot hold the lead, and it lands
     // with the lead met.
     if (found.hops > 0) return leadCycles;
@@ -2239,8 +2241,9 @@ class InsertClusterBarrierPassImpl : public Pass {
                     std::vector<std::optional<uint32_t>> cycles;
                     for (size_t i : group) {
                         ReduceCandidate& cand = reduceCandidates[i];
-                        cand.lead = measureReducedHandshakeLead(
-                            cand, cycleMap, rule3SignalLeadCycles_, reduceMaxHops);
+                        cand.lead =
+                            measureReducedHandshakeLead(cand, cycleMap, rule3SignalLeadCycles_,
+                                                        reduceMaxHops, girFramePipeline_);
                         leads.push_back(cand.lead);
                         cycles.push_back(cand.cycle);
                     }

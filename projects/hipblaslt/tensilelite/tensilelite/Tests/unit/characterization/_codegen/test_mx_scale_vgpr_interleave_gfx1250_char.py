@@ -38,18 +38,26 @@ _ARCH = "gfx1250"
 
 _DESIGNED = os.path.join(os.path.dirname(__file__), "data", "test_data", "_designed", "gfx1250")
 
-# (config, the bank-conflict-free layout needs more VGPRs than the default, so the kernels get the
-# fewest-conflict layout that fits the default region)
+# (config, fallsBack, extraMatters).
+#   fallsBack:    the bank-conflict-free layout needs more VGPRs than the default AND the longer
+#                 region would move the accumulators, so the kernels get the fewest-conflict
+#                 layout that fits the default region instead.
+#   extraMatters: MXScaleVgprInterleaveExtraVgpr is not folded away, so True and False are two
+#                 kernels.  These were one flag until the region learned to grow when the
+#                 accumulators keep their place: a layout can then be taken without the
+#                 parameter (three_mxsa_buffers), while Solution still forks on it because
+#                 mxs_interleave_extra answers from the Solution state, which does not carry
+#                 where the accumulators start.
 _CONFIGS = [
-    ("cluster_padding_npot_mt1.yaml", True),
-    ("streamk_cluster_multicast.yaml", False),
-    ("streamk_cluster_multicast_pgr2.yaml", False),
-    ("streamk_tdm_prefetchgl2.yaml", False),
-    ("streamk_tdm_prefetchgl2_f4.yaml", False),
-    ("loopmodel_mxf8_scale_buffers.yaml", False),
-    ("loopmodel_mxf8_three_mxsa_buffers.yaml", False),
+    ("cluster_padding_npot_mt1.yaml", True, False),
+    ("streamk_cluster_multicast.yaml", False, False),
+    ("streamk_cluster_multicast_pgr2.yaml", False, False),
+    ("streamk_tdm_prefetchgl2.yaml", False, False),
+    ("streamk_tdm_prefetchgl2_f4.yaml", False, False),
+    ("loopmodel_mxf8_scale_buffers.yaml", False, False),
+    ("loopmodel_mxf8_three_mxsa_buffers.yaml", False, True),
 ]
-_IDS = [name for name, _ in _CONFIGS]
+_IDS = [name for name, _, _ in _CONFIGS]
 _VGPRS = re.compile(r"\.amdhsa_next_free_vgpr\s+(\d+)")
 
 
@@ -166,13 +174,13 @@ def _emit(name):
 
 @pytest.fixture(scope="module", params=_CONFIGS, ids=_IDS)
 def kernels(request):
-    name, fallsBack = request.param
+    name, fallsBack, _extraMatters = request.param
     return fallsBack, _emit(name)
 
 
 @pytest.fixture(scope="module", params=_CONFIGS, ids=_IDS)
 def kernels_on_off(request):
-    name, fallsBack = request.param
+    name, fallsBack, _extraMatters = request.param
     on = _emit(name)
     init = KernelWriter.__init__
 
@@ -267,30 +275,31 @@ def _emit_with_extra_vgpr(name, tmp_path_factory, values="true", limit=8):
 
 @pytest.fixture(scope="module", params=_CONFIGS, ids=_IDS)
 def kernels_extra_requested(request, tmp_path_factory):
-    name, tight = request.param
-    return tight, _emit(name), _emit_with_extra_vgpr(name, tmp_path_factory)
+    name, _fallsBack, extraMatters = request.param
+    return extraMatters, _emit(name), _emit_with_extra_vgpr(name, tmp_path_factory)
 
 
-@pytest.fixture(scope="module", params=[c for c in _CONFIGS if c[1]], ids=[c[0] for c in _CONFIGS if c[1]])
+@pytest.fixture(scope="module", params=[c for c in _CONFIGS if c[2]], ids=[c[0] for c in _CONFIGS if c[2]])
 def kernels_extra_vgprs(request, tmp_path_factory):
-    name, _ = request.param
+    name, _fallsBack, _extraMatters = request.param
     return _emit_with_extra_vgpr(name, tmp_path_factory)
 
 
 def _without_random_labels(src):
     # The cluster barrier labels carry a random suffix that differs between two emissions.
-    return re.sub(r"(skipCBPreSignal_)[A-Za-z0-9]{16}", r"\1X", src)
+    # The loop-counter gate names the same signal through an `LCL_` variant of that label.
+    return re.sub(r"(skipCBPreSignal_(?:LCL_)?)[A-Za-z0-9]{16}", r"\1X", src)
 
 
 def test_extra_vgpr_is_folded_unless_the_layout_needs_it(kernels_extra_requested):
     # Solution folds True into False when the conflict-free layout fits the default span: the kernel is
     # then identical to the one without the parameter. Where it does not fit, True changes the layout.
     # (The harness canonicalizes kernel names, so the sources are compared.)
-    tight, default, extra = kernels_extra_requested
+    extraMatters, default, extra = kernels_extra_requested
     assert default and len(default) == len(extra)
     for (_, defaultSrc, _), (_, extraSrc, extraErr) in zip(default, extra):
         assert extraErr == 0
-        assert (_without_random_labels(defaultSrc) != _without_random_labels(extraSrc)) == tight
+        assert (_without_random_labels(defaultSrc) != _without_random_labels(extraSrc)) == extraMatters
 
 
 def test_extra_vgpr_on_a_non_mx_kernel_is_rejected(tmp_path_factory):
@@ -302,8 +311,11 @@ def test_mx_scale_vgpr_interleave_extra_vgprs_is_conflict_free(kernels_extra_vgp
     # With extra VGPRs allowed the region grows to hold the conflict-free layout.
     for base, src, err in kernels_extra_vgprs:
         assert err == 0, f"kernel {base!r} emitted with err={err}"
-        wmma, conflicts, high, shared, pieces = _scan(src)
-        assert wmma > 0 and pieces
+        wmma, conflicts, high, shared, _pieces = _scan(src)
+        # Not `pieces`: a block only carries a _P<k> symbol when it is cut into more than one
+        # piece, and a kernel whose blocks each hold one has none to show. What the extra VGPRs
+        # buy is read off the v_wmma_scale operands below, which every kernel has.
+        assert wmma > 0
         assert conflicts == 0, f"{base}: {conflicts}/{wmma} v_wmma_scale read both scales from one bank"
         assert high == 0 and shared == 0
 
