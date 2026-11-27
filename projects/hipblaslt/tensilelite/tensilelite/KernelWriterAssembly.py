@@ -25464,6 +25464,70 @@ class KernelWriterAssembly(KernelWriter):
                           f"tdm{tc} global region step (sole tensor on this descriptor)")
     return self.tdmSplitLdsBoundary(kernel, tp)
 
+  def tdmSplitUnrollRegionMembers(self, kernel: Mapping, tc: str):
+    """The members of `tc`'s descriptor set whose region step moves along the UNROLL axis.
+
+    A region step is a K step only for a DU split; an MT split walks the free axis and leaves K
+    alone. Tail folding measures the K dim from the moving base, so only these members owe it a
+    correction when the walk steps.
+    """
+    members, _ = self.tdmFuseGroupOf(kernel, tc)
+    return [m for m in (members or (tc,))
+            if _tdm_split.split_of(kernel, m)[1] == _tdm_split.AXIS_DU]
+
+  def tdmSplitUnrollRegionStep(self, module: Module, kernel: Mapping, dstIdx: int,
+                               scratchIdx: int, tc: str) -> bool:
+    """Write this wave's region step ALONG K into `sgpr(dstIdx)`; False when no member steps K.
+
+    Same parity shape as `_tdmSplitMultiWaveInc`, with a non-DU member contributing zero: the set
+    is one descriptor, so a wave carrying an MT-split member must not move the shared K dim that
+    its DU-split peer does. Clobbers SCC and `scratchIdx`.
+    """
+    duMembers = self.tdmSplitUnrollRegionMembers(kernel, tc)
+    if not duMembers:
+      return False
+    members, ranges = self.tdmFuseGroupOf(kernel, tc)
+    if not members or ranges is not None:
+      tp = self.tdmTpByChar(duMembers[0])
+      strideRef, const = self.tdmSplitGlobalInc(kernel, tp)
+      self._splitIncOperand(module, dstIdx, strideRef, const,
+                            f"tdm{tc} K region step (sole tensor on this descriptor)")
+      return True
+    tcEven, tcOdd = tdmParityOrder(kernel, members)
+    # Zero for the member that does not cut K, so the parity select carries the whole rule.
+    def _bytes(m):
+      if m not in duMembers:
+        return 0, 0
+      return self.tdmSplitGlobalInc(kernel, self.tdmTpByChar(m))
+    strideEven, constEven = _bytes(tcEven)
+    strideOdd, constOdd = _bytes(tcOdd)
+    strideEven = 1 if isinstance(strideEven, str) else strideEven
+    strideOdd = 1 if isinstance(strideOdd, str) else strideOdd
+    self._emitTdmWaveParitySCCAuto(module, kernel,
+                                   comment=f"wave parity ({tcEven}=even/{tcOdd}=odd)",
+                                   tmpTag="tdmSplitUnrollParity")
+    if strideEven in (0, 1) and strideOdd in (0, 1):
+      # Both steps are compile-time: select the product, since two literals in one SALU
+      # instruction are not encodable.
+      module.add(SMovB32(sgpr(dstIdx), constEven * strideEven,
+                         f"K region step = parity ? {tcOdd} : {tcEven}"))
+      module.add(SCSelectB32(sgpr(dstIdx), constOdd * strideOdd, sgpr(dstIdx),
+                             f"K region step = parity ? {tcOdd} : {tcEven}"))
+      return True
+    module.add(SCSelectB32(sgpr(dstIdx), strideOdd, strideEven,
+                           f"K split stride = parity ? {tcOdd} : {tcEven}"))
+    if constEven == constOdd:
+      module.add(SMulI32(sgpr(dstIdx), sgpr(dstIdx), constEven,
+                         f"K region step = stride * {constEven}"))
+    else:
+      module.add(SMovB32(sgpr(scratchIdx), constEven,
+                         f"K split const = parity ? {tcOdd} : {tcEven}"))
+      module.add(SCSelectB32(sgpr(scratchIdx), constOdd, sgpr(scratchIdx),
+                             f"K split const = parity ? {tcOdd} : {tcEven}"))
+      module.add(SMulI32(sgpr(dstIdx), sgpr(dstIdx), sgpr(scratchIdx),
+                         "K region step = stride * const"))
+    return True
+
   def _tdmSplitMultiWaveInc(self, module: Module, kernel: Mapping, gIncIdx: int,
                             scratchIdx: int, tPA=None, tPB=None):
     """Emit the per-wave-parity TDMSplit increments for the multi-wave (aliased AB)

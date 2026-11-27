@@ -8,15 +8,17 @@ that reconstruction, so these expose the same work one region at a time.  `tdmGi
 walk needs too, so they have two callers and one derivation.
 """
 
+import contextlib
+
 from rocisa.code import Module
 from rocisa.container import sgpr
 from rocisa.instruction import SAddCU32, SAddU32, SAddU64, SCSelectB32, SCmpEQU32, SCmpLtU32, \
-    SLShiftLeftB32, SLShiftRightB32, SMovB32, SOrB32, SSubBU32, SSubU32
+    SLShiftLeftB32, SLShiftLeftB64, SLShiftRightB32, SMovB32, SOrB32, SSubBU32, SSubU32
 
 from .. import TDMSplit as _tdm_split
 from ...ExecutionPolicy import isPersistent, isStreamK
 from ..TensorDataMover import TensorDataMoverLoad
-from ..TDMFuse import tdmSetIncsSgpr
+from ..TDMFuse import tdmKDimField, tdmSetIncsSgpr
 
 
 def tdmIncrementGir(writer, kernel, tP, wrapLead=None, tPFused=None) -> Module:
@@ -31,6 +33,12 @@ def tdmIncrementGir(writer, kernel, tP, wrapLead=None, tPFused=None) -> Module:
   operands.  One movement is still one advance, so only the stride (`tdm{tc}{tcPeer}Incs`, the
   per-operand `GlobalReadIncs*` having been returned to the pool) and the parity-selected
   `WrapU` differ.  Sparse is rejected under UseLoopModel.
+
+  Under `_TailFolding` the advance also SHRINKS the descriptor's K extent by the k-tile it just
+  stepped, the way `KernelWriterAssembly.tdmIncrementABWaveSperated` does: a folded kernel has no
+  tail loop, and the partial last k-tile zero-fills only while K, measured from the moving base,
+  shrinks in step.  Same two conditions as the scaffold -- the stagger path derives the step from
+  the increment it selected, every other path from the set's stride.
   """
   fused: bool = tPFused is not None
   if not (kernel.get("UseSubtileImpl") or fused):
@@ -51,10 +59,24 @@ def tdmIncrementGir(writer, kernel, tP, wrapLead=None, tPFused=None) -> Module:
   else:
     incSgprName = f"GlobalReadIncs{tc}"
 
-  if writer.states.staggerUCode and wrapLead is not None:
+  staggered: bool = bool(writer.states.staggerUCode) and wrapLead is not None
+  tailFold: bool = bool(kernel.get("_TailFolding", False))
+  # The scaffold's split: the stagger path owns the shrink because only it knows which increment
+  # the wrap selected; RAP's K dim steps by a constant and takes the plain form either way.
+  tfStagger: bool = tailFold and staggered and not kernel["ReuseAcrossPersistent"]
+  if tailFold and not fused:
+    # Solution only folds a wave-separated A/B set (no separate descriptors, no pair on every
+    # wave, no MX/sparse), so every folded advance is the fused one.  A gap between that gate and
+    # this emitter is an error, never a silently unshrunk K dim.
+    raise RuntimeError(
+        f"tail folding: unfused GIR advance for {tc}, which has no paired K dim to shrink")
+
+  if staggered:
     # A fused advance needs two more temps: the parity compare and the wrap-lead compare both
     # land in SCC, so the wrap is materialized before the second compare overwrites it.
-    with writer.allocTmpSgpr(4 if fused else 2, tag="tdmIncrementGir_tmpSgprInfo") as tmpSgprInfo:
+    with writer.allocTmpSgpr(4 if fused else 2, tag="tdmIncrementGir_tmpSgprInfo") as tmpSgprInfo, \
+         (writer.allocTmpSgpr(2, 2, tag="tdmIncrementGir_tailFoldStep")
+          if tfStagger else contextlib.nullcontext()) as kStep:
       incTmpLo = tmpSgprInfo.idx
       incTmpHi = tmpSgprInfo.idx + 1
       if fused:
@@ -114,12 +136,25 @@ def tdmIncrementGir(writer, kernel, tP, wrapLead=None, tPFused=None) -> Module:
                           comment="select WrapU or normal inc (lo)"))
       mod.add(SCSelectB32(dst=sgpr(incTmpHi), src0=wrapHi, src1=0,
                           comment="select WrapU or normal inc (hi)"))
+      if tfStagger:
+        # Read the step off the delta before (2) consumes it: on the wrapIter the address walks
+        # back by -(splitIters-1)*inc, and the K dim owes exactly that same move.
+        _shift = writer.tailFoldStepShift(kernel)
+        mod.add(SLShiftLeftB64(dst=sgpr(kStep.idx, 2), shiftHex=hex(_shift), src=sgpr(incTmpLo, 2),
+                               comment="TailFolding: K dim step = (wrapIter ? WrapU : inc) << %u" % _shift))
       # (2) APPLY
       mod.add(SAddU64(dst=sgpr(f"{tdmGroup0}+2", 2), src0=sgpr(f"{tdmGroup0}+2", 2),
                       src1=sgpr(incTmpLo, 2), comment="TDM addr += inc (with wrap, 64-bit)"))
+      if tfStagger:
+        mod.add(writer.tailFoldingShrinkTdmKDim(kernel, tP, tPFused,
+                                                (sgpr(kStep.idx), sgpr(kStep.idx + 1))))
   else:
     # `incSgprName` is the fused stride when fused; `GlobalReadIncs{tc}` is back in the pool.
     mod.add(comp.incrementGlobalAddr(writer, tdmGroup0, incSgprName))
+
+  if tailFold and not tfStagger:
+    # No stagger delta to read: the set's own stride is the whole advance, so the K dim steps by it.
+    mod.add(writer.tailFoldingShrinkTdmKDim(kernel, tP, tPFused))
 
   # (3) No TDMSplit correction: GIR walks the regions itself and closes the walk with
   # `back=True`, so the descriptor sits at the chunk base and the stride above is the whole
@@ -295,6 +330,45 @@ def tdmMaskShortMembers(writer, mod, kernel, tc: str, region: int, enabled: bool
   return mod
 
 
+def _tailFoldRegionKDim(writer, kernel, tP, mod, back: bool) -> None:
+  """Move the folded K dim with the region step, for the members whose split cuts K.
+
+  Tail folding measures the K extent from the descriptor's CURRENT base, so every move of that
+  base owes it a matching move -- the chunk advance in `tdmIncrementGir`, and this walk.  Without
+  it region r > 0 of the partial last k-tile reads a full region past K instead of zero-filling.
+  Only a DU split steps K; an MT split walks the free axis and leaves the extent alone.
+  """
+  if not kernel.get("_TailFolding", False):
+    return
+  tc = tP["tensorChar"]
+  fields = tdmKDimField(kernel, tc, allowIterate=not kernel["ReuseAcrossPersistent"])
+  assert fields is not None, f"tail folding: {tc} does not keep K in one field"
+  dword = fields[0]
+  group1 = f"tdm{tc}Group1"   # the set's own registers; `tdmRegionIncrementGir` walks this one
+  lo, hi = sgpr(f"{group1}+{dword}"), sgpr(f"{group1}+{dword + 1}")
+  shift = writer.tailFoldStepShift(kernel)
+  # Same shape as the base's `_tailFoldingShrinkTdmKDim32`: build the step in the field's position
+  # and move the two halves with a borrow.  The inverse on the way back closes the walk.
+  with writer.allocTmpSgpr(3, tag="tdmRegionIncrementGir_tailFoldK") as t:
+    if not writer.tdmSplitUnrollRegionStep(mod, kernel, t.idx + 2, t.idx + 1, tc):
+      return
+    what = "region step (back)" if back else "region step"
+    mod.add(SLShiftLeftB32(dst=sgpr(t.idx), shiftHex=hex(shift), src=sgpr(t.idx + 2),
+                           comment="TailFolding: K dim %s << %u (low half)" % (what, shift)))
+    mod.add(SLShiftRightB32(dst=sgpr(t.idx + 1), shiftHex=hex(32 - shift), src=sgpr(t.idx + 2),
+                            comment="TailFolding: K dim %s << %u (high half)" % (what, shift)))
+    if back:
+      mod.add(SAddU32(dst=lo, src0=lo, src1=sgpr(t.idx),
+                      comment="TailFolding: K dim += region step (low half)"))
+      mod.add(SAddCU32(dst=hi, src0=hi, src1=sgpr(t.idx + 1),
+                       comment="TailFolding: K dim += region step (high half)"))
+    else:
+      mod.add(SSubU32(dst=lo, src0=lo, src1=sgpr(t.idx),
+                      comment="TailFolding: K dim -= region step (low half)"))
+      mod.add(SSubBU32(dst=hi, src0=hi, src1=sgpr(t.idx + 1),
+                       comment="TailFolding: K dim -= region step (high half)"))
+
+
 def tdmRegionIncrementGir(writer, kernel, tP, back: bool = False) -> Module:
   """Move the TDM descriptor by one storage region; `back=True` for the inverse.
 
@@ -326,6 +400,7 @@ def tdmRegionIncrementGir(writer, kernel, tP, back: bool = False) -> Module:
         mod.add(SAddU32(sgpr(f"{g0}+1"), sgpr(f"{g0}+1"), ldsIncOp, f"tdm{tc} region += lds"))
         mod.add(SAddU32(sgpr(f"{g0}+2"), sgpr(f"{g0}+2"), sgpr(gIncIdx), f"tdm{tc} region += glb"))
         mod.add(SAddCU32(sgpr(f"{g0}+3"), sgpr(f"{g0}+3"), 0, f"tdm{tc} region carry"))
+    _tailFoldRegionKDim(writer, kernel, tP, mod, back)
     return mod
   lds = sgpr(f"tdm{tc}LdsSplitIncs")
   glb = sgpr(f"tdm{tc}GlobalSplitIncs")
