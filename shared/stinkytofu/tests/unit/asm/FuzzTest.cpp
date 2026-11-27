@@ -10,13 +10,10 @@
  */
 
 #include <gtest/gtest.h>
-#include <unistd.h>
 
-#include <atomic>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <string>
 
 #include "stinkytofu/serialization/asm/IRParser.hpp"
 #include "stinkytofu/serialization/asm/PatternParser.hpp"
@@ -25,13 +22,9 @@ using namespace stinkytofu;
 
 class FuzzTest : public ::testing::Test {
    protected:
-    // Helper to parse pattern from string. The file name carries the pid and a counter: a fixed
-    // name is one path shared by every case, so concurrent cases truncate each other's input.
+    // Helper to parse pattern from string
     PatternParseResult parsePatternString(const std::string& input) {
-        static std::atomic<unsigned> counter{0};
-        const std::string name =
-            "fuzz_test_" + std::to_string(getpid()) + "_" + std::to_string(counter++) + ".pattern";
-        auto tmpPath = std::filesystem::temp_directory_path() / name;
+        auto tmpPath = std::filesystem::temp_directory_path() / "fuzz_test.pattern";
         std::ofstream out(tmpPath);
         out << input;
         out.close();

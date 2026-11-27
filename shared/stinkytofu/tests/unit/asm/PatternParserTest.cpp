@@ -32,9 +32,7 @@
  */
 
 #include <gtest/gtest.h>
-#include <unistd.h>
 
-#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -49,21 +47,12 @@ using namespace stinkytofu;
  */
 class PatternParserTest : public ::testing::Test {
    protected:
-    /// A file name no other process or call can collide with.
-    static std::string uniqueName(const char* stem) {
-        static std::atomic<unsigned> counter{0};
-        return std::string(stem) + "_" + std::to_string(getpid()) + "_" +
-               std::to_string(counter++) + ".pattern";
-    }
-
     /**
      * Helper to parse pattern from string
      */
     std::vector<Pattern> parsePatternString(const std::string& input) {
-        // UNIQUE per process and per call: ctest runs each test as its own process, so a fixed
-        // name let concurrent tests truncate and read each other's file -- a random subset failed
-        // under `-j`, and it always passed serially.
-        auto tmpPath = std::filesystem::temp_directory_path() / uniqueName("test_pattern");
+        // Create temporary file in platform temp directory
+        auto tmpPath = std::filesystem::temp_directory_path() / "test_pattern.pattern";
         std::ofstream out(tmpPath);
         out << input;
         out.close();
@@ -81,7 +70,8 @@ class PatternParserTest : public ::testing::Test {
      * Helper to parse pattern from string with diagnostics
      */
     PatternParseResult parsePatternStringWithDiagnostics(const std::string& input) {
-        auto tmpPath = std::filesystem::temp_directory_path() / uniqueName("test_pattern_diag");
+        // Create temporary file in platform temp directory
+        auto tmpPath = std::filesystem::temp_directory_path() / "test_pattern_diag.pattern";
         std::ofstream out(tmpPath);
         out << input;
         out.close();
