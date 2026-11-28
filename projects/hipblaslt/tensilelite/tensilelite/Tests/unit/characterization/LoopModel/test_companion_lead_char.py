@@ -4,15 +4,11 @@
 """Characterization tests for a COMPANION's local-read lead under UseLoopModel.
 
 A companion operand -- an MX scale or a sparse problem's metadata -- has no PrefetchLocalRead of
-its own; it reads the one belonging to the tensor it rides.  PLR counts prefetch UNITS, and a
-companion's unit is the wider one: a merged read lands a whole fold in one buffer, so one of its
-units can already span every tile the parent's lead reaches.  Taking the parent's NUMBER then asks
-for a read of a unit the loop has not arrived at.
-
-The lead is therefore stated in the companion's own units, and a parent lead that does not fill
-one of them is no read-ahead at all:
-
-    lead  ==  (parent unit tiles * parent PLR) // companion unit tiles
+its own; it reads the one belonging to the tensor it rides.  PLR counts read-order positions.
+For every phase in LoopOrder, the parent's PLR selects a required interval of logical tiles.
+Map that interval through the companion's fold/coverage direction, then choose the minimum
+uniform companion lead whose carrier occurrences cover every such interval.  A scalar width
+division is only a special case when fold direction and LoopOrder agree.
 
 pinned below for the three cases that differ -- the parent's lead inside one companion unit, on
 its boundary, and past it.  A and B are pinned alongside because the derivation must not reach
@@ -75,14 +71,13 @@ def _lead(theta, name):
     return geometry._raw_read_ahead(theta, _operand(theta, name))
 
 
-@pytest.mark.parametrize("plr,parent_tiles,companion_lead", [(1, 1, 0), (2, 2, 1), (3, 3, 1)])
-def test_the_lead_is_the_parents_coverage_in_the_companions_units(plr, parent_tiles,
-                                                                  companion_lead):
-    """PLR 1 is half an MXSA unit, so MXSA does not lead at all; PLR 2 and 3 are one of them."""
+@pytest.mark.parametrize("plr,companion_lead", [(1, 1), (2, 1), (3, 2)])
+def test_the_lead_is_the_parents_coverage_in_the_companions_units(plr, companion_lead):
+    """Choose the fewest complete companion units that cover every parent lead tile."""
     theta = _theta(plr)
-    unit = adapter._unit_free_tiles(theta, _operand(theta, "MXSA"))
-    assert adapter._unit_free_tiles(theta, _operand(theta, "A")) * plr == parent_tiles
-    assert parent_tiles // unit == companion_lead
+    operand, parent = _operand(theta, "MXSA"), _operand(theta, "A")
+    assert adapter._companion_read_lead(
+        theta, parent, operand, plr) == companion_lead
     assert _lead(theta, "MXSA") == companion_lead
     assert _lead(theta, "MXSB") == companion_lead
 

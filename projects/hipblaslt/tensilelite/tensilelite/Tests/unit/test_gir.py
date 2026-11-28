@@ -180,6 +180,102 @@ def test_folded_mxsb_refill_follows_its_last_broadcast_consumer(
     assert check_plan(build_gir(theta)) == []
 
 
+def _asymmetric_hilnmx_plr3_theta():
+    """The gfx1250 ULM wrong-result cell from ``ulm_one_fail.yaml``."""
+    k = _kernel(
+        _mxf8(32),
+        _mi("fp8", (4, 4), (2, 2)),
+        2,
+        3,
+        loopOrder(2, 2, 0, 1),
+        0,
+        1,
+        1,
+    )
+    k.update(
+        PrefetchLocalReadA=2,
+        PrefetchLocalReadB=3,
+        TDMFuse=1,
+        WmmaInnerOrder=2,
+        WmmaOuterOrder=2,
+        ClusterLocalReadA=-1,
+        ClusterLocalReadB=-1,
+        VgprGroupA=-1,
+        VgprGroupB=-1,
+        VgprAllocA=-1,
+        VgprAllocB=-1,
+        ISA=[12, 5, 0],
+        MXScaleFormat="InMemorySwizzle",
+        LocalReadVectorWidthMXS=4,
+        MatrixInstM=16,
+        MatrixInstN=16,
+        SuppressNoLoadLoop=False,
+    )
+    k = calculate_registers(k)
+    target = {
+        "ReadVectorElems": {"MXSA": 4, "MXSB": 4},
+        "ReadInstances": {"MXSA": 2, "MXSB": 2},
+        "ReadAgentGroup": {"MXSA": 2, "MXSB": 2},
+    }
+    return adapter.params_to_theta(_kernel_to_params(k, target=target))
+
+
+def test_hilnmx_companion_lead_covers_parent_tiles_in_loop_order():
+    """Use the fewest HiLnMX positions whose tile coverage reaches the parent's requested lead."""
+    from tensilelite.LoopModel import traversal as geometry
+    from tensilelite.LoopModel.schedule import BufferDepths, Schedule
+
+    theta = _asymmetric_hilnmx_plr3_theta()
+    depths = BufferDepths(theta, include_shared=False)
+    parent = theta.op("B")
+    operand = theta.op("MXSB")
+
+    assert geometry.group_prefetch_unit_tiles(theta, parent) == 2
+    assert geometry.group_prefetch_unit_positions(theta, parent) == 2
+    assert geometry.group_prefetch_unit_tiles(theta, operand) == 2
+    assert geometry.group_prefetch_unit_positions(theta, operand) == 1
+    assert set(adapter._companion_read_lead_deltas(
+        theta, parent, operand, 3)) == {0, 1, 2}
+    assert geometry.group_ring_depth(theta, operand, "g0", depths) == 2
+    assert geometry.requested_read_ahead(theta, parent, depths) == 3
+    assert operand.fragment.read_lead == 2
+    assert geometry.requested_read_ahead(theta, operand, depths) == 2
+    assert Schedule(theta, depths).want(operand) == 2
+
+    program = build_gir(theta)
+    mxsb_loads = [
+        action
+        for action in plan_program(program)["steady"]
+        if action.kind == "ds_load" and action.at["tc"] == "MXSB"
+    ]
+    assert mxsb_loads
+    assert {action.at["advance"] for action in mxsb_loads} == {2}
+    assert check_plan(program) == []
+
+    from tensilelite.Lowering.gir.analyses.frame_hazards import RAW
+    from tensilelite.Lowering.gir.analyses.reg_hazards import RegHazards
+
+    mxsb_raw = [
+        hazard
+        for hazard in AnalysisManager().get(RegHazards(), program)
+        if hazard.kind == RAW
+        and hazard.producer.operand == "MXSB"
+        and hazard.producer.block == "steady"
+        and hazard.consumer.block == "steady"
+    ]
+    by_gap = {
+        gap: {
+            dict(hazard.consumer.coord).get("Ni")
+            for hazard in mxsb_raw
+            if hazard.gap == gap
+        }
+        for gap in (0, 1)
+    }
+    # The No1 carrier is consumed later in the same trip; the next No0 carrier crosses the
+    # backedge. Both dependencies cover the low and high Ni members of the half-wave fold.
+    assert by_gap == {0: {0, 1}, 1: {0, 1}}
+
+
 def _grouped_mxsb_theta():
     k = _kernel(
         _mxf8(32),

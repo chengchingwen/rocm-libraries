@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import product as _product
 from math import gcd as _gcd
 
 from . import traversal as geometry
@@ -693,6 +694,87 @@ def _unit_free_tiles(theta, operand) -> int:
         extent for _name, extent in geometry.unit_free_modes(theta, operand))
 
 
+def _read_carrier_key(theta, operand, coordinate):
+    """The read instruction occurrence containing one logical tile."""
+    varying = tuple(geometry.varying_axes(theta, operand))
+    missing = [name for name in varying if name not in coordinate]
+    if missing:
+        raise RuntimeError(
+            "%s companion walk has axes absent from its parent: %s"
+            % (operand.name, ", ".join(missing))
+        )
+    group = int(geometry.group_index(theta, operand, coordinate))
+    coverage = operand.trajectory.shared_read.coverage
+    if coverage is None:
+        return (("group", group),) + tuple(
+            (name, int(coordinate[name])) for name in varying)
+    candidates = {name for name, _extent in geometry.coverage_candidate_axes(theta, operand)}
+    carrier = geometry.coverage_carrier_of(theta, operand, coverage, coordinate)
+    if carrier is None:
+        return (("group", group),) + tuple(
+            (name, int(coordinate[name])) for name in varying)
+    return (
+        (("group", group),)
+        + tuple((name, int(coordinate[name])) for name in varying if name not in candidates)
+        + (("carrier", int(carrier)),)
+    )
+
+
+def _companion_read_lead_deltas(theta, parent, companion, parent_lead) -> tuple:
+    """Carrier distances needed to cover the parent's whole tile interval, in actual LoopOrder.
+
+    For every phase of the parent walk, map all tiles through ``parent_lead`` into this
+    companion's carrier occurrences.  A folded carrier can contain parent tiles whose required
+    intervals reach different carriers; enumerating the sets retains that direction.
+    """
+    lead = max(0, int(parent_lead))
+    if not lead:
+        return (0,)
+    parent_names = set(geometry.varying_axes(theta, parent))
+    axes = [axis for axis in theta.inner_axes() if axis.name in parent_names]
+    names = [axis.name for axis in axes]
+    coordinates = [
+        dict(zip(names, values))
+        for values in _product(*[
+            range(max(1, int(axis.extent.constant_value)))
+            for axis in axes
+        ])
+    ]
+    if not coordinates:
+        return (lead,)
+
+    labels = tuple(parent.fragment.groups()) or ("g0",)
+    deltas = []
+    for group_number, _label in enumerate(labels):
+        group_walk = [
+            coordinate
+            for coordinate in coordinates
+            if int(geometry.group_index(theta, parent, coordinate)) == group_number
+        ]
+        if not group_walk:
+            continue
+        keys = [_read_carrier_key(theta, companion, coordinate)
+                for coordinate in group_walk]
+        order = tuple(dict.fromkeys(keys))
+        ordinal = {key: index for index, key in enumerate(order)}
+        for index, source in enumerate(keys):
+            source_ordinal = ordinal[source]
+            for tile_distance in range(1, lead + 1):
+                trip, target_index = divmod(index + tile_distance, len(keys))
+                target = keys[target_index]
+                deltas.append(max(
+                    0,
+                    trip * len(order) + ordinal[target] - source_ordinal,
+                ))
+    return tuple(deltas) or (lead,)
+
+
+def _companion_read_lead(theta, parent, companion, parent_lead) -> int:
+    """Minimum uniform carrier lead covering every directional parent displacement."""
+    return max(0, max(_companion_read_lead_deltas(
+        theta, parent, companion, parent_lead)))
+
+
 def _set_register_depths(theta, kernel):
     """Apply the register values calculated by LoopModel.Registers."""
 
@@ -711,7 +793,7 @@ def _set_register_depths(theta, kernel):
               if operand.movements and operand.fragment
               and _register_side(kernel, operand.name) is not None]
     staged.sort(key=lambda operand: _is_companion(operand.name))
-    covered, leads = {}, {}
+    covered = {}
 
     for operand in staged:
         side = _register_side(kernel, operand.name)
@@ -739,15 +821,21 @@ def _set_register_depths(theta, kernel):
                      else value("VgprAlloc", side))
             alloc = max(alloc, geometry.fold_use_span(
                 theta, operand, operand.fragment.groups()[0]))
-            # The lead is the same statement: a parent lead that does not fill one of this
-            # operand's buffers is no read-ahead at all.
-            leadTiles = int(leads.get(side, 0))
-            operand.fragment.read_lead = (leadTiles // perBuffer) if leadTiles else plr
+            # The directional walk below asks for group/carrier identities, so it must see the
+            # same grouping the final ring will use. A carrier ring already applies the merge's
+            # cut and therefore does not inherit the parent's VG a second time.
+            if geometry.carrier_ring(theta, operand):
+                vg = 1
+            operand.fragment.vgpr_group = vg
+            # Convert the parent's tile displacement through THIS companion's fold and coverage
+            # in actual LoopOrder.  A direct ratio loses direction: in the target HiLnMX case the
+            # two Ni members of one carrier land one and two MXSB carriers ahead, respectively.
+            # The minimum uniform lead covering both is therefore max{1, 2} = 2.
+            operand.fragment.read_lead = _companion_read_lead(
+                theta, theta.op(side), operand, plr)
             # Stated on the FRAGMENT: `VgprAllocA/B` are parameters a user writes, and a derived
             # value put beside them would be read back as one.
             operand.fragment.coverage_tiles = tiles
-            if geometry.carrier_ring(theta, operand):
-                vg = 1
         else:
             alloc = value("VgprAlloc", side)
         clamped = (clr and not bool(kernel.get("VgprAllocExplicit" + side, False))) \
@@ -782,7 +870,6 @@ def _set_register_depths(theta, kernel):
             label: depth for label in operand.fragment.groups()}
         if not _is_companion(operand.name):
             covered[side] = perBuffer * max(1, int(depth))
-            leads[side] = perBuffer * max(0, plr)
 
 def _validate_register_depths(theta, kernel):
     def value(base, side):
